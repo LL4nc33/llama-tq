@@ -977,7 +977,8 @@ static int generate(LlamaData & llama_data, const std::string & prompt, std::str
 }
 
 static int read_user_input(std::string & user_input) {
-    static const char * prompt_prefix = "> ";
+    static const char * prompt_prefix_env = std::getenv("LLAMA_PROMPT_PREFIX");
+    static const char * prompt_prefix     = prompt_prefix_env ? prompt_prefix_env : "> ";
 #ifdef WIN32
     printf("\r" LOG_CLR_TO_EOL LOG_COL_DEFAULT "%s", prompt_prefix);
 
