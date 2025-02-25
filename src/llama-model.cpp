@@ -3838,6 +3838,10 @@ int32_t llama_model_n_head(const struct llama_model * model) {
     return model->hparams.n_head();
 }
 
+int32_t llama_model_n_head_kv(const struct llama_model * model) {
+    return model->hparams.n_head_kv();
+}
+
 // deprecated
 int32_t llama_n_ctx_train(const struct llama_model * model) {
     return llama_model_n_ctx_train(model);
