@@ -127,7 +127,6 @@ struct slot_params {
     std::vector<std::string> response_fields;
     bool timings_per_token = false;
     bool post_sampling_probs = false;
-    bool ignore_eos = false;
 
     struct common_params_sampling sampling;
     struct common_params_speculative speculative;
@@ -441,7 +440,6 @@ struct server_task {
 
         {
             params.sampling.logit_bias.clear();
-            params.ignore_eos = json_value(data, "ignore_eos", false);
 
             const auto & logit_bias = data.find("logit_bias");
             if (logit_bias != data.end() && logit_bias->is_array()) {
@@ -469,6 +467,16 @@ struct server_task {
                                 params.sampling.logit_bias.push_back({tok, bias});
                             }
                         }
+                    }
+                }
+            }
+
+            params.sampling.ignore_eos = json_value(data, "ignore_eos", params_base.sampling.ignore_eos);
+            if (params.sampling.ignore_eos) {
+                for (llama_token i = 0; i < llama_vocab_n_tokens(vocab); i++) {
+                    if (llama_vocab_is_eog(vocab, i)) {
+                        //SRV_DBG("%s: added %s logit bias = %f\n", __func__, common_token_to_piece(ctx, i).c_str(), -INFINITY);
+                        params.sampling.logit_bias.push_back({i, -INFINITY});
                     }
                 }
             }
@@ -2215,10 +2223,6 @@ struct server_context {
             // Might be better to reject the request with a 400 ?
             SLT_WRN(slot, "n_predict = %d exceeds server configuration, setting to %d\n", slot.params.n_predict, slot.n_predict);
             slot.params.n_predict = slot.n_predict;
-        }
-
-        if (slot.params.ignore_eos && has_eos_token) {
-            slot.params.sampling.logit_bias.push_back({llama_vocab_eos(vocab), -INFINITY});
         }
 
         {
