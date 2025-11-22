@@ -141,7 +141,7 @@ jobs:
         with:
           path: llama-${{ steps.tag.outputs.name }}-bin-macos-x64.tar
           name: llama-bin-macos-x64.tar
- 
+
   ubuntu-22-cpu:
     strategy:
       matrix:
