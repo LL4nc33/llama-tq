@@ -866,8 +866,6 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           body: |
-            ## ${{ steps.tag.outputs.name }}
-
             > [!WARNING]
             > **Release Format Update**: Linux releases will soon use .tar.gz archives instead of .zip. Please make the necessary changes to your deployment scripts.
 
@@ -913,7 +911,7 @@ jobs:
             const fs = require('fs');
             const release_id = '${{ steps.create_release.outputs.id }}';
             for (let file of await fs.readdirSync('./release')) {
-              if (path.extname(file) === '.zip' || path.extname(file) === '.tar.gz') {
+              if (path.extname(file) === '.zip' || file.endsWith('.tar.gz')) {
                 console.log('uploadReleaseAsset', file);
                 await github.repos.uploadReleaseAsset({
                   owner: context.repo.owner,
