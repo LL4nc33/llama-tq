@@ -75,7 +75,7 @@ v7 TG: **+65% faster** than v6 (63.4 vs 38.4 tok/s).
 v7 improved PP by +13% over v6 via Hadamard-domain dot product.
 TG penalty ~22% on CC 6.1 (fewer warp schedulers limit shuffle hiding).
 
-### Real-World Deployments
+### Example Configurations
 
 **Qwen3.5-35B-A3B IQ2_XS on CC 7.5 (12 GB):**
 
@@ -91,9 +91,8 @@ llama-server -m Qwen3.5-35B-A3B-IQ2_XS.gguf \
 | Parallel Slots | 2 |
 | KV-Cache (tq2_1) | 1,711 MB (vs ~10,400 MB with q4_0) |
 | Total VRAM | 9.0 GB / 12 GB |
-| Speed | ~33 tok/s |
 
-Without TurboQuant: q4_0 KV can't fit 400K context on 12 GB. Even 200K is at the limit with parallel 2.
+Without TurboQuant: q4_0 can't fit 400K context on 12 GB. Even 200K is tight with parallel 2.
 
 **Gemma4 26B on CC 7.5 (12 GB):**
 
@@ -101,10 +100,9 @@ Without TurboQuant: q4_0 KV can't fit 400K context on 12 GB. Even 200K is at the
 |--------|:---:|:---:|:---:|
 | KV-Cache (200K ctx) | ~1.7 GB | ~1.3 GB | -400 MB |
 | Speed | 36.6 tok/s | 38.6 tok/s | **+2 tok/s** |
-| VRAM free | 50 MB | 323 MB | +273 MB |
 | GPU Layers | 16/30 | 17/30 | **+1 layer** |
 
-TQ2_1 saves 400 MB KV-Cache, enabling +1 GPU layer, which nets +2 tok/s. Speed AND compression win.
+Saved VRAM enables +1 GPU layer, netting +2 tok/s. Speed AND compression win.
 
 ### v6 to v7 Performance Delta
 
