@@ -85,7 +85,8 @@ static __global__ void flash_attn_ext_vec(
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, D, nthreads_KQ>();
-    constexpr bool Q_q8_1 = type_K != GGML_TYPE_F16 && type_K != GGML_TYPE_BF16;
+    constexpr bool Q_tq = type_K == GGML_TYPE_TQ2_1 || type_K == GGML_TYPE_TQ3_1 || type_K == GGML_TYPE_TQ4_1;
+    constexpr bool Q_q8_1 = !Q_tq && type_K != GGML_TYPE_F16 && type_K != GGML_TYPE_BF16;
 #ifdef V_DOT2_F32_F16_AVAILABLE
     constexpr dequantize_V_t dequantize_V = get_dequantize_V<type_V, half,  V_rows_per_thread>();
 #else
@@ -128,7 +129,7 @@ static __global__ void flash_attn_ext_vec(
         KQ_sum[j] = 0.0f;
     }
 
-    // Convert Q to float2 (f16 K) or q8_1 (quantized K) and store in registers:
+    // Convert Q to float2 (f16 K), q8_1 (quantized K), or f32 registers (TQ K):
 #ifdef V_DOT2_F32_F16_AVAILABLE
     half2  Q_reg[ncols][(D/2)/nthreads_KQ]; // Will be initialized completely.
 #else
@@ -136,7 +137,27 @@ static __global__ void flash_attn_ext_vec(
 #endif // V_DOT2_F32_F16_AVAILABLE
     int    Q_i32[ncols][1 > D/(sizeof(int)*nthreads_KQ) ? 1 : D/(sizeof(int)*nthreads_KQ)];
     float2  Q_ds[ncols][1 > D/(sizeof(int)*nthreads_KQ) ? 1 : D/(sizeof(int)*nthreads_KQ)];
-    if constexpr (Q_q8_1) {
+
+    // TQ v7: Q as f32 in registers for Hadamard-domain dot product.
+    // Thread t holds Q_f32[j][bi] = Q value at position bi*32 + t (scaled).
+    float Q_f32[ncols][D/WARP_SIZE];
+    if constexpr (Q_tq) {
+#pragma unroll
+        for (int j = 0; j < ncols; ++j) {
+            if (ncols > 1 && ic0 + j >= int(ne01.z)) {
+#pragma unroll
+                for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                    Q_f32[j][bi] = 0.0f;
+                }
+            } else {
+                const float * Q_j = (const float *) (Q + j*nb01);
+#pragma unroll
+                for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                    Q_f32[j][bi] = Q_j[bi * WARP_SIZE + threadIdx.x] * scale;
+                }
+            }
+        }
+    } else if constexpr (Q_q8_1) {
 #pragma unroll
         for (int j0 = 0; j0 < ncols; j0 += nwarps) {
             const int j = j0 + threadIdx.y;
@@ -259,7 +280,13 @@ static __global__ void flash_attn_ext_vec(
 
 #pragma unroll
             for (int j = 0; j < ncols; ++j) {
-                float sum = vec_dot_KQ(K + i_KQ*nb11, Q_reg[j], Q_i32[j], Q_ds[j]);
+                float sum;
+                if constexpr (Q_tq) {
+                    // TQ v7: pass Q as f32 via Q_v parameter; vec_dot returns warp-reduced result
+                    sum = vec_dot_KQ(K + i_KQ*nb11, Q_f32[j], nullptr, nullptr);
+                } else {
+                    sum = vec_dot_KQ(K + i_KQ*nb11, Q_reg[j], Q_i32[j], Q_ds[j]);
+                }
                 sum = warp_reduce_sum<nthreads_KQ>(sum);
 
                 if (use_logit_softcap) {
@@ -574,6 +601,9 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_Q5_1); \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_Q8_0); \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_BF16); \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_TQ2_1); \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_TQ3_1); \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_TQ4_1); \
 
 EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_F16)
 EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_Q4_0)
@@ -582,6 +612,9 @@ EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_Q5_0)
 EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_Q5_1)
 EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_Q8_0)
 EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_BF16)
+EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_TQ2_1)
+EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_TQ3_1)
+EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_TQ4_1)
 
 EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_F16)
 EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_Q4_0)
@@ -590,6 +623,9 @@ EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_Q5_0)
 EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_Q5_1)
 EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_Q8_0)
 EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_BF16)
+EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_TQ2_1)
+EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_TQ3_1)
+EXTERN_DECL_FATTN_VEC_CASES(128, GGML_TYPE_TQ4_1)
 
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_F16)
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_Q4_0)
@@ -598,3 +634,6 @@ EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_Q5_0)
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_Q5_1)
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_Q8_0)
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_BF16)
+EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_TQ2_1)
+EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_TQ3_1)
+EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_TQ4_1)
