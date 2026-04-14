@@ -105,6 +105,7 @@ public:
                      uint32_t   n_pad,
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
+                     uint32_t   tq_protect_layers,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse);
 
@@ -234,6 +235,13 @@ private:
 
     // SWA
     const uint32_t n_swa = 0;
+
+    // TurboQuant boundary layer protection
+    const uint32_t tq_protect_layers = 0;
+
+    // user-selected cache types (for type_k()/type_v() accessors when boundary protection is active)
+    ggml_type user_type_k = GGML_TYPE_F16;
+    ggml_type user_type_v = GGML_TYPE_F16;
 
     // env: LLAMA_ATTN_ROT_DISABLE
     bool attn_rot_k = false;

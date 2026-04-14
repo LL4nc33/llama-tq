@@ -2035,6 +2035,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
+        {"--tq-protect-layers"}, "N",
+        string_format(
+            "TurboQuant boundary layer protection: use q8_0 for first/last N layers\n"
+            "(default: %u, recommended: 2)",
+            params.tq_protect_layers
+        ),
+        [](common_params & params, int value) {
+            params.tq_protect_layers = value;
+        }
+    ).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
+    add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
         [](common_params & params) {

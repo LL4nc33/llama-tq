@@ -8748,6 +8748,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 1,
                                 hparams.n_swa,
                                 hparams.swa_type,
+                                params.tq_protect_layers,
                                 nullptr,
                                 nullptr);
                     }
