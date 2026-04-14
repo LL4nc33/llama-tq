@@ -2881,14 +2881,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_WEBUI_MCP_PROXY"));
     add_opt(common_arg(
-        {"-cortex", "--cortex-proxy"},
-        {"--no-cortex-proxy"},
-        string_format("experimental: enable Cortex Python backend proxy - starts Cortex on localhost:11435 and proxies /api/* requests (default: %s)", params.cortex_proxy ? "enabled" : "disabled"),
-        [](common_params & params, bool value) {
-            params.cortex_proxy = value;
-        }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORTEX_PROXY"));
-    add_opt(common_arg(
         {"--tools"}, "TOOL1,TOOL2,...",
         "experimental: whether to enable built-in tools for AI agents - do not enable in untrusted environments (default: no tools)\n"
         "specify \"all\" to enable all tools\n"
