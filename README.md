@@ -56,9 +56,24 @@ cmake --build build -j$(nproc) --target llama-server
 | q4_0 | 4.5 | 798 | 43.0 | -- |
 | **tq2_1 v7** | 3.5 | 211 | 33.3 | -22.6% |
 
+### Real-World Deployment: 400K Context on 12 GB
+
+Qwen3.5-35B-A3B IQ2_XS with tq2_1 KV on CC 7.5 (12 GB):
+
+| Detail | Value |
+|--------|-------|
+| Context | **400K tokens** |
+| Parallel Slots | 2 |
+| KV-Cache | 1,711 MB (vs ~10,400 MB with q4_0) |
+| VRAM | 9.0 / 12 GB |
+
+Without TQ: q4_0 can't fit 400K on 12 GB. Even 200K is at the limit.
+
 ### NIAH Retrieval (@sztlink, RTX 4090)
 
 q8_0-K + turbo3-V, Qwen3-30B-A3B, 65K context: **25/25 = 100%** retrieval across all depths and context lengths (4K-49K).
+
+See [docs/turboquant.md](docs/turboquant.md) for full benchmarks including deployment configs, community results, v6-v7 deltas, and K/V asymmetry analysis.
 
 ## Documentation
 
