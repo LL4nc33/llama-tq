@@ -166,6 +166,15 @@ typedef sycl::half2 ggml_half2;
 #define QI3_S (QK_K / (4*QR3_S))
 #define QR3_S 4
 
+#define QI_TQ2_1 (QK_TQ / (4*QR_TQ2_1))
+#define QR_TQ2_1 2
+
+#define QI_TQ3_1 (QK_TQ / (4*QR_TQ3_1))
+#define QR_TQ3_1 2
+
+#define QI_TQ4_1 (QK_TQ / (4*QR_TQ4_1))
+#define QR_TQ4_1 2
+
 #endif // GGML_COMMON_DECL_CUDA || GGML_COMMON_DECL_HIP
 
 #ifdef _MSC_VER
@@ -276,6 +285,35 @@ typedef struct {
     ggml_half d;
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
+
+// TurboQuant (TQ) block structures — based on arXiv:2504.19874 (ICLR 2026)
+// v5: PolarQuant (RHT + Lloyd-Max) with precomputed sign bits. QJL removed.
+
+#define QK_TQ 32  // TurboQuant block size
+
+// TQ2_1: 2-bit PolarQuant = 3.5 bpw (v5: compact, sign bits precomputed)
+typedef struct {
+    ggml_half d;              // 2B: vector L2 norm (PolarQuant scaling)
+    uint8_t   qs[QK_TQ / 4]; // 8B: 2-bit PolarQuant indices (4 per byte)
+    uint8_t   sb[QK_TQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
+} block_tq2_1;               // = 14 bytes for 32 elements
+static_assert(sizeof(block_tq2_1) == sizeof(ggml_half) + QK_TQ/4 + QK_TQ/8, "wrong tq2_1 block size/padding");
+
+// TQ3_1: 3-bit PolarQuant = 4.5 bpw (v5: compact, sign bits precomputed)
+typedef struct {
+    ggml_half d;                  // 2B: vector L2 norm
+    uint8_t   qs[QK_TQ * 3 / 8]; // 12B: 3-bit PolarQuant indices (packed)
+    uint8_t   sb[QK_TQ / 8];     // 4B: precomputed RHT sign bits (1 bit per element)
+} block_tq3_1;                    // = 18 bytes for 32 elements
+static_assert(sizeof(block_tq3_1) == sizeof(ggml_half) + QK_TQ*3/8 + QK_TQ/8, "wrong tq3_1 block size/padding");
+
+// TQ4_1: 4-bit PolarQuant = 5.5 bpw (v5: sign bits precomputed)
+typedef struct {
+    ggml_half d;              // 2B: vector L2 norm
+    uint8_t   qs[QK_TQ / 2]; // 16B: 4-bit PolarQuant indices (2 per byte, nibble-packed)
+    uint8_t   sb[QK_TQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
+} block_tq4_1;               // = 22 bytes for 32 elements
+static_assert(sizeof(block_tq4_1) == sizeof(ggml_half) + QK_TQ/2 + QK_TQ/8, "wrong tq4_1 block size/padding");
 
 //
 // Super-block quantization structures
