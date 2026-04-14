@@ -71,6 +71,7 @@ q8_0-K + turbo3-V, Qwen3-30B-A3B, 65K context: **25/25 = 100%** retrieval across
 
 | Project | Focus | Hardware |
 |---------|-------|----------|
+| [LL4nc33/on-llama-tq](https://git.oidanice.at/LL4nc33/on-llama-tq) | Original dev repo (TQ + Cortex Tools) | CUDA |
 | [TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus) | Reference community fork | Metal + CUDA + CPU |
 | [spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda) | Trellis-constrained quantization | CUDA (RTX 3090) |
 | [Madreag/turbo3-cuda](https://github.com/Madreag/turbo3-cuda) | Blackwell (SM120) support | CUDA (RTX 5090) |
