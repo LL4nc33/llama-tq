@@ -432,7 +432,8 @@ extern "C" {
         GGML_TYPE_TQ2_1   = 42, // TurboQuant 2-bit PolarQuant (KV cache, 3.5 bpw)
         GGML_TYPE_TQ3_1   = 43, // TurboQuant 3-bit PolarQuant (KV cache, 4.5 bpw)
         GGML_TYPE_TQ4_1   = 44, // TurboQuant 4-bit PolarQuant (KV cache, 5.5 bpw)
-        GGML_TYPE_COUNT   = 45,
+        GGML_TYPE_TQ1_1   = 45, // TurboQuant 1-bit PolarQuant (KV cache, 2.5 bpw)
+        GGML_TYPE_COUNT   = 46,
     };
 
     // precision

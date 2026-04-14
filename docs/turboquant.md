@@ -29,7 +29,8 @@ cmake --build build -j$(nproc) --target llama-server
 
 | Type | bpw | Block Size | vs f16 | vs q4_0 | Use Case |
 |------|-----|------------|--------|---------|----------|
-| `tq2_1` | 3.5 | 14 bytes | **-78%** | -22% | Maximum compression, long context |
+| `tq1_1` | 2.5 | 10 bytes | **-84%** | -44% | Extreme compression (V-cache recommended) |
+| `tq2_1` | 3.5 | 14 bytes | -78% | -22% | Maximum compression, long context |
 | `tq3_1` | 4.5 | 18 bytes | -72% | Same | Balanced quality/compression |
 | `tq4_1` | 5.5 | 22 bytes | -66% | +22% | Best TQ quality, better PPL than q4_0 |
 
@@ -43,6 +44,7 @@ For comparison:
 | q4_0 | 4.5 | 18 bytes |
 | **tq3_1** | **4.5** | **18 bytes** |
 | **tq2_1** | **3.5** | **14 bytes** |
+| **tq1_1** | **2.5** | **10 bytes** |
 
 ## Memory Savings (Ministral 3B, 26 layers, 8 KV-heads)
 
@@ -159,6 +161,12 @@ float[32] -> normalize -> random signs -> FWHT -> codebook -> norm correction ->
 ### Block Layout
 
 ```
+TQ1_1 (10 bytes, 2.5 bpw):
++--------+----------+--------+
+| d (2B) | qs[4] 1b | sb[4]  |
+|  norm   | indices  | signs  |
++--------+----------+--------+
+
 TQ2_1 (14 bytes, 3.5 bpw):
 +--------+----------+--------+
 | d (2B) | qs[8] 2b | sb[4]  |
@@ -180,6 +188,7 @@ TQ4_1 (22 bytes, 5.5 bpw):
 
 ### Codebooks (Lloyd-Max for Beta(15.5, 15.5), d=32)
 
+- **1-bit (2 centroids):** `{-0.7979, 0.7979}` (= sqrt(2/pi))
 - **2-bit (4 centroids):** `{-1.4896, -0.4514, 0.4514, 1.4896}`
 - **3-bit (8 centroids):** `{-2.0719, -1.3150, -0.7453, -0.2424, 0.2424, 0.7453, 1.3150, 2.0719}`
 - **4-bit (16 centroids):** `{-2.7326, -2.0690, -1.6180, -1.2562, -0.9423, -0.6568, -0.3880, -0.1284, 0.1284, 0.3880, 0.6568, 0.9423, 1.2562, 1.6180, 2.0690, 2.7326}`
@@ -247,7 +256,7 @@ In Flash Attention V-accumulation: skip dequant for positions where attention we
 
 | File | Description |
 |------|-------------|
-| `ggml/include/ggml.h` | Type enum: TQ2_1=41, TQ3_1=42, TQ4_1=43 |
+| `ggml/include/ggml.h` | Type enum: TQ1_1=42, TQ2_1=43, TQ3_1=44, TQ4_1=45 |
 | `ggml/src/ggml-common.h` | Block structs (14B, 18B, 22B) |
 | `ggml/src/ggml-cuda/turboquant.cuh` | CUDA kernels: Philox, FWHT, quantize, dequant, get-rows |
 | `ggml/src/ggml-cuda/fattn-common.cuh` | FA: vec_dot_KQ_tq*, dequantize_V_tq*, Sparse V guard |

@@ -121,12 +121,15 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-q4_0-q4_0.cu
             template-instances/fattn-vec-instance-q8_0-q8_0.cu
             template-instances/fattn-vec-instance-bf16-bf16.cu
+            template-instances/fattn-vec-instance-tq1_1-tq1_1.cu
             template-instances/fattn-vec-instance-tq2_1-tq2_1.cu
             template-instances/fattn-vec-instance-tq3_1-tq3_1.cu
             template-instances/fattn-vec-instance-tq4_1-tq4_1.cu
+            template-instances/fattn-vec-instance-tq1_1-f16.cu
             template-instances/fattn-vec-instance-tq2_1-f16.cu
             template-instances/fattn-vec-instance-tq3_1-f16.cu
             template-instances/fattn-vec-instance-tq4_1-f16.cu
+            template-instances/fattn-vec-instance-f16-tq1_1.cu
             template-instances/fattn-vec-instance-f16-tq2_1.cu)
     endif()
 

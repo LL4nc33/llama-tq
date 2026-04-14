@@ -4,7 +4,7 @@ This fork adds TurboQuant v7 KV cache quantization. All changes are contained in
 
 ## New Files
 - `ggml/src/ggml-cuda/turboquant.cuh` -- CUDA kernels (Philox, FWHT, quantize, dequant, get-rows)
-- `ggml/src/ggml-cuda/template-instances/fattn-vec-instance-*-tq*.cu` -- 51 FA template instances
+- `ggml/src/ggml-cuda/template-instances/fattn-vec-instance-*-tq*.cu` -- 72 FA template instances
 
 ## Modified Files
 

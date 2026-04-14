@@ -212,8 +212,8 @@ llama_kv_cache::llama_kv_cache(
         ggml_type eff_type_k = type_k;
         ggml_type eff_type_v = type_v;
         if (tq_protect_layers > 0) {
-            const bool is_tq_k = (type_k == GGML_TYPE_TQ2_1 || type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
-            const bool is_tq_v = (type_v == GGML_TYPE_TQ2_1 || type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
+            const bool is_tq_k = (type_k == GGML_TYPE_TQ1_1 || type_k == GGML_TYPE_TQ2_1 || type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
+            const bool is_tq_v = (type_v == GGML_TYPE_TQ1_1 || type_v == GGML_TYPE_TQ2_1 || type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
 
             if (is_tq_k || is_tq_v) {
                 uint32_t kv_layer_idx = 0;
@@ -223,7 +223,8 @@ llama_kv_cache::llama_kv_cache(
                     }
                 }
                 const uint32_t n_kv_layers = hparams.n_layer_kv();
-                const bool is_boundary = (kv_layer_idx < tq_protect_layers) ||
+                const bool is_boundary = (tq_protect_layers >= n_kv_layers) ||
+                                         (kv_layer_idx < tq_protect_layers) ||
                                          (kv_layer_idx >= n_kv_layers - tq_protect_layers);
                 if (is_boundary) {
                     if (is_tq_k) { eff_type_k = GGML_TYPE_Q8_0; }

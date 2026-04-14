@@ -10,6 +10,10 @@
 // ============================================================
 // Codebook constants (Lloyd-Max for Beta(15.5, 15.5), d=32, v3) — __constant__ for GPU cache
 // ============================================================
+__device__ __constant__ static float TQ_CUDA_CB_1BIT[2] = {
+    -0.797885f, 0.797885f
+};
+
 __device__ __constant__ static float TQ_CUDA_CB_2BIT[4] = {
     -1.489560f, -0.451428f, 0.451428f, 1.489560f
 };
@@ -125,6 +129,45 @@ static __device__ __forceinline__ float tq_cuda_gaussian(uint32_t i, uint32_t j,
 }
 
 // ============================================================
+// Block-level dequantize kernel: TQ1_1 (1-bit PolarQuant + Hadamard, NO QJL)
+// One CUDA block = one TQ block = 32 threads = 32 elements
+//
+// TQ1_1 is the simplest TurboQuant variant: 1-bit codebook {-0.7979, +0.7979}.
+// Index extraction: 1 bit per element, 8 elements packed per byte in qs[4].
+// ============================================================
+template <typename dst_t>
+static __global__ void dequantize_block_tq1_1_v2(
+        const void * __restrict__ vx,
+        dst_t * __restrict__ yy,
+        const int64_t ne) {
+    const int64_t ib = blockIdx.x;
+    const int tid = threadIdx.x;     // 0..31, one per element
+    const int64_t base = ib * QK_TQ;
+    if (base >= ne) return;
+
+    const block_tq1_1 * x = (const block_tq1_1 *) vx;
+    const float norm = (float)x[ib].d;
+
+    if (norm < 1e-30f) {
+        if (base + tid < ne) yy[base + tid] = ggml_cuda_cast<dst_t>(0.0f);
+        return;
+    }
+
+    // Step 1: PolarQuant codebook lookup (in rotated space) — 1-bit index
+    const int idx = (x[ib].qs[tid / 8] >> (tid % 8)) & 0x1;
+    float val = TQ_CUDA_CB_1BIT[idx] * TQ_CUDA_CB_SCALE;
+
+    // Step 2: Inverse FWHT via warp shuffles (inverse RHT part 1)
+    val = tq_cuda_fwht_warp(val);
+
+    // Step 3+4: Fused sign*norm — branchless: (1 - 2*bit) * norm
+    const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
+    val *= (1.0f - 2.0f * sb) * norm;
+
+    if (base + tid < ne) yy[base + tid] = ggml_cuda_cast<dst_t>(val);
+}
+
+// ============================================================
 // Block-level dequantize kernel: TQ2_1 (PolarQuant + Hadamard, NO QJL)
 // One CUDA block = one TQ block = 32 threads = 32 elements
 //
@@ -209,6 +252,13 @@ static __global__ void dequantize_block_tq3_1_v2(
 // Launcher functions matching the dequantize_row_*_cuda pattern
 // ============================================================
 template <typename dst_t>
+static void dequantize_row_tq1_1_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    GGML_ASSERT(k % QK_TQ == 0);
+    const int nb = k / QK_TQ;
+    dequantize_block_tq1_1_v2<<<nb, 32, 0, stream>>>(vx, y, k);
+}
+
+template <typename dst_t>
 static void dequantize_row_tq2_1_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     GGML_ASSERT(k % QK_TQ == 0);
     const int nb = k / QK_TQ;
@@ -220,6 +270,68 @@ static void dequantize_row_tq3_1_cuda(const void * vx, dst_t * y, const int64_t 
     GGML_ASSERT(k % QK_TQ == 0);
     const int nb = k / QK_TQ;
     dequantize_block_tq3_1_v2<<<nb, 32, 0, stream>>>(vx, y, k);
+}
+
+// ============================================================
+// Quantize block: TQ1_1 (for set-rows / cpy — single-thread per block)
+// normalize -> random signs -> FWHT -> PolarQuant (1-bit) -> sign bits
+// ============================================================
+static __device__ void tq_cuda_quantize_tq1_1_block(const float * __restrict__ x, block_tq1_1 * __restrict__ y, int64_t block_index) {
+    // Step 1: Compute L2 norm
+    float sum_sq = 0.0f;
+    for (int j = 0; j < 32; j++) sum_sq += x[j] * x[j];
+    const float norm = sqrtf(sum_sq);
+    y->d = __float2half(norm);
+
+    if (norm < 1e-30f) {
+        memset(y->qs, 0, 4);
+        memset(y->sb, 0, 4);
+        return;
+    }
+
+    // Step 2: Normalize
+    float x_hat[32];
+    const float inv_norm = 1.0f / norm;
+    for (int j = 0; j < 32; j++) x_hat[j] = x[j] * inv_norm;
+
+    // Step 3: RHT forward (random signs via Philox + FWHT)
+    const uint16_t seed = tq_cuda_derive_seed(block_index);
+    float rotated[32];
+    for (int j = 0; j < 32; j++) {
+        const float s = (tq_cuda_philox_6r(j, seed) & 1) ? 1.0f : -1.0f;
+        rotated[j] = x_hat[j] * s;
+    }
+    tq_cuda_fwht_32_serial(rotated);
+
+    // Step 4: PolarQuant — 1-bit: sign threshold
+    memset(y->qs, 0, 4);
+    for (int j = 0; j < 32; j++) {
+        const int idx = (rotated[j] >= 0.0f) ? 1 : 0;
+        y->qs[j / 8] |= (uint8_t)(idx << (j % 8));
+    }
+
+    // v5: Norm correction — compensate for codebook quantization error
+    float recon[32];
+    for (int j = 0; j < 32; j++) {
+        const int idx = (y->qs[j / 8] >> (j % 8)) & 0x1;
+        recon[j] = TQ_CUDA_CB_1BIT[idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(recon);
+    for (int j = 0; j < 32; j++) {
+        const float s = (tq_cuda_philox_6r(j, seed) & 1) ? 1.0f : -1.0f;
+        recon[j] *= s;
+    }
+    float recon_sq = 0.0f;
+    for (int j = 0; j < 32; j++) recon_sq += recon[j] * recon[j];
+    const float recon_norm = sqrtf(recon_sq);
+    y->d = __float2half((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+
+    // v5: Precompute RHT sign bits and store in sb[4]
+    memset(y->sb, 0, 4);
+    for (int j = 0; j < 32; j++) {
+        uint8_t sign_bit = (tq_cuda_philox_6r(j, seed) & 1);
+        y->sb[j / 8] |= (sign_bit << (j % 8));
+    }
 }
 
 // ============================================================
@@ -379,6 +491,54 @@ static __global__ void k_get_rows_tq(
         const size_t nb01, const size_t nb02, const size_t nb03,
         const size_t s10, const size_t s11, const size_t s12);
 
+// TQ1_1 specialization
+template <typename dst_t>
+static __global__ void k_get_rows_tq1_1(
+        const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const int64_t ne00,
+        const int64_t ne11, const int64_t ne12,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+
+    // blockIdx.x = row index in src1, blockIdx.y = TQ block within row, blockIdx.z = batch
+    const int i10 = blockIdx.x;
+    const int ib_in_row = blockIdx.y;  // which TQ block within the row
+    const int tid = threadIdx.x;       // 0..31
+
+    const int64_t z = blockIdx.z;
+    const int i11 = z / ne12;
+    const int i12 = z % ne12;
+
+    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+
+    dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
+    const block_tq1_1 * src0_row = (const block_tq1_1 *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
+
+    const int64_t nb_per_row = ne00 / QK_TQ;
+    if (ib_in_row >= nb_per_row) return;
+
+    const block_tq1_1 * xb = &src0_row[ib_in_row];
+    const float norm = (float)xb->d;
+    const int64_t out_base = ib_in_row * QK_TQ;
+
+    if (norm < 1e-30f) {
+        if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
+        return;
+    }
+
+    // PolarQuant codebook lookup — 1-bit index (rotated space)
+    const int idx = (xb->qs[tid / 8] >> (tid % 8)) & 0x1;
+    float val = TQ_CUDA_CB_1BIT[idx] * TQ_CUDA_CB_SCALE;
+
+    // Inverse FWHT + precomputed signs from sb[] (v5)
+    val = tq_cuda_fwht_warp(val);
+    const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
+    val *= (1.0f - 2.0f * sb) * norm;
+
+    if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
+}
+
 // TQ2_1 specialization
 template <typename dst_t>
 static __global__ void k_get_rows_tq2_1(
@@ -480,8 +640,32 @@ static __global__ void k_get_rows_tq3_1(
 }
 
 // ============================================================
-// Get-rows launcher for TQ types
+// Get-rows launchers for TQ types
 // ============================================================
+template <typename dst_t>
+static void get_rows_cuda_tq1_1(
+        const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
+        const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
+        const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
+        const size_t nb1, const size_t nb2, const size_t nb3,
+        cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_TQ == 0);
+    const int64_t nb_per_row = ne00 / QK_TQ;
+
+    const size_t s1 = nb1 / sizeof(dst_t);
+    const size_t s2 = nb2 / sizeof(dst_t);
+    const size_t s3 = nb3 / sizeof(dst_t);
+    const size_t s10 = nb10 / sizeof(int32_t);
+    const size_t s11 = nb11 / sizeof(int32_t);
+    const size_t s12 = nb12 / sizeof(int32_t);
+
+    const dim3 block_dims(32);  // warp size = QK_TQ
+    const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
+
+    k_get_rows_tq1_1<<<grid_dims, block_dims, 0, stream>>>(
+        src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
+}
+
 template <typename dst_t>
 static void get_rows_cuda_tq2_1(
         const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
