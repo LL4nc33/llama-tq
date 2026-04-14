@@ -1,5 +1,6 @@
 #include "convert.cuh"
 #include "dequantize.cuh"
+#include "turboquant.cuh"
 
 #include <cstdint>
 
@@ -818,6 +819,148 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
     }
 }
 
+// TurboQuant NC-aware dequant kernels: one CUDA block = one TQ block = 32 threads
+template <typename dst_t>
+static __global__ void dequantize_block_tq2_1_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
+        const int64_t ne00, const int64_t ne01,
+        const int64_t ne0203, const uint3 ne02_fdv,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    const int64_t ib_in_row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int64_t nb_per_row = ne00 / QK_TQ;
+    if (ib_in_row >= nb_per_row) return;
+    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
+        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
+            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
+            const int64_t i02 = dm.y;
+            const int64_t i03 = dm.x;
+            const int64_t ibx0 = i03*s03 + i02*s02 + i01*s01;
+            const int64_t ib = ibx0 + ib_in_row;
+            const block_tq2_1 * x = (const block_tq2_1 *) vx;
+            const float norm = (float)x[ib].d;
+            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_TQ;
+            if (norm < 1e-30f) {
+                if (ib_in_row * QK_TQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
+                continue;
+            }
+            const int idx = (x[ib].qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
+            float val = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE;
+            val = tq_cuda_fwht_warp(val);
+            const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
+            val *= (1.0f - 2.0f * sb) * norm;
+            if (ib_in_row * QK_TQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
+        }
+    }
+}
+
+template <typename dst_t>
+static __global__ void dequantize_block_tq3_1_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
+        const int64_t ne00, const int64_t ne01,
+        const int64_t ne0203, const uint3 ne02_fdv,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    const int64_t ib_in_row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int64_t nb_per_row = ne00 / QK_TQ;
+    if (ib_in_row >= nb_per_row) return;
+    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
+        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
+            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
+            const int64_t i02 = dm.y;
+            const int64_t i03 = dm.x;
+            const int64_t ibx0 = i03*s03 + i02*s02 + i01*s01;
+            const int64_t ib = ibx0 + ib_in_row;
+            const block_tq3_1 * x = (const block_tq3_1 *) vx;
+            const float norm = (float)x[ib].d;
+            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_TQ;
+            if (norm < 1e-30f) {
+                if (ib_in_row * QK_TQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
+                continue;
+            }
+            const int bit_offset = tid * 3;
+            const int byte_idx = bit_offset / 8;
+            const int bit_idx = bit_offset % 8;
+            int cb_idx = (x[ib].qs[byte_idx] >> bit_idx);
+            if (bit_idx > 5) cb_idx |= (x[ib].qs[byte_idx + 1] << (8 - bit_idx));
+            cb_idx &= 0x7;
+            float val = TQ_CUDA_CB_3BIT[cb_idx] * TQ_CUDA_CB_SCALE;
+            val = tq_cuda_fwht_warp(val);
+            const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
+            val *= (1.0f - 2.0f * sb) * norm;
+            if (ib_in_row * QK_TQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
+        }
+    }
+}
+
+template <typename dst_t>
+static __global__ void dequantize_block_tq4_1_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
+        const int64_t ne00, const int64_t ne01,
+        const int64_t ne0203, const uint3 ne02_fdv,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    const int64_t ib_in_row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int64_t nb_per_row = ne00 / QK_TQ;
+    if (ib_in_row >= nb_per_row) return;
+    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
+        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
+            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
+            const int64_t i02 = dm.y;
+            const int64_t i03 = dm.x;
+            const int64_t ibx0 = i03*s03 + i02*s02 + i01*s01;
+            const int64_t ib = ibx0 + ib_in_row;
+            const block_tq4_1 * x = (const block_tq4_1 *) vx;
+            const float norm = (float)x[ib].d;
+            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_TQ;
+            if (norm < 1e-30f) {
+                if (ib_in_row * QK_TQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
+                continue;
+            }
+            const int idx = (x[ib].qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
+            float val = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE;
+            val = tq_cuda_fwht_warp(val);
+            const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
+            val *= (1.0f - 2.0f * sb) * norm;
+            if (ib_in_row * QK_TQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
+        }
+    }
+}
+
+// NC launcher wrappers for TQ types
+template <typename dst_t>
+static void dequantize_block_tq2_1_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_TQ == 0);
+    const int64_t nb_per_row = ne00 / QK_TQ;
+    const int64_t ne0203 = ne02*ne03;
+    const uint3 ne02_fdv = init_fastdiv_values(ne02);
+    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    dequantize_block_tq2_1_nc<<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+}
+
+template <typename dst_t>
+static void dequantize_block_tq3_1_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_TQ == 0);
+    const int64_t nb_per_row = ne00 / QK_TQ;
+    const int64_t ne0203 = ne02*ne03;
+    const uint3 ne02_fdv = init_fastdiv_values(ne02);
+    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    dequantize_block_tq3_1_nc<<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+}
+
+template <typename dst_t>
+static void dequantize_block_tq4_1_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_TQ == 0);
+    const int64_t nb_per_row = ne00 / QK_TQ;
+    const int64_t ne0203 = ne02*ne03;
+    const uint3 ne02_fdv = init_fastdiv_values(ne02);
+    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    dequantize_block_tq4_1_nc<<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+}
+
 to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
     switch (type) {
         case GGML_TYPE_F32:
@@ -832,6 +975,12 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
         case GGML_TYPE_Q8_0:
             return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
+        case GGML_TYPE_TQ2_1:
+            return dequantize_block_tq2_1_nc_cuda;
+        case GGML_TYPE_TQ3_1:
+            return dequantize_block_tq3_1_nc_cuda;
+        case GGML_TYPE_TQ4_1:
+            return dequantize_block_tq4_1_nc_cuda;
         case GGML_TYPE_BF16:
             return convert_unary_cuda<nv_bfloat16>;
         default:
@@ -853,6 +1002,12 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
         case GGML_TYPE_Q8_0:
             return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
+        case GGML_TYPE_TQ2_1:
+            return dequantize_block_tq2_1_nc_cuda;
+        case GGML_TYPE_TQ3_1:
+            return dequantize_block_tq3_1_nc_cuda;
+        case GGML_TYPE_TQ4_1:
+            return dequantize_block_tq4_1_nc_cuda;
         case GGML_TYPE_F16:
             return convert_unary_cuda<half, nv_bfloat16>;
         default:
@@ -874,6 +1029,12 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
             return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
         case GGML_TYPE_Q8_0:
             return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
+        case GGML_TYPE_TQ2_1:
+            return dequantize_block_tq2_1_nc_cuda;
+        case GGML_TYPE_TQ3_1:
+            return dequantize_block_tq3_1_nc_cuda;
+        case GGML_TYPE_TQ4_1:
+            return dequantize_block_tq4_1_nc_cuda;
         case GGML_TYPE_BF16:
             return convert_unary_cuda<nv_bfloat16, float>;
         default:

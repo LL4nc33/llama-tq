@@ -5489,3 +5489,362 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
 
     return true;
 }
+
+// =====================================================================
+// TurboQuant v7 (TQ2_1 / TQ3_1 / TQ4_1) — PolarQuant + precomputed sign bits
+// =====================================================================
+
+// --- Philox 2x32 Counter-Based PRNG — O(1) random access ---
+static inline uint32_t tq_philox(uint32_t counter, uint32_t key) {
+    uint32_t lo = counter;
+    uint32_t hi = key;
+    for (int i = 0; i < 10; ++i) {
+        const uint32_t lo_old = lo;
+        lo = (uint32_t)(((uint64_t)lo_old * 0xD2511F53u) >> 32) ^ hi ^ (0x9E3779B9u * (uint32_t)(i + 1));
+        hi = lo_old * 0xD2511F53u;
+    }
+    return lo;
+}
+
+static inline uint32_t tq_philox_6r(uint32_t counter, uint32_t key) {
+    uint32_t lo = counter;
+    uint32_t hi = key;
+    for (int i = 0; i < 6; ++i) {
+        const uint32_t lo_old = lo;
+        lo = (uint32_t)(((uint64_t)lo_old * 0xD2511F53u) >> 32) ^ hi ^ (0x9E3779B9u * (uint32_t)(i + 1));
+        hi = lo_old * 0xD2511F53u;
+    }
+    return lo;
+}
+
+static void tq_random_signs(uint16_t seed, float * signs, int n) {
+    for (int i = 0; i < n; i++) {
+        signs[i] = (tq_philox_6r((uint32_t)i, (uint32_t)seed) & 1) ? 1.0f : -1.0f;
+    }
+}
+
+static void tq_fwht(float * data, int n) {
+    for (int len = 1; len < n; len <<= 1) {
+        for (int i = 0; i < n; i += len << 1) {
+            for (int j = 0; j < len; j++) {
+                float u = data[i + j];
+                float v = data[i + j + len];
+                data[i + j]       = u + v;
+                data[i + j + len] = u - v;
+            }
+        }
+    }
+    const float scale = 1.0f / sqrtf((float)n);
+    for (int i = 0; i < n; i++) data[i] *= scale;
+}
+
+static void tq_rht_forward(const float * x, float * y, int n, uint16_t seed) {
+    float signs[QK_TQ];
+    tq_random_signs(seed, signs, n);
+    for (int i = 0; i < n; i++) y[i] = x[i] * signs[i];
+    tq_fwht(y, n);
+}
+
+static void tq_rht_inverse(const float * y, float * x, int n, uint16_t seed) {
+    float signs[QK_TQ];
+    tq_random_signs(seed, signs, n);
+    for (int i = 0; i < n; i++) x[i] = y[i];
+    tq_fwht(x, n);
+    for (int i = 0; i < n; i++) x[i] *= signs[i];
+}
+
+static void tq_rht_inverse_sb(const float * y, float * x, int n, const uint8_t * sb) {
+    for (int i = 0; i < n; i++) x[i] = y[i];
+    tq_fwht(x, n);
+    for (int i = 0; i < n; i++) {
+        float sign = ((sb[i / 8] >> (i % 8)) & 1) ? 1.0f : -1.0f;
+        x[i] *= sign;
+    }
+}
+
+static inline uint16_t tq_derive_seed(int64_t block_index) {
+    uint32_t h = 2166136261u;
+    h ^= (uint32_t)(block_index & 0xFF);        h *= 16777619u;
+    h ^= (uint32_t)((block_index >> 8) & 0xFF); h *= 16777619u;
+    h ^= (uint32_t)((block_index >> 16) & 0xFF); h *= 16777619u;
+    h ^= (uint32_t)((block_index >> 24) & 0xFF); h *= 16777619u;
+    return (uint16_t)(h & 0xFFFF);
+}
+
+static const float TQ_CODEBOOK_2BIT[4] = {
+    -1.489560f, -0.451428f, 0.451428f, 1.489560f
+};
+
+static const float TQ_CODEBOOK_3BIT[8] = {
+    -2.071926f, -1.314996f, -0.745325f, -0.242405f,
+     0.242405f,  0.745325f,  1.314996f,  2.071926f
+};
+
+void quantize_row_tq2_1_ref(const float * GGML_RESTRICT x, block_tq2_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const int nb = k / QK_TQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_TQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_TQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_TQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) {
+            memset(y[i].qs, 0, sizeof(y[i].qs));
+            memset(y[i].sb, 0, sizeof(y[i].sb));
+            continue;
+        }
+
+        float x_hat[QK_TQ];
+        const float inv_norm = 1.0f / norm;
+        for (int j = 0; j < QK_TQ; j++) x_hat[j] = xi[j] * inv_norm;
+
+        uint16_t seed = tq_derive_seed((int64_t)i);
+        float rotated[QK_TQ];
+        tq_rht_forward(x_hat, rotated, QK_TQ, seed);
+
+        memset(y[i].qs, 0, sizeof(y[i].qs));
+        for (int j = 0; j < QK_TQ; j++) {
+            float val = rotated[j];
+            float best_dist = FLT_MAX;
+            uint8_t best_idx = 0;
+            for (int c = 0; c < 4; c++) {
+                float centroid = TQ_CODEBOOK_2BIT[c] * cb_scale;
+                float dist = (val - centroid) * (val - centroid);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            y[i].qs[j / 4] |= (best_idx << (2 * (j % 4)));
+        }
+
+        {
+            float recon[QK_TQ];
+            for (int j = 0; j < QK_TQ; j++) {
+                int idx = (y[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+                recon[j] = TQ_CODEBOOK_2BIT[idx] * cb_scale;
+            }
+            float result[QK_TQ];
+            tq_rht_inverse(recon, result, QK_TQ, seed);
+            float recon_sq = 0.0f;
+            for (int j = 0; j < QK_TQ; j++) recon_sq += result[j] * result[j];
+            float recon_norm = sqrtf(recon_sq);
+            y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+        }
+
+        memset(y[i].sb, 0, sizeof(y[i].sb));
+        for (int j = 0; j < QK_TQ; j++) {
+            uint8_t sign_bit = (tq_philox_6r((uint32_t)j, (uint32_t)seed) & 1);
+            y[i].sb[j / 8] |= (sign_bit << (j % 8));
+        }
+    }
+}
+
+void quantize_row_tq3_1_ref(const float * GGML_RESTRICT x, block_tq3_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const int nb = k / QK_TQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_TQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_TQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_TQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) {
+            memset(y[i].qs, 0, sizeof(y[i].qs));
+            memset(y[i].sb, 0, sizeof(y[i].sb));
+            continue;
+        }
+
+        float x_hat[QK_TQ];
+        const float inv_norm = 1.0f / norm;
+        for (int j = 0; j < QK_TQ; j++) x_hat[j] = xi[j] * inv_norm;
+
+        uint16_t seed = tq_derive_seed((int64_t)i);
+        float rotated[QK_TQ];
+        tq_rht_forward(x_hat, rotated, QK_TQ, seed);
+
+        memset(y[i].qs, 0, sizeof(y[i].qs));
+        for (int j = 0; j < QK_TQ; j++) {
+            float val = rotated[j];
+            float best_dist = FLT_MAX;
+            uint8_t best_idx = 0;
+            for (int c = 0; c < 8; c++) {
+                float centroid = TQ_CODEBOOK_3BIT[c] * cb_scale;
+                float dist = (val - centroid) * (val - centroid);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            int bit_offset = j * 3;
+            int byte_idx = bit_offset / 8;
+            int bit_idx  = bit_offset % 8;
+            y[i].qs[byte_idx] |= (best_idx << bit_idx);
+            if (bit_idx > 5) {
+                y[i].qs[byte_idx + 1] |= (best_idx >> (8 - bit_idx));
+            }
+        }
+
+        {
+            float recon[QK_TQ];
+            for (int j = 0; j < QK_TQ; j++) {
+                int bit_offset = j * 3;
+                int byte_idx = bit_offset / 8;
+                int bit_idx  = bit_offset % 8;
+                uint8_t idx = (y[i].qs[byte_idx] >> bit_idx);
+                if (bit_idx > 5) idx |= (y[i].qs[byte_idx + 1] << (8 - bit_idx));
+                idx &= 0x07;
+                recon[j] = TQ_CODEBOOK_3BIT[idx] * cb_scale;
+            }
+            float result[QK_TQ];
+            tq_rht_inverse(recon, result, QK_TQ, seed);
+            float recon_sq = 0.0f;
+            for (int j = 0; j < QK_TQ; j++) recon_sq += result[j] * result[j];
+            float recon_norm = sqrtf(recon_sq);
+            y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+        }
+
+        memset(y[i].sb, 0, sizeof(y[i].sb));
+        for (int j = 0; j < QK_TQ; j++) {
+            uint8_t sign_bit = (tq_philox_6r((uint32_t)j, (uint32_t)seed) & 1);
+            y[i].sb[j / 8] |= (sign_bit << (j % 8));
+        }
+    }
+}
+
+void dequantize_row_tq2_1(const block_tq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const int nb = k / QK_TQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_TQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_TQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_TQ * sizeof(float)); continue; }
+
+        float rotated_hat[QK_TQ];
+        for (int j = 0; j < QK_TQ; j++) {
+            int idx = (x[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            rotated_hat[j] = TQ_CODEBOOK_2BIT[idx] * cb_scale;
+        }
+        float result[QK_TQ];
+        tq_rht_inverse_sb(rotated_hat, result, QK_TQ, x[i].sb);
+        for (int j = 0; j < QK_TQ; j++) yb[j] = result[j] * norm;
+    }
+}
+
+void dequantize_row_tq3_1(const block_tq3_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const int nb = k / QK_TQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_TQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_TQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_TQ * sizeof(float)); continue; }
+
+        float rotated_hat[QK_TQ];
+        for (int j = 0; j < QK_TQ; j++) {
+            int bit_offset = j * 3;
+            int byte_idx = bit_offset / 8;
+            int bit_idx  = bit_offset % 8;
+            uint8_t idx = (x[i].qs[byte_idx] >> bit_idx);
+            if (bit_idx > 5) idx |= (x[i].qs[byte_idx + 1] << (8 - bit_idx));
+            idx &= 0x07;
+            rotated_hat[j] = TQ_CODEBOOK_3BIT[idx] * cb_scale;
+        }
+        float result[QK_TQ];
+        tq_rht_inverse_sb(rotated_hat, result, QK_TQ, x[i].sb);
+        for (int j = 0; j < QK_TQ; j++) yb[j] = result[j] * norm;
+    }
+}
+
+static const float TQ_CODEBOOK_4BIT[16] = {
+    -2.732590f, -2.069017f, -1.618046f, -1.256231f,
+    -0.942340f, -0.656759f, -0.388048f, -0.128395f,
+     0.128395f,  0.388048f,  0.656759f,  0.942340f,
+     1.256231f,  1.618046f,  2.069017f,  2.732590f
+};
+
+void quantize_row_tq4_1_ref(const float * GGML_RESTRICT x, block_tq4_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const int nb = k / QK_TQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_TQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_TQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_TQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) {
+            memset(y[i].qs, 0, sizeof(y[i].qs));
+            memset(y[i].sb, 0, sizeof(y[i].sb));
+            continue;
+        }
+
+        float x_hat[QK_TQ];
+        const float inv_norm = 1.0f / norm;
+        for (int j = 0; j < QK_TQ; j++) x_hat[j] = xi[j] * inv_norm;
+
+        uint16_t seed = tq_derive_seed((int64_t)i);
+        float rotated[QK_TQ];
+        tq_rht_forward(x_hat, rotated, QK_TQ, seed);
+
+        memset(y[i].qs, 0, sizeof(y[i].qs));
+        for (int j = 0; j < QK_TQ; j++) {
+            float val = rotated[j];
+            float best_dist = FLT_MAX;
+            uint8_t best_idx = 0;
+            for (int c = 0; c < 16; c++) {
+                float centroid = TQ_CODEBOOK_4BIT[c] * cb_scale;
+                float dist = (val - centroid) * (val - centroid);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            y[i].qs[j / 2] |= (best_idx << (4 * (j % 2)));
+        }
+
+        {
+            float recon[QK_TQ];
+            for (int j = 0; j < QK_TQ; j++) {
+                int idx = (y[i].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+                recon[j] = TQ_CODEBOOK_4BIT[idx] * cb_scale;
+            }
+            float result[QK_TQ];
+            tq_rht_inverse(recon, result, QK_TQ, seed);
+            float recon_sq = 0.0f;
+            for (int j = 0; j < QK_TQ; j++) recon_sq += result[j] * result[j];
+            float recon_norm = sqrtf(recon_sq);
+            y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+        }
+
+        memset(y[i].sb, 0, sizeof(y[i].sb));
+        for (int j = 0; j < QK_TQ; j++) {
+            uint8_t sign_bit = (tq_philox_6r((uint32_t)j, (uint32_t)seed) & 1);
+            y[i].sb[j / 8] |= (sign_bit << (j % 8));
+        }
+    }
+}
+
+void dequantize_row_tq4_1(const block_tq4_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_TQ == 0);
+    const int nb = k / QK_TQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_TQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_TQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_TQ * sizeof(float)); continue; }
+
+        float rotated_hat[QK_TQ];
+        for (int j = 0; j < QK_TQ; j++) {
+            int idx = (x[i].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+            rotated_hat[j] = TQ_CODEBOOK_4BIT[idx] * cb_scale;
+        }
+        float result_tq4[QK_TQ];
+        tq_rht_inverse_sb(rotated_hat, result_tq4, QK_TQ, x[i].sb);
+        for (int j = 0; j < QK_TQ; j++) yb[j] = result_tq4[j] * norm;
+    }
+}
