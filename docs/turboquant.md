@@ -75,17 +75,6 @@ v7 TG: **+65% faster** than v6 (63.4 vs 38.4 tok/s).
 v7 improved PP by +13% over v6 via Hadamard-domain dot product.
 TG penalty ~22% on CC 6.1 (fewer warp schedulers limit shuffle hiding).
 
-### Community: NIAH Validation (RTX 4090, @sztlink)
-
-q8_0-K + turbo3-V on Qwen3-30B-A3B MoE, 65K context:
-
-| Context | 0% | 25% | 50% | 75% | 100% | Score |
-|---------|:--:|:---:|:---:|:---:|:----:|:-----:|
-| 4K-49K | pass | pass | pass | pass | pass | **100%** |
-
-25/25 -- 100% retrieval across all depths and context lengths.
-Asymmetric TQ doesn't just preserve PPL -- it retrieves.
-
 ### Real-World Deployments
 
 **Qwen3.5-35B-A3B IQ2_XS on CC 7.5 (12 GB):**
@@ -144,38 +133,6 @@ TQ2_1 saves 400 MB KV-Cache, enabling +1 GPU layer, which nets +2 tok/s. Speed A
 | 400K | ~10,400 MB | ~1,711 MB | **-8,689 MB (83%)** |
 
 Note: At 400K with GatedDeltaNet architecture, 75% of layers use constant recurrent state instead of growing KV cache. The 1,711 MB is the measured value.
-
-### Community Benchmarks
-
-**RTX 5090 32 GB -- Qwen3.5-27B Q6_K (@Madreag):**
-- 700K context with TQ KV-Cache
-- 4.6x KV compression (14 KB/token vs 64 KB baseline)
-- NIAH: 6/6 passes
-
-**Context Scaling Degradation (Nemotron-30B):**
-
-| Context | f16 TG | q4_0 TG | Degradation |
-|---------|:---:|:---:|:---:|
-| ~6K | 44.7 | 45.0 | +0.7% |
-| ~24K | 44.6 | 39.3 | -11.9% |
-| ~110K | 38.0 | 24.0 | **-36.8%** |
-
-q4_0 KV degrades sharply at long context. TQ2_1's Sparse V Dequant (+22% at 32K+) helps here.
-
-**WHT vs Random Rotation (Qwen3-1.7B):**
-
-| Bits | WHT PPL | Random PPL | WHT advantage |
-|------|:---:|:---:|:---:|
-| 4-bit MSE | 10.12 | 604 | **59.7x** |
-| 4-bit QJL | 93 | 1408 | 15.1x |
-
-WHT is fundamentally superior -- it mixes all coordinates globally, unlike random rotation which lacks cross-group decorrelation.
-
-**K/V Asymmetry Matters (scos-lab, 8-model study):**
-- Qwen2.5-1.5B: 182x K/V magnitude ratio
-- Qwen2.5-7B: 106x K/V ratio
-- Keys need more bits than Values
-- Recommendation: `--cache-type-k q8_0 --cache-type-v tq2_1` for best quality
 
 ## How It Works
 
