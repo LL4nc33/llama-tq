@@ -3,6 +3,7 @@
 #include "common.cuh"
 #include "convert.cuh"
 #include "vecdotq.cuh"
+#include "turboquant.cuh"
 
 #include <cstdint>
 
@@ -286,6 +287,446 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
     }
 
     return sum;
+}
+
+// ============================================================
+// TurboQuant Flash Attention Helpers — Warp-Cooperative Dequant
+//
+// The warp-cooperative variants use tq_cuda_fwht_warp() (5 warp shuffles)
+// instead of tq_cuda_fwht_32_serial() (80 butterfly ops in a single thread).
+// This is ~16x fewer instructions and eliminates the local memory buf[32].
+//
+// Each thread in the warp handles one element of the 32-element TQ block.
+// The lane index within the block is passed as `lane` (0..31).
+// Returns the single dequantized element for this thread's lane.
+// ============================================================
+
+static __device__ __forceinline__ float tq_fattn_dequant_elem_tq2_1(
+        const block_tq2_1 * __restrict__ x, const int64_t ib, const int lane) {
+    const float norm = (float)x[ib].d;
+    // NOTE: no early return for norm==0 — all lanes must participate in FWHT warp shuffle
+
+    // Step 1: PolarQuant codebook lookup (in rotated space)
+    const int idx = (x[ib].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
+    float val = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE;
+
+    // Step 2: Inverse FWHT via warp shuffles (5 steps, not 80 butterfly ops)
+    val = tq_cuda_fwht_warp(val);
+
+    // Step 3: Fused sign×norm — branchless. norm==0 naturally zeros the result.
+    const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
+    return val * (1.0f - 2.0f * sign_bit) * norm;
+}
+
+static __device__ __forceinline__ float tq_fattn_dequant_elem_tq3_1(
+        const block_tq3_1 * __restrict__ x, const int64_t ib, const int lane) {
+    const float norm = (float)x[ib].d;
+
+    // Step 1: 3-bit unpack
+    const int bit_offset = lane * 3;
+    const int byte_idx = bit_offset / 8;
+    const int bit_idx  = bit_offset % 8;
+    int cb_idx = (x[ib].qs[byte_idx] >> bit_idx);
+    if (bit_idx > 5) cb_idx |= (x[ib].qs[byte_idx + 1] << (8 - bit_idx));
+    cb_idx &= 0x7;
+    float val = TQ_CUDA_CB_3BIT[cb_idx] * TQ_CUDA_CB_SCALE;
+
+    // Step 2: Inverse FWHT via warp shuffles
+    val = tq_cuda_fwht_warp(val);
+
+    // Step 3: Fused sign×norm — branchless
+    const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
+    return val * (1.0f - 2.0f * sign_bit) * norm;
+}
+
+static __device__ __forceinline__ float tq_fattn_dequant_elem_tq4_1(
+        const block_tq4_1 * __restrict__ x, const int64_t ib, const int lane) {
+    const float norm = (float)x[ib].d;
+
+    // Step 1: 4-bit codebook lookup
+    const int idx = (x[ib].qs[lane / 2] >> (4 * (lane % 2))) & 0xF;
+    float val = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE;
+
+    // Step 2: Inverse FWHT via warp shuffles
+    val = tq_cuda_fwht_warp(val);
+
+    // Step 3: Fused sign×norm — branchless
+    const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
+    return val * (1.0f - 2.0f * sign_bit) * norm;
+}
+
+// Legacy serial dequant — kept for non-FA paths (e.g. standalone dequantize kernels)
+static __device__ __forceinline__ void tq_fattn_dequant_block_tq2_1(const block_tq2_1 * __restrict__ x, const int64_t ib, float * __restrict__ buf) {
+    const float norm = (float)x[ib].d;
+    if (norm < 1e-30f) {
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) buf[j] = 0.0f;
+        return;
+    }
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int idx = (x[ib].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+        buf[j] = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
+    }
+}
+
+static __device__ __forceinline__ void tq_fattn_dequant_block_tq3_1(const block_tq3_1 * __restrict__ x, const int64_t ib, float * __restrict__ buf) {
+    const float norm = (float)x[ib].d;
+    if (norm < 1e-30f) {
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) buf[j] = 0.0f;
+        return;
+    }
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int bit_offset = j * 3;
+        const int byte_idx = bit_offset / 8;
+        const int bit_idx  = bit_offset % 8;
+        int idx = (x[ib].qs[byte_idx] >> bit_idx);
+        if (bit_idx > 5) idx |= (x[ib].qs[byte_idx + 1] << (8 - bit_idx));
+        idx &= 0x7;
+        buf[j] = TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
+    }
+}
+
+static __device__ __forceinline__ void tq_fattn_dequant_block_tq4_1(const block_tq4_1 * __restrict__ x, const int64_t ib, float * __restrict__ buf) {
+    const float norm = (float)x[ib].d;
+    if (norm < 1e-30f) {
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) buf[j] = 0.0f;
+        return;
+    }
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int idx = (x[ib].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+        buf[j] = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
+    }
+}
+
+// vec_dot_KQ for TurboQuant types — Warp-Cooperative
+//
+// When nthreads == WARP_SIZE (D >= 128): all 32 threads cooperate via tq_cuda_fwht_warp
+// (5 warp shuffles per block) + 4 gather shuffles per thread. Total: ~9 * nblocks shuffles
+// vs 80 * nblocks serial butterfly ops in the old code.
+//
+// When nthreads < WARP_SIZE (D == 64): fall back to serial FWHT since the warp is split
+// into multiple groups that cannot safely cooperate on a 32-element FWHT.
+//
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_tq2_1(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+    const block_tq2_1 * K_tq = (const block_tq2_1 *) K_c;
+    const int lane = threadIdx.x;
+
+    if constexpr (nthreads == WARP_SIZE) {
+        // v7 Hadamard-domain dot product: FWHT on Q (once per block), dot in rotated space.
+        // Eliminates all gather shuffles and branch divergence.
+        // v7: Shuffles: 4 blocks × 5 FWHT = 20 + 5 reduce = 25 (was 41 in v6).
+        //
+        // Q_v layout: float[D/WARP_SIZE] per thread. Thread t holds Q values at
+        // positions [0*32+t, 1*32+t, 2*32+t, 3*32+t] (for D=128).
+        // So Q_f32[bi] = Q value at position bi*32 + threadIdx.x.
+        const float * Q_f32 = (const float *) Q_v;
+        GGML_UNUSED(Q_q8);
+        GGML_UNUSED(Q_ds_v);
+        float accum = 0.0f;
+
+        constexpr int nblocks = D / QK_TQ;  // 4 for D=128
+
+        #pragma unroll
+        for (int bi = 0; bi < nblocks; ++bi) {
+            const float norm = (float)K_tq[bi].d;
+            // NOTE: no early-exit for norm==0 — all lanes must participate in FWHT
+            // (warp shuffle requires all 32 threads to be active, otherwise deadlock)
+
+            // 1. Sign-flip Q for this K-block (branchless)
+            // Q_f32[bi] is the Q value at position bi*32 + lane (this thread's element)
+            const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
+            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+
+            // 2. FWHT(Q_signed) → rotate Q into Hadamard space (5 shuffles)
+            float Q_rot = tq_cuda_fwht_warp(Q_signed);
+
+            // 3. Codebook lookup (stays in Hadamard/rotated space — no inverse FWHT needed!)
+            const int idx = (K_tq[bi].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
+
+            // 4. Multiply + accumulate: norm==0 naturally zeros the contribution
+            accum += TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE * Q_rot * norm;
+        }
+
+        return accum;  // NOT reduced — caller does warp_reduce_sum
+    } else {
+        // Fallback: serial FWHT for nthreads < WARP_SIZE (D == 64)
+        GGML_UNUSED(Q_v);
+        const int lane_q = threadIdx.x % nthreads;
+        float sum = 0.0f;
+
+        #pragma unroll
+        for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+            const int k_KQ     = k_KQ_0 + lane_q;
+            const int my_ib    = k_KQ / (QK_TQ / 4);
+            const int iqs      = k_KQ % (QK_TQ / 4);
+            const int elem_off = iqs * 4;
+
+            const int q8_val = Q_q8[k_KQ_0 / nthreads];
+            const int8_t * q8 = (const int8_t *) &q8_val;
+            float block_sum = 0.0f;
+
+            float buf[32];
+            tq_fattn_dequant_block_tq2_1(K_tq, my_ib, buf);
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                block_sum += buf[elem_off + l] * (float)q8[l];
+            }
+
+            const float2 Q_ds = ((const float2 *) Q_ds_v)[k_KQ_0 / nthreads];
+            sum += block_sum * Q_ds.x;
+        }
+        return sum;
+    }
+}
+
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_tq3_1(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+    const block_tq3_1 * K_tq = (const block_tq3_1 *) K_c;
+    const int lane = threadIdx.x;
+
+    if constexpr (nthreads == WARP_SIZE) {
+        const float * Q_f32 = (const float *) Q_v;
+        GGML_UNUSED(Q_q8);
+        GGML_UNUSED(Q_ds_v);
+        float accum = 0.0f;
+        constexpr int nblocks = D / QK_TQ;
+
+        #pragma unroll
+        for (int bi = 0; bi < nblocks; ++bi) {
+            const float norm = (float)K_tq[bi].d;
+            // NOTE: no early-exit — all lanes must participate in FWHT warp shuffle
+
+            const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
+            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_rot = tq_cuda_fwht_warp(Q_signed);
+
+            // 3-bit unpack
+            const int bit_offset = lane * 3;
+            const int byte_idx = bit_offset / 8;
+            const int bit_idx  = bit_offset % 8;
+            int cb_idx = (K_tq[bi].qs[byte_idx] >> bit_idx);
+            if (bit_idx > 5) cb_idx |= (K_tq[bi].qs[byte_idx + 1] << (8 - bit_idx));
+            cb_idx &= 0x7;
+
+            accum += TQ_CUDA_CB_3BIT[cb_idx] * TQ_CUDA_CB_SCALE * Q_rot * norm;
+        }
+        return accum;
+    } else {
+        GGML_UNUSED(Q_v);
+        const int lane_q = threadIdx.x % nthreads;
+        float sum = 0.0f;
+        #pragma unroll
+        for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+            const int k_KQ     = k_KQ_0 + lane_q;
+            const int my_ib    = k_KQ / (QK_TQ / 4);
+            const int iqs      = k_KQ % (QK_TQ / 4);
+            const int elem_off = iqs * 4;
+            const int q8_val = Q_q8[k_KQ_0 / nthreads];
+            const int8_t * q8 = (const int8_t *) &q8_val;
+            float block_sum = 0.0f;
+            float buf[32];
+            tq_fattn_dequant_block_tq3_1(K_tq, my_ib, buf);
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                block_sum += buf[elem_off + l] * (float)q8[l];
+            }
+            const float2 Q_ds = ((const float2 *) Q_ds_v)[k_KQ_0 / nthreads];
+            sum += block_sum * Q_ds.x;
+        }
+        return sum;
+    }
+}
+
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_tq4_1(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+    const block_tq4_1 * K_tq = (const block_tq4_1 *) K_c;
+    const int lane = threadIdx.x;
+
+    if constexpr (nthreads == WARP_SIZE) {
+        const float * Q_f32 = (const float *) Q_v;
+        GGML_UNUSED(Q_q8);
+        GGML_UNUSED(Q_ds_v);
+        float accum = 0.0f;
+        constexpr int nblocks = D / QK_TQ;
+
+        #pragma unroll
+        for (int bi = 0; bi < nblocks; ++bi) {
+            const float norm = (float)K_tq[bi].d;
+            // NOTE: no early-exit — all lanes must participate in FWHT warp shuffle
+
+            const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
+            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_rot = tq_cuda_fwht_warp(Q_signed);
+
+            // 4-bit nibble unpack
+            const int idx = (K_tq[bi].qs[lane / 2] >> (4 * (lane % 2))) & 0xF;
+
+            accum += TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE * Q_rot * norm;
+        }
+        return accum;
+    } else {
+        GGML_UNUSED(Q_v);
+        const int lane_q = threadIdx.x % nthreads;
+        float sum = 0.0f;
+        #pragma unroll
+        for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+            const int k_KQ     = k_KQ_0 + lane_q;
+            const int my_ib    = k_KQ / (QK_TQ / 4);
+            const int iqs      = k_KQ % (QK_TQ / 4);
+            const int elem_off = iqs * 4;
+            const int q8_val = Q_q8[k_KQ_0 / nthreads];
+            const int8_t * q8 = (const int8_t *) &q8_val;
+            float block_sum = 0.0f;
+            float buf[32];
+            tq_fattn_dequant_block_tq4_1(K_tq, my_ib, buf);
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                block_sum += buf[elem_off + l] * (float)q8[l];
+            }
+            const float2 Q_ds = ((const float2 *) Q_ds_v)[k_KQ_0 / nthreads];
+            sum += block_sum * Q_ds.x;
+        }
+        return sum;
+    }
+}
+
+// dequantize_V for TurboQuant types
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_tq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_tq2_1 * x = (const block_tq2_1 *) vx;
+    const int64_t my_ib = i0 / QK_TQ;
+    const int     iqs   = i0 % QK_TQ;
+    const int     lane  = threadIdx.x % WARP_SIZE;
+
+    // Warp-cooperative: all 32 threads dequant 4 blocks together (D=128, ne=4, 32 threads)
+    // Each iteration: all threads compute 1 element of 1 block via warp FWHT (5 shuffles)
+    constexpr int nblocks = ne * WARP_SIZE / QK_TQ;  // = 4 for D=128
+    const int64_t ib_base = my_ib - (lane / (QK_TQ / ne));
+
+    float results[ne];
+
+    #pragma unroll
+    for (int bi = 0; bi < nblocks; ++bi) {
+        const int64_t ib = ib_base + bi;
+        float dq = tq_fattn_dequant_elem_tq2_1(x, ib, lane);
+        // Gather via shuffle OUTSIDE the branch — all lanes must participate
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            float gathered = __shfl_sync(0xFFFFFFFF, dq, iqs + l);
+            if (ib == my_ib) {
+                results[l] = gathered;
+            }
+        }
+    }
+
+    if constexpr (std::is_same_v<T, half>) {
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) ((half *) dst)[l] = __float2half(results[l]);
+    } else if constexpr (std::is_same_v<T, float>) {
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = results[l];
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
+    }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_tq3_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_tq3_1 * x = (const block_tq3_1 *) vx;
+    const int64_t my_ib = i0 / QK_TQ;
+    const int     iqs   = i0 % QK_TQ;
+    const int     lane  = threadIdx.x % WARP_SIZE;
+
+    constexpr int nblocks = ne * WARP_SIZE / QK_TQ;
+    const int64_t ib_base = my_ib - (lane / (QK_TQ / ne));
+
+    float results[ne];
+
+    #pragma unroll
+    for (int bi = 0; bi < nblocks; ++bi) {
+        const int64_t ib = ib_base + bi;
+        float dq = tq_fattn_dequant_elem_tq3_1(x, ib, lane);
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            float gathered = __shfl_sync(0xFFFFFFFF, dq, iqs + l);
+            if (ib == my_ib) {
+                results[l] = gathered;
+            }
+        }
+    }
+
+    if constexpr (std::is_same_v<T, half>) {
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) ((half *) dst)[l] = __float2half(results[l]);
+    } else if constexpr (std::is_same_v<T, float>) {
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = results[l];
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
+    }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_tq4_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_tq4_1 * x = (const block_tq4_1 *) vx;
+    const int64_t my_ib = i0 / QK_TQ;
+    const int     iqs   = i0 % QK_TQ;
+    const int     lane  = threadIdx.x % WARP_SIZE;
+
+    constexpr int nblocks = ne * WARP_SIZE / QK_TQ;
+    const int64_t ib_base = my_ib - (lane / (QK_TQ / ne));
+
+    float results[ne];
+
+    #pragma unroll
+    for (int bi = 0; bi < nblocks; ++bi) {
+        const int64_t ib = ib_base + bi;
+        float dq = tq_fattn_dequant_elem_tq4_1(x, ib, lane);
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            float gathered = __shfl_sync(0xFFFFFFFF, dq, iqs + l);
+            if (ib == my_ib) {
+                results[l] = gathered;
+            }
+        }
+    }
+
+    if constexpr (std::is_same_v<T, half>) {
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) ((half *) dst)[l] = __float2half(results[l]);
+    } else if constexpr (std::is_same_v<T, float>) {
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = results[l];
+    } else {
+        static_assert(std::is_same_v<T, void>, "unsupported type");
+    }
 }
 
 template <typename Tds, int ni>
@@ -593,6 +1034,12 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_TQ2_1) {
+        return vec_dot_fattn_vec_KQ_tq2_1<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_TQ3_1) {
+        return vec_dot_fattn_vec_KQ_tq3_1<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_TQ4_1) {
+        return vec_dot_fattn_vec_KQ_tq4_1<D, nthreads>;
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;
@@ -615,6 +1062,12 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_q8_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_BF16) {
         return dequantize_V_bf16<float, ne>;
+    } else if constexpr (type_V == GGML_TYPE_TQ2_1) {
+        return dequantize_V_tq2_1<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_TQ3_1) {
+        return dequantize_V_tq3_1<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_TQ4_1) {
+        return dequantize_V_tq4_1<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
