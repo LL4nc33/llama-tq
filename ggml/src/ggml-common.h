@@ -166,6 +166,9 @@ typedef sycl::half2 ggml_half2;
 #define QI3_S (QK_K / (4*QR3_S))
 #define QR3_S 4
 
+#define QI_TQ1_1 (QK_TQ / (4*QR_TQ1_1))
+#define QR_TQ1_1 4
+
 #define QI_TQ2_1 (QK_TQ / (4*QR_TQ2_1))
 #define QR_TQ2_1 2
 
@@ -290,6 +293,14 @@ static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 
 // v5: PolarQuant (RHT + Lloyd-Max) with precomputed sign bits. QJL removed.
 
 #define QK_TQ 32  // TurboQuant block size
+
+// TQ1_1: 1-bit PolarQuant = 2.5 bpw (sign-only quantization, maximum compression)
+typedef struct {
+    ggml_half d;              // 2B: vector L2 norm (PolarQuant scaling)
+    uint8_t   qs[QK_TQ / 8]; // 4B: 1-bit PolarQuant indices (8 per byte)
+    uint8_t   sb[QK_TQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
+} block_tq1_1;               // = 10 bytes for 32 elements
+static_assert(sizeof(block_tq1_1) == sizeof(ggml_half) + QK_TQ/8 + QK_TQ/8, "wrong tq1_1 block size/padding");
 
 // TQ2_1: 2-bit PolarQuant = 3.5 bpw (v5: compact, sign bits precomputed)
 typedef struct {
