@@ -86,6 +86,97 @@ q8_0-K + turbo3-V on Qwen3-30B-A3B MoE, 65K context:
 25/25 -- 100% retrieval across all depths and context lengths.
 Asymmetric TQ doesn't just preserve PPL -- it retrieves.
 
+### Real-World Deployments
+
+**Qwen3.5-35B-A3B IQ2_XS on CC 7.5 (12 GB):**
+
+```bash
+llama-server -m Qwen3.5-35B-A3B-IQ2_XS.gguf \
+    --cache-type-k tq2_1 --cache-type-v tq2_1 \
+    -c 400000 -ngl 99 --parallel 2
+```
+
+| Detail | Value |
+|--------|-------|
+| Context | 400K tokens |
+| Parallel Slots | 2 |
+| KV-Cache (tq2_1) | 1,711 MB (vs ~10,400 MB with q4_0) |
+| Total VRAM | 9.0 GB / 12 GB |
+| Speed | ~33 tok/s |
+
+Without TurboQuant: q4_0 KV can't fit 400K context on 12 GB. Even 200K is at the limit with parallel 2.
+
+**Gemma4 26B on CC 7.5 (12 GB):**
+
+| Metric | q4_0 KV | tq2_1 KV | Delta |
+|--------|:---:|:---:|:---:|
+| KV-Cache (200K ctx) | ~1.7 GB | ~1.3 GB | -400 MB |
+| Speed | 36.6 tok/s | 38.6 tok/s | **+2 tok/s** |
+| VRAM free | 50 MB | 323 MB | +273 MB |
+| GPU Layers | 16/30 | 17/30 | **+1 layer** |
+
+TQ2_1 saves 400 MB KV-Cache, enabling +1 GPU layer, which nets +2 tok/s. Speed AND compression win.
+
+### v6 to v7 Performance Delta
+
+**CC 7.5 (12 GB) -- Qwen3.5-35B-A3B IQ2_XS:**
+
+| Metric | v6 | v7 | Delta |
+|--------|:---:|:---:|:---:|
+| PP512 | 686 tok/s | 634 tok/s | -7.6% |
+| TG32 | 38.4 tok/s | 63.4 tok/s | **+65.1%** |
+| TG penalty vs q4_0 | 44.7% | 8.8% | **-35.9pp** |
+
+**CC 6.1 (6 GB) -- Ministral 3B IQ2_M:**
+
+| Metric | v6 | v7 | Delta |
+|--------|:---:|:---:|:---:|
+| PP128 | 186 tok/s | 211 tok/s | **+13.4%** |
+| TG32 | 32.2 tok/s | 33.3 tok/s | +3.4% |
+
+### Memory Savings (Qwen3.5-35B-A3B, MoE)
+
+| Context | q4_0 KV | tq2_1 KV | Savings |
+|---------|:---:|:---:|:---:|
+| 32K | ~860 MB | ~670 MB | -190 MB |
+| 128K | ~3,400 MB | ~2,650 MB | -750 MB |
+| 200K | ~5,300 MB | ~4,130 MB | -1,170 MB |
+| 400K | ~10,400 MB | ~1,711 MB | **-8,689 MB (83%)** |
+
+Note: At 400K with GatedDeltaNet architecture, 75% of layers use constant recurrent state instead of growing KV cache. The 1,711 MB is the measured value.
+
+### Community Benchmarks
+
+**RTX 5090 32 GB -- Qwen3.5-27B Q6_K (@Madreag):**
+- 700K context with TQ KV-Cache
+- 4.6x KV compression (14 KB/token vs 64 KB baseline)
+- NIAH: 6/6 passes
+
+**Context Scaling Degradation (Nemotron-30B):**
+
+| Context | f16 TG | q4_0 TG | Degradation |
+|---------|:---:|:---:|:---:|
+| ~6K | 44.7 | 45.0 | +0.7% |
+| ~24K | 44.6 | 39.3 | -11.9% |
+| ~110K | 38.0 | 24.0 | **-36.8%** |
+
+q4_0 KV degrades sharply at long context. TQ2_1's Sparse V Dequant (+22% at 32K+) helps here.
+
+**WHT vs Random Rotation (Qwen3-1.7B):**
+
+| Bits | WHT PPL | Random PPL | WHT advantage |
+|------|:---:|:---:|:---:|
+| 4-bit MSE | 10.12 | 604 | **59.7x** |
+| 4-bit QJL | 93 | 1408 | 15.1x |
+
+WHT is fundamentally superior -- it mixes all coordinates globally, unlike random rotation which lacks cross-group decorrelation.
+
+**K/V Asymmetry Matters (scos-lab, 8-model study):**
+- Qwen2.5-1.5B: 182x K/V magnitude ratio
+- Qwen2.5-7B: 106x K/V ratio
+- Keys need more bits than Values
+- Recommendation: `--cache-type-k q8_0 --cache-type-v tq2_1` for best quality
+
 ## How It Works
 
 ### Quantization Pipeline
