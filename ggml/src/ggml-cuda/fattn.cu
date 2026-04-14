@@ -377,13 +377,13 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_1, GGML_TYPE_TQ3_1)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ4_1, GGML_TYPE_TQ4_1)
 
-    // TQ asymmetric: K=TQ + V=f16 (for boundary layer protection mixed types)
+    // TQ asymmetric: K=TQ + V=f16
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ1_1, GGML_TYPE_F16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ2_1, GGML_TYPE_F16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ3_1, GGML_TYPE_F16)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TQ4_1, GGML_TYPE_F16)
 
-    // TQ asymmetric: K=f16/q4_0/q8_0 + V=TQ (common asymmetric configs)
+    // TQ asymmetric: K=standard + V=TQ (recommended asymmetric configs)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,   GGML_TYPE_TQ1_1)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,   GGML_TYPE_TQ2_1)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,   GGML_TYPE_TQ3_1)
@@ -396,6 +396,8 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0,  GGML_TYPE_TQ2_1)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0,  GGML_TYPE_TQ3_1)
     FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0,  GGML_TYPE_TQ4_1)
+
+    // Note: K=TQ + V=standard (e.g., tq2_1/q4_0) requires GGML_CUDA_FA_ALL_QUANTS=ON
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     GGML_ABORT("fatal error");
@@ -515,10 +517,20 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
     // TurboQuant types only have VEC kernel support (no MMA/TILE/WMMA):
-    const bool is_tq = K->type == GGML_TYPE_TQ1_1 || K->type == GGML_TYPE_TQ2_1 || K->type == GGML_TYPE_TQ3_1 || K->type == GGML_TYPE_TQ4_1 ||
-                        V->type == GGML_TYPE_TQ1_1 || V->type == GGML_TYPE_TQ2_1 || V->type == GGML_TYPE_TQ3_1 || V->type == GGML_TYPE_TQ4_1;
-    if (is_tq) {
-        return can_use_vector_kernel ? BEST_FATTN_KERNEL_VEC : BEST_FATTN_KERNEL_NONE;
+    const bool is_tq_k = K->type == GGML_TYPE_TQ1_1 || K->type == GGML_TYPE_TQ2_1 || K->type == GGML_TYPE_TQ3_1 || K->type == GGML_TYPE_TQ4_1;
+    const bool is_tq_v = V->type == GGML_TYPE_TQ1_1 || V->type == GGML_TYPE_TQ2_1 || V->type == GGML_TYPE_TQ3_1 || V->type == GGML_TYPE_TQ4_1;
+    if (is_tq_k || is_tq_v) {
+        if (!can_use_vector_kernel) {
+            return BEST_FATTN_KERNEL_NONE;
+        }
+#ifndef GGML_CUDA_FA_ALL_QUANTS
+        // Without FA_ALL_QUANTS, only symmetric TQ and K=standard+V=TQ are compiled.
+        // K=TQ + V=non-TQ-non-f16 combinations are not available.
+        if (is_tq_k && !is_tq_v && V->type != GGML_TYPE_F16) {
+            return BEST_FATTN_KERNEL_NONE;
+        }
+#endif
+        return BEST_FATTN_KERNEL_VEC;
     }
 
     // If Turing tensor cores are available, use them:
