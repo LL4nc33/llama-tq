@@ -20,6 +20,9 @@ struct llama_memory_params {
 
     // use full-size SWA cache
     bool swa_full;
+
+    // TurboQuant boundary layer protection
+    uint32_t tq_protect_layers;
 };
 
 enum llama_memory_status {

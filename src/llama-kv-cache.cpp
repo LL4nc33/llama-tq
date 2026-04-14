@@ -88,10 +88,12 @@ llama_kv_cache::llama_kv_cache(
                  uint32_t   n_pad,
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
+                 uint32_t   tq_protect_layers,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse) :
     model(model), hparams(model.hparams), v_trans(v_trans),
-    n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type) {
+    n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa),
+    tq_protect_layers(tq_protect_layers), user_type_k(type_k), user_type_v(type_v), swa_type(swa_type) {
 
     GGML_ASSERT(kv_size % n_pad == 0);
 
@@ -206,8 +208,34 @@ llama_kv_cache::llama_kv_cache(
         const bool has_k = true;
         const bool has_v = !is_mla;
 
-        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
-        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
+        // Boundary Layer Protection: first/last N layers use q8_0 instead of TQ
+        ggml_type eff_type_k = type_k;
+        ggml_type eff_type_v = type_v;
+        if (tq_protect_layers > 0) {
+            const bool is_tq_k = (type_k == GGML_TYPE_TQ2_1 || type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
+            const bool is_tq_v = (type_v == GGML_TYPE_TQ2_1 || type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
+
+            if (is_tq_k || is_tq_v) {
+                uint32_t kv_layer_idx = 0;
+                for (uint32_t j = 0; j < il; j++) {
+                    if (hparams.has_kv(j)) {
+                        kv_layer_idx++;
+                    }
+                }
+                const uint32_t n_kv_layers = hparams.n_layer_kv();
+                const bool is_boundary = (kv_layer_idx < tq_protect_layers) ||
+                                         (kv_layer_idx >= n_kv_layers - tq_protect_layers);
+                if (is_boundary) {
+                    if (is_tq_k) { eff_type_k = GGML_TYPE_Q8_0; }
+                    if (is_tq_v) { eff_type_v = GGML_TYPE_Q8_0; }
+                    LLAMA_LOG_INFO("%s: layer %3d: boundary protection (k=%s, v=%s)\n",
+                        __func__, il, ggml_type_name(eff_type_k), ggml_type_name(eff_type_v));
+                }
+            }
+        }
+
+        ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, eff_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
+        ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, eff_type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
 
         has_k && ggml_format_name(k, "cache_k_l%d", il);
         has_v && ggml_format_name(v, "cache_v_l%d", il);
@@ -1118,11 +1146,11 @@ bool llama_kv_cache::get_has_shift() const {
 }
 
 ggml_type llama_kv_cache::type_k() const {
-    return layers[0].k->type;
+    return user_type_k;
 }
 
 ggml_type llama_kv_cache::type_v() const {
-    return layers[0].v->type;
+    return user_type_v;
 }
 
 uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
