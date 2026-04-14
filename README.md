@@ -1,8 +1,8 @@
 # llama-tq
 
-**TurboQuant v7 for llama.cpp** -- KV cache quantization via PolarQuant (3.5-5.5 bpw)
+**TurboQuant v7 for llama.cpp** -- KV cache quantization via PolarQuant (2.5-5.5 bpw)
 
-Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) implementing [TurboQuant](https://arxiv.org/abs/2504.19874) (Google Research, ICLR 2026). **78% less KV-Cache VRAM** vs f16, enabling 4x longer context in the same memory.
+Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) implementing [TurboQuant](https://arxiv.org/abs/2504.19874) (Google Research, ICLR 2026). Up to **84% less KV-Cache VRAM** vs f16, enabling 6x longer context in the same memory.
 
 ## What Makes This Fork Different
 
@@ -34,7 +34,8 @@ cmake --build build -j$(nproc) --target llama-server
 
 | Type | bpw | VRAM vs f16 | Use Case |
 |------|-----|-------------|----------|
-| `tq2_1` | 3.5 | **-78%** | Maximum compression, long context |
+| `tq1_1` | 2.5 | **-84%** | Extreme compression (V-cache recommended) |
+| `tq2_1` | 3.5 | -78% | Maximum compression, long context |
 | `tq3_1` | 4.5 | -72% | Balanced quality/compression |
 | `tq4_1` | 5.5 | -66% | Best quality, better PPL than q4_0 |
 

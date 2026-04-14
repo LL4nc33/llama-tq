@@ -390,6 +390,7 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_IQ4_NL,
     GGML_TYPE_Q5_0,
     GGML_TYPE_Q5_1,
+    GGML_TYPE_TQ1_1,
     GGML_TYPE_TQ2_1,
     GGML_TYPE_TQ3_1,
     GGML_TYPE_TQ4_1,
@@ -2042,7 +2043,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.tq_protect_layers
         ),
         [](common_params & params, int value) {
-            params.tq_protect_layers = value;
+            params.tq_protect_layers = value >= 0 ? (uint32_t)value : 0;
         }
     ).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
     add_opt(common_arg(
