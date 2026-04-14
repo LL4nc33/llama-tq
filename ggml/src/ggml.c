@@ -912,6 +912,30 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = 0,
         .is_quantized             = false,
     },
+    [GGML_TYPE_TQ2_1] = {
+        .type_name                = "tq2_1",
+        .blck_size                = QK_TQ,
+        .type_size                = sizeof(block_tq2_1),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tq2_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tq2_1_ref,
+    },
+    [GGML_TYPE_TQ3_1] = {
+        .type_name                = "tq3_1",
+        .blck_size                = QK_TQ,
+        .type_size                = sizeof(block_tq3_1),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tq3_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tq3_1_ref,
+    },
+    [GGML_TYPE_TQ4_1] = {
+        .type_name                = "tq4_1",
+        .blck_size                = QK_TQ,
+        .type_size                = sizeof(block_tq4_1),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_tq4_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_tq4_1_ref,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {

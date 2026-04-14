@@ -390,6 +390,9 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_IQ4_NL,
     GGML_TYPE_Q5_0,
     GGML_TYPE_Q5_1,
+    GGML_TYPE_TQ2_1,
+    GGML_TYPE_TQ3_1,
+    GGML_TYPE_TQ4_1,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
@@ -2865,6 +2868,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.webui_mcp_proxy = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_WEBUI_MCP_PROXY"));
+    add_opt(common_arg(
+        {"-cortex", "--cortex-proxy"},
+        {"--no-cortex-proxy"},
+        string_format("experimental: enable Cortex Python backend proxy - starts Cortex on localhost:11435 and proxies /api/* requests (default: %s)", params.cortex_proxy ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.cortex_proxy = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORTEX_PROXY"));
     add_opt(common_arg(
         {"--tools"}, "TOOL1,TOOL2,...",
         "experimental: whether to enable built-in tools for AI agents - do not enable in untrusted environments (default: no tools)\n"
