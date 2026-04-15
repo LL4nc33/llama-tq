@@ -2959,9 +2959,64 @@ llama_context * llama_init_from_model(
             LLAMA_LOG_ERROR("%s: SPLIT_MODE_TENSOR requires flash_attn to be enabled\n", __func__);
             return nullptr;
         }
+        // Tensor parallelism + quantized KV cache (TP+TQ):
+        //
+        // This works because AllReduce only touches activations (f16/f32), never the KV cache.
+        // Each GPU stores and dequantizes its own subset of attention heads independently.
+        //
+        // Requirements:
+        //   1. Attention heads must split evenly across GPUs (n_head % n_gpu == 0)
+        //   2. KV heads must split evenly across GPUs     (n_head_kv % n_gpu == 0)
+        //   3. Each GPU's local KV dimension must align with the quantization block size
+        //
         if (ggml_is_quantized(params.type_k) || ggml_is_quantized(params.type_v)) {
-            LLAMA_LOG_ERROR("%s: simultaneous use of SPLIT_MODE_TENSOR and KV cache quantization not implemented\n", __func__);
-            return nullptr;
+            const uint32_t n_gpu = model->n_devices();
+            if (n_gpu > 1) {
+                for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {
+                    const uint32_t n_head    = model->hparams.n_head(il);
+                    const uint32_t n_head_kv = model->hparams.n_head_kv(il);
+
+                    // (1) query heads must divide evenly across GPUs
+                    if (n_head % n_gpu != 0) {
+                        LLAMA_LOG_ERROR("%s: layer %u has %u query heads which cannot be split across %u GPUs — try a different model or fewer GPUs\n",
+                            __func__, il, n_head, n_gpu);
+                        return nullptr;
+                    }
+
+                    // (2) KV heads must divide evenly (important for GQA models where n_head_kv < n_head)
+                    if (n_head_kv > 0 && n_head_kv % n_gpu != 0) {
+                        LLAMA_LOG_ERROR("%s: layer %u has %u KV heads which cannot be split across %u GPUs — try a different model or fewer GPUs\n",
+                            __func__, il, n_head_kv, n_gpu);
+                        return nullptr;
+                    }
+
+                    // (3) each GPU's share of the KV cache must align with the quantization block size
+                    //     e.g. TQ block = 32 elements, head_dim = 128, 1 head per GPU → 128 elements → 128 % 32 = 0 ✓
+                    if (n_head_kv > 0) {
+                        const uint32_t heads_per_gpu = n_head_kv / n_gpu;
+
+                        if (ggml_is_quantized(params.type_k)) {
+                            const uint32_t k_block   = ggml_blck_size(params.type_k);
+                            const uint32_t k_per_gpu = model->hparams.n_embd_head_k(il) * heads_per_gpu;
+                            if (k_per_gpu % k_block != 0) {
+                                LLAMA_LOG_ERROR("%s: layer %u: local K cache size (%u) is not a multiple of %s block size (%u) — try fewer GPUs or a different K cache type\n",
+                                    __func__, il, k_per_gpu, ggml_type_name(params.type_k), k_block);
+                                return nullptr;
+                            }
+                        }
+                        if (ggml_is_quantized(params.type_v)) {
+                            const uint32_t v_block   = ggml_blck_size(params.type_v);
+                            const uint32_t v_per_gpu = model->hparams.n_embd_head_v(il) * heads_per_gpu;
+                            if (v_per_gpu % v_block != 0) {
+                                LLAMA_LOG_ERROR("%s: layer %u: local V cache size (%u) is not a multiple of %s block size (%u) — try fewer GPUs or a different V cache type\n",
+                                    __func__, il, v_per_gpu, ggml_type_name(params.type_v), v_block);
+                                return nullptr;
+                            }
+                        }
+                    }
+                }
+                LLAMA_LOG_INFO("%s: tensor parallelism with quantized KV cache enabled (TP+TQ, %u GPUs)\n", __func__, n_gpu);
+            }
         }
     }
 
