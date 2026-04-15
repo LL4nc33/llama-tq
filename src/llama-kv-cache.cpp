@@ -113,9 +113,6 @@ llama_kv_cache::llama_kv_cache(
                                 type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
     const bool use_deferred_k = tq_deferred_k && is_tq_type_k;
 
-    LLAMA_LOG_INFO("%s: tq_deferred_k=%d, is_tq_type_k=%d, use_deferred_k=%d, type_k=%s\n",
-        __func__, tq_deferred_k, is_tq_type_k, use_deferred_k, ggml_type_name(type_k));
-
     // create a context for each buffer type
     // extra tensors per layer when deferred K is active: k_staging + k_staging_stream views
     const size_t n_tensors_per_layer = 2u*(1 + n_stream) + (use_deferred_k ? (1 + n_stream) : 0);
