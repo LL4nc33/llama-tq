@@ -505,6 +505,33 @@ void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, 
     *s = sumf;
 }
 
+// TurboQuant PolarQuant CPU fallback: dequantize to f32, then f32 dot product
+// These are slow but correct — only used for CPU graph splits on GPU-offloaded models
+#define TQ_VEC_DOT_F32_IMPL(type_name, block_type) \
+void ggml_vec_dot_##type_name##_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) { \
+    assert(nrc == 1); \
+    UNUSED(nrc); UNUSED(bx); UNUSED(by); UNUSED(bs); \
+    float tmp[QK_TQ]; \
+    const block_type * GGML_RESTRICT x = vx; \
+    const float * GGML_RESTRICT y = vy; \
+    const int nb = n / QK_TQ; \
+    float sumf = 0.0f; \
+    for (int i = 0; i < nb; ++i) { \
+        dequantize_row_##type_name(&x[i], tmp, QK_TQ); \
+        for (int j = 0; j < QK_TQ; ++j) { \
+            sumf += tmp[j] * y[i * QK_TQ + j]; \
+        } \
+    } \
+    *s = sumf; \
+}
+
+TQ_VEC_DOT_F32_IMPL(tq1_1, block_tq1_1)
+TQ_VEC_DOT_F32_IMPL(tq2_1, block_tq2_1)
+TQ_VEC_DOT_F32_IMPL(tq3_1, block_tq3_1)
+TQ_VEC_DOT_F32_IMPL(tq4_1, block_tq4_1)
+
+#undef TQ_VEC_DOT_F32_IMPL
+
 void ggml_vec_dot_q2_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
