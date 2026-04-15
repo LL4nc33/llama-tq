@@ -2047,6 +2047,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
     add_opt(common_arg(
+        {"--tq-deferred-k"},
+        "defer K quantization until prefill->decode transition for better quality\n"
+        "(only effective with TQ K cache types)",
+        [](common_params & params) {
+            params.tq_deferred_k = true;
+        }
+    ).set_env("LLAMA_ARG_TQ_DEFERRED_K"));
+    add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
         [](common_params & params) {
