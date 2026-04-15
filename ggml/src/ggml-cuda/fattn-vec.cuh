@@ -552,11 +552,28 @@ void ggml_cuda_flash_attn_ext_vec_case_impl(ggml_backend_cuda_context & ctx, ggm
 
     const int nthreads = ggml_cuda_fattn_vec_get_nthreads_host(cc);
     const int nwarps   = nthreads / WARP_SIZE;
-    fattn_kernel_t fattn_kernel = flash_attn_ext_vec<D, cols_per_block, type_K, type_V, use_logit_softcap>;
-    const bool need_f16_K = type_K == GGML_TYPE_F16;
-    const bool need_f16_V = type_V == GGML_TYPE_F16;
-    constexpr size_t nbytes_shared = 0;
-    launch_fattn<D, cols_per_block, 1>(ctx, dst, fattn_kernel, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);
+
+    // When K and V share the same TQ type, there's a kernel correctness issue
+    // (NVCC generates incorrect code for same-type TQ K/V). Workaround: convert
+    // V to f16 pre-kernel and use the (type_K, F16) kernel instead.
+    constexpr bool tq_same_kv = (type_K == type_V) &&
+        (type_K == GGML_TYPE_TQ1_1 || type_K == GGML_TYPE_TQ2_1 ||
+         type_K == GGML_TYPE_TQ3_1 || type_K == GGML_TYPE_TQ4_1);
+
+    if constexpr (tq_same_kv) {
+        // Use the (type_K, F16) kernel — V will be converted to f16 by launch_fattn
+        fattn_kernel_t fattn_kernel = flash_attn_ext_vec<D, cols_per_block, type_K, GGML_TYPE_F16, use_logit_softcap>;
+        const bool need_f16_K = false;
+        const bool need_f16_V = true;  // forces V→f16 conversion in launch_fattn
+        constexpr size_t nbytes_shared = 0;
+        launch_fattn<D, cols_per_block, 1>(ctx, dst, fattn_kernel, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);
+    } else {
+        fattn_kernel_t fattn_kernel = flash_attn_ext_vec<D, cols_per_block, type_K, type_V, use_logit_softcap>;
+        const bool need_f16_K = type_K == GGML_TYPE_F16;
+        const bool need_f16_V = type_V == GGML_TYPE_F16;
+        constexpr size_t nbytes_shared = 0;
+        launch_fattn<D, cols_per_block, 1>(ctx, dst, fattn_kernel, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);
+    }
 }
 
 template <int D, ggml_type type_K, ggml_type type_V>
