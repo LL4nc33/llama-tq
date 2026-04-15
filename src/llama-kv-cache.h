@@ -212,6 +212,7 @@ public:
     void set_input_v_idxs(ggml_tensor * dst, const llama_ubatch * ubatch, const slot_info & sinfo) const;
 
     void set_input_k_shift(ggml_tensor * dst) const;
+    void set_input_deferred_convert(ggml_tensor * dst) const;
 
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
@@ -321,8 +322,6 @@ private:
     ggml_cgraph * build_graph_deferred_convert(
                llm_graph_result * res,
                   llama_context * lctx);
-
-    void set_input_deferred_convert(ggml_tensor * dst) const;
 
     struct cell_ranges_t {
         uint32_t strm;
