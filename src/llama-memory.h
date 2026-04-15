@@ -23,6 +23,9 @@ struct llama_memory_params {
 
     // TurboQuant boundary layer protection
     uint32_t tq_protect_layers;
+
+    // TurboQuant deferred K quantization
+    bool tq_deferred_k;
 };
 
 enum llama_memory_status {

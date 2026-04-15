@@ -358,6 +358,7 @@ extern "C" {
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
 
         uint32_t tq_protect_layers; // boundary layer protection: first/last N layers use q8_0 instead of TQ
+        bool tq_deferred_k;        // defer K quantization until prefill->decode transition
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted

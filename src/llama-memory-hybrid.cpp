@@ -43,6 +43,7 @@ llama_memory_hybrid::llama_memory_hybrid(
         n_swa,
         swa_type,
         0, // tq_protect_layers (not used for hybrid models)
+        false, // tq_deferred_k (not used for hybrid models)
         filter_attn == nullptr ?
             [&](int32_t il) { return !hparams.is_recurrent(il); }
             : filter_attn,

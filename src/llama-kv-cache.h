@@ -13,6 +13,13 @@ struct llama_hparams;
 struct llama_model;
 struct llama_context;
 
+enum tq_deferred_state : uint8_t {
+    TQ_DEFERRED_OFF     = 0, // feature disabled
+    TQ_DEFERRED_STAGING = 1, // prefill phase: K written to f16 staging buffer
+    TQ_DEFERRED_READY   = 2, // ready for bulk convert (prefill->decode transition)
+    TQ_DEFERRED_DONE    = 3, // converted: K in TQ, writing directly
+};
+
 //
 // llama_kv_cache
 //
@@ -106,6 +113,7 @@ public:
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
                      uint32_t   tq_protect_layers,
+                         bool   tq_deferred_k,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse);
 
@@ -156,6 +164,8 @@ public:
     ggml_type type_k() const;
     ggml_type type_v() const;
 
+    tq_deferred_state get_deferred_state() const;
+
     //
     // graph_build API
     //
@@ -178,7 +188,7 @@ public:
     // return empty vector on failure
     slot_info_vec_t prepare(const std::vector<llama_ubatch> & ubatches);
 
-    bool update(llama_context * lctx, bool do_shift, const stream_copy_info & sc_info);
+    bool update(llama_context * lctx, bool do_shift, bool do_deferred_convert, const stream_copy_info & sc_info);
 
     // find a slot of kv cells that can hold the ubatch
     // if cont == true, then the slot must be continuous
@@ -221,8 +231,12 @@ private:
         ggml_tensor * k;
         ggml_tensor * v;
 
+        // deferred K quantization: f16 staging buffer (nullptr when not deferred or boundary-protected)
+        ggml_tensor * k_staging = nullptr;
+
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
+        std::vector<ggml_tensor *> k_staging_stream;
     };
 
     bool v_trans = true;  // the value tensor is transposed
@@ -238,6 +252,9 @@ private:
 
     // TurboQuant boundary layer protection
     const uint32_t tq_protect_layers = 0;
+
+    // TurboQuant deferred K quantization
+    tq_deferred_state deferred_state = TQ_DEFERRED_OFF;
 
     // user-selected cache types (for type_k()/type_v() accessors when boundary protection is active)
     ggml_type user_type_k = GGML_TYPE_F16;
@@ -301,6 +318,12 @@ private:
                llm_graph_result * res,
                   llama_context * lctx) const;
 
+    ggml_cgraph * build_graph_deferred_convert(
+               llm_graph_result * res,
+                  llama_context * lctx);
+
+    void set_input_deferred_convert(ggml_tensor * dst) const;
+
     struct cell_ranges_t {
         uint32_t strm;
 
@@ -332,6 +355,7 @@ public:
             llama_kv_cache * kv,
             llama_context * lctx,
             bool do_shift,
+            bool do_deferred_convert,
             stream_copy_info sc_info);
 
     // used to create a batch processing context from a batch
@@ -404,6 +428,7 @@ private:
     //
 
     bool do_shift = false;
+    bool do_deferred_convert = false;
 
     stream_copy_info sc_info;
 
