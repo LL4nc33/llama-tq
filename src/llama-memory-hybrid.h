@@ -28,6 +28,9 @@ public:
                  uint32_t   n_pad,
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
+                            /* TurboQuant */
+                 uint32_t   tq_protect_layers,
+                     bool   tq_deferred_k,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,

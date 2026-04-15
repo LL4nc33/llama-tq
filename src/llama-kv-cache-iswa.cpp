@@ -23,6 +23,8 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
                  uint32_t   n_seq_max,
                  uint32_t   n_ubatch,
                  uint32_t   n_pad,
+                 uint32_t   tq_protect_layers,
+                     bool   tq_deferred_k,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse) : hparams(model.hparams), unified(unified) {
 
@@ -62,14 +64,14 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
     kv_base = std::make_unique<llama_kv_cache>(
             model, type_k, type_v,
             v_trans, offload, unified, size_base, n_seq_max, n_pad,
-            0, LLAMA_SWA_TYPE_NONE, 0, false, filter_base, reuse);
+            0, LLAMA_SWA_TYPE_NONE, tq_protect_layers, tq_deferred_k, filter_base, reuse);
 
     LLAMA_LOG_INFO("%s: creating     SWA KV cache, size = %u cells\n", __func__, size_swa);
 
     kv_swa = std::make_unique<llama_kv_cache>(
             model, type_k, type_v,
             v_trans, offload, unified, size_swa, n_seq_max, n_pad,
-            hparams.n_swa, hparams.swa_type, 0, false, filter_swa, reuse);
+            hparams.n_swa, hparams.swa_type, tq_protect_layers, tq_deferred_k, filter_swa, reuse);
 }
 
 void llama_kv_cache_iswa::clear(bool data) {
