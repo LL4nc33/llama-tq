@@ -590,7 +590,7 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
 }
 
 #define DECL_FATTN_VEC_CASE(D, type_K, type_V)                              \
-    template void ggml_cuda_flash_attn_ext_vec_case                         \
+    template __attribute__((used)) void ggml_cuda_flash_attn_ext_vec_case   \
     <D, type_K, type_V>(ggml_backend_cuda_context & ctx, ggml_tensor * dst) \
 
 #define EXTERN_DECL_FATTN_VEC_CASES(D, type_K)             \
