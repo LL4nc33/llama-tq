@@ -761,6 +761,14 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return convert_unary_cont_cuda<float>;
         case GGML_TYPE_BF16:
             return convert_unary_cont_cuda<nv_bfloat16>;
+        case GGML_TYPE_TQ1_1:
+            return dequantize_row_tq1_1_cuda<half>;
+        case GGML_TYPE_TQ2_1:
+            return dequantize_row_tq2_1_cuda<half>;
+        case GGML_TYPE_TQ3_1:
+            return dequantize_row_tq3_1_cuda<half>;
+        case GGML_TYPE_TQ4_1:
+            return dequantize_row_tq4_1_cuda<half>;
         default:
             return nullptr;
     }
