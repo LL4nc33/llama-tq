@@ -223,6 +223,7 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
     FATTN_VEC_CASE( 64, type_K, type_V)       \
     FATTN_VEC_CASE(128, type_K, type_V)       \
     FATTN_VEC_CASE(256, type_K, type_V)       \
+    FATTN_VEC_CASE(512, type_K, type_V)       \
 
 static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
@@ -517,10 +518,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
     // TurboQuant types only have VEC kernel support (no MMA/TILE/WMMA):
+    // For TQ, allow head sizes up to 512 (needed for Gemma4 global attention layers)
     const bool is_tq_k = K->type == GGML_TYPE_TQ1_1 || K->type == GGML_TYPE_TQ2_1 || K->type == GGML_TYPE_TQ3_1 || K->type == GGML_TYPE_TQ4_1;
     const bool is_tq_v = V->type == GGML_TYPE_TQ1_1 || V->type == GGML_TYPE_TQ2_1 || V->type == GGML_TYPE_TQ3_1 || V->type == GGML_TYPE_TQ4_1;
+    const bool can_use_vector_kernel_tq = Q->ne[0] <= 512 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
     if (is_tq_k || is_tq_v) {
-        if (!can_use_vector_kernel) {
+        if (!can_use_vector_kernel_tq) {
             return BEST_FATTN_KERNEL_NONE;
         }
 #ifndef GGML_CUDA_FA_ALL_QUANTS
