@@ -724,28 +724,28 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_tq4_1(
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_tq1_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_tq1_1 * x = (const block_tq1_1 *) vx;
-    const int64_t my_ib = i0 / QK_TQ;
-    const int     iqs   = i0 % QK_TQ;
-    const int     lane  = threadIdx.x % WARP_SIZE;
-
-    // Warp-cooperative: all 32 threads dequant blocks together via warp FWHT
-    constexpr int nblocks = ne * WARP_SIZE / QK_TQ;
-    const int64_t ib_base = my_ib - (lane / (QK_TQ / ne));
-
     float results[ne];
 
     #pragma unroll
-    for (int bi = 0; bi < nblocks; ++bi) {
-        const int64_t ib = ib_base + bi;
-        float dq = tq_fattn_dequant_elem_tq1_1(x, ib, lane);
-        // Gather via shuffle OUTSIDE the branch — all lanes must participate
+    for (int l = 0; l < ne; ++l) {
+        const int64_t idx = i0 + l;
+        const int64_t ib  = idx / QK_TQ;
+        const int     il  = idx % QK_TQ;
+        const float norm = (float)x[ib].d;
+        if (norm < 1e-30f) { results[l] = 0.0f; continue; }
+        float buf[32];
         #pragma unroll
-        for (int l = 0; l < ne; ++l) {
-            float gathered = __shfl_sync(0xFFFFFFFF, dq, iqs + l);
-            if (ib == my_ib) {
-                results[l] = gathered;
-            }
+        for (int j = 0; j < 32; ++j) {
+            const int cb_idx = (x[ib].qs[j / 8] >> (j % 8)) & 0x1;
+            buf[j] = TQ_CUDA_CB_1BIT[cb_idx] * TQ_CUDA_CB_SCALE;
         }
+        tq_cuda_fwht_32_serial(buf);
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+            buf[j] *= (1.0f - 2.0f * sb) * norm;
+        }
+        results[l] = buf[il];
     }
 
     if constexpr (std::is_same_v<T, half>) {
@@ -761,30 +761,39 @@ static __device__ __forceinline__ void dequantize_V_tq1_1(const void * __restric
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_tq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    // Serial per-thread dequant: each thread dequantizes its own ne elements independently.
+    // Uses the proven tq_fattn_dequant_block path (serial FWHT) instead of warp-cooperative FWHT.
+    // Slightly slower (~2x for V accumulation) but avoids warp synchronization issues.
     const block_tq2_1 * x = (const block_tq2_1 *) vx;
-    const int64_t my_ib = i0 / QK_TQ;
-    const int     iqs   = i0 % QK_TQ;
-    const int     lane  = threadIdx.x % WARP_SIZE;
-
-    // Warp-cooperative: all 32 threads dequant 4 blocks together (D=128, ne=4, 32 threads)
-    // Each iteration: all threads compute 1 element of 1 block via warp FWHT (5 shuffles)
-    constexpr int nblocks = ne * WARP_SIZE / QK_TQ;  // = 4 for D=128
-    const int64_t ib_base = my_ib - (lane / (QK_TQ / ne));
 
     float results[ne];
 
     #pragma unroll
-    for (int bi = 0; bi < nblocks; ++bi) {
-        const int64_t ib = ib_base + bi;
-        float dq = tq_fattn_dequant_elem_tq2_1(x, ib, lane);
-        // Gather via shuffle OUTSIDE the branch — all lanes must participate
-        #pragma unroll
-        for (int l = 0; l < ne; ++l) {
-            float gathered = __shfl_sync(0xFFFFFFFF, dq, iqs + l);
-            if (ib == my_ib) {
-                results[l] = gathered;
-            }
+    for (int l = 0; l < ne; ++l) {
+        const int64_t idx = i0 + l;
+        const int64_t ib  = idx / QK_TQ;
+        const int     il  = idx % QK_TQ;
+
+        const float norm = (float)x[ib].d;
+        if (norm < 1e-30f) {
+            results[l] = 0.0f;
+            continue;
         }
+
+        // Full serial dequant for this single element: codebook → FWHT → sign → norm
+        float buf[32];
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            const int cb_idx = (x[ib].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            buf[j] = TQ_CUDA_CB_2BIT[cb_idx] * TQ_CUDA_CB_SCALE;
+        }
+        tq_cuda_fwht_32_serial(buf);
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+            buf[j] *= (1.0f - 2.0f * sb) * norm;
+        }
+        results[l] = buf[il];
     }
 
     if constexpr (std::is_same_v<T, half>) {
@@ -801,26 +810,33 @@ static __device__ __forceinline__ void dequantize_V_tq2_1(const void * __restric
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_tq3_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_tq3_1 * x = (const block_tq3_1 *) vx;
-    const int64_t my_ib = i0 / QK_TQ;
-    const int     iqs   = i0 % QK_TQ;
-    const int     lane  = threadIdx.x % WARP_SIZE;
-
-    constexpr int nblocks = ne * WARP_SIZE / QK_TQ;
-    const int64_t ib_base = my_ib - (lane / (QK_TQ / ne));
-
     float results[ne];
 
     #pragma unroll
-    for (int bi = 0; bi < nblocks; ++bi) {
-        const int64_t ib = ib_base + bi;
-        float dq = tq_fattn_dequant_elem_tq3_1(x, ib, lane);
+    for (int l = 0; l < ne; ++l) {
+        const int64_t idx = i0 + l;
+        const int64_t ib  = idx / QK_TQ;
+        const int     il  = idx % QK_TQ;
+        const float norm = (float)x[ib].d;
+        if (norm < 1e-30f) { results[l] = 0.0f; continue; }
+        float buf[32];
         #pragma unroll
-        for (int l = 0; l < ne; ++l) {
-            float gathered = __shfl_sync(0xFFFFFFFF, dq, iqs + l);
-            if (ib == my_ib) {
-                results[l] = gathered;
-            }
+        for (int j = 0; j < 32; ++j) {
+            const int bit_offset = j * 3;
+            const int byte_idx = bit_offset / 8;
+            const int bit_idx  = bit_offset % 8;
+            int cb_idx = (x[ib].qs[byte_idx] >> bit_idx);
+            if (bit_idx > 5) cb_idx |= (x[ib].qs[byte_idx + 1] << (8 - bit_idx));
+            cb_idx &= 0x7;
+            buf[j] = TQ_CUDA_CB_3BIT[cb_idx] * TQ_CUDA_CB_SCALE;
         }
+        tq_cuda_fwht_32_serial(buf);
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+            buf[j] *= (1.0f - 2.0f * sb) * norm;
+        }
+        results[l] = buf[il];
     }
 
     if constexpr (std::is_same_v<T, half>) {
@@ -837,26 +853,28 @@ static __device__ __forceinline__ void dequantize_V_tq3_1(const void * __restric
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_tq4_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_tq4_1 * x = (const block_tq4_1 *) vx;
-    const int64_t my_ib = i0 / QK_TQ;
-    const int     iqs   = i0 % QK_TQ;
-    const int     lane  = threadIdx.x % WARP_SIZE;
-
-    constexpr int nblocks = ne * WARP_SIZE / QK_TQ;
-    const int64_t ib_base = my_ib - (lane / (QK_TQ / ne));
-
     float results[ne];
 
     #pragma unroll
-    for (int bi = 0; bi < nblocks; ++bi) {
-        const int64_t ib = ib_base + bi;
-        float dq = tq_fattn_dequant_elem_tq4_1(x, ib, lane);
+    for (int l = 0; l < ne; ++l) {
+        const int64_t idx = i0 + l;
+        const int64_t ib  = idx / QK_TQ;
+        const int     il  = idx % QK_TQ;
+        const float norm = (float)x[ib].d;
+        if (norm < 1e-30f) { results[l] = 0.0f; continue; }
+        float buf[32];
         #pragma unroll
-        for (int l = 0; l < ne; ++l) {
-            float gathered = __shfl_sync(0xFFFFFFFF, dq, iqs + l);
-            if (ib == my_ib) {
-                results[l] = gathered;
-            }
+        for (int j = 0; j < 32; ++j) {
+            const int cb_idx = (x[ib].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+            buf[j] = TQ_CUDA_CB_4BIT[cb_idx] * TQ_CUDA_CB_SCALE;
         }
+        tq_cuda_fwht_32_serial(buf);
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) {
+            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+            buf[j] *= (1.0f - 2.0f * sb) * norm;
+        }
+        results[l] = buf[il];
     }
 
     if constexpr (std::is_same_v<T, half>) {
