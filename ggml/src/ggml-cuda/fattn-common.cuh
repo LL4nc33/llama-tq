@@ -722,167 +722,183 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_tq4_1(
 
 // dequantize_V for TurboQuant types
 template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_tq1_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+static __device__ __noinline__ void dequantize_V_tq1_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_tq1_1 * x = (const block_tq1_1 *) vx;
-    float results[ne];
 
+    const int64_t ib  = i0 / QK_TQ;
+    const int     il  = (int)(i0 % QK_TQ);
+    const float   norm = (float)x[ib].d;
+
+    if (norm < 1e-30f) {
+        if constexpr (std::is_same_v<T, half>) {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(0.0f);
+        } else {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((float *) dst)[l] = 0.0f;
+        }
+        return;
+    }
+
+    float buf[32];
     #pragma unroll
-    for (int l = 0; l < ne; ++l) {
-        const int64_t idx = i0 + l;
-        const int64_t ib  = idx / QK_TQ;
-        const int     il  = idx % QK_TQ;
-        const float norm = (float)x[ib].d;
-        if (norm < 1e-30f) { results[l] = 0.0f; continue; }
-        float buf[32];
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int cb_idx = (x[ib].qs[j / 8] >> (j % 8)) & 0x1;
-            buf[j] = TQ_CUDA_CB_1BIT[cb_idx] * TQ_CUDA_CB_SCALE;
-        }
-        tq_cuda_fwht_32_serial(buf);
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-            buf[j] *= (1.0f - 2.0f * sb) * norm;
-        }
-        results[l] = buf[il];
+    for (int j = 0; j < 32; ++j) {
+        const int cb_idx = (x[ib].qs[j / 8] >> (j % 8)) & 0x1;
+        buf[j] = TQ_CUDA_CB_1BIT[cb_idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
     }
 
     if constexpr (std::is_same_v<T, half>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((half *) dst)[l] = __float2half(results[l]);
+        for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(buf[il + l]);
     } else if constexpr (std::is_same_v<T, float>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = results[l];
+        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = buf[il + l];
     } else {
         static_assert(std::is_same_v<T, void>, "unsupported type");
     }
 }
 
 template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_tq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    // Serial per-thread dequant: each thread dequantizes its own ne elements independently.
-    // Uses the proven tq_fattn_dequant_block path (serial FWHT) instead of warp-cooperative FWHT.
-    // Slightly slower (~2x for V accumulation) but avoids warp synchronization issues.
+static __device__ __noinline__ void dequantize_V_tq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    // Block-based V dequant: ne consecutive elements always fall within a single 32-element
+    // TQ block (ne <= 32, i0 aligned), so we dequant the block once and extract ne values.
+    // Uses __noinline__ to prevent NVCC from merging V-dequant reads with K-dequant reads
+    // when K and V share the same TQ type (compiler alias disambiguation bug).
     const block_tq2_1 * x = (const block_tq2_1 *) vx;
 
-    float results[ne];
+    const int64_t ib  = i0 / QK_TQ;
+    const int     il  = (int)(i0 % QK_TQ);
+    const float   norm = (float)x[ib].d;
 
-    #pragma unroll
-    for (int l = 0; l < ne; ++l) {
-        const int64_t idx = i0 + l;
-        const int64_t ib  = idx / QK_TQ;
-        const int     il  = idx % QK_TQ;
-
-        const float norm = (float)x[ib].d;
-        if (norm < 1e-30f) {
-            results[l] = 0.0f;
-            continue;
+    if (norm < 1e-30f) {
+        if constexpr (std::is_same_v<T, half>) {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(0.0f);
+        } else {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((float *) dst)[l] = 0.0f;
         }
-
-        // Full serial dequant for this single element: codebook → FWHT → sign → norm
-        float buf[32];
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int cb_idx = (x[ib].qs[j / 4] >> (2 * (j % 4))) & 0x3;
-            buf[j] = TQ_CUDA_CB_2BIT[cb_idx] * TQ_CUDA_CB_SCALE;
-        }
-        tq_cuda_fwht_32_serial(buf);
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-            buf[j] *= (1.0f - 2.0f * sb) * norm;
-        }
-        results[l] = buf[il];
+        return;
     }
 
+    // Dequant the full 32-element block once: codebook → FWHT → sign → norm
+    float buf[32];
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int cb_idx = (x[ib].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+        buf[j] = TQ_CUDA_CB_2BIT[cb_idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
+    }
+
+    // Extract the ne consecutive elements we need
     if constexpr (std::is_same_v<T, half>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((half *) dst)[l] = __float2half(results[l]);
+        for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(buf[il + l]);
     } else if constexpr (std::is_same_v<T, float>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = results[l];
+        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = buf[il + l];
     } else {
         static_assert(std::is_same_v<T, void>, "unsupported type");
     }
 }
 
 template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_tq3_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+static __device__ __noinline__ void dequantize_V_tq3_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_tq3_1 * x = (const block_tq3_1 *) vx;
-    float results[ne];
 
+    const int64_t ib  = i0 / QK_TQ;
+    const int     il  = (int)(i0 % QK_TQ);
+    const float   norm = (float)x[ib].d;
+
+    if (norm < 1e-30f) {
+        if constexpr (std::is_same_v<T, half>) {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(0.0f);
+        } else {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((float *) dst)[l] = 0.0f;
+        }
+        return;
+    }
+
+    float buf[32];
     #pragma unroll
-    for (int l = 0; l < ne; ++l) {
-        const int64_t idx = i0 + l;
-        const int64_t ib  = idx / QK_TQ;
-        const int     il  = idx % QK_TQ;
-        const float norm = (float)x[ib].d;
-        if (norm < 1e-30f) { results[l] = 0.0f; continue; }
-        float buf[32];
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int bit_offset = j * 3;
-            const int byte_idx = bit_offset / 8;
-            const int bit_idx  = bit_offset % 8;
-            int cb_idx = (x[ib].qs[byte_idx] >> bit_idx);
-            if (bit_idx > 5) cb_idx |= (x[ib].qs[byte_idx + 1] << (8 - bit_idx));
-            cb_idx &= 0x7;
-            buf[j] = TQ_CUDA_CB_3BIT[cb_idx] * TQ_CUDA_CB_SCALE;
-        }
-        tq_cuda_fwht_32_serial(buf);
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-            buf[j] *= (1.0f - 2.0f * sb) * norm;
-        }
-        results[l] = buf[il];
+    for (int j = 0; j < 32; ++j) {
+        const int bit_offset = j * 3;
+        const int byte_idx = bit_offset / 8;
+        const int bit_idx  = bit_offset % 8;
+        int cb_idx = (x[ib].qs[byte_idx] >> bit_idx);
+        if (bit_idx > 5) cb_idx |= (x[ib].qs[byte_idx + 1] << (8 - bit_idx));
+        cb_idx &= 0x7;
+        buf[j] = TQ_CUDA_CB_3BIT[cb_idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
     }
 
     if constexpr (std::is_same_v<T, half>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((half *) dst)[l] = __float2half(results[l]);
+        for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(buf[il + l]);
     } else if constexpr (std::is_same_v<T, float>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = results[l];
+        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = buf[il + l];
     } else {
         static_assert(std::is_same_v<T, void>, "unsupported type");
     }
 }
 
 template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_tq4_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+static __device__ __noinline__ void dequantize_V_tq4_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_tq4_1 * x = (const block_tq4_1 *) vx;
-    float results[ne];
 
+    const int64_t ib  = i0 / QK_TQ;
+    const int     il  = (int)(i0 % QK_TQ);
+    const float   norm = (float)x[ib].d;
+
+    if (norm < 1e-30f) {
+        if constexpr (std::is_same_v<T, half>) {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(0.0f);
+        } else {
+            #pragma unroll
+            for (int l = 0; l < ne; ++l) ((float *) dst)[l] = 0.0f;
+        }
+        return;
+    }
+
+    float buf[32];
     #pragma unroll
-    for (int l = 0; l < ne; ++l) {
-        const int64_t idx = i0 + l;
-        const int64_t ib  = idx / QK_TQ;
-        const int     il  = idx % QK_TQ;
-        const float norm = (float)x[ib].d;
-        if (norm < 1e-30f) { results[l] = 0.0f; continue; }
-        float buf[32];
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int cb_idx = (x[ib].qs[j / 2] >> (4 * (j % 2))) & 0xF;
-            buf[j] = TQ_CUDA_CB_4BIT[cb_idx] * TQ_CUDA_CB_SCALE;
-        }
-        tq_cuda_fwht_32_serial(buf);
-        #pragma unroll
-        for (int j = 0; j < 32; ++j) {
-            const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-            buf[j] *= (1.0f - 2.0f * sb) * norm;
-        }
-        results[l] = buf[il];
+    for (int j = 0; j < 32; ++j) {
+        const int cb_idx = (x[ib].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+        buf[j] = TQ_CUDA_CB_4BIT[cb_idx] * TQ_CUDA_CB_SCALE;
+    }
+    tq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
     }
 
     if constexpr (std::is_same_v<T, half>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((half *) dst)[l] = __float2half(results[l]);
+        for (int l = 0; l < ne; ++l) ((half *) dst)[l]  = __float2half(buf[il + l]);
     } else if constexpr (std::is_same_v<T, float>) {
         #pragma unroll
-        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = results[l];
+        for (int l = 0; l < ne; ++l) ((float *) dst)[l] = buf[il + l];
     } else {
         static_assert(std::is_same_v<T, void>, "unsupported type");
     }
