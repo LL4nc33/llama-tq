@@ -23,7 +23,9 @@ This fork adds TurboQuant v7 KV cache quantization. All changes are contained in
 | `ggml/src/ggml-cuda/fattn-common.cuh` | +453 lines: vec_dot_KQ + dequantize_V for TQ types |
 | `ggml/src/ggml-cuda/fattn-vec.cuh` | +47 lines: Q_tq constexpr, f32 Q registers, TQ vec_dot call |
 | `ggml/src/ggml-cuda/fattn.cu` | +81 lines: TQ type dispatch in FA entry point |
-| `common/arg.cpp` | +11 lines: CLI --cache-type-k/v tq2_1/tq3_1/tq4_1 |
+| `common/arg.cpp` | +11 lines: CLI --cache-type-k/v tq2_1/tq3_1/tq4_1, --tq-deferred-k |
+| `common/common.h` | +2 lines: tq_deferred_k param |
+| `common/common.cpp` | +1 line: param forwarding |
 | `tools/llama-bench/llama-bench.cpp` | +9 lines: TQ type parser for -ctk/-ctv flags |
 
-**Total delta:** ~2,400 lines added, 3 lines modified across 66 files.
+**Total delta:** ~2,650 lines added, 3 lines modified across 66 files.

@@ -89,6 +89,7 @@ llama_kv_cache::llama_kv_cache(
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
                  uint32_t   tq_protect_layers,
+                     bool   tq_deferred_k,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse) :
     model(model), hparams(model.hparams), v_trans(v_trans),
@@ -107,12 +108,19 @@ llama_kv_cache::llama_kv_cache(
     };
     std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
 
+    // check if deferred K quantization is applicable
+    const bool is_tq_type_k = (type_k == GGML_TYPE_TQ1_1 || type_k == GGML_TYPE_TQ2_1 ||
+                                type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
+    const bool use_deferred_k = tq_deferred_k && is_tq_type_k;
+
     // create a context for each buffer type
+    // extra tensors per layer when deferred K is active: k_staging + k_staging_stream views
+    const size_t n_tensors_per_layer = 2u*(1 + n_stream) + (use_deferred_k ? (1 + n_stream) : 0);
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
             ggml_init_params params = {
-                /*.mem_size   =*/ size_t(2u*(1 + n_stream)*n_layer_kv*ggml_tensor_overhead()),
+                /*.mem_size   =*/ size_t(n_tensors_per_layer*n_layer_kv*ggml_tensor_overhead()),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -241,6 +249,24 @@ llama_kv_cache::llama_kv_cache(
         has_k && ggml_format_name(k, "cache_k_l%d", il);
         has_v && ggml_format_name(v, "cache_v_l%d", il);
 
+        // deferred K quantization: f16 staging buffer for TQ layers (not boundary-protected)
+        ggml_tensor * k_staging = nullptr;
+        std::vector<ggml_tensor *> k_staging_stream;
+
+        if (use_deferred_k && has_k) {
+            const bool layer_uses_tq = (eff_type_k == GGML_TYPE_TQ1_1 || eff_type_k == GGML_TYPE_TQ2_1 ||
+                                         eff_type_k == GGML_TYPE_TQ3_1 || eff_type_k == GGML_TYPE_TQ4_1);
+            if (layer_uses_tq) {
+                k_staging = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, n_embd_k_gqa, kv_size, n_stream);
+                ggml_format_name(k_staging, "cache_k_staging_l%d", il);
+
+                for (uint32_t s = 0; s < n_stream; ++s) {
+                    k_staging_stream.push_back(
+                        ggml_view_2d(ctx, k_staging, n_embd_k_gqa, kv_size, k_staging->nb[1], s*k_staging->nb[2]));
+                }
+            }
+        }
+
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
 
@@ -251,7 +277,7 @@ llama_kv_cache::llama_kv_cache(
 
         map_layer_ids[il] = layers.size();
 
-        layers.push_back({ il, k, v, k_stream, v_stream, });
+        layers.push_back({ il, k, v, k_staging, k_stream, v_stream, k_staging_stream });
     }
 
     if (reuse) {
@@ -307,6 +333,20 @@ llama_kv_cache::llama_kv_cache(
                 (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f), kv_size, (int) layers.size(), n_seq_max, n_stream,
                 ggml_type_name(type_k), (float)memory_size_k / (1024.0f * 1024.0f),
                 ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f));
+    }
+
+    // initialize deferred K quantization state
+    if (use_deferred_k) {
+        uint32_t n_staging = 0;
+        for (const auto & layer : layers) {
+            if (layer.k_staging) {
+                n_staging++;
+            }
+        }
+        if (n_staging > 0) {
+            deferred_state = TQ_DEFERRED_STAGING;
+            LLAMA_LOG_INFO("%s: deferred K quantization enabled (%u layers with f16 staging)\n", __func__, n_staging);
+        }
     }
 
     const char * LLAMA_ATTN_ROT_DISABLE = getenv("LLAMA_ATTN_ROT_DISABLE");
@@ -365,6 +405,11 @@ void llama_kv_cache::clear(bool data) {
         for (auto & [_, buf] : ctxs_bufs) {
             ggml_backend_buffer_clear(buf.get(), 0);
         }
+    }
+
+    // reset deferred K quantization state for next sequence
+    if (deferred_state != TQ_DEFERRED_OFF) {
+        deferred_state = TQ_DEFERRED_STAGING;
     }
 }
 
@@ -658,6 +703,14 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
             bool embd_all) {
     GGML_UNUSED(embd_all);
 
+    // deferred K quantization: detect prefill->decode transition
+    if (deferred_state == TQ_DEFERRED_STAGING && balloc.get_n_tokens() == 1) {
+        deferred_state = TQ_DEFERRED_READY;
+        LLAMA_LOG_INFO("%s: deferred K quantization: triggering bulk convert (prefill->decode)\n", __func__);
+        // return FAILED_PREPARE to trigger memory_update(true) -> update() -> bulk convert
+        return std::make_unique<llama_kv_cache_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);
+    }
+
     do {
         balloc.split_reset();
 
@@ -697,8 +750,9 @@ llama_memory_context_ptr llama_kv_cache::init_update(llama_context * lctx, bool 
     GGML_UNUSED(optimize);
 
     bool do_shift = get_has_shift();
+    bool do_deferred_convert = (deferred_state == TQ_DEFERRED_READY);
 
-    return std::make_unique<llama_kv_cache_context>(this, lctx, do_shift, std::move(sc_info));
+    return std::make_unique<llama_kv_cache_context>(this, lctx, do_shift, do_deferred_convert, std::move(sc_info));
 }
 
 llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_ubatch> & ubatches) {
@@ -767,7 +821,7 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
     return res;
 }
 
-bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_copy_info & sc_info) {
+bool llama_kv_cache::update(llama_context * lctx, bool do_shift, bool do_deferred_convert, const stream_copy_info & sc_info) {
     bool updated = false;
 
     auto * sched = lctx->get_sched();
@@ -794,6 +848,11 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
                 const auto & layer = layers[il];
 
                 ggml_backend_tensor_copy(layer.k_stream[ssrc], layer.k_stream[sdst]);
+
+                // deferred K: also copy staging buffer
+                if (deferred_state == TQ_DEFERRED_STAGING && !layer.k_staging_stream.empty()) {
+                    ggml_backend_tensor_copy(layer.k_staging_stream[ssrc], layer.k_staging_stream[sdst]);
+                }
 
                 if (layer.v_stream[ssrc]) {
                     ggml_backend_tensor_copy(layer.v_stream[ssrc], layer.v_stream[sdst]);
@@ -838,6 +897,34 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
 
             cells.reset_shift();
         }
+    }
+
+    if (do_deferred_convert) {
+        LLAMA_LOG_INFO("%s: performing deferred K quantization (f16 -> %s)\n", __func__, ggml_type_name(user_type_k));
+
+        ggml_backend_sched_reset(sched);
+
+        auto * res = lctx->get_gf_res_reserve();
+
+        res->reset();
+
+        auto * gf = build_graph_deferred_convert(res, lctx);
+        if (!ggml_backend_sched_alloc_graph(sched, gf)) {
+            LLAMA_LOG_ERROR("%s: failed to allocate compute graph for deferred K convert\n", __func__);
+            return updated;
+        }
+
+        res->set_inputs(nullptr);
+
+        if (lctx->graph_compute(gf, false) != GGML_STATUS_SUCCESS) {
+            LLAMA_LOG_ERROR("%s: failed to compute deferred K convert\n", __func__);
+            return updated;
+        }
+
+        deferred_state = TQ_DEFERRED_DONE;
+        updated = true;
+
+        LLAMA_LOG_INFO("%s: deferred K quantization complete\n", __func__);
     }
 
     return updated;
@@ -1150,6 +1237,10 @@ ggml_type llama_kv_cache::type_k() const {
     return user_type_k;
 }
 
+tq_deferred_state llama_kv_cache::get_deferred_state() const {
+    return deferred_state;
+}
+
 ggml_type llama_kv_cache::type_v() const {
     return user_type_v;
 }
@@ -1173,7 +1264,9 @@ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
 ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
     const int32_t ikv = map_layer_ids.at(il);
 
-    auto * k = layers[ikv].k;
+    // deferred K quantization: during prefill, read from f16 staging buffer
+    auto * k = (deferred_state == TQ_DEFERRED_STAGING && layers[ikv].k_staging)
+               ? layers[ikv].k_staging : layers[ikv].k;
 
     const uint64_t kv_size      = get_size();
     const uint64_t n_embd_k_gqa = k->ne[0];
@@ -1227,7 +1320,9 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
 
     const int32_t ikv = map_layer_ids.at(il);
 
-    ggml_tensor * k = layers[ikv].k;
+    // deferred K quantization: during prefill, write to f16 staging buffer
+    ggml_tensor * k = (deferred_state == TQ_DEFERRED_STAGING && layers[ikv].k_staging)
+                      ? layers[ikv].k_staging : layers[ikv].k;
 
     const int64_t n_embd_head = k_cur->ne[0];
     const int64_t n_head      = k_cur->ne[1];
@@ -1853,12 +1948,16 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
 
         ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
+        // deferred K quantization: during staging, shift operates on f16 staging buffer
+        ggml_tensor * k_src = (deferred_state == TQ_DEFERRED_STAGING && layer.k_staging)
+                              ? layer.k_staging : layer.k;
+
         ggml_tensor * k =
-            ggml_view_3d(ctx, layer.k,
+            ggml_view_3d(ctx, k_src,
                 n_rot, n_head_kv, get_size()*n_stream,
-                ggml_row_size(layer.k->type, n_embd_head_k),
-                ggml_row_size(layer.k->type, n_embd_k_gqa),
-                ggml_row_size(layer.k->type, n_embd_nope));
+                ggml_row_size(k_src->type, n_embd_head_k),
+                ggml_row_size(k_src->type, n_embd_k_gqa),
+                ggml_row_size(k_src->type, n_embd_nope));
 
         ggml_tensor * cur = build_rope_shift(cparams, ctx, k, inp->k_shift, inp->k_rot, rope_factors, freq_base_l, freq_scale_l, il);
 
@@ -1870,10 +1969,88 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
     return gf;
 }
 
+class llm_graph_input_deferred_convert : public llm_graph_input_i {
+public:
+    llm_graph_input_deferred_convert(const llama_kv_cache * kv_self) : kv_self(kv_self) {}
+    virtual ~llm_graph_input_deferred_convert() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * idxs = nullptr; // I64 [kv_size*n_stream]
+
+    const llama_kv_cache * kv_self;
+};
+
+void llm_graph_input_deferred_convert::set_input(const llama_ubatch * ubatch) {
+    GGML_UNUSED(ubatch);
+
+    if (idxs) {
+        kv_self->set_input_deferred_convert(idxs);
+    }
+}
+
+void llama_kv_cache::set_input_deferred_convert(ggml_tensor * dst) const {
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    int64_t * data = (int64_t *) dst->data;
+    const int64_t n = dst->ne[0];
+    for (int64_t i = 0; i < n; ++i) {
+        data[i] = i;
+    }
+}
+
+ggml_cgraph * llama_kv_cache::build_graph_deferred_convert(llm_graph_result * res, llama_context * lctx) {
+    GGML_UNUSED(lctx);
+
+    auto * ctx = res->get_ctx();
+    auto * gf  = res->get_gf();
+
+    auto inp = std::make_unique<llm_graph_input_deferred_convert>(this);
+
+    // allocate identity index tensor once (all layers share the same kv_size*n_stream)
+    // find the size from the first staging layer
+    for (const auto & layer : layers) {
+        if (layer.k_staging) {
+            const int64_t kv_size = layer.k_staging->ne[1];
+            const int64_t n_strm  = layer.k_staging->ne[2];
+            inp->idxs = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, kv_size * n_strm);
+            ggml_set_input(inp->idxs);
+            break;
+        }
+    }
+
+    for (const auto & layer : layers) {
+        if (!layer.k_staging) {
+            continue; // boundary-protected or non-TQ layer
+        }
+
+        const int64_t n_embd_k_gqa = layer.k_staging->ne[0];
+        const int64_t n_rows       = layer.k_staging->ne[1] * layer.k_staging->ne[2];
+
+        GGML_ASSERT(inp->idxs && inp->idxs->ne[0] == n_rows);
+
+        // cast f16 staging -> f32 (required by set_rows)
+        ggml_tensor * src = ggml_reshape_2d(ctx, layer.k_staging, n_embd_k_gqa, n_rows);
+        ggml_tensor * src_f32 = ggml_cast(ctx, src, GGML_TYPE_F32);
+
+        // set_rows: f32 -> TQ (quantization happens here)
+        ggml_tensor * dst = ggml_reshape_2d(ctx, layer.k, n_embd_k_gqa, n_rows);
+
+        ggml_build_forward_expand(gf, ggml_set_rows(ctx, dst, src_f32, inp->idxs));
+    }
+
+    res->add_input(std::move(inp));
+
+    return gf;
+}
+
 void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
     GGML_UNUSED(flags);
 
     io.write(&n_stream, sizeof(n_stream));
+
+    // persist deferred K quantization state
+    const uint8_t ds = (uint8_t) deferred_state;
+    io.write(&ds, sizeof(ds));
 
     for (uint32_t s = 0; s < n_stream; ++s) {
         cell_ranges_t cr { s, {} };
@@ -1932,6 +2109,13 @@ void llama_kv_cache::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama
     io.read_to(&n_stream_cur, sizeof(n_stream_cur));
     if (n_stream_cur != n_stream) {
         throw std::runtime_error("n_stream mismatch");
+    }
+
+    // restore deferred K quantization state
+    uint8_t ds;
+    io.read_to(&ds, sizeof(ds));
+    if (deferred_state != TQ_DEFERRED_OFF) {
+        deferred_state = (tq_deferred_state) ds;
     }
 
     for (uint32_t s = 0; s < n_stream; ++s) {
@@ -2010,7 +2194,11 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
 
         const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
 
-        auto * k = layer.k_stream[cr.strm];
+        // deferred K: during staging, data lives in f16 staging buffer;
+        // after convert (DONE), data lives in TQ k buffer.
+        // always write from where the current data actually is.
+        auto * k = (deferred_state == TQ_DEFERRED_STAGING && !layer.k_staging_stream.empty())
+                   ? layer.k_staging_stream[cr.strm] : layer.k_stream[cr.strm];
 
         // Write key type
         const int32_t k_type_i = (int32_t) k->type;
@@ -2242,7 +2430,9 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
 
         const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
 
-        auto * k = layer.k_stream[strm];
+        // deferred K: during staging, read into f16 staging buffer
+        auto * k = (deferred_state == TQ_DEFERRED_STAGING && !layer.k_staging_stream.empty())
+                   ? layer.k_staging_stream[strm] : layer.k_stream[strm];
 
         // Read type of key
         int32_t k_type_i_ref;
@@ -2410,8 +2600,9 @@ llama_kv_cache_context::llama_kv_cache_context(
         llama_kv_cache * kv,
         llama_context * lctx,
         bool do_shift,
-        stream_copy_info sc_info) : status(LLAMA_MEMORY_STATUS_SUCCESS), kv(kv), lctx(lctx), do_shift(do_shift), sc_info(std::move(sc_info)) {
-    if (!do_shift && this->sc_info.empty()) {
+        bool do_deferred_convert,
+        stream_copy_info sc_info) : status(LLAMA_MEMORY_STATUS_SUCCESS), kv(kv), lctx(lctx), do_shift(do_shift), do_deferred_convert(do_deferred_convert), sc_info(std::move(sc_info)) {
+    if (!do_shift && this->sc_info.empty() && !do_deferred_convert) {
         status = LLAMA_MEMORY_STATUS_NO_UPDATE;
     }
 }
@@ -2439,7 +2630,7 @@ bool llama_kv_cache_context::apply() {
 
     // no ubatches -> this is a KV cache update
     if (ubatches.empty()) {
-        kv->update(lctx, do_shift, sc_info);
+        kv->update(lctx, do_shift, do_deferred_convert, sc_info);
 
         return true;
     }
