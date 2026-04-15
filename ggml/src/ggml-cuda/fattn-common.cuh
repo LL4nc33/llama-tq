@@ -770,6 +770,7 @@ static __device__ __noinline__ void dequantize_V_tq2_1(const void * __restrict__
     // TQ block (ne <= 32, i0 aligned), so we dequant the block once and extract ne values.
     // Uses __noinline__ to prevent NVCC from merging V-dequant reads with K-dequant reads
     // when K and V share the same TQ type (compiler alias disambiguation bug).
+
     const block_tq2_1 * x = (const block_tq2_1 *) vx;
 
     const int64_t ib  = i0 / QK_TQ;
