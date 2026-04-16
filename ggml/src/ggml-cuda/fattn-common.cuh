@@ -1177,6 +1177,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_tq3_1<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_TQ4_1) {
         return dequantize_V_tq4_1<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ1_1) {
+        return dequantize_V_vtq<block_vtq1_1, T, ne, vtq_decode_1bit>;
     } else if constexpr (type_V == GGML_TYPE_VTQ2_1) {
         return dequantize_V_vtq2_1<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ3_1) {

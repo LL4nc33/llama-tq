@@ -331,6 +331,13 @@ static_assert(sizeof(block_tq4_1) == sizeof(ggml_half) + QK_TQ/2 + QK_TQ/8, "wro
 // Dequant = codebook lookup * scale — ~8 registers, __forceinline__.
 #define QK_VTQ 32  // block size (same as TQ)
 
+// VTQ1_1: 1-bit codebook, NO sign bits = 1.5 bpw (maximum V compression)
+typedef struct {
+    ggml_half d;               // 2B: block L2 norm (scale)
+    uint8_t   qs[QK_VTQ / 8]; // 4B: 1-bit codebook indices (8 per byte)
+} block_vtq1_1;                // = 6 bytes for 32 elements
+static_assert(sizeof(block_vtq1_1) == 6, "wrong vtq1_1 block size");
+
 // VTQ2_1: 2-bit codebook, NO sign bits = 2.5 bpw
 typedef struct {
     ggml_half d;               // 2B: block L2 norm (scale)

@@ -433,10 +433,11 @@ extern "C" {
         GGML_TYPE_TQ3_1   = 43, // TurboQuant 3-bit PolarQuant (KV cache, 4.5 bpw)
         GGML_TYPE_TQ4_1   = 44, // TurboQuant 4-bit PolarQuant (KV cache, 5.5 bpw)
         GGML_TYPE_TQ1_1   = 45, // TurboQuant 1-bit PolarQuant (KV cache, 2.5 bpw)
-        GGML_TYPE_VTQ2_1  = 46, // VTQ 2-bit (V-cache optimized, no FWHT, 2.5 bpw)
-        GGML_TYPE_VTQ3_1  = 47, // VTQ 3-bit (V-cache optimized, no FWHT, 3.5 bpw)
-        GGML_TYPE_VTQ4_1  = 48, // VTQ 4-bit (V-cache optimized, no FWHT, 4.5 bpw)
-        GGML_TYPE_COUNT   = 49,
+        GGML_TYPE_VTQ1_1  = 46, // VTQ 1-bit (V-cache optimized, no FWHT, 1.5 bpw)
+        GGML_TYPE_VTQ2_1  = 47, // VTQ 2-bit (V-cache optimized, no FWHT, 2.5 bpw)
+        GGML_TYPE_VTQ3_1  = 48, // VTQ 3-bit (V-cache optimized, no FWHT, 3.5 bpw)
+        GGML_TYPE_VTQ4_1  = 49, // VTQ 4-bit (V-cache optimized, no FWHT, 4.5 bpw)
+        GGML_TYPE_COUNT   = 50,
     };
 
     // precision
