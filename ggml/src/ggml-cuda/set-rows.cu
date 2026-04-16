@@ -114,7 +114,7 @@ static void set_rows_cuda_quant(
 // TQ quantize functions require a block_index parameter for RHT seed derivation,
 // so they cannot use the standard 2-arg quantize_func template above.
 template <typename idx_t, typename block_type, int qk, void (*quantize_func)(const float *, block_type *, int64_t)>
-static __global__ void k_set_rows_tq(const float * __restrict__ src0,
+static __global__ void k_set_rows_pq(const float * __restrict__ src0,
                                      const idx_t * __restrict__ src1,
                                      block_type * __restrict__ dst,
                                      const int64_t ne_total,
@@ -183,7 +183,7 @@ static __global__ void k_set_rows_tq(const float * __restrict__ src0,
 
 // Template dispatch function for TurboQuant set_rows
 template<typename idx_t, typename block_type, int qk, void (*quantize_func)(const float*, block_type*, int64_t)>
-static void set_rows_cuda_tq(
+static void set_rows_cuda_pq(
         const float * src0_d, const idx_t * src1_d, block_type * dst_d,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t ne13,
@@ -215,7 +215,7 @@ static void set_rows_cuda_tq(
         const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
         const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
-        k_set_rows_tq<idx_t, block_type, qk, quantize_func><<<grid_size, block_size, 0, stream>>>(
+        k_set_rows_pq<idx_t, block_type, qk, quantize_func><<<grid_size, block_size, 0, stream>>>(
             src0_d, src1_d, dst_d, ne_total, ne10, ne11, ne12, ne13, s01, s02, s03, s10, s11, s12, s1, s2, s3, ne00_fd,
             ne01_fd, ne02_fd, ne11_fd, ne12_fd);
     }
@@ -421,9 +421,9 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
-    } else if (dst->type == GGML_TYPE_TQ1_1) {
-        set_rows_cuda_tq<idx_t, block_tq1_1, QK_TQ, tq_cuda_quantize_tq1_1_block>(
-            src0_d, src1_d, (block_tq1_1*)dst->data,
+    } else if (dst->type == GGML_TYPE_KTQ1_1) {
+        set_rows_cuda_pq<idx_t, block_ktq1_1, QK_KTQ, ktq_cuda_quantize_ktq1_1_block>(
+            src0_d, src1_d, (block_ktq1_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
             nb01, nb02, nb03,
@@ -431,9 +431,9 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
-    } else if (dst->type == GGML_TYPE_TQ2_1) {
-        set_rows_cuda_tq<idx_t, block_tq2_1, QK_TQ, tq_cuda_quantize_tq2_1_block>(
-            src0_d, src1_d, (block_tq2_1*)dst->data,
+    } else if (dst->type == GGML_TYPE_KTQ2_1) {
+        set_rows_cuda_pq<idx_t, block_ktq2_1, QK_KTQ, ktq_cuda_quantize_ktq2_1_block>(
+            src0_d, src1_d, (block_ktq2_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
             nb01, nb02, nb03,
@@ -441,9 +441,9 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
-    } else if (dst->type == GGML_TYPE_TQ3_1) {
-        set_rows_cuda_tq<idx_t, block_tq3_1, QK_TQ, tq_cuda_quantize_tq3_1_block>(
-            src0_d, src1_d, (block_tq3_1*)dst->data,
+    } else if (dst->type == GGML_TYPE_KTQ3_1) {
+        set_rows_cuda_pq<idx_t, block_ktq3_1, QK_KTQ, ktq_cuda_quantize_ktq3_1_block>(
+            src0_d, src1_d, (block_ktq3_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
             nb01, nb02, nb03,
@@ -451,9 +451,9 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
-    } else if (dst->type == GGML_TYPE_TQ4_1) {
-        set_rows_cuda_tq<idx_t, block_tq4_1, QK_TQ, tq_cuda_quantize_tq4_1_block>(
-            src0_d, src1_d, (block_tq4_1*)dst->data,
+    } else if (dst->type == GGML_TYPE_KTQ4_1) {
+        set_rows_cuda_pq<idx_t, block_ktq4_1, QK_KTQ, ktq_cuda_quantize_ktq4_1_block>(
+            src0_d, src1_d, (block_ktq4_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
             nb01, nb02, nb03,
@@ -462,7 +462,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ1_1) {
-        set_rows_cuda_tq<idx_t, block_vtq1_1, QK_VTQ, vtq_cuda_quantize_vtq1_1_block>(
+        set_rows_cuda_pq<idx_t, block_vtq1_1, QK_VTQ, vtq_cuda_quantize_vtq1_1_block>(
             src0_d, src1_d, (block_vtq1_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -472,7 +472,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ2_1) {
-        set_rows_cuda_tq<idx_t, block_vtq2_1, QK_VTQ, vtq_cuda_quantize_vtq2_1_block>(
+        set_rows_cuda_pq<idx_t, block_vtq2_1, QK_VTQ, vtq_cuda_quantize_vtq2_1_block>(
             src0_d, src1_d, (block_vtq2_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -482,7 +482,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ3_1) {
-        set_rows_cuda_tq<idx_t, block_vtq3_1, QK_VTQ, vtq_cuda_quantize_vtq3_1_block>(
+        set_rows_cuda_pq<idx_t, block_vtq3_1, QK_VTQ, vtq_cuda_quantize_vtq3_1_block>(
             src0_d, src1_d, (block_vtq3_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -492,7 +492,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ4_1) {
-        set_rows_cuda_tq<idx_t, block_vtq4_1, QK_VTQ, vtq_cuda_quantize_vtq4_1_block>(
+        set_rows_cuda_pq<idx_t, block_vtq4_1, QK_VTQ, vtq_cuda_quantize_vtq4_1_block>(
             src0_d, src1_d, (block_vtq4_1*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,

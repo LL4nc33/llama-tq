@@ -166,17 +166,17 @@ typedef sycl::half2 ggml_half2;
 #define QI3_S (QK_K / (4*QR3_S))
 #define QR3_S 4
 
-#define QI_TQ1_1 (QK_TQ / (4*QR_TQ1_1))
-#define QR_TQ1_1 4
+#define QI_KTQ1_1 (QK_KTQ / (4*QR_KTQ1_1))
+#define QR_KTQ1_1 4
 
-#define QI_TQ2_1 (QK_TQ / (4*QR_TQ2_1))
-#define QR_TQ2_1 2
+#define QI_KTQ2_1 (QK_KTQ / (4*QR_KTQ2_1))
+#define QR_KTQ2_1 2
 
-#define QI_TQ3_1 (QK_TQ / (4*QR_TQ3_1))
-#define QR_TQ3_1 2
+#define QI_KTQ3_1 (QK_KTQ / (4*QR_KTQ3_1))
+#define QR_KTQ3_1 2
 
-#define QI_TQ4_1 (QK_TQ / (4*QR_TQ4_1))
-#define QR_TQ4_1 2
+#define QI_KTQ4_1 (QK_KTQ / (4*QR_KTQ4_1))
+#define QR_KTQ4_1 2
 
 #endif // GGML_COMMON_DECL_CUDA || GGML_COMMON_DECL_HIP
 
@@ -289,47 +289,47 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
-// TurboQuant (TQ) block structures — based on arXiv:2504.19874 (ICLR 2026)
+// KTQ (K-Cache TurboQuant) block structures — based on arXiv:2504.19874 (ICLR 2026)
 // v5: PolarQuant (RHT + Lloyd-Max) with precomputed sign bits. QJL removed.
 
-#define QK_TQ 32  // TurboQuant block size
+#define QK_KTQ 32  // KTQ block size
 
-// TQ1_1: 1-bit PolarQuant = 2.5 bpw (sign-only quantization, maximum compression)
+// KTQ1_1: 1-bit PolarQuant = 2.5 bpw (sign-only quantization, maximum compression)
 typedef struct {
-    ggml_half d;              // 2B: vector L2 norm (PolarQuant scaling)
-    uint8_t   qs[QK_TQ / 8]; // 4B: 1-bit PolarQuant indices (8 per byte)
-    uint8_t   sb[QK_TQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
-} block_tq1_1;               // = 10 bytes for 32 elements
-static_assert(sizeof(block_tq1_1) == sizeof(ggml_half) + QK_TQ/8 + QK_TQ/8, "wrong tq1_1 block size/padding");
+    ggml_half d;               // 2B: vector L2 norm (PolarQuant scaling)
+    uint8_t   qs[QK_KTQ / 8]; // 4B: 1-bit PolarQuant indices (8 per byte)
+    uint8_t   sb[QK_KTQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
+} block_ktq1_1;                // = 10 bytes for 32 elements
+static_assert(sizeof(block_ktq1_1) == sizeof(ggml_half) + QK_KTQ/8 + QK_KTQ/8, "wrong ktq1_1 block size/padding");
 
-// TQ2_1: 2-bit PolarQuant = 3.5 bpw (v5: compact, sign bits precomputed)
+// KTQ2_1: 2-bit PolarQuant = 3.5 bpw (v5: compact, sign bits precomputed)
 typedef struct {
-    ggml_half d;              // 2B: vector L2 norm (PolarQuant scaling)
-    uint8_t   qs[QK_TQ / 4]; // 8B: 2-bit PolarQuant indices (4 per byte)
-    uint8_t   sb[QK_TQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
-} block_tq2_1;               // = 14 bytes for 32 elements
-static_assert(sizeof(block_tq2_1) == sizeof(ggml_half) + QK_TQ/4 + QK_TQ/8, "wrong tq2_1 block size/padding");
+    ggml_half d;               // 2B: vector L2 norm (PolarQuant scaling)
+    uint8_t   qs[QK_KTQ / 4]; // 8B: 2-bit PolarQuant indices (4 per byte)
+    uint8_t   sb[QK_KTQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
+} block_ktq2_1;                // = 14 bytes for 32 elements
+static_assert(sizeof(block_ktq2_1) == sizeof(ggml_half) + QK_KTQ/4 + QK_KTQ/8, "wrong ktq2_1 block size/padding");
 
-// TQ3_1: 3-bit PolarQuant = 4.5 bpw (v5: compact, sign bits precomputed)
+// KTQ3_1: 3-bit PolarQuant = 4.5 bpw (v5: compact, sign bits precomputed)
 typedef struct {
-    ggml_half d;                  // 2B: vector L2 norm
-    uint8_t   qs[QK_TQ * 3 / 8]; // 12B: 3-bit PolarQuant indices (packed)
-    uint8_t   sb[QK_TQ / 8];     // 4B: precomputed RHT sign bits (1 bit per element)
-} block_tq3_1;                    // = 18 bytes for 32 elements
-static_assert(sizeof(block_tq3_1) == sizeof(ggml_half) + QK_TQ*3/8 + QK_TQ/8, "wrong tq3_1 block size/padding");
+    ggml_half d;                   // 2B: vector L2 norm
+    uint8_t   qs[QK_KTQ * 3 / 8]; // 12B: 3-bit PolarQuant indices (packed)
+    uint8_t   sb[QK_KTQ / 8];     // 4B: precomputed RHT sign bits (1 bit per element)
+} block_ktq3_1;                    // = 18 bytes for 32 elements
+static_assert(sizeof(block_ktq3_1) == sizeof(ggml_half) + QK_KTQ*3/8 + QK_KTQ/8, "wrong ktq3_1 block size/padding");
 
-// TQ4_1: 4-bit PolarQuant = 5.5 bpw (v5: sign bits precomputed)
+// KTQ4_1: 4-bit PolarQuant = 5.5 bpw (v5: sign bits precomputed)
 typedef struct {
-    ggml_half d;              // 2B: vector L2 norm
-    uint8_t   qs[QK_TQ / 2]; // 16B: 4-bit PolarQuant indices (2 per byte, nibble-packed)
-    uint8_t   sb[QK_TQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
-} block_tq4_1;               // = 22 bytes for 32 elements
-static_assert(sizeof(block_tq4_1) == sizeof(ggml_half) + QK_TQ/2 + QK_TQ/8, "wrong tq4_1 block size/padding");
+    ggml_half d;               // 2B: vector L2 norm
+    uint8_t   qs[QK_KTQ / 2]; // 16B: 4-bit PolarQuant indices (2 per byte, nibble-packed)
+    uint8_t   sb[QK_KTQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
+} block_ktq4_1;                // = 22 bytes for 32 elements
+static_assert(sizeof(block_ktq4_1) == sizeof(ggml_half) + QK_KTQ/2 + QK_KTQ/8, "wrong ktq4_1 block size/padding");
 
 // VTQ (Value TurboQuant) — V-cache optimized, NO FWHT/sign bits.
 // Data arrives pre-rotated via self_v_rot (graph-level Hadamard).
 // Dequant = codebook lookup * scale — ~8 registers, __forceinline__.
-#define QK_VTQ 32  // block size (same as TQ)
+#define QK_VTQ 32  // block size (same as KTQ)
 
 // VTQ1_1: 1-bit codebook, NO sign bits = 1.5 bpw (maximum V compression)
 typedef struct {
