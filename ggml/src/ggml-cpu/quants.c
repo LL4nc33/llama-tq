@@ -421,7 +421,7 @@ void ggml_vec_dot_q8_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
-void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_ktq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);
@@ -473,7 +473,7 @@ void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, 
     *s = sumf;
 }
 
-void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_ktq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);
@@ -511,24 +511,24 @@ void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, 
 void ggml_vec_dot_##type_name##_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) { \
     assert(nrc == 1); \
     UNUSED(nrc); UNUSED(bx); UNUSED(by); UNUSED(bs); \
-    float tmp[QK_TQ]; \
+    float tmp[QK_KTQ]; \
     const block_type * GGML_RESTRICT x = vx; \
     const float * GGML_RESTRICT y = vy; \
-    const int nb = n / QK_TQ; \
+    const int nb = n / QK_KTQ; \
     float sumf = 0.0f; \
     for (int i = 0; i < nb; ++i) { \
-        dequantize_row_##type_name(&x[i], tmp, QK_TQ); \
-        for (int j = 0; j < QK_TQ; ++j) { \
-            sumf += tmp[j] * y[i * QK_TQ + j]; \
+        dequantize_row_##type_name(&x[i], tmp, QK_KTQ); \
+        for (int j = 0; j < QK_KTQ; ++j) { \
+            sumf += tmp[j] * y[i * QK_KTQ + j]; \
         } \
     } \
     *s = sumf; \
 }
 
-TQ_VEC_DOT_F32_IMPL(tq1_1, block_tq1_1)
-TQ_VEC_DOT_F32_IMPL(tq2_1, block_tq2_1)
-TQ_VEC_DOT_F32_IMPL(tq3_1, block_tq3_1)
-TQ_VEC_DOT_F32_IMPL(tq4_1, block_tq4_1)
+TQ_VEC_DOT_F32_IMPL(ktq1_1, block_ktq1_1)
+TQ_VEC_DOT_F32_IMPL(ktq2_1, block_ktq2_1)
+TQ_VEC_DOT_F32_IMPL(ktq3_1, block_ktq3_1)
+TQ_VEC_DOT_F32_IMPL(ktq4_1, block_ktq4_1)
 
 #undef TQ_VEC_DOT_F32_IMPL
 

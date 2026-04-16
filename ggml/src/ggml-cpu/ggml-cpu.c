@@ -396,23 +396,23 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
         .nrows                    = 1,
     },
-    [GGML_TYPE_TQ1_1] = {
-        .vec_dot                  = ggml_vec_dot_tq1_1_f32,
+    [GGML_TYPE_KTQ1_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq1_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_TQ2_1] = {
-        .vec_dot                  = ggml_vec_dot_tq2_1_f32,
+    [GGML_TYPE_KTQ2_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq2_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_TQ3_1] = {
-        .vec_dot                  = ggml_vec_dot_tq3_1_f32,
+    [GGML_TYPE_KTQ3_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq3_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_TQ4_1] = {
-        .vec_dot                  = ggml_vec_dot_tq4_1_f32,
+    [GGML_TYPE_KTQ4_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq4_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
