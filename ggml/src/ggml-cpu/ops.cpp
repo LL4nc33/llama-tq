@@ -683,6 +683,7 @@ void ggml_compute_forward_add(
         case GGML_TYPE_TQ2_1:
         case GGML_TYPE_TQ3_1:
         case GGML_TYPE_TQ4_1:
+        case GGML_TYPE_VTQ1_1:
         case GGML_TYPE_VTQ2_1:
         case GGML_TYPE_VTQ3_1:
         case GGML_TYPE_VTQ4_1:
@@ -1141,6 +1142,7 @@ void ggml_compute_forward_add1(
         case GGML_TYPE_TQ2_1:
         case GGML_TYPE_TQ3_1:
         case GGML_TYPE_TQ4_1:
+        case GGML_TYPE_VTQ1_1:
         case GGML_TYPE_VTQ2_1:
         case GGML_TYPE_VTQ3_1:
         case GGML_TYPE_VTQ4_1:
@@ -1278,6 +1280,7 @@ void ggml_compute_forward_acc(
         case GGML_TYPE_TQ2_1:
         case GGML_TYPE_TQ3_1:
         case GGML_TYPE_TQ4_1:
+        case GGML_TYPE_VTQ1_1:
         case GGML_TYPE_VTQ2_1:
         case GGML_TYPE_VTQ3_1:
         case GGML_TYPE_VTQ4_1:
@@ -4374,6 +4377,7 @@ void ggml_compute_forward_out_prod(
         case GGML_TYPE_TQ2_1:
         case GGML_TYPE_TQ3_1:
         case GGML_TYPE_TQ4_1:
+        case GGML_TYPE_VTQ1_1:
         case GGML_TYPE_VTQ2_1:
         case GGML_TYPE_VTQ3_1:
         case GGML_TYPE_VTQ4_1:
@@ -4658,6 +4662,7 @@ void ggml_compute_forward_set(
         case GGML_TYPE_TQ2_1:
         case GGML_TYPE_TQ3_1:
         case GGML_TYPE_TQ4_1:
+        case GGML_TYPE_VTQ1_1:
         case GGML_TYPE_VTQ2_1:
         case GGML_TYPE_VTQ3_1:
         case GGML_TYPE_VTQ4_1:
@@ -4889,6 +4894,7 @@ void ggml_compute_forward_get_rows(
         case GGML_TYPE_TQ2_1:
         case GGML_TYPE_TQ3_1:
         case GGML_TYPE_TQ4_1:
+        case GGML_TYPE_VTQ1_1:
         case GGML_TYPE_VTQ2_1:
         case GGML_TYPE_VTQ3_1:
         case GGML_TYPE_VTQ4_1:
@@ -5622,6 +5628,7 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_TQ2_1:
         case GGML_TYPE_TQ3_1:
         case GGML_TYPE_TQ4_1:
+        case GGML_TYPE_VTQ1_1:
         case GGML_TYPE_VTQ2_1:
         case GGML_TYPE_VTQ3_1:
         case GGML_TYPE_VTQ4_1:
