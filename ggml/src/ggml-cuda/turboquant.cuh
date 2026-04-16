@@ -956,10 +956,10 @@ static __device__ void vtq_cuda_quantize_vtq3_1_block(const float * __restrict__
     const float norm = sqrtf(sum_sq);
     y->d = __float2half(norm);
 
-    if (norm < 1e-30f) { memset(y->qs, 0, 12); return; }
+    if (norm < 1e-30f) { memset(y->qs, 0, 14); return; }
 
     const float inv_norm = 1.0f / norm;
-    memset(y->qs, 0, 12);
+    memset(y->qs, 0, 14);
     for (int j = 0; j < 32; j++) {
         float val = x[j] * inv_norm;
         int best = 0;
