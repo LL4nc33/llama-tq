@@ -340,10 +340,10 @@ static_assert(sizeof(block_vtq2_1) == 10, "wrong vtq2_1 block size");
 
 // VTQ3_1: 3-bit codebook = 3.5 bpw
 typedef struct {
-    ggml_half d;                   // 2B: block L2 norm
-    uint8_t   qs[QK_VTQ * 3 / 8]; // 12B: 3-bit indices (packed)
-} block_vtq3_1;                    // = 14 bytes for 32 elements
-static_assert(sizeof(block_vtq3_1) == 14, "wrong vtq3_1 block size");
+    ggml_half d;                       // 2B: block L2 norm
+    uint8_t   qs[QK_VTQ * 3 / 8 + 1]; // 13B: 3-bit indices (packed) + 1B padding for safe 2-byte reads
+} block_vtq3_1;                        // = 15 bytes for 32 elements
+static_assert(sizeof(block_vtq3_1) == 15, "wrong vtq3_1 block size");
 
 // VTQ4_1: 4-bit codebook = 4.5 bpw
 typedef struct {
