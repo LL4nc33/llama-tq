@@ -5930,3 +5930,191 @@ void dequantize_row_tq4_1(const block_tq4_1 * GGML_RESTRICT x, float * GGML_REST
         for (int j = 0; j < QK_TQ; j++) yb[j] = result_tq4[j] * norm;
     }
 }
+
+// ============================================================
+// VTQ (Value TurboQuant) — V-cache optimized, NO FWHT/sign bits
+// Data arrives pre-rotated via self_v_rot. Dequant = CB * scale.
+// ============================================================
+
+void quantize_row_vtq2_1_ref(const float * GGML_RESTRICT x, block_vtq2_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_VTQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) { memset(y[i].qs, 0, sizeof(y[i].qs)); continue; }
+
+        const float inv_norm = 1.0f / norm;
+        // No RHT — data is already in rotated space
+        memset(y[i].qs, 0, sizeof(y[i].qs));
+        for (int j = 0; j < QK_VTQ; j++) {
+            float val = xi[j] * inv_norm;
+            float best_dist = FLT_MAX;
+            uint8_t best_idx = 0;
+            for (int c = 0; c < 4; c++) {
+                float centroid = TQ_CODEBOOK_2BIT[c] * cb_scale;
+                float dist = (val - centroid) * (val - centroid);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            y[i].qs[j / 4] |= (best_idx << (2 * (j % 4)));
+        }
+
+        // Norm correction
+        float recon_sq = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) {
+            int idx = (y[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            float r = TQ_CODEBOOK_2BIT[idx] * cb_scale;
+            recon_sq += r * r;
+        }
+        float recon_norm = sqrtf(recon_sq);
+        y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+    }
+}
+
+void quantize_row_vtq3_1_ref(const float * GGML_RESTRICT x, block_vtq3_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_VTQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) { memset(y[i].qs, 0, sizeof(y[i].qs)); continue; }
+
+        const float inv_norm = 1.0f / norm;
+        memset(y[i].qs, 0, sizeof(y[i].qs));
+        for (int j = 0; j < QK_VTQ; j++) {
+            float val = xi[j] * inv_norm;
+            float best_dist = FLT_MAX;
+            uint8_t best_idx = 0;
+            for (int c = 0; c < 8; c++) {
+                float centroid = TQ_CODEBOOK_3BIT[c] * cb_scale;
+                float dist = (val - centroid) * (val - centroid);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            // Pack 3-bit index
+            int bit_offset = j * 3;
+            int byte_idx = bit_offset / 8;
+            int bit_pos = bit_offset % 8;
+            y[i].qs[byte_idx] |= (best_idx << bit_pos) & 0xFF;
+            if (bit_pos > 5) {
+                y[i].qs[byte_idx + 1] |= (best_idx >> (8 - bit_pos));
+            }
+        }
+
+        // Norm correction
+        float recon_sq = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) {
+            int bit_offset = j * 3;
+            int byte_idx = bit_offset / 8;
+            int bit_pos = bit_offset % 8;
+            int idx = ((y[i].qs[byte_idx] >> bit_pos) | (y[i].qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
+            float r = TQ_CODEBOOK_3BIT[idx] * cb_scale;
+            recon_sq += r * r;
+        }
+        float recon_norm = sqrtf(recon_sq);
+        y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+    }
+}
+
+void quantize_row_vtq4_1_ref(const float * GGML_RESTRICT x, block_vtq4_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_VTQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) { memset(y[i].qs, 0, sizeof(y[i].qs)); continue; }
+
+        const float inv_norm = 1.0f / norm;
+        memset(y[i].qs, 0, sizeof(y[i].qs));
+        for (int j = 0; j < QK_VTQ; j++) {
+            float val = xi[j] * inv_norm;
+            float best_dist = FLT_MAX;
+            uint8_t best_idx = 0;
+            for (int c = 0; c < 16; c++) {
+                float centroid = TQ_CODEBOOK_4BIT[c] * cb_scale;
+                float dist = (val - centroid) * (val - centroid);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            y[i].qs[j / 2] |= (best_idx << (4 * (j % 2)));
+        }
+
+        // Norm correction
+        float recon_sq = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) {
+            int idx = (y[i].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+            float r = TQ_CODEBOOK_4BIT[idx] * cb_scale;
+            recon_sq += r * r;
+        }
+        float recon_norm = sqrtf(recon_sq);
+        y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+    }
+}
+
+void dequantize_row_vtq2_1(const block_vtq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_VTQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_VTQ * sizeof(float)); continue; }
+        // No inverse RHT — output stays in rotated space (post-FA matmul handles inverse)
+        for (int j = 0; j < QK_VTQ; j++) {
+            int idx = (x[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            yb[j] = TQ_CODEBOOK_2BIT[idx] * cb_scale * norm;
+        }
+    }
+}
+
+void dequantize_row_vtq3_1(const block_vtq3_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_VTQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_VTQ * sizeof(float)); continue; }
+        for (int j = 0; j < QK_VTQ; j++) {
+            int bit_offset = j * 3;
+            int byte_idx = bit_offset / 8;
+            int bit_pos = bit_offset % 8;
+            int idx = ((x[i].qs[byte_idx] >> bit_pos) | (x[i].qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
+            yb[j] = TQ_CODEBOOK_3BIT[idx] * cb_scale * norm;
+        }
+    }
+}
+
+void dequantize_row_vtq4_1(const block_vtq4_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_VTQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_VTQ * sizeof(float)); continue; }
+        for (int j = 0; j < QK_VTQ; j++) {
+            int idx = (x[i].qs[j / 2] >> (4 * (j % 2))) & 0xF;
+            yb[j] = TQ_CODEBOOK_4BIT[idx] * cb_scale * norm;
+        }
+    }
+}
