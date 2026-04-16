@@ -105,6 +105,29 @@ VTQ3_1 is **perplexity-neutral** on both models. VTQ2_1 with q8_0 K costs only +
 | q4_0 / vtq2_1 | 8.7 MiB | **78%** |
 | ktq2_1 / vtq2_1 | 7.5 MiB | **81%** |
 
+### Comparison with Other Approaches
+
+PPL delta vs f16 baseline (lower is better). Different hardware, so absolute tok/s are not comparable — **relative deltas are**.
+
+| Approach | Type | bpw | PPL Delta (Qwen ~35B) | Decode Delta | Hardware |
+|----------|------|:---:|:---:|:---:|---|
+| **llama-tq vtq3_1** | V-only | 4.0 | **+1.0%** | **-2%** | 2x RTX 2060 |
+| TheTom turbo4 | K+V sym | 4.25 | +0.23% | -7% | M5 Max |
+| **llama-tq vtq2_1** | V-only | 2.5 | **+6.6%** | **-2%** | 2x RTX 2060 |
+| TheTom turbo3 | K+V sym | 3.5 | +1.06% | -10% | M5 Max |
+| TheTom turbo2 | K+V sym | 2.5 | +6.48% | -22%* | M5 Max |
+| q4_0 | K+V sym | 4.5 | +0.3-0.6% | -16% | 2x RTX 2060 |
+| **llama-tq q8_0+vtq2_1** | asymmetric | 5.5 | **+6.6%** | **-2%** | 2x RTX 2060 |
+| TheTom q8_0+turbo3 | asymmetric | ~5.5 | +2.0% | ~-10% | M5 Max |
+
+*TheTom turbo2 decode varies: -22% on MoE short context, but **+33.9%** on M1 Max with turbo4.
+
+**Key differences:**
+- **llama-tq VTQ** separates K and V quantization paths — V dequant is `__forceinline__` (~8 registers) vs TheTom's shared TQ dequant
+- **VTQ decode overhead is minimal** (-2% TG) because the V-dequant is a trivial codebook lookup. TheTom's symmetric approach has higher decode cost (-7 to -10%) because both K and V share the full TQ dequant path
+- **PPL at 2-bit**: Both achieve ~+6.5% at 2.5 bpw V-cache, but llama-tq uses D\*H\*D rotation (Laplace codebook) while TheTom uses standard RHT
+- **TheTom has better PPL at 3-4 bit** because symmetric K+V quantization avoids the K-V error amplification issue
+
 ---
 
 ## Available Cache Types
