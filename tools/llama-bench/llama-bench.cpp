@@ -503,6 +503,18 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "ktq4_1") {
         return GGML_TYPE_KTQ4_1;
     }
+    if (s == "vtq1_1") {
+        return GGML_TYPE_VTQ1_1;
+    }
+    if (s == "vtq2_1") {
+        return GGML_TYPE_VTQ2_1;
+    }
+    if (s == "vtq3_1") {
+        return GGML_TYPE_VTQ3_1;
+    }
+    if (s == "vtq4_1") {
+        return GGML_TYPE_VTQ4_1;
+    }
 
     return GGML_TYPE_COUNT;
 }
