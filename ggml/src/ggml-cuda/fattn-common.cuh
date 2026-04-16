@@ -798,68 +798,40 @@ static __device__ __noinline__ void dequantize_V_tq4_1(const void * __restrict__
 // ============================================================
 // VTQ V-Dequant — the key improvement: NO FWHT, NO sign bits
 // Only codebook lookup * scale. ~8 registers, __forceinline__.
+// Uses vtq_decode_* helpers from turboquant.cuh.
 // ============================================================
 
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    const block_vtq2_1 * x = (const block_vtq2_1 *) vx;
+template <typename block_t, typename T, int ne, auto decode_fn>
+static __device__ __forceinline__ void dequantize_V_vtq(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_t * x = (const block_t *) vx;
     const int64_t ib = i0 / QK_VTQ;
     const int     il = (int)(i0 % QK_VTQ);
     const float   scale = (float)x[ib].d;
 
     #pragma unroll
     for (int l = 0; l < ne; ++l) {
-        const int idx = (x[ib].qs[(il + l) / 4] >> (2 * ((il + l) % 4))) & 0x3;
-        const float val = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE * scale;
+        const float val = decode_fn(x[ib].qs, il + l) * scale;
         if constexpr (std::is_same_v<T, half>) {
             ((half *) dst)[l] = __float2half(val);
         } else {
             ((float *) dst)[l] = val;
         }
     }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq<block_vtq2_1, T, ne, vtq_decode_2bit>(vx, dst, i0);
 }
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq3_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    const block_vtq3_1 * x = (const block_vtq3_1 *) vx;
-    const int64_t ib = i0 / QK_VTQ;
-    const int     il = (int)(i0 % QK_VTQ);
-    const float   scale = (float)x[ib].d;
-
-    #pragma unroll
-    for (int l = 0; l < ne; ++l) {
-        const int j = il + l;
-        const int bit_offset = j * 3;
-        const int byte_idx = bit_offset / 8;
-        const int bit_pos = bit_offset % 8;
-        const int idx = ((x[ib].qs[byte_idx] >> bit_pos) | (x[ib].qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-        const float val = TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE * scale;
-        if constexpr (std::is_same_v<T, half>) {
-            ((half *) dst)[l] = __float2half(val);
-        } else {
-            ((float *) dst)[l] = val;
-        }
-    }
+    dequantize_V_vtq<block_vtq3_1, T, ne, vtq_decode_3bit>(vx, dst, i0);
 }
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq4_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    const block_vtq4_1 * x = (const block_vtq4_1 *) vx;
-    const int64_t ib = i0 / QK_VTQ;
-    const int     il = (int)(i0 % QK_VTQ);
-    const float   scale = (float)x[ib].d;
-
-    #pragma unroll
-    for (int l = 0; l < ne; ++l) {
-        const int j = il + l;
-        const int idx = (x[ib].qs[j / 2] >> (4 * (j % 2))) & 0xF;
-        const float val = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE * scale;
-        if constexpr (std::is_same_v<T, half>) {
-            ((half *) dst)[l] = __float2half(val);
-        } else {
-            ((float *) dst)[l] = val;
-        }
-    }
+    dequantize_V_vtq<block_vtq4_1, T, ne, vtq_decode_4bit>(vx, dst, i0);
 }
 
 template <typename Tds, int ni>

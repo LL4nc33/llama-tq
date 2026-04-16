@@ -914,194 +914,141 @@ static void get_rows_cuda_tq4_1(
 // VTQ (Value TurboQuant) — V-cache optimized, NO FWHT/sign bits
 // Data arrives pre-rotated via self_v_rot. Dequant = CB * scale.
 // Reuses TQ codebook constants (same Lloyd-Max centroids).
+//
+// Shared helpers avoid code tripling between VTQ2/3/4 variants.
+// The only difference is index extraction (2/3/4-bit packing).
 // ============================================================
 
-// --- VTQ2_1 quantize block (set-rows path) ---
-static __device__ void vtq_cuda_quantize_vtq2_1_block(const float * __restrict__ x, block_vtq2_1 * __restrict__ y, int64_t /*block_index*/) {
+// --- VTQ index decode: extract codebook index for element j from qs[] ---
+
+static __device__ __forceinline__ float vtq_decode_2bit(const uint8_t * qs, int j) {
+    return TQ_CUDA_CB_2BIT[(qs[j / 4] >> (2 * (j % 4))) & 0x3] * TQ_CUDA_CB_SCALE;
+}
+
+static __device__ __forceinline__ float vtq_decode_3bit(const uint8_t * qs, int j) {
+    const int bit_offset = j * 3;
+    const int byte_idx = bit_offset / 8;
+    const int bit_pos = bit_offset % 8;
+    const int idx = ((qs[byte_idx] >> bit_pos) | (qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
+    return TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE;
+}
+
+static __device__ __forceinline__ float vtq_decode_4bit(const uint8_t * qs, int j) {
+    return TQ_CUDA_CB_4BIT[(qs[j / 2] >> (4 * (j % 2))) & 0xF] * TQ_CUDA_CB_SCALE;
+}
+
+// --- VTQ index encode: pack codebook index for element j into qs[] ---
+
+static __device__ __forceinline__ void vtq_encode_2bit(uint8_t * qs, int j, int idx) {
+    qs[j / 4] |= (uint8_t)(idx << (2 * (j % 4)));
+}
+
+static __device__ __forceinline__ void vtq_encode_3bit(uint8_t * qs, int j, int idx) {
+    const int bit_offset = j * 3;
+    const int byte_idx = bit_offset / 8;
+    const int bit_pos = bit_offset % 8;
+    qs[byte_idx] |= (uint8_t)((idx << bit_pos) & 0xFF);
+    if (bit_pos > 5) {
+        qs[byte_idx + 1] |= (uint8_t)(idx >> (8 - bit_pos));
+    }
+}
+
+static __device__ __forceinline__ void vtq_encode_4bit(uint8_t * qs, int j, int idx) {
+    qs[j / 2] |= (uint8_t)(idx << (4 * (j % 2)));
+}
+
+// --- Generic VTQ quantize block (set-rows path) ---
+// DecodeFn: float(const uint8_t*, int) — reads index j from qs
+// EncodeFn: void(uint8_t*, int, int) — writes index idx at position j
+// codebook: pointer to N_CB float centroids
+template <typename block_t, int N_CB, typename DecodeFn, typename EncodeFn>
+static __device__ void vtq_cuda_quantize_block(
+        const float * __restrict__ x, block_t * __restrict__ y,
+        const float * codebook, DecodeFn decode, EncodeFn encode) {
     float sum_sq = 0.0f;
     for (int j = 0; j < 32; j++) sum_sq += x[j] * x[j];
     const float norm = sqrtf(sum_sq);
     y->d = __float2half(norm);
 
-    if (norm < 1e-30f) { memset(y->qs, 0, 8); return; }
+    if (norm < 1e-30f) { memset(y->qs, 0, sizeof(y->qs)); return; }
 
     const float inv_norm = 1.0f / norm;
-    memset(y->qs, 0, 8);
+    memset(y->qs, 0, sizeof(y->qs));
     for (int j = 0; j < 32; j++) {
         float val = x[j] * inv_norm;
         int best = 0;
-        float best_d = fabsf(val - TQ_CUDA_CB_2BIT[0] * TQ_CUDA_CB_SCALE);
-        for (int c = 1; c < 4; c++) {
-            float d = fabsf(val - TQ_CUDA_CB_2BIT[c] * TQ_CUDA_CB_SCALE);
+        float best_d = fabsf(val - codebook[0] * TQ_CUDA_CB_SCALE);
+        for (int c = 1; c < N_CB; c++) {
+            float d = fabsf(val - codebook[c] * TQ_CUDA_CB_SCALE);
             if (d < best_d) { best_d = d; best = c; }
         }
-        y->qs[j / 4] |= (uint8_t)(best << (2 * (j % 4)));
+        encode(y->qs, j, best);
     }
 
     // Norm correction
     float recon_sq = 0.0f;
     for (int j = 0; j < 32; j++) {
-        const int idx = (y->qs[j / 4] >> (2 * (j % 4))) & 0x3;
-        float r = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE;
+        float r = decode(y->qs, j);
         recon_sq += r * r;
     }
     const float recon_norm = sqrtf(recon_sq);
     y->d = __float2half((recon_norm > 1e-30f) ? norm / recon_norm : norm);
 }
 
-// --- VTQ3_1 quantize block ---
-static __device__ void vtq_cuda_quantize_vtq3_1_block(const float * __restrict__ x, block_vtq3_1 * __restrict__ y, int64_t /*block_index*/) {
-    float sum_sq = 0.0f;
-    for (int j = 0; j < 32; j++) sum_sq += x[j] * x[j];
-    const float norm = sqrtf(sum_sq);
-    y->d = __float2half(norm);
-
-    if (norm < 1e-30f) { memset(y->qs, 0, 14); return; }
-
-    const float inv_norm = 1.0f / norm;
-    memset(y->qs, 0, 14);
-    for (int j = 0; j < 32; j++) {
-        float val = x[j] * inv_norm;
-        int best = 0;
-        float best_d = fabsf(val - TQ_CUDA_CB_3BIT[0] * TQ_CUDA_CB_SCALE);
-        for (int c = 1; c < 8; c++) {
-            float d = fabsf(val - TQ_CUDA_CB_3BIT[c] * TQ_CUDA_CB_SCALE);
-            if (d < best_d) { best_d = d; best = c; }
-        }
-        int bit_offset = j * 3;
-        int byte_idx = bit_offset / 8;
-        int bit_pos = bit_offset % 8;
-        y->qs[byte_idx] |= (uint8_t)((best << bit_pos) & 0xFF);
-        if (bit_pos > 5) {
-            y->qs[byte_idx + 1] |= (uint8_t)(best >> (8 - bit_pos));
-        }
-    }
-
-    float recon_sq = 0.0f;
-    for (int j = 0; j < 32; j++) {
-        int bit_offset = j * 3;
-        int byte_idx = bit_offset / 8;
-        int bit_pos = bit_offset % 8;
-        int idx = ((y->qs[byte_idx] >> bit_pos) | (y->qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-        float r = TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE;
-        recon_sq += r * r;
-    }
-    const float recon_norm = sqrtf(recon_sq);
-    y->d = __float2half((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+// Concrete quantize-block wrappers (signature matches set_rows_cuda_tq template)
+static __device__ void vtq_cuda_quantize_vtq2_1_block(const float * __restrict__ x, block_vtq2_1 * __restrict__ y, int64_t) {
+    vtq_cuda_quantize_block<block_vtq2_1, 4>(x, y, TQ_CUDA_CB_2BIT, vtq_decode_2bit, vtq_encode_2bit);
+}
+static __device__ void vtq_cuda_quantize_vtq3_1_block(const float * __restrict__ x, block_vtq3_1 * __restrict__ y, int64_t) {
+    vtq_cuda_quantize_block<block_vtq3_1, 8>(x, y, TQ_CUDA_CB_3BIT, vtq_decode_3bit, vtq_encode_3bit);
+}
+static __device__ void vtq_cuda_quantize_vtq4_1_block(const float * __restrict__ x, block_vtq4_1 * __restrict__ y, int64_t) {
+    vtq_cuda_quantize_block<block_vtq4_1, 16>(x, y, TQ_CUDA_CB_4BIT, vtq_decode_4bit, vtq_encode_4bit);
 }
 
-// --- VTQ4_1 quantize block ---
-static __device__ void vtq_cuda_quantize_vtq4_1_block(const float * __restrict__ x, block_vtq4_1 * __restrict__ y, int64_t /*block_index*/) {
-    float sum_sq = 0.0f;
-    for (int j = 0; j < 32; j++) sum_sq += x[j] * x[j];
-    const float norm = sqrtf(sum_sq);
-    y->d = __float2half(norm);
-
-    if (norm < 1e-30f) { memset(y->qs, 0, 16); return; }
-
-    const float inv_norm = 1.0f / norm;
-    memset(y->qs, 0, 16);
-    for (int j = 0; j < 32; j++) {
-        float val = x[j] * inv_norm;
-        int best = 0;
-        float best_d = fabsf(val - TQ_CUDA_CB_4BIT[0] * TQ_CUDA_CB_SCALE);
-        for (int c = 1; c < 16; c++) {
-            float d = fabsf(val - TQ_CUDA_CB_4BIT[c] * TQ_CUDA_CB_SCALE);
-            if (d < best_d) { best_d = d; best = c; }
-        }
-        y->qs[j / 2] |= (uint8_t)(best << (4 * (j % 2)));
-    }
-
-    float recon_sq = 0.0f;
-    for (int j = 0; j < 32; j++) {
-        const int idx = (y->qs[j / 2] >> (4 * (j % 2))) & 0xF;
-        float r = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE;
-        recon_sq += r * r;
-    }
-    const float recon_norm = sqrtf(recon_sq);
-    y->d = __float2half((recon_norm > 1e-30f) ? norm / recon_norm : norm);
-}
-
-// --- VTQ bulk dequantize kernels (warp-parallel, for convert.cu) ---
-template <typename dst_t>
-static __global__ void dequantize_block_vtq2_1_v2(const void * __restrict__ vx, dst_t * __restrict__ y,
-        const int64_t ne, const int64_t nb) {
+// --- Generic VTQ bulk dequantize kernel (warp-parallel, for convert.cu) ---
+template <typename block_t, typename DecodeFn, typename dst_t>
+static __global__ void k_dequantize_block_vtq(const void * __restrict__ vx, dst_t * __restrict__ y,
+        const int64_t ne, const int64_t nb, DecodeFn decode) {
     const int64_t ib = (int64_t)blockIdx.x * blockDim.y + threadIdx.y;
     if (ib >= nb) return;
-    const block_vtq2_1 * x = (const block_vtq2_1 *) vx;
-    const int tid = threadIdx.x;  // 0..31
-    const float norm = (float)x[ib].d;
-    const int idx = (x[ib].qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
-    const float val = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE * norm;
-    const int64_t out_idx = ib * QK_VTQ + tid;
-    if (out_idx < ne) y[out_idx] = ggml_cuda_cast<dst_t>(val);
-}
-
-template <typename dst_t>
-static __global__ void dequantize_block_vtq3_1_v2(const void * __restrict__ vx, dst_t * __restrict__ y,
-        const int64_t ne, const int64_t nb) {
-    const int64_t ib = (int64_t)blockIdx.x * blockDim.y + threadIdx.y;
-    if (ib >= nb) return;
-    const block_vtq3_1 * x = (const block_vtq3_1 *) vx;
+    const block_t * x = (const block_t *) vx;
     const int tid = threadIdx.x;
-    const float norm = (float)x[ib].d;
-    const int bit_offset = tid * 3;
-    const int byte_idx = bit_offset / 8;
-    const int bit_pos = bit_offset % 8;
-    const int idx = ((x[ib].qs[byte_idx] >> bit_pos) | (x[ib].qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-    const float val = TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE * norm;
+    const float val = decode(x[ib].qs, tid) * (float)x[ib].d;
     const int64_t out_idx = ib * QK_VTQ + tid;
     if (out_idx < ne) y[out_idx] = ggml_cuda_cast<dst_t>(val);
 }
 
-template <typename dst_t>
-static __global__ void dequantize_block_vtq4_1_v2(const void * __restrict__ vx, dst_t * __restrict__ y,
-        const int64_t ne, const int64_t nb) {
-    const int64_t ib = (int64_t)blockIdx.x * blockDim.y + threadIdx.y;
-    if (ib >= nb) return;
-    const block_vtq4_1 * x = (const block_vtq4_1 *) vx;
-    const int tid = threadIdx.x;
-    const float norm = (float)x[ib].d;
-    const int idx = (x[ib].qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
-    const float val = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE * norm;
-    const int64_t out_idx = ib * QK_VTQ + tid;
-    if (out_idx < ne) y[out_idx] = ggml_cuda_cast<dst_t>(val);
+// Row dequant launcher (shared for all VTQ types)
+template <typename block_t, typename DecodeFn, typename dst_t>
+static void vtq_dequantize_row_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream, DecodeFn decode) {
+    const int64_t nb = (ne + QK_VTQ - 1) / QK_VTQ;
+    const int rows_per_block = 4;
+    const dim3 block_dims(32, rows_per_block);
+    const dim3 grid_dims((int)((nb + rows_per_block - 1) / rows_per_block));
+    k_dequantize_block_vtq<block_t, DecodeFn, dst_t><<<grid_dims, block_dims, 0, stream>>>(vx, y, ne, nb, decode);
 }
 
-// Row dequant launchers
+// Concrete row dequant wrappers (signature matches convert.cu dispatcher)
 template <typename dst_t>
 static void dequantize_row_vtq2_1_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    const int64_t nb = (ne + QK_VTQ - 1) / QK_VTQ;
-    const int rows_per_block = 4;
-    const dim3 block_dims(32, rows_per_block);
-    const dim3 grid_dims((int)((nb + rows_per_block - 1) / rows_per_block));
-    dequantize_block_vtq2_1_v2<<<grid_dims, block_dims, 0, stream>>>(vx, y, ne, nb);
+    vtq_dequantize_row_cuda<block_vtq2_1>(vx, y, ne, stream, vtq_decode_2bit);
 }
-
 template <typename dst_t>
 static void dequantize_row_vtq3_1_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    const int64_t nb = (ne + QK_VTQ - 1) / QK_VTQ;
-    const int rows_per_block = 4;
-    const dim3 block_dims(32, rows_per_block);
-    const dim3 grid_dims((int)((nb + rows_per_block - 1) / rows_per_block));
-    dequantize_block_vtq3_1_v2<<<grid_dims, block_dims, 0, stream>>>(vx, y, ne, nb);
+    vtq_dequantize_row_cuda<block_vtq3_1>(vx, y, ne, stream, vtq_decode_3bit);
 }
-
 template <typename dst_t>
 static void dequantize_row_vtq4_1_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    const int64_t nb = (ne + QK_VTQ - 1) / QK_VTQ;
-    const int rows_per_block = 4;
-    const dim3 block_dims(32, rows_per_block);
-    const dim3 grid_dims((int)((nb + rows_per_block - 1) / rows_per_block));
-    dequantize_block_vtq4_1_v2<<<grid_dims, block_dims, 0, stream>>>(vx, y, ne, nb);
+    vtq_dequantize_row_cuda<block_vtq4_1>(vx, y, ne, stream, vtq_decode_4bit);
 }
 
-// --- VTQ NC (non-contiguous) dequant kernels ---
-template <typename dst_t>
-static __global__ void dequantize_block_vtq2_1_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
+// --- Generic VTQ NC (non-contiguous) dequant kernel ---
+template <typename block_t, typename DecodeFn, typename dst_t>
+static __global__ void k_dequantize_block_vtq_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
         const int64_t ne00, const int64_t ne01,
         const int64_t ne0203, const uint3 ne02_fdv,
-        const int64_t s01, const int64_t s02, const int64_t s03) {
+        const int64_t s01, const int64_t s02, const int64_t s03, DecodeFn decode) {
     const int64_t ib_in_row = blockIdx.x;
     const int tid = threadIdx.x;
     const int64_t nb_per_row = ne00 / QK_VTQ;
@@ -1109,132 +1056,62 @@ static __global__ void dequantize_block_vtq2_1_nc(const void * __restrict__ vx, 
     for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
         for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
             const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
-            const int64_t i02 = dm.y;
-            const int64_t i03 = dm.x;
-            const int64_t ibx0 = i03*s03 + i02*s02 + i01*s01;
+            const int64_t ibx0 = dm.x*s03 + dm.y*s02 + i01*s01;
+            const block_t * x = (const block_t *) vx;
             const int64_t ib = ibx0 + ib_in_row;
-            const block_vtq2_1 * x = (const block_vtq2_1 *) vx;
             const float norm = (float)x[ib].d;
             const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ;
             if (norm < 1e-30f) {
                 if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
                 continue;
             }
-            const int idx = (x[ib].qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
-            float val = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE * norm;
+            const float val = decode(x[ib].qs, tid) * norm;
             if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
         }
     }
 }
 
-template <typename dst_t>
-static __global__ void dequantize_block_vtq3_1_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
-        const int64_t ne00, const int64_t ne01,
-        const int64_t ne0203, const uint3 ne02_fdv,
-        const int64_t s01, const int64_t s02, const int64_t s03) {
-    const int64_t ib_in_row = blockIdx.x;
-    const int tid = threadIdx.x;
+// NC launcher (shared for all VTQ types)
+template <typename block_t, typename DecodeFn, typename dst_t>
+static void vtq_dequantize_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream, DecodeFn decode) {
+    GGML_ASSERT(ne00 % QK_VTQ == 0);
     const int64_t nb_per_row = ne00 / QK_VTQ;
-    if (ib_in_row >= nb_per_row) return;
-    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
-        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
-            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
-            const int64_t i02 = dm.y;
-            const int64_t i03 = dm.x;
-            const int64_t ibx0 = i03*s03 + i02*s02 + i01*s01;
-            const int64_t ib = ibx0 + ib_in_row;
-            const block_vtq3_1 * x = (const block_vtq3_1 *) vx;
-            const float norm = (float)x[ib].d;
-            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ;
-            if (norm < 1e-30f) {
-                if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
-                continue;
-            }
-            const int bit_offset = tid * 3;
-            const int byte_idx = bit_offset / 8;
-            const int bit_pos = bit_offset % 8;
-            const int idx = ((x[ib].qs[byte_idx] >> bit_pos) | (x[ib].qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-            float val = TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE * norm;
-            if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
-        }
-    }
+    const int64_t ne0203 = ne02*ne03;
+    const uint3 ne02_fdv = init_fastdiv_values(ne02);
+    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    k_dequantize_block_vtq_nc<block_t, DecodeFn, dst_t><<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03, decode);
 }
 
-template <typename dst_t>
-static __global__ void dequantize_block_vtq4_1_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
-        const int64_t ne00, const int64_t ne01,
-        const int64_t ne0203, const uint3 ne02_fdv,
-        const int64_t s01, const int64_t s02, const int64_t s03) {
-    const int64_t ib_in_row = blockIdx.x;
-    const int tid = threadIdx.x;
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    if (ib_in_row >= nb_per_row) return;
-    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
-        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
-            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
-            const int64_t i02 = dm.y;
-            const int64_t i03 = dm.x;
-            const int64_t ibx0 = i03*s03 + i02*s02 + i01*s01;
-            const int64_t ib = ibx0 + ib_in_row;
-            const block_vtq4_1 * x = (const block_vtq4_1 *) vx;
-            const float norm = (float)x[ib].d;
-            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ;
-            if (norm < 1e-30f) {
-                if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
-                continue;
-            }
-            const int idx = (x[ib].qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
-            float val = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE * norm;
-            if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
-        }
-    }
-}
-
-// NC launcher functions
+// Concrete NC wrappers (signature matches convert.cu dispatcher)
 template <typename dst_t>
 static void dequantize_block_vtq2_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    const int64_t ne0203 = ne02*ne03;
-    const uint3 ne02_fdv = init_fastdiv_values(ne02);
-    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    dequantize_block_vtq2_1_nc<<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+    vtq_dequantize_nc_cuda<block_vtq2_1>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream, vtq_decode_2bit);
 }
-
 template <typename dst_t>
 static void dequantize_block_vtq3_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    const int64_t ne0203 = ne02*ne03;
-    const uint3 ne02_fdv = init_fastdiv_values(ne02);
-    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    dequantize_block_vtq3_1_nc<<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+    vtq_dequantize_nc_cuda<block_vtq3_1>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream, vtq_decode_3bit);
 }
-
 template <typename dst_t>
 static void dequantize_block_vtq4_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    const int64_t ne0203 = ne02*ne03;
-    const uint3 ne02_fdv = init_fastdiv_values(ne02);
-    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    dequantize_block_vtq4_1_nc<<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+    vtq_dequantize_nc_cuda<block_vtq4_1>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream, vtq_decode_4bit);
 }
 
-// --- VTQ get_rows kernels ---
-template <typename dst_t>
-static __global__ void k_get_rows_vtq2_1(
+// --- Generic VTQ get_rows kernel ---
+template <typename block_t, typename DecodeFn, typename dst_t>
+static __global__ void k_get_rows_vtq(
         const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
         const int64_t ne00, const int64_t ne11, const int64_t ne12,
         const size_t s1, const size_t s2, const size_t s3,
         const size_t nb01, const size_t nb02, const size_t nb03,
-        const size_t s10, const size_t s11, const size_t s12) {
+        const size_t s10, const size_t s11, const size_t s12, DecodeFn decode) {
     const int i10 = blockIdx.x;
     const int ib_in_row = blockIdx.y;
     const int tid = threadIdx.x;
@@ -1243,115 +1120,54 @@ static __global__ void k_get_rows_vtq2_1(
     const int i12 = z % ne12;
     const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
     dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
-    const block_vtq2_1 * src0_row = (const block_vtq2_1 *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
+    const block_t * src0_row = (const block_t *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
     const int64_t nb_per_row = ne00 / QK_VTQ;
     if (ib_in_row >= nb_per_row) return;
-    const block_vtq2_1 * xb = &src0_row[ib_in_row];
+    const block_t * xb = &src0_row[ib_in_row];
     const int64_t out_base = ib_in_row * QK_VTQ;
-    const float norm = (float)xb->d;
-    const int idx = (xb->qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
-    float val = TQ_CUDA_CB_2BIT[idx] * TQ_CUDA_CB_SCALE * norm;
+    const float val = decode(xb->qs, tid) * (float)xb->d;
     if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
 }
 
+// get_rows launcher (shared for all VTQ types)
+template <typename block_t, typename DecodeFn, typename dst_t>
+static void vtq_get_rows_cuda(
+        const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
+        const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
+        const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
+        const size_t nb1, const size_t nb2, const size_t nb3, cudaStream_t stream, DecodeFn decode) {
+    GGML_ASSERT(ne00 % QK_VTQ == 0);
+    const int64_t nb_per_row = ne00 / QK_VTQ;
+    const size_t s1 = nb1/sizeof(dst_t), s2 = nb2/sizeof(dst_t), s3 = nb3/sizeof(dst_t);
+    const size_t s10 = nb10/sizeof(int32_t), s11 = nb11/sizeof(int32_t), s12 = nb12/sizeof(int32_t);
+    const dim3 block_dims(32);
+    const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
+    k_get_rows_vtq<block_t, DecodeFn, dst_t><<<grid_dims, block_dims, 0, stream>>>(
+        src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12, decode);
+}
+
+// Concrete get_rows wrappers (signature matches getrows.cu dispatcher)
 template <typename dst_t>
 static void get_rows_cuda_vtq2_1(
         const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
         const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
         const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
         const size_t nb1, const size_t nb2, const size_t nb3, cudaStream_t stream) {
-    GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    const size_t s1 = nb1/sizeof(dst_t), s2 = nb2/sizeof(dst_t), s3 = nb3/sizeof(dst_t);
-    const size_t s10 = nb10/sizeof(int32_t), s11 = nb11/sizeof(int32_t), s12 = nb12/sizeof(int32_t);
-    const dim3 block_dims(32);
-    const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
-    k_get_rows_vtq2_1<<<grid_dims, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
+    vtq_get_rows_cuda<block_vtq2_1>(src0_d, src1_d, dst_d, ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream, vtq_decode_2bit);
 }
-
-// --- VTQ3_1 get_rows ---
-template <typename dst_t>
-static __global__ void k_get_rows_vtq3_1(
-        const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
-        const int64_t ne00, const int64_t ne11, const int64_t ne12,
-        const size_t s1, const size_t s2, const size_t s3,
-        const size_t nb01, const size_t nb02, const size_t nb03,
-        const size_t s10, const size_t s11, const size_t s12) {
-    const int i10 = blockIdx.x;
-    const int ib_in_row = blockIdx.y;
-    const int tid = threadIdx.x;
-    const int64_t z = blockIdx.z;
-    const int i11 = z / ne12;
-    const int i12 = z % ne12;
-    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
-    dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
-    const block_vtq3_1 * src0_row = (const block_vtq3_1 *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    if (ib_in_row >= nb_per_row) return;
-    const block_vtq3_1 * xb = &src0_row[ib_in_row];
-    const int64_t out_base = ib_in_row * QK_VTQ;
-    const float norm = (float)xb->d;
-    const int bit_offset = tid * 3;
-    const int byte_idx = bit_offset / 8;
-    const int bit_pos = bit_offset % 8;
-    const int idx = ((xb->qs[byte_idx] >> bit_pos) | (xb->qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-    float val = TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE * norm;
-    if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
-}
-
 template <typename dst_t>
 static void get_rows_cuda_vtq3_1(
         const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
         const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
         const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
         const size_t nb1, const size_t nb2, const size_t nb3, cudaStream_t stream) {
-    GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    const size_t s1 = nb1/sizeof(dst_t), s2 = nb2/sizeof(dst_t), s3 = nb3/sizeof(dst_t);
-    const size_t s10 = nb10/sizeof(int32_t), s11 = nb11/sizeof(int32_t), s12 = nb12/sizeof(int32_t);
-    const dim3 block_dims(32);
-    const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
-    k_get_rows_vtq3_1<<<grid_dims, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
+    vtq_get_rows_cuda<block_vtq3_1>(src0_d, src1_d, dst_d, ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream, vtq_decode_3bit);
 }
-
-// --- VTQ4_1 get_rows ---
-template <typename dst_t>
-static __global__ void k_get_rows_vtq4_1(
-        const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
-        const int64_t ne00, const int64_t ne11, const int64_t ne12,
-        const size_t s1, const size_t s2, const size_t s3,
-        const size_t nb01, const size_t nb02, const size_t nb03,
-        const size_t s10, const size_t s11, const size_t s12) {
-    const int i10 = blockIdx.x;
-    const int ib_in_row = blockIdx.y;
-    const int tid = threadIdx.x;
-    const int64_t z = blockIdx.z;
-    const int i11 = z / ne12;
-    const int i12 = z % ne12;
-    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
-    dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
-    const block_vtq4_1 * src0_row = (const block_vtq4_1 *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    if (ib_in_row >= nb_per_row) return;
-    const block_vtq4_1 * xb = &src0_row[ib_in_row];
-    const int64_t out_base = ib_in_row * QK_VTQ;
-    const float norm = (float)xb->d;
-    const int idx = (xb->qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
-    float val = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE * norm;
-    if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
-}
-
 template <typename dst_t>
 static void get_rows_cuda_vtq4_1(
         const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
         const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
         const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
         const size_t nb1, const size_t nb2, const size_t nb3, cudaStream_t stream) {
-    GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    const size_t s1 = nb1/sizeof(dst_t), s2 = nb2/sizeof(dst_t), s3 = nb3/sizeof(dst_t);
-    const size_t s10 = nb10/sizeof(int32_t), s11 = nb11/sizeof(int32_t), s12 = nb12/sizeof(int32_t);
-    const dim3 block_dims(32);
-    const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
-    k_get_rows_vtq4_1<<<grid_dims, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
+    vtq_get_rows_cuda<block_vtq4_1>(src0_d, src1_d, dst_d, ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream, vtq_decode_4bit);
 }
