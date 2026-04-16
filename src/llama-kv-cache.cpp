@@ -219,6 +219,20 @@ llama_kv_cache::llama_kv_cache(
         // Boundary Layer Protection: first/last N layers use q8_0 instead of TQ
         ggml_type eff_type_k = type_k;
         ggml_type eff_type_v = type_v;
+
+        // FA + TQ V workaround: TQ V-dequant in FA vec kernel has a known bug.
+        // Force V to f16 when FA is active (v_trans == false means FA is on).
+        // K stays TQ (Hadamard-domain dot product is proven correct).
+        {
+            const bool is_tq_v = (type_v == GGML_TYPE_TQ1_1 || type_v == GGML_TYPE_TQ2_1 ||
+                                  type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
+            if (is_tq_v && !v_trans) {
+                eff_type_v = GGML_TYPE_F16;
+                if (il == 0) {
+                    LLAMA_LOG_WARN("%s: FA active with TQ V-cache — forcing V to f16 (TQ V-dequant in FA kernel not yet supported)\n", __func__);
+                }
+            }
+        }
         if (tq_protect_layers > 0) {
             const bool is_tq_k = (type_k == GGML_TYPE_TQ1_1 || type_k == GGML_TYPE_TQ2_1 || type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
             const bool is_tq_v = (type_v == GGML_TYPE_TQ1_1 || type_v == GGML_TYPE_TQ2_1 || type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
