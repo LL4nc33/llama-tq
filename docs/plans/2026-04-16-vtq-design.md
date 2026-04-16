@@ -2,14 +2,14 @@
 
 **Author:** LL4nc33  
 **Date:** 2026-04-16  
-**Status:** Proposed  
-**Depends on:** TurboQuant v7, upstream `self_v_rot` infrastructure (PR #21038)
+**Status:** Implemented + Verified  
+**Depends on:** KTQ v7 (formerly TQ v7), upstream `self_v_rot` infrastructure (PR #21038)
 
 ---
 
 ## Executive Summary
 
-Current TurboQuant (TQ) types use PolarQuant with per-block data-dependent sign bits (RHT). The dequantization path requires a serial 32-element FWHT butterfly transform, which is acceptable for the K-cache (where we can move the FWHT to Q via the Hadamard-domain dot product trick) but causes register spilling and corruption in the V-cache Flash Attention inner loop.
+Current KTQ (K-Cache TurboQuant, formerly TQ) types use PolarQuant with per-block data-dependent sign bits (RHT). The dequantization path requires a serial 32-element FWHT butterfly transform, which is acceptable for the K-cache (where we can move the FWHT to Q via the Hadamard-domain dot product trick) but causes register spilling and corruption in the V-cache Flash Attention inner loop.
 
 VTQ solves this by separating the quantization scheme for V-cache:
 - **Store** V values in Hadamard-rotated space using a **fixed, position-independent** rotation matrix R per attention head
@@ -138,23 +138,25 @@ typedef struct {
 static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
 ```
 
-### Comparison with TQ Structs
+### Comparison with KTQ Structs
 
 | Type | d (norm) | qs (indices) | sb (signs) | Total | bpw |
 |------|----------|-------------|------------|-------|-----|
-| block_tq2_1 | 2B | 8B | **4B** | 14B | 3.5 |
+| block_ktq1_1 | 2B | 4B | **4B** | 10B | 2.5 |
+| block_vtq1_1 | 2B | 4B | **0B** | 6B | **1.5** |
+| block_ktq2_1 | 2B | 8B | **4B** | 14B | 3.5 |
 | block_vtq2_1 | 2B | 8B | **0B** | 10B | **2.5** |
-| block_tq3_1 | 2B | 12B | **4B** | 18B | 4.5 |
-| block_vtq3_1 | 2B | 12B | **0B** | 14B | **3.5** |
-| block_tq4_1 | 2B | 16B | **4B** | 22B | 5.5 |
+| block_ktq3_1 | 2B | 12B | **4B** | 18B | 4.5 |
+| block_vtq3_1 | 2B | 14B | **0B** | 16B | **4.0** |
+| block_ktq4_1 | 2B | 16B | **4B** | 22B | 5.5 |
 | block_vtq4_1 | 2B | 16B | **0B** | 18B | **4.5** |
 
-VTQ saves 4 bytes per block (the `sb[4]` sign bits) because the rotation is fixed and position-independent -- it does not need per-block storage. This is a **28.6% size reduction** for VTQ2_1 vs TQ2_1.
+VTQ saves 4 bytes per block (the `sb[4]` sign bits) because the rotation is fixed and position-independent -- it does not need per-block storage.
 
-**Important note on effective quality:** Although VTQ2_1 is 2.5 bpw (vs TQ2_1 at 3.5 bpw), the quality should be comparable because:
-1. TQ's sign bits encode per-block RHT randomization; VTQ's fixed rotation achieves the same decorrelation globally
-2. The codebooks are identical (same Lloyd-Max centroids)
-3. The fixed rotation's decorrelation is slightly weaker than per-block RHT (no per-block randomness), so VTQ2_1 quality will be between TQ1_1 and TQ2_1 -- empirical measurement needed
+**Important note on effective quality:** Although VTQ2_1 is 2.5 bpw (vs KTQ2_1 at 3.5 bpw), the quality should be comparable because:
+1. KTQ's sign bits encode per-block RHT randomization; VTQ's fixed rotation achieves the same decorrelation globally
+2. The codebooks are identical (same Lloyd-Max centroids from shared PQ_CODEBOOK_*)
+3. The fixed rotation's decorrelation is slightly weaker than per-block RHT (no per-block randomness), so VTQ2_1 quality will be between KTQ1_1 and KTQ2_1 -- empirical measurement needed
 
 ---
 
@@ -212,14 +214,14 @@ static __device__ void vtq_cuda_quantize_vtq2_1_block(
 }
 ```
 
-Compared to `tq_cuda_quantize_tq2_1_block`:
-- **Removed:** Philox seed derivation, RHT sign generation, FWHT, sign bit storage
-- **Kept:** Norm, normalize, codebook search, norm correction
+Compared to `ktq_cuda_quantize_ktq2_1_block`:
+- **Removed:** Philox seed derivation, RHT sign generation, FWHT, sign bit storage (all present in KTQ)
+- **Kept:** Norm, normalize, codebook search, norm correction (shared with KTQ)
 - **Result:** ~40% fewer instructions, no PRNG state, no sb[] writes
 
 ### Codebook Constants
 
-VTQ reuses the same Lloyd-Max codebooks as TQ (optimal for Beta(15.5, 15.5) distribution with d=32):
+VTQ reuses the same Lloyd-Max codebooks as KTQ (shared PQ_CODEBOOK_* / PQ_CUDA_CB_* constants, optimal for Beta(15.5, 15.5) distribution with d=32):
 
 ```cuda
 // Same codebooks -- the Hadamard rotation preserves the statistical distribution
@@ -278,9 +280,9 @@ static __device__ __forceinline__ void dequantize_V_vtq2_1(
 }
 ```
 
-### Comparison with Current TQ V-Dequant
+### Comparison with KTQ V-Dequant
 
-| Operation | TQ dequant_V | VTQ dequant_V |
+| Operation | KTQ dequant_V | VTQ dequant_V |
 |-----------|-------------|---------------|
 | Load block data | qs[8] + sb[4] + d | qs[8] + d |
 | Codebook lookup | 32 lookups | ne lookups (4 typical) |
@@ -357,12 +359,17 @@ VTQ types must register `ggml_is_quantized() = true` in the type metadata table 
 
 ### New Type Registration
 
-In `ggml.h`, add type enums:
+In `ggml.h`, type enums (implemented):
 
 ```c
-GGML_TYPE_VTQ2_1 = 44,
-GGML_TYPE_VTQ3_1 = 45,
-GGML_TYPE_VTQ4_1 = 46,
+GGML_TYPE_KTQ2_1  = 42, // K-cache, 3.5 bpw
+GGML_TYPE_KTQ3_1  = 43, // K-cache, 4.5 bpw
+GGML_TYPE_KTQ4_1  = 44, // K-cache, 5.5 bpw
+GGML_TYPE_KTQ1_1  = 45, // K-cache, 2.5 bpw
+GGML_TYPE_VTQ1_1  = 46, // V-cache, 1.5 bpw
+GGML_TYPE_VTQ2_1  = 47, // V-cache, 2.5 bpw
+GGML_TYPE_VTQ3_1  = 48, // V-cache, 3.5 bpw (4.0 bpw with padding)
+GGML_TYPE_VTQ4_1  = 49, // V-cache, 4.5 bpw
 ```
 
 In `ggml.c`, add type metadata (name, block size, type size, is_quantized=true).
@@ -372,9 +379,13 @@ In `ggml-common.h`, add the block structs (as specified above).
 ### CLI Integration
 
 ```bash
-# VTQ for V-cache only (recommended: TQ for K, VTQ for V)
+# Maximum compression: KTQ for K, VTQ for V (2.5 bpw avg)
 ./build/bin/llama-server -m model.gguf \
-    --cache-type-k tq2_1 --cache-type-v vtq2_1 -fa on -ngl 99
+    --cache-type-k ktq2_1 --cache-type-v vtq1_1 -fa on -ngl 99
+
+# Balanced (3.5 bpw avg)
+./build/bin/llama-server -m model.gguf \
+    --cache-type-k ktq3_1 --cache-type-v vtq2_1 -fa on -ngl 99
 
 # Asymmetric: q8_0 K (best quality) + vtq2_1 V (maximum compression)
 ./build/bin/llama-server -m model.gguf \
@@ -390,14 +401,15 @@ In `ggml-common.h`, add the block structs (as specified above).
 VTQ types need V-side dispatch only (not K-side -- VTQ is V-only):
 
 ```cpp
-// V type validation (add VTQ cases)
+// V type validation (VTQ cases)
+case GGML_TYPE_VTQ1_1:
 case GGML_TYPE_VTQ2_1:
 case GGML_TYPE_VTQ3_1:
 case GGML_TYPE_VTQ4_1:
     break;
 
 // VTQ types ONLY for V, never for K
-const bool is_vtq_v = V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1;
+const bool is_vtq_v = V->type == GGML_TYPE_VTQ1_1 || V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1;
 if (is_vtq_v) {
     GGML_ASSERT(K->type != GGML_TYPE_VTQ2_1 && K->type != GGML_TYPE_VTQ3_1 && K->type != GGML_TYPE_VTQ4_1);
     // VTQ V-dequant is lightweight, so all FA kernel types work (VEC, MMA, WMMA)
@@ -415,40 +427,38 @@ VTQ uses the standard `nthreads_V_q = D/4` (same as q4_0, q8_0). No special warp
 
 ### Template Instances
 
-New files: `fattn-vec-instance-*-vtq*.cu` (following existing pattern). Since VTQ is V-only, instances are needed for combinations: {f16, bf16, q4_0, q8_0, tq2_1, tq3_1, tq4_1} x {vtq2_1, vtq3_1, vtq4_1} = 21 new instances.
+New files: `fattn-vec-instance-*-vtq*.cu` (following existing pattern). Since VTQ is V-only, instances are needed for combinations: {f16, bf16, q4_0, q8_0, ktq1_1, ktq2_1, ktq3_1, ktq4_1} x {vtq1_1, vtq2_1, vtq3_1, vtq4_1} = 32 new instances.
 
 ---
 
-## Migration Path from TQ to VTQ
+## Implementation Status
 
-### Phase 1: VTQ2_1 Only (Minimum Viable)
+### Phase 1: DONE -- Full VTQ Family (VTQ1_1..VTQ4_1)
 
-1. Add `block_vtq2_1` struct and type enum
-2. Implement `vtq_cuda_quantize_vtq2_1_block` in `turboquant.cuh`
-3. Implement `dequantize_V_vtq2_1` in `fattn-common.cuh`
-4. Add FA dispatch for V=VTQ2_1 (VEC kernel only initially)
-5. Register in CLI as `--cache-type-v vtq2_1`
-6. Verify: `--cache-type-k tq2_1 --cache-type-v vtq2_1` produces correct output
+1. Added `block_vtq1_1` through `block_vtq4_1` structs and type enums
+2. Implemented VTQ quantize/dequant in `turboquant.cuh` (no FWHT, no Philox, no sign bits)
+3. Implemented `dequantize_V_vtq*` in `fattn-common.cuh` (`__forceinline__`, ~8 registers)
+4. FA dispatch for all VTQ V types
+5. Registered in CLI: `--cache-type-v vtq1_1` through `--cache-type-v vtq4_1`
+6. SET_ROWS, convert, get-rows kernels for all VTQ types
+7. TQ types renamed to KTQ throughout (K-cache optimized)
+8. Verified: `--cache-type-k ktq2_1 --cache-type-v vtq2_1` produces correct, coherent output
 
-### Phase 2: Full VTQ Family
+### Commits
+- `3d69e4fdd` feat(vtq): implement VTQ -- 830 LOC, 15 files
+- `da6383399` fix(vtq): VTQ3_1 OOB + missing get_rows
+- `1ff85a17d` fix(vtq): VTQ3_1 struct alignment
 
-7. Add VTQ3_1 and VTQ4_1 (same pattern, different codebook widths)
-8. Extend FA dispatch to MMA/WMMA kernels (VTQ dequant is simple enough)
-9. Add set-rows, convert, get-rows kernels
-10. Template instances for all K x VTQ_V combinations
+### Phase 2: Future Optimization
 
-### Phase 3: Optimization
-
-11. Benchmark and compare quality vs TQ at equivalent bpw
-12. Consider re-optimized codebooks for fixed-Hadamard marginals
-13. Consider D1*H*D2 rotation with per-head (not per-block) sign diagonals
-14. Explore sub-64 rotation matrices for further matmul cost reduction
+- Benchmark VTQ quality vs KTQ at equivalent bpw (codebook optimality with fixed rotation)
+- Consider D1*H*D2 rotation with per-head (not per-block) sign diagonals
+- Explore sub-64 rotation matrices for further matmul cost reduction
 
 ### Backward Compatibility
 
-- VTQ is a V-cache-only format. K-cache continues to use TQ (where the Hadamard-domain dot product avoids FWHT entirely)
-- Existing `--cache-type-v tq2_1` continues to work (uses serial FWHT in V-dequant). VTQ is a new, better option
-- No model format changes -- VTQ is purely a KV cache runtime format
+- VTQ is a V-cache-only format. K-cache uses KTQ (where the Hadamard-domain dot product avoids FWHT entirely)
+- No model format changes -- KTQ/VTQ are purely KV cache runtime formats
 - The `self_v_rot` path is upstream and always available when quantized V is used
 
 ---
@@ -457,7 +467,7 @@ New files: `fattn-vec-instance-*-vtq*.cu` (following existing pattern). Since VT
 
 ### FLOPS per Decode Token (Qwen3.5-35B-A3B, d_head=128, n_kv=8, 32 layers)
 
-| Operation | TQ2_1 V-dequant | VTQ2_1 V-dequant | Saving |
+| Operation | KTQ2_1 V-dequant | VTQ2_1 V-dequant | Saving |
 |-----------|-----------------|-------------------|--------|
 | Codebook lookup | 32 per block | 4 per call (ne=4) | N/A (different granularity) |
 | FWHT butterfly | 160 FMA/block | **0** | **-160 FMA/block** |
@@ -466,7 +476,7 @@ New files: `fattn-vec-instance-*-vtq*.cu` (following existing pattern). Since VT
 | Post-FA rotation | 0 | 128*128*8 = 131K FMA/layer | +131K FMA/layer |
 
 Per decode token at 1024 KV positions, 32 layers:
-- **TQ2_1 V-dequant:** 1024 * (128/32) * (160+32+32) * 32 = **29.4M FMA** (in FA hot loop)
+- **KTQ2_1 V-dequant:** 1024 * (128/32) * (160+32+32) * 32 = **29.4M FMA** (in FA hot loop)
 - **VTQ2_1 V-dequant:** 1024 * (128/4) * 3 * 32 = **3.1M FMA** (in FA hot loop) + 131K * 32 = **4.2M FMA** (post-FA matmul)
 - **Net saving: 22.1M FMA per token (75% reduction in V-path compute)**
 
@@ -480,11 +490,11 @@ The key difference is WHERE the compute happens:
 |--------|------------|--------------------------------------|-------------------|
 | f16 | 64B | 4 | 256B |
 | q4_0 | 18B | 4 | 72B |
-| tq2_1 | 14B | 4 | 56B |
+| ktq2_1 | 14B | 4 | 56B |
 | **vtq2_1** | **10B** | **4** | **40B** |
-| tq1_1 | 10B | 4 | 40B |
+| ktq1_1 | 10B | 4 | 40B |
 
-VTQ2_1 matches TQ1_1's bandwidth (40B/pos) while providing 2-bit codebook quality (TQ1_1 uses 1-bit). This is a sweet spot: TQ2_1 quality at TQ1_1 bandwidth.
+VTQ2_1 matches KTQ1_1's bandwidth (40B/pos) while providing 2-bit codebook quality (KTQ1_1 uses 1-bit). This is a sweet spot: KTQ2_1 quality at KTQ1_1 bandwidth.
 
 ### Register Pressure (V-Dequant in FA Inner Loop)
 
@@ -492,7 +502,7 @@ VTQ2_1 matches TQ1_1's bandwidth (40B/pos) while providing 2-bit codebook qualit
 |--------|----------------|------------|--------|
 | f16 | 2 | Yes | No |
 | q4_0 | 4 | Yes | No |
-| tq2_1 | ~40 (buf[32] + intermediates) | **No** (`__noinline__`) | **Yes** |
+| ktq2_1 | ~40 (buf[32] + intermediates) | **No** (`__noinline__`) | **Yes** |
 | **vtq2_1** | **~8** | **Yes** (`__forceinline__`) | **No** |
 
 This is the most impactful difference. The TQ V-dequant's register spilling is what causes the corruption (LMEM writes clobbering FA accumulator state). VTQ eliminates this entirely.
@@ -501,34 +511,34 @@ This is the most impactful difference. The TQ V-dequant's register spilling is w
 
 ## Comparison Table
 
-| | KTQ (K-cache) | TQ (V-cache, current) | VTQ (V-cache, proposed) | q4_0 (V-cache) | f16 (V-cache) |
-|---|---|---|---|---|---|
-| **bpw** (2-bit variant) | 3.5 | 3.5 | **2.5** | 4.5 | 16.0 |
-| **Block size** | 14B | 14B | **10B** | 18B | 64B |
-| **Dequant in FA** | N/A (dot product) | Serial FWHT + sign flip | **Codebook + scale** | Shift + scale | Load |
-| **Registers** | N/A | ~40 | **~8** | ~8 | ~2 |
-| **Can inline** | N/A | No | **Yes** | Yes | Yes |
-| **Spills** | N/A | Yes | **No** | No | No |
-| **Post-FA matmul** | No | No | **Yes (R^T)** | No | No |
-| **FWHT in hot loop** | Applied to Q | Applied to V (serial) | **None** | None | None |
-| **Per-block state** | d + qs + sb | d + qs + sb | **d + qs only** | d + qs | raw values |
-| **Quality** | PolarQuant (RHT) | PolarQuant (RHT) | PolarQuant (fixed H) | Uniform scalar | Exact |
-| **Corruption risk** | None | **HIGH** | **None** | None | None |
+| | KTQ (K-cache) | VTQ (V-cache) | q4_0 (V-cache) | f16 (V-cache) |
+|---|---|---|---|---|
+| **bpw** (2-bit variant) | 3.5 | **2.5** | 4.5 | 16.0 |
+| **Block size** | 14B | **10B** | 18B | 64B |
+| **Dequant in FA** | N/A (dot product) | **Codebook + scale** | Shift + scale | Load |
+| **Registers** | N/A | **~8** | ~8 | ~2 |
+| **Can inline** | N/A | **Yes** | Yes | Yes |
+| **Spills** | N/A | **No** | No | No |
+| **Post-FA matmul** | No | **Yes (R^T)** | No | No |
+| **FWHT in hot loop** | Applied to Q | **None** | None | None |
+| **Per-block state** | d + qs + sb | **d + qs only** | d + qs | raw values |
+| **Quality** | PolarQuant (RHT) | PolarQuant (fixed H) | Uniform scalar | Exact |
+| **Corruption risk** | None | **None** | None | None |
 
-### Recommended Configurations
+### Recommended Configurations (Implemented)
 
-| Use Case | K-cache | V-cache | Total bpw | Notes |
-|----------|---------|---------|-----------|-------|
-| Maximum compression | tq2_1 (3.5) | vtq2_1 (2.5) | **3.0** | Best VRAM, TQ1_1-level V bandwidth |
-| Balanced | tq3_1 (4.5) | vtq3_1 (3.5) | **4.0** | ~q4_0 quality, less VRAM |
-| Best quality TQ | tq4_1 (5.5) | vtq4_1 (4.5) | **5.0** | Better than q4_0/q4_0 |
-| Production safe | q8_0 (8.5) | vtq2_1 (2.5) | **5.5** | Best K quality + maximum V compression |
+| Use Case | K-cache | V-cache | Avg bpw | Notes |
+|----------|---------|---------|---------|-------|
+| Maximum compression | ktq2_1 (3.5) | vtq1_1 (1.5) | **2.5** | Best VRAM, extreme V compression |
+| Balanced | ktq3_1 (4.5) | vtq2_1 (2.5) | **3.5** | Good quality, long context |
+| Quality | ktq4_1 (5.5) | vtq3_1 (4.0) | **4.75** | Better than q4_0/q4_0 |
+| Production safe | q8_0 (8.5) | vtq2_1 (2.5) | **5.5** | Best K quality + max V compression |
 
 ---
 
 ## Open Questions
 
-1. **Codebook quality with fixed rotation:** Does the bare Hadamard (without per-block random signs) degrade PolarQuant's optimality enough to warrant VTQ-specific codebooks? Requires PPL benchmarks comparing `tq2_1/tq2_1` vs `tq2_1/vtq2_1`.
+1. **Codebook quality with fixed rotation:** Does the bare Hadamard (without per-block random signs) degrade PolarQuant's optimality enough to warrant VTQ-specific codebooks? Requires PPL benchmarks comparing `ktq2_1/ktq2_1` vs `ktq2_1/vtq2_1`.
 
 2. **Rotation matrix size:** Upstream uses 64x64 for V (applied per 64-element stripe). Our d_head=128 models could use either 64x64 (cheaper matmul) or 128x128 (better decorrelation). Need benchmarks.
 
@@ -536,7 +546,7 @@ This is the most impactful difference. The TQ V-dequant's register spilling is w
 
 4. **Norm correction quality:** TQ v5's norm correction reconstructs through FWHT+sign to measure error. VTQ's norm correction is simpler (reconstruct = codebook lookup, no FWHT) but the error profile may differ. May need a VTQ-specific correction factor.
 
-5. **CPU fallback:** VTQ quantize/dequantize on CPU is simpler than TQ (no Philox, no FWHT), but the post-FA rotation is a dense matmul. For CPU-only inference, this matmul cost may dominate. Consider whether CPU path should use TQ instead of VTQ.
+5. **CPU fallback:** VTQ quantize/dequantize on CPU is simpler than TQ (no Philox, no FWHT), but the post-FA rotation is a dense matmul. For CPU-only inference, this matmul cost may dominate. Consider whether CPU path should use KTQ instead of VTQ.
 
 ---
 
@@ -544,30 +554,16 @@ This is the most impactful difference. The TQ V-dequant's register spilling is w
 
 ### New Files
 
-| File | Content |
-|------|---------|
-| `ggml/src/ggml-cuda/fattn-vec-instance-*-vtq*.cu` | ~21 FA template instances |
+**Actual implementation delta:** ~830 LOC across 15 files. VTQ is simpler than KTQ because it removes the FWHT/Philox/sign-bit machinery.
 
-### Modified Files
-
-| File | Change |
-|------|--------|
-| `ggml/include/ggml.h` | +3 type enums (VTQ2_1, VTQ3_1, VTQ4_1) |
-| `ggml/src/ggml-common.h` | +3 block structs |
-| `ggml/src/ggml.c` | +3 type metadata entries |
-| `ggml/src/ggml-quants.h` | +6 function declarations |
-| `ggml/src/ggml-quants.c` | ~200 lines: CPU quantize/dequantize (simpler than TQ -- no FWHT) |
-| `ggml/src/ggml-cuda/turboquant.cuh` | ~150 lines: VTQ quantize blocks + codebook constants |
-| `ggml/src/ggml-cuda/fattn-common.cuh` | ~80 lines: dequantize_V_vtq* + get_dequantize_V dispatch |
-| `ggml/src/ggml-cuda/fattn.cu` | ~20 lines: VTQ type dispatch |
-| `ggml/src/ggml-cuda/convert.cu` | ~80 lines: CUDA dequant kernels |
-| `ggml/src/ggml-cuda/set-rows.cu` | ~60 lines: k_set_rows_vtq kernels |
-| `ggml/src/ggml-cuda/getrows.cu` | ~10 lines: get_rows dispatch |
-| `ggml/src/ggml-cuda/CMakeLists.txt` | +21 template instances |
-| `ggml/src/ggml-cpu/quants.c` | ~150 lines: CPU quantize/dequantize |
-| `common/arg.cpp` | +6 lines: CLI --cache-type-v vtq2_1/vtq3_1/vtq4_1 |
-
-**Estimated total delta:** ~800 lines added (vs ~2,650 for full TQ). VTQ is simpler because it removes the FWHT/Philox/sign-bit machinery.
+Key files modified:
+- `ggml/include/ggml.h` -- 8 type enums (KTQ1_1..KTQ4_1 + VTQ1_1..VTQ4_1)
+- `ggml/src/ggml-common.h` -- 4 VTQ block structs (no sb[])
+- `ggml/src/ggml-cuda/turboquant.cuh` -- VTQ quantize/dequant (shared PQ_CUDA_CB_* codebooks)
+- `ggml/src/ggml-cuda/fattn-common.cuh` -- `dequantize_V_vtq*` (`__forceinline__`, ~8 registers)
+- `ggml/src/ggml-cuda/fattn.cu` -- VTQ V-type dispatch
+- `ggml/src/ggml-quants.c` -- CPU quantize/dequantize for VTQ (shared PQ_CODEBOOK_*)
+- `common/arg.cpp` -- CLI: vtq1_1..vtq4_1 + ktq1_1..ktq4_1
 
 ---
 
@@ -575,9 +571,9 @@ This is the most impactful difference. The TQ V-dequant's register spilling is w
 
 - [PolarQuant (arXiv:2504.19874)](https://arxiv.org/abs/2504.19874) -- TurboQuant foundation paper (ICLR 2026)
 - [llama.cpp PR #21038](https://github.com/ggml-org/llama.cpp/pull/21038) -- TheTom's `self_v_rot` implementation
-- `ggml/src/ggml-common.h` lines 295-327 -- Current TQ block structs
-- `ggml/src/ggml-cuda/turboquant.cuh` -- TQ CUDA implementation
-- `ggml/src/ggml-cuda/fattn-common.cuh` lines 396-760 -- Current TQ V-dequant (the code VTQ replaces)
+- `ggml/src/ggml-common.h` lines 295-360 -- KTQ + VTQ block structs
+- `ggml/src/ggml-cuda/turboquant.cuh` -- KTQ + VTQ CUDA implementation (shared PQ codebooks)
+- `ggml/src/ggml-cuda/fattn-common.cuh` -- KTQ vec_dot_KQ + VTQ dequantize_V functions
 - `ggml/src/ggml-cuda/fattn-vec.cuh` lines 60-94 -- FA vec kernel V-threading model
 - `src/llama-graph.cpp` lines 2094-2161 -- `build_attn()` with `self_v_rot` pre/post FA
 - `src/llama-kv-cache.cpp` lines 22-58 -- `ggml_gen_hadamard()` rotation matrix construction
