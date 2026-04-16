@@ -944,6 +944,30 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_tq1_1,
         .from_float_ref           = (ggml_from_float_t) quantize_row_tq1_1_ref,
     },
+    [GGML_TYPE_VTQ2_1] = {
+        .type_name                = "vtq2_1",
+        .blck_size                = QK_VTQ,
+        .type_size                = sizeof(block_vtq2_1),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_vtq2_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq2_1_ref,
+    },
+    [GGML_TYPE_VTQ3_1] = {
+        .type_name                = "vtq3_1",
+        .blck_size                = QK_VTQ,
+        .type_size                = sizeof(block_vtq3_1),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_vtq3_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq3_1_ref,
+    },
+    [GGML_TYPE_VTQ4_1] = {
+        .type_name                = "vtq4_1",
+        .blck_size                = QK_VTQ,
+        .type_size                = sizeof(block_vtq4_1),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_vtq4_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq4_1_ref,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
