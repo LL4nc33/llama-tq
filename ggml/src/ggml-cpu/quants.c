@@ -505,7 +505,7 @@ void ggml_vec_dot_ktq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
     *s = sumf;
 }
 
-// TurboQuant PolarQuant CPU fallback: dequantize to f32, then f32 dot product
+// TurboQuant KTQ CPU fallback: dequantize to f32, then f32 dot product
 // These are slow but correct — only used for CPU graph splits on GPU-offloaded models
 #define TQ_VEC_DOT_F32_IMPL(type_name, block_type) \
 void ggml_vec_dot_##type_name##_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) { \

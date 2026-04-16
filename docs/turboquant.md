@@ -2,12 +2,12 @@
 
 ## Overview
 
-TurboQuant implements [Google Research's TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026) in GGML. It compresses the KV cache via **PolarQuant** (Randomized Hadamard Transform + Lloyd-Max scalar quantization), enabling significantly longer context windows on limited VRAM.
+TurboQuant implements KV cache quantization for GGML, inspired by [TurboQuant](https://arxiv.org/abs/2504.19874) (Zandieh et al., arXiv preprint April 2025). It compresses the KV cache via Randomized Hadamard Transform + Lloyd-Max scalar quantization, enabling significantly longer context windows on limited VRAM.
 
 Two type families exist, split by cache role:
 
-- **KTQ** (K-Cache TurboQuant) -- full PolarQuant with per-block RHT sign bits. The FA kernel uses a Hadamard-domain dot product (FWHT on Q, not inverse-FWHT on K), eliminating gather shuffles and branch divergence. 39% fewer warp shuffles per vec_dot call.
-- **VTQ** (V-Cache TurboQuant) -- PolarQuant without FWHT or sign bits. V values are pre-rotated via `self_v_rot` (graph-level Hadamard). FA V-dequant is `codebook[idx] * scale` -- `__forceinline__`, ~8 registers (vs ~40 for KTQ). Inverse rotation applied as a single post-FA matmul.
+- **KTQ** (K-Cache TurboQuant) -- Hadamard rotation (RHT) with per-block sign bits. The FA kernel uses a Hadamard-domain dot product (FWHT on Q, not inverse-FWHT on K), eliminating gather shuffles and branch divergence. 39% fewer warp shuffles per vec_dot call.
+- **VTQ** (V-Cache TurboQuant) -- codebook-only quantization without FWHT or sign bits. V values are pre-rotated via `self_v_rot` (graph-level Hadamard). FA V-dequant is `codebook[idx] * scale` -- `__forceinline__`, ~8 registers (vs ~40 for KTQ). Inverse rotation applied as a single post-FA matmul.
 
 The KTQ/VTQ split was motivated by a V-dequant register spilling bug in the FA kernel: KTQ's full dequant path (32-element FWHT butterfly + sign bits) requires ~40 float registers, forcing `__noinline__` and causing LMEM spills that corrupt the FA accumulator state. VTQ eliminates this by moving the rotation out of the FA hot loop.
 
@@ -32,7 +32,7 @@ cmake --build build -j$(nproc) --target llama-server
 
 ## Available Types
 
-### KTQ (K-Cache) -- full PolarQuant with RHT sign bits
+### KTQ (K-Cache) -- Hadamard rotation (RHT) with sign bits
 
 | Type | bpw | Block Size | vs f16 | Use Case |
 |------|-----|------------|--------|----------|
@@ -72,7 +72,7 @@ VTQ saves 4 bytes per block (the `sb[4]` sign bits) because the rotation is fixe
 | Maximum compression | `ktq2_1` (3.5) | `vtq1_1` (1.5) | **2.5** | Best VRAM, extreme V compression |
 | Balanced | `ktq3_1` (4.5) | `vtq2_1` (2.5) | **3.5** | Good quality, long context |
 | Quality | `ktq4_1` (5.5) | `vtq3_1` (4.0) | **4.75** | Better PPL than q4_0/q4_0 |
-| Production safe | `q8_0` (8.5) | `vtq2_1` (2.5) | **5.5** | Best K quality + max V compression |
+| Conservative | `q8_0` (8.5) | `vtq2_1` (2.5) | **5.5** | Best K quality + max V compression |
 
 ## Memory Savings (Ministral 3B, 26 layers, 8 KV-heads)
 
@@ -142,7 +142,7 @@ float[32] -> normalize -> random signs -> FWHT -> codebook -> norm correction ->
 1. **Normalize:** `x_hat = x / ||x||`
 2. **Random Signs:** Apply deterministic +/-1 signs (Philox 6-round PRNG from block-index seed)
 3. **FWHT:** Fast Walsh-Hadamard Transform, scaled by `1/sqrt(32)`
-4. **Lloyd-Max Quantization:** Nearest centroid from Beta(15.5, 15.5)-optimal codebook
+4. **Lloyd-Max Quantization:** Nearest centroid from Beta(15.5, 15.5)-approximate codebook (d=32 approximation of the TurboQuant marginal distribution)
 5. **Norm Correction:** Reconstruct, measure `||recon||`, store `norm / ||recon||` -- compensates codebook error (~1.2% PPL improvement)
 6. **Sign Bits:** Store precomputed signs in `sb[4]` (32 bits = 32 signs)
 
@@ -164,7 +164,7 @@ float[d_head] -> graph-level R * v -> [cache write] -> per-block: normalize -> c
 
 1. **Pre-rotation:** `v_rot = R * v` applied at graph level via `self_v_rot` before cache write
 2. **Normalize:** `x_hat = block / ||block||`
-3. **Lloyd-Max Quantization:** Same shared PolarQuant codebooks as KTQ
+3. **Lloyd-Max Quantization:** Same shared codebooks as KTQ
 4. **Norm Correction:** Same approach as KTQ
 5. **Pack:** `d` + `qs` only -- NO `sb[4]` sign bits
 
@@ -180,9 +180,9 @@ Values are in the rotated (Hadamard) domain. After the FA kernel accumulates the
 VKQ_final = R^T * VKQ_rotated    // graph-level matmul via self_v_rot
 ```
 
-### Shared PolarQuant Codebooks (PQ_CODEBOOK_*)
+### Shared Codebooks (PQ_CODEBOOK_*)
 
-Both KTQ and VTQ use the same Lloyd-Max codebooks, optimal for Beta(15.5, 15.5) with d=32:
+Both KTQ and VTQ use the same Lloyd-Max codebooks, optimal for the TurboQuant marginal distribution ≈ Beta(15.5, 15.5) at d=32:
 
 - **1-bit (2 centroids):** `{-0.7979, 0.7979}` (= sqrt(2/pi))
 - **2-bit (4 centroids):** `{-1.4896, -0.4514, 0.4514, 1.4896}`
@@ -302,10 +302,15 @@ The fixed Hadamard rotation (without per-block random signs) produces slightly d
 ### Block Size 128 Rotation (LOW)
 WHT rotation over 128 elements (full head_dim) instead of 32. Better decorrelation (5.12x vs 4.57x compression). Significant architecture change.
 
-## Paper Reference
+## References
 
-**TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate**
-Google Research, ICLR 2026 -- https://arxiv.org/abs/2504.19874
+This implementation is inspired by but deviates from the TurboQuant paper. KTQ uses Hadamard (FWHT) + random signs instead of QR rotation; VTQ uses a fixed D\*H\*D rotation (our own design). Neither uses QJL (removed in v5).
+
+| Paper | Authors | arXiv | Relevance |
+|-------|---------|-------|-----------|
+| **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate** | Zandieh, Daliri, Hadian, Mirrokni | [2504.19874](https://arxiv.org/abs/2504.19874) (April 2025) | Primary inspiration: random rotation + Lloyd-Max codebooks |
+| **PolarQuant: Quantizing KV Cache via Polar Coordinate Transformation** | Han, Kacham, Karbasi, Mirrokni, Zandieh | [2502.02617](https://arxiv.org/abs/2502.02617) (Feb 2025) | Different method (polar coordinates), not used in our implementation |
+| **QJL: 1-Bit Quantized JL Transform for KV Cache Quantization** | Zandieh, Daliri, Han | [2406.03482](https://arxiv.org/abs/2406.03482) (June 2024) | Used in v1-v4, removed in v5 |
 
 ## Version History
 
@@ -316,4 +321,4 @@ Google Research, ICLR 2026 -- https://arxiv.org/abs/2504.19874
 - **v4** (2026-04-09): TQ4_1 (4-bit, 16 centroids), Sparse V Dequant, asymmetric K/V support.
 - **v3** (2026-04-08): Paper-compliant: stored r_norm, QJL on CUDA, Beta-exact codebooks.
 - **v2** (2026-04-07): Warp-parallel FWHT, CUDA QJL attempt.
-- **v1** (2026-04-06): Initial PolarQuant + CPU reference.
+- **v1** (2026-04-06): Initial TurboQuant-inspired implementation + CPU reference.
