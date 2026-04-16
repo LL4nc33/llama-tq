@@ -101,6 +101,34 @@ static __device__ __forceinline__ uint16_t ktq_cuda_derive_seed(int64_t block_in
 }
 
 // ============================================================
+// Stochastic Rounding for PolarQuant — makes E[K_q] = K (unbiased)
+// Probabilistically chooses between two nearest centroids.
+// This eliminates first-order softmax perturbation when K+V are both quantized.
+// ============================================================
+template <int N_CB>
+static __device__ __forceinline__ int pq_stochastic_round(float val, const float * codebook, uint32_t rng) {
+    // Find two nearest centroids
+    int best = 0, second = 0;
+    float best_d = 1e30f, second_d = 1e30f;
+    for (int c = 0; c < N_CB; c++) {
+        float d = fabsf(val - codebook[c] * PQ_CUDA_CB_SCALE);
+        if (d < best_d) {
+            second = best; second_d = best_d;
+            best = c; best_d = d;
+        } else if (d < second_d) {
+            second = c; second_d = d;
+        }
+    }
+    // P(choose best) = second_d / (best_d + second_d)
+    const float total = best_d + second_d;
+    if (total > 1e-30f) {
+        const float u = (float)(rng & 0xFFFF) / 65536.0f;
+        if (u >= second_d / total) best = second;
+    }
+    return best;
+}
+
+// ============================================================
 // Warp-Parallel FWHT via __shfl_xor_sync (32 elements, one per thread)
 // ============================================================
 static __device__ __forceinline__ float ktq_cuda_fwht_warp(float val) {
@@ -321,10 +349,18 @@ static __device__ void ktq_cuda_quantize_ktq1_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: PolarQuant — 1-bit: sign threshold
+    // Step 4: PolarQuant — 1-bit: stochastic rounding between centroids
+    // P(idx=1) = (val - c0) / (c1 - c0) where c0=-0.798, c1=+0.798 (scaled)
     memset(y->qs, 0, 4);
     for (int j = 0; j < 32; j++) {
-        const int idx = (rotated[j] >= 0.0f) ? 1 : 0;
+        const float val = rotated[j];
+        const float c0 = PQ_CUDA_CB_1BIT[0] * PQ_CUDA_CB_SCALE;
+        const float c1 = PQ_CUDA_CB_1BIT[1] * PQ_CUDA_CB_SCALE;
+        float p1 = (val - c0) / (c1 - c0);  // probability of choosing centroid 1
+        p1 = fmaxf(0.0f, fminf(1.0f, p1));   // clamp to [0, 1]
+        const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
+        const float u = (float)(rng & 0xFFFF) / 65536.0f;
+        const int idx = (u < p1) ? 1 : 0;
         y->qs[j / 8] |= (uint8_t)(idx << (j % 8));
     }
 
@@ -383,16 +419,11 @@ static __device__ void ktq_cuda_quantize_ktq2_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: PolarQuant — nearest codebook centroid
+    // Step 4: PolarQuant — stochastic rounding (makes E[K_q] = K, unbiased)
     memset(y->qs, 0, 8);
     for (int j = 0; j < 32; j++) {
-        float val = rotated[j];
-        int best = 0;
-        float best_d = fabsf(val - PQ_CUDA_CB_2BIT[0] * PQ_CUDA_CB_SCALE);
-        for (int c = 1; c < 4; c++) {
-            float d = fabsf(val - PQ_CUDA_CB_2BIT[c] * PQ_CUDA_CB_SCALE);
-            if (d < best_d) { best_d = d; best = c; }
-        }
+        const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
+        const int best = pq_stochastic_round<4>(rotated[j], PQ_CUDA_CB_2BIT, rng);
         y->qs[j / 4] |= (uint8_t)(best << (2 * (j % 4)));
     }
 
@@ -447,16 +478,11 @@ static __device__ void ktq_cuda_quantize_ktq3_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // PolarQuant with 3-bit codebook
+    // PolarQuant with 3-bit codebook — stochastic rounding
     memset(y->qs, 0, 12);
     for (int j = 0; j < 32; j++) {
-        float val = rotated[j];
-        int best = 0;
-        float best_d = fabsf(val - PQ_CUDA_CB_3BIT[0] * PQ_CUDA_CB_SCALE);
-        for (int c = 1; c < 8; c++) {
-            float d = fabsf(val - PQ_CUDA_CB_3BIT[c] * PQ_CUDA_CB_SCALE);
-            if (d < best_d) { best_d = d; best = c; }
-        }
+        const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
+        const int best = pq_stochastic_round<8>(rotated[j], PQ_CUDA_CB_3BIT, rng);
         // Pack 3-bit
         const int bit_off = j * 3;
         const int byte_idx = bit_off / 8;
@@ -814,16 +840,11 @@ static __device__ void ktq_cuda_quantize_ktq4_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: PolarQuant — nearest of 16 codebook centroids, nibble-packed
+    // Step 4: PolarQuant — stochastic rounding with 16 centroids
     memset(y->qs, 0, 16);
     for (int j = 0; j < 32; j++) {
-        float val = rotated[j];
-        int best = 0;
-        float best_d = fabsf(val - PQ_CUDA_CB_4BIT[0] * PQ_CUDA_CB_SCALE);
-        for (int c = 1; c < 16; c++) {
-            float d = fabsf(val - PQ_CUDA_CB_4BIT[c] * PQ_CUDA_CB_SCALE);
-            if (d < best_d) { best_d = d; best = c; }
-        }
+        const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
+        const int best = pq_stochastic_round<16>(rotated[j], PQ_CUDA_CB_4BIT, rng);
         y->qs[j / 2] |= (uint8_t)(best << (4 * (j % 2)));
     }
 
