@@ -220,24 +220,25 @@ llama_kv_cache::llama_kv_cache(
         ggml_type eff_type_k = type_k;
         ggml_type eff_type_v = type_v;
 
-        // FA + TQ V workaround: TQ V-dequant in FA vec kernel has a known bug.
-        // Force V to f16 when FA is active (v_trans == false means FA is on).
-        // K stays TQ (Hadamard-domain dot product is proven correct).
+        // FA + TQ V workaround: TQ V-dequant in FA vec kernel has a known bug (register spilling).
+        // Force V to f16 when FA is active. VTQ types are exempt (lightweight dequant, no FWHT).
         {
             const bool is_tq_v = (type_v == GGML_TYPE_TQ1_1 || type_v == GGML_TYPE_TQ2_1 ||
                                   type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
             if (is_tq_v && !v_trans) {
                 eff_type_v = GGML_TYPE_F16;
                 if (il == 0) {
-                    LLAMA_LOG_WARN("%s: FA active with TQ V-cache — forcing V to f16 (TQ V-dequant in FA kernel not yet supported)\n", __func__);
+                    LLAMA_LOG_WARN("%s: FA active with TQ V-cache — forcing V to f16 (use vtq2_1/vtq3_1/vtq4_1 for native FA V support)\n", __func__);
                 }
             }
+            // VTQ types work natively in FA — no workaround needed
         }
         if (tq_protect_layers > 0) {
             const bool is_tq_k = (type_k == GGML_TYPE_TQ1_1 || type_k == GGML_TYPE_TQ2_1 || type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
             const bool is_tq_v = (type_v == GGML_TYPE_TQ1_1 || type_v == GGML_TYPE_TQ2_1 || type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
+            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ2_1 || type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1);
 
-            if (is_tq_k || is_tq_v) {
+            if (is_tq_k || is_tq_v || is_vtq_v) {
                 uint32_t kv_layer_idx = 0;
                 for (uint32_t j = 0; j < il; j++) {
                     if (hparams.has_kv(j)) {
@@ -250,7 +251,7 @@ llama_kv_cache::llama_kv_cache(
                                          (kv_layer_idx >= n_kv_layers - tq_protect_layers);
                 if (is_boundary) {
                     if (is_tq_k) { eff_type_k = GGML_TYPE_Q8_0; }
-                    if (is_tq_v) { eff_type_v = GGML_TYPE_Q8_0; }
+                    if (is_tq_v || is_vtq_v) { eff_type_v = GGML_TYPE_Q8_0; }
                     LLAMA_LOG_INFO("%s: layer %3d: boundary protection (k=%s, v=%s)\n",
                         __func__, il, ggml_type_name(eff_type_k), ggml_type_name(eff_type_v));
                 }

@@ -340,6 +340,43 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ3_1, GGML_TYPE_TQ4_1)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ4_1, GGML_TYPE_TQ4_1)
 
+    // VTQ V-type combinations (any K-type with VTQ V-type)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ1_1, GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ2_1, GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ3_1, GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ4_1, GGML_TYPE_VTQ2_1)
+
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ1_1, GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ2_1, GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ3_1, GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ4_1, GGML_TYPE_VTQ3_1)
+
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ1_1, GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ2_1, GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ3_1, GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ4_1, GGML_TYPE_VTQ4_1)
+
     // TurboQuant K-type with standard V-types (K=TQ, V=standard)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ1_1, GGML_TYPE_F16)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ1_1, GGML_TYPE_Q4_0)
@@ -401,6 +438,19 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_TQ2_1)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_TQ3_1)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_TQ4_1)
+
+    // VTQ (V-cache optimized) — any K-type with VTQ V-type
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ4_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ1_1, GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ2_1, GGML_TYPE_VTQ2_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ3_1, GGML_TYPE_VTQ3_1)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_TQ4_1, GGML_TYPE_VTQ4_1)
 
     // Note: K=TQ + V=standard (e.g., tq2_1/q4_0) requires GGML_CUDA_FA_ALL_QUANTS=ON
 #endif // GGML_CUDA_FA_ALL_QUANTS
@@ -485,8 +535,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
     }
 
+    // VTQ types are V-cache only — always asymmetric K!=V
+    const bool is_vtq_v = V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1;
+
 #ifndef GGML_CUDA_FA_ALL_QUANTS
-    if (K->type != V->type) {
+    if (K->type != V->type && !is_vtq_v) {
         return BEST_FATTN_KERNEL_NONE;
     }
 #endif // GGML_CUDA_FA_ALL_QUANTS
@@ -521,19 +574,18 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
 
-    // TurboQuant types only have VEC kernel support (no MMA/TILE/WMMA):
-    // For TQ, allow head sizes up to 512 (needed for Gemma4 global attention layers)
+    // TurboQuant/VTQ types only have VEC kernel support (no MMA/TILE/WMMA):
+    // For TQ/VTQ, allow head sizes up to 512 (needed for Gemma4 global attention layers)
     const bool is_tq_k = K->type == GGML_TYPE_TQ1_1 || K->type == GGML_TYPE_TQ2_1 || K->type == GGML_TYPE_TQ3_1 || K->type == GGML_TYPE_TQ4_1;
     const bool is_tq_v = V->type == GGML_TYPE_TQ1_1 || V->type == GGML_TYPE_TQ2_1 || V->type == GGML_TYPE_TQ3_1 || V->type == GGML_TYPE_TQ4_1;
     const bool can_use_vector_kernel_tq = Q->ne[0] <= 512 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
-    if (is_tq_k || is_tq_v) {
+    if (is_tq_k || is_tq_v || is_vtq_v) {
         if (!can_use_vector_kernel_tq) {
             return BEST_FATTN_KERNEL_NONE;
         }
 #ifndef GGML_CUDA_FA_ALL_QUANTS
-        // Without FA_ALL_QUANTS, only symmetric TQ and K=standard+V=TQ are compiled.
-        // K=TQ + V=non-TQ-non-f16 combinations are not available.
-        if (is_tq_k && !is_tq_v && V->type != GGML_TYPE_F16) {
+        // Without FA_ALL_QUANTS, only symmetric TQ, K=standard+V=TQ, and VTQ V-types are compiled.
+        if (is_tq_k && !is_tq_v && !is_vtq_v && V->type != GGML_TYPE_F16) {
             return BEST_FATTN_KERNEL_NONE;
         }
 #endif

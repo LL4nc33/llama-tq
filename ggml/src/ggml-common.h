@@ -326,6 +326,32 @@ typedef struct {
 } block_tq4_1;               // = 22 bytes for 32 elements
 static_assert(sizeof(block_tq4_1) == sizeof(ggml_half) + QK_TQ/2 + QK_TQ/8, "wrong tq4_1 block size/padding");
 
+// VTQ (Value TurboQuant) — V-cache optimized, NO FWHT/sign bits.
+// Data arrives pre-rotated via self_v_rot (graph-level Hadamard).
+// Dequant = codebook lookup * scale — ~8 registers, __forceinline__.
+#define QK_VTQ 32  // block size (same as TQ)
+
+// VTQ2_1: 2-bit codebook, NO sign bits = 2.5 bpw
+typedef struct {
+    ggml_half d;               // 2B: block L2 norm (scale)
+    uint8_t   qs[QK_VTQ / 4]; // 8B: 2-bit codebook indices (4 per byte)
+} block_vtq2_1;                // = 10 bytes for 32 elements
+static_assert(sizeof(block_vtq2_1) == 10, "wrong vtq2_1 block size");
+
+// VTQ3_1: 3-bit codebook = 3.5 bpw
+typedef struct {
+    ggml_half d;                   // 2B: block L2 norm
+    uint8_t   qs[QK_VTQ * 3 / 8]; // 12B: 3-bit indices (packed)
+} block_vtq3_1;                    // = 14 bytes for 32 elements
+static_assert(sizeof(block_vtq3_1) == 14, "wrong vtq3_1 block size");
+
+// VTQ4_1: 4-bit codebook = 4.5 bpw
+typedef struct {
+    ggml_half d;               // 2B: block L2 norm
+    uint8_t   qs[QK_VTQ / 2]; // 16B: 4-bit indices (nibble-packed)
+} block_vtq4_1;                // = 18 bytes for 32 elements
+static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
+
 //
 // Super-block quantization structures
 //
