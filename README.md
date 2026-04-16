@@ -4,7 +4,7 @@
 
 **Asymmetric KV-Cache Quantization for llama.cpp** -- separate K and V compression paths, each optimized for their role in Flash Attention.
 
-Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) based on [PolarQuant](https://arxiv.org/abs/2504.19874) (Google Research, ICLR 2026).
+Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp), inspired by [TurboQuant](https://arxiv.org/abs/2504.19874) (Zandieh et al., arXiv preprint April 2025).
 
 > **Key findings:**
 > - VTQ V-cache at 2.5 bpw is **faster than q4_0** (+40% prompt throughput) while using less memory
@@ -29,7 +29,7 @@ cmake --build build -j$(nproc) --target llama-server
 
 | Config | K | V | Avg bpw | PPL Impact | Best For |
 |--------|---|---|:---:|---|---|
-| **Safe** | `q8_0` | `vtq3_1` | 6.25 | +1% | production, quality-first |
+| **Safe** | `q8_0` | `vtq3_1` | 6.25 | +1% | quality-first, near-lossless |
 | **Balanced** | `q4_0` | `vtq3_1` | 4.25 | ~1% | general use |
 | **Recommended** | `q8_0` | `vtq2_1` | 5.5 | +6-7% | best VRAM/quality tradeoff |
 | Aggressive | `q4_0` | `vtq2_1` | 3.5 | +8% | long context, VRAM-limited |
@@ -109,24 +109,33 @@ VTQ3_1 is **perplexity-neutral** on both models. VTQ2_1 with q8_0 K costs only +
 
 PPL delta vs f16 baseline (lower is better). Different hardware, so absolute tok/s are not comparable — **relative deltas are**.
 
-| Approach | Type | bpw | PPL Delta (Qwen ~35B) | Decode Delta | Hardware |
-|----------|------|:---:|:---:|:---:|---|
-| **llama-tq vtq3_1** | V-only | 4.0 | **+1.0%** | **-2%** | 2x RTX 2060 |
-| TheTom turbo4 | K+V sym | 4.25 | +0.23% | -7% | M5 Max |
-| **llama-tq vtq2_1** | V-only | 2.5 | **+6.6%** | **-2%** | 2x RTX 2060 |
-| TheTom turbo3 | K+V sym | 3.5 | +1.06% | -10% | M5 Max |
-| TheTom turbo2 | K+V sym | 2.5 | +6.48% | -22%* | M5 Max |
-| q4_0 | K+V sym | 4.5 | +0.3-0.6% | -16% | 2x RTX 2060 |
-| **llama-tq q8_0+vtq2_1** | asymmetric | 5.5 | **+6.6%** | **-2%** | 2x RTX 2060 |
-| TheTom q8_0+turbo3 | asymmetric | ~5.5 | +2.0% | ~-10% | M5 Max |
+| Approach | Type | bpw | PPL Delta (Qwen ~27-35B) | Decode Delta | Hardware | Model Quant |
+|----------|------|:---:|:---:|:---:|---|---|
+| Approach | Type | bpw | PPL Delta | Decode Delta | Hardware | Model Quant |
+|----------|------|:---:|:---:|:---:|---|---|
+| buun turbo3_tcq | K+V trellis | 3.25 | **-0.05%**\*\* | **-3%** | RTX 3090 | Q6_K |
+| **llama-tq vtq3_1** | V-only | 4.0 | +1.0% | **-2%** | 2x RTX 2060 | IQ2_XS |
+| TheTom turbo4 | K+V sym | 4.25 | **+0.23%** | -7% | M5 Max | Q4_K_M |
+| **llama-tq vtq2_1** | V-only | 2.5 | +6.6% | **-2%** | 2x RTX 2060 | IQ2_XS |
+| TheTom turbo3 | K+V sym | 3.5 | +1.06% | -10% | M5 Max | Q4_K_M |
+| buun turbo2_tcq | K+V trellis | 2.25 | KLD 0.101\*\*\* | **-3%** | RTX 3090 | Q6_K |
+| TheTom turbo2 | K+V sym | 2.5 | +6.48% | -22%\* | M5 Max | Q4_K_M |
+| q4_0 | K+V sym | 4.5 | +0.3-0.6% | -16% | 2x RTX 2060 | IQ2_XS |
+| **llama-tq q8_0+vtq2_1** | asymmetric | 5.5 | +6.6% | **-2%** | 2x RTX 2060 | IQ2_XS |
+| TheTom q8_0+turbo3 | asymmetric | ~5.5 | +2.0% | ~-10% | M5 Max | Q4_K_M |
 
-*TheTom turbo2 decode varies: -22% on MoE short context, but **+33.9%** on M1 Max with turbo4.
+\*TheTom turbo2 decode varies: -22% on MoE short context, but +33.9% on M1 Max with turbo4.
+\*\*buun turbo3_tcq: PPL 5.802 vs f16 5.805 (Qwen3.5-27B Q6_K, 2K ctx). Uses KL-divergence metric, not directly comparable to wikitext-2 PPL.
+\*\*\*buun turbo2_tcq: KLD 0.101 at 2K context — different metric, not directly comparable to PPL delta.
+
+**Note:** These results use different models, hardware, quantizations, and metrics. Direct comparison is approximate at best.
 
 **Key differences:**
-- **llama-tq VTQ** separates K and V quantization paths — V dequant is `__forceinline__` (~8 registers) vs TheTom's shared TQ dequant
-- **VTQ decode overhead is minimal** (-2% TG) because the V-dequant is a trivial codebook lookup. TheTom's symmetric approach has higher decode cost (-7 to -10%) because both K and V share the full TQ dequant path
-- **PPL at 2-bit**: Both achieve ~+6.5% at 2.5 bpw V-cache, but llama-tq uses D\*H\*D rotation (Laplace codebook) while TheTom uses standard RHT
-- **TheTom has better PPL at 3-4 bit** because symmetric K+V quantization avoids the K-V error amplification issue
+- **llama-tq VTQ** separates K and V quantization paths — V dequant is `__forceinline__` (~8 registers). CUDA only
+- **buun TCQ** uses Trellis-Coded Quantization (512-state Viterbi encoding, O(1) decode). Best quality at 3-bit. CUDA only
+- **TheTom** has the widest platform support (Metal + CUDA) and most extensive benchmarks (NIAH, long context). Symmetric K+V means higher decode cost (-7 to -10%)
+- **VTQ decode overhead is minimal** (-2% TG) because V-dequant is a trivial codebook lookup vs full TQ dequant path
+- **PPL at 2-bit**: llama-tq and TheTom both achieve ~+6.5% at 2.5 bpw V-cache
 
 ---
 
@@ -168,7 +177,7 @@ Graph-level D\*H\*D rotation (randomized Hadamard). FA dequant is `codebook[idx]
 
 ### The Problem
 
-PolarQuant's V-dequant requires a 32-element FWHT butterfly (~40 float registers) inside the FA kernel's inner loop. This causes register spilling and corruption on CUDA.
+TurboQuant's V-dequant requires a 32-element FWHT butterfly (~40 float registers) inside the FA kernel's inner loop. This causes register spilling and corruption on CUDA.
 
 ### The Solution: Split K and V
 
@@ -214,14 +223,19 @@ CUDA CC 6.1+. CPU fallback available.
 
 | Project | Focus |
 |---------|-------|
-| [TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus) | Community TQ, Metal + CUDA, extensive benchmarks |
-| [spiritbuun/buun-llama-cpp](https://github.com/spiritbuun/buun-llama-cpp) | TCQ (Trellis-Coded Quantization) |
+| [TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus) | Symmetric TQ, Metal + CUDA, extensive benchmarks (NIAH, long ctx) |
+| [spiritbuun/buun-llama-cpp](https://github.com/spiritbuun/buun-llama-cpp) | TCQ (Trellis-Coded Quantization), Viterbi encoding, best 3-bit PPL |
 | [llama.cpp #20969](https://github.com/ggml-org/llama.cpp/discussions/20969) | TurboQuant community thread |
 
-## Paper
+## References
 
-**TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate**
-Google Research, ICLR 2026 -- [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
+This implementation is inspired by but deviates from the TurboQuant paper. KTQ uses Hadamard (FWHT) + random signs instead of QR rotation; VTQ uses a fixed D\*H\*D rotation (our own design). Neither uses QJL (removed in v5).
+
+| Paper | Authors | arXiv | Relevance |
+|-------|---------|-------|-----------|
+| **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate** | Zandieh, Daliri, Hadian, Mirrokni | [2504.19874](https://arxiv.org/abs/2504.19874) (April 2025) | Primary inspiration: random rotation + Lloyd-Max codebooks |
+| **PolarQuant: Quantizing KV Cache via Polar Coordinate Transformation** | Han, Kacham, Karbasi, Mirrokni, Zandieh | [2502.02617](https://arxiv.org/abs/2502.02617) (Feb 2025) | Different method (polar coordinates), not used in our implementation |
+| **QJL: 1-Bit Quantized JL Transform for KV Cache Quantization** | Zandieh, Daliri, Han | [2406.03482](https://arxiv.org/abs/2406.03482) (June 2024) | Used in v1-v4, removed in v5 |
 
 ## License
 
