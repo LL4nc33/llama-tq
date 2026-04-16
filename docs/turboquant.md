@@ -1,10 +1,15 @@
-# TurboQuant v7 -- Advanced KV Cache Quantization for CUDA
+# TurboQuant v7 -- KTQ/VTQ KV Cache Quantization for CUDA
 
 ## Overview
 
 TurboQuant implements [Google Research's TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026) in GGML. It compresses the KV cache via **PolarQuant** (Randomized Hadamard Transform + Lloyd-Max scalar quantization), enabling significantly longer context windows on limited VRAM.
 
-**v7 key innovation:** Hadamard-domain KQ dot product -- applies FWHT to Q instead of inverse-FWHT on K, eliminating gather shuffles and branch divergence. 39% fewer warp shuffles per vec_dot call.
+Two type families exist, split by cache role:
+
+- **KTQ** (K-Cache TurboQuant) -- full PolarQuant with per-block RHT sign bits. The FA kernel uses a Hadamard-domain dot product (FWHT on Q, not inverse-FWHT on K), eliminating gather shuffles and branch divergence. 39% fewer warp shuffles per vec_dot call.
+- **VTQ** (V-Cache TurboQuant) -- PolarQuant without FWHT or sign bits. V values are pre-rotated via `self_v_rot` (graph-level Hadamard). FA V-dequant is `codebook[idx] * scale` -- `__forceinline__`, ~8 registers (vs ~40 for KTQ). Inverse rotation applied as a single post-FA matmul.
+
+The KTQ/VTQ split was motivated by a V-dequant register spilling bug in the FA kernel: KTQ's full dequant path (32-element FWHT butterfly + sign bits) requires ~40 float registers, forcing `__noinline__` and causing LMEM spills that corrupt the FA accumulator state. VTQ eliminates this by moving the rotation out of the FA hot loop.
 
 ## Quick Start
 
@@ -12,47 +17,70 @@ TurboQuant implements [Google Research's TurboQuant](https://arxiv.org/abs/2504.
 cmake -B build -DGGML_CUDA=ON
 cmake --build build -j$(nproc) --target llama-server
 
-# Maximum compression (3.5 bpw)
+# Maximum compression (2.5 bpw avg)
 ./build/bin/llama-server -m model.gguf \
-    --cache-type-k tq2_1 --cache-type-v tq2_1 -fa on -ngl 99
+    --cache-type-k ktq2_1 --cache-type-v vtq1_1 -fa on -ngl 99
 
-# Best quality TQ (5.5 bpw, better than q4_0 PPL)
+# Balanced (3.5 bpw avg)
 ./build/bin/llama-server -m model.gguf \
-    --cache-type-k tq4_1 --cache-type-v tq4_1 -fa on -ngl 99
+    --cache-type-k ktq3_1 --cache-type-v vtq2_1 -fa on -ngl 99
 
-# Asymmetric (recommended for quantized weights)
+# Quality (4.75 bpw avg)
 ./build/bin/llama-server -m model.gguf \
-    --cache-type-k q8_0 --cache-type-v tq2_1 -fa on -ngl 99
+    --cache-type-k ktq4_1 --cache-type-v vtq3_1 -fa on -ngl 99
 ```
 
 ## Available Types
 
-| Type | bpw | Block Size | vs f16 | vs q4_0 | Use Case |
-|------|-----|------------|--------|---------|----------|
-| `tq1_1` | 2.5 | 10 bytes | **-84%** | -44% | Extreme compression (V-cache recommended) |
-| `tq2_1` | 3.5 | 14 bytes | -78% | -22% | Maximum compression, long context |
-| `tq3_1` | 4.5 | 18 bytes | -72% | Same | Balanced quality/compression |
-| `tq4_1` | 5.5 | 22 bytes | -66% | +22% | Best TQ quality, better PPL than q4_0 |
+### KTQ (K-Cache) -- full PolarQuant with RHT sign bits
 
-For comparison:
+| Type | bpw | Block Size | vs f16 | Use Case |
+|------|-----|------------|--------|----------|
+| `ktq1_1` | 2.5 | 10 bytes | **-84%** | Extreme K compression |
+| `ktq2_1` | 3.5 | 14 bytes | -78% | Maximum compression, long context |
+| `ktq3_1` | 4.5 | 18 bytes | -72% | Balanced quality/compression |
+| `ktq4_1` | 5.5 | 22 bytes | -66% | Best KTQ quality |
 
-| Type | bpw | Block Size (32 elements) |
-|------|-----|--------------------------|
-| f16 | 16.0 | 64 bytes |
-| q8_0 | 8.5 | 34 bytes |
-| **tq4_1** | **5.5** | **22 bytes** |
-| q4_0 | 4.5 | 18 bytes |
-| **tq3_1** | **4.5** | **18 bytes** |
-| **tq2_1** | **3.5** | **14 bytes** |
-| **tq1_1** | **2.5** | **10 bytes** |
+### VTQ (V-Cache) -- no FWHT/sign bits, pre-rotated via self_v_rot
+
+| Type | bpw | Block Size | vs f16 | Use Case |
+|------|-----|------------|--------|----------|
+| `vtq1_1` | 1.5 | 6 bytes | **-91%** | Extreme V compression |
+| `vtq2_1` | 2.5 | 10 bytes | -84% | Best V compression with 2-bit quality |
+| `vtq3_1` | 4.0 | 16 bytes | -75% | Balanced V quality |
+| `vtq4_1` | 4.5 | 18 bytes | -72% | Best VTQ quality |
+
+### Combined Reference
+
+| Type | Family | bpw | Block | d (norm) | qs (indices) | sb (signs) |
+|------|--------|-----|-------|----------|-------------|------------|
+| `ktq1_1` | KTQ | 2.5 | 10B | 2B | 4B (1-bit) | 4B |
+| `ktq2_1` | KTQ | 3.5 | 14B | 2B | 8B (2-bit) | 4B |
+| `ktq3_1` | KTQ | 4.5 | 18B | 2B | 12B (3-bit) | 4B |
+| `ktq4_1` | KTQ | 5.5 | 22B | 2B | 16B (4-bit) | 4B |
+| `vtq1_1` | VTQ | 1.5 | 6B | 2B | 4B (1-bit) | -- |
+| `vtq2_1` | VTQ | 2.5 | 10B | 2B | 8B (2-bit) | -- |
+| `vtq3_1` | VTQ | 4.0 | 16B | 2B | 14B (3-bit) | -- |
+| `vtq4_1` | VTQ | 4.5 | 18B | 2B | 16B (4-bit) | -- |
+
+VTQ saves 4 bytes per block (the `sb[4]` sign bits) because the rotation is fixed and position-independent. The V data arrives pre-rotated; no per-block state is needed.
+
+## Recommended Configurations
+
+| Use Case | K-Cache | V-Cache | Avg bpw | Notes |
+|----------|---------|---------|---------|-------|
+| Maximum compression | `ktq2_1` (3.5) | `vtq1_1` (1.5) | **2.5** | Best VRAM, extreme V compression |
+| Balanced | `ktq3_1` (4.5) | `vtq2_1` (2.5) | **3.5** | Good quality, long context |
+| Quality | `ktq4_1` (5.5) | `vtq3_1` (4.0) | **4.75** | Better PPL than q4_0/q4_0 |
+| Production safe | `q8_0` (8.5) | `vtq2_1` (2.5) | **5.5** | Best K quality + max V compression |
 
 ## Memory Savings (Ministral 3B, 26 layers, 8 KV-heads)
 
-| Context | f16 | q8_0 | q4_0 | tq3_1 | tq2_1 |
-|---------|------|------|------|-------|-------|
-| 32K | 1.6 GB | 0.8 GB | 0.5 GB | 0.4 GB | 0.3 GB |
-| 128K | 6.4 GB | 3.4 GB | 1.8 GB | 1.8 GB | 1.4 GB |
-| 384K | 19.2 GB | 10.2 GB | 5.4 GB | 5.4 GB | 4.2 GB |
+| Context | f16 | q8_0 | q4_0 | ktq3_1+vtq2_1 | ktq2_1+vtq1_1 |
+|---------|------|------|------|----------------|----------------|
+| 32K | 1.6 GB | 0.8 GB | 0.5 GB | 0.3 GB | 0.2 GB |
+| 128K | 6.4 GB | 3.4 GB | 1.8 GB | 1.4 GB | 1.0 GB |
+| 384K | 19.2 GB | 10.2 GB | 5.4 GB | 4.2 GB | 3.0 GB |
 
 ## Benchmarks
 
@@ -61,7 +89,7 @@ For comparison:
 | KV Cache | bpw | pp512 (tok/s) | tg32 (tok/s) | TG vs q4_0 |
 |----------|-----|:---:|:---:|:---:|
 | q4_0/q4_0 | 4.5 | 838 | 69.5 | baseline |
-| **tq2_1/tq2_1 (v7)** | 3.5 | **634** | **63.4** | **-8.8%** |
+| **ktq2_1/vtq2_1 (v7)** | 3.0 | **634** | **63.4** | **-8.8%** |
 
 v7 TG: **+65% faster** than v6 (63.4 vs 38.4 tok/s).
 78% less KV-Cache VRAM vs f16 -- fit 4x more context in the same memory.
@@ -72,10 +100,7 @@ v7 TG: **+65% faster** than v6 (63.4 vs 38.4 tok/s).
 |----------|-----|:---:|:---:|:---:|
 | f16/f16 | 16.0 | 824 | 45.8 | +6.5% |
 | q4_0/q4_0 | 4.5 | 798 | 43.0 | baseline |
-| **tq2_1/tq2_1 (v7)** | 3.5 | **211** | **33.3** | **-22.6%** |
-
-v7 improved PP by +13% over v6 via Hadamard-domain dot product.
-TG penalty ~22% on CC 6.1 (fewer warp schedulers limit shuffle hiding).
+| **ktq2_1/vtq2_1 (v7)** | 3.0 | **211** | **33.3** | **-22.6%** |
 
 ### Example Configurations
 
@@ -83,7 +108,7 @@ TG penalty ~22% on CC 6.1 (fewer warp schedulers limit shuffle hiding).
 
 ```bash
 llama-server -m Qwen3.5-35B-A3B-IQ2_XS.gguf \
-    --cache-type-k tq2_1 --cache-type-v tq2_1 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
     -c 400000 -ngl 99 --parallel 2
 ```
 
@@ -91,52 +116,22 @@ llama-server -m Qwen3.5-35B-A3B-IQ2_XS.gguf \
 |--------|-------|
 | Context | 400K tokens |
 | Parallel Slots | 2 |
-| KV-Cache (tq2_1) | 1,711 MB (vs ~10,400 MB with q4_0) |
+| KV-Cache (ktq2_1+vtq2_1) | ~1,500 MB (vs ~10,400 MB with q4_0) |
 | Total VRAM | 9.0 GB / 12 GB |
-
-Without TurboQuant: q4_0 can't fit 400K context on 12 GB. Even 200K is tight with parallel 2.
 
 **Gemma4 26B on CC 7.5 (12 GB):**
 
-| Metric | q4_0 KV | tq2_1 KV | Delta |
+| Metric | q4_0 KV | ktq2_1+vtq2_1 KV | Delta |
 |--------|:---:|:---:|:---:|
-| KV-Cache (200K ctx) | ~1.7 GB | ~1.3 GB | -400 MB |
+| KV-Cache (200K ctx) | ~1.7 GB | ~1.1 GB | -600 MB |
 | Speed | 36.6 tok/s | 38.6 tok/s | **+2 tok/s** |
 | GPU Layers | 16/30 | 17/30 | **+1 layer** |
 
 Saved VRAM enables +1 GPU layer, netting +2 tok/s. Speed AND compression win.
 
-### v6 to v7 Performance Delta
-
-**CC 7.5 (12 GB) -- Qwen3.5-35B-A3B IQ2_XS:**
-
-| Metric | v6 | v7 | Delta |
-|--------|:---:|:---:|:---:|
-| PP512 | 686 tok/s | 634 tok/s | -7.6% |
-| TG32 | 38.4 tok/s | 63.4 tok/s | **+65.1%** |
-| TG penalty vs q4_0 | 44.7% | 8.8% | **-35.9pp** |
-
-**CC 6.1 (6 GB) -- Ministral 3B IQ2_M:**
-
-| Metric | v6 | v7 | Delta |
-|--------|:---:|:---:|:---:|
-| PP128 | 186 tok/s | 211 tok/s | **+13.4%** |
-| TG32 | 32.2 tok/s | 33.3 tok/s | +3.4% |
-
-### Memory Savings (Qwen3.5-35B-A3B, MoE)
-
-| Context | q4_0 KV | tq2_1 KV | Savings |
-|---------|:---:|:---:|:---:|
-| 32K | ~860 MB | ~670 MB | -190 MB |
-| 128K | ~3,400 MB | ~2,650 MB | -750 MB |
-| 200K | ~5,300 MB | ~4,130 MB | -1,170 MB |
-| 400K | ~10,400 MB | ~1,711 MB | **-8,689 MB (83%)** |
-
-Note: At 400K with GatedDeltaNet architecture, 75% of layers use constant recurrent state instead of growing KV cache. The 1,711 MB is the measured value.
-
 ## How It Works
 
-### Quantization Pipeline
+### KTQ Quantization Pipeline (K-Cache)
 
 ```
 float[32] -> normalize -> random signs -> FWHT -> codebook -> norm correction -> pack
@@ -151,57 +146,90 @@ float[32] -> normalize -> random signs -> FWHT -> codebook -> norm correction ->
 5. **Norm Correction:** Reconstruct, measure `||recon||`, store `norm / ||recon||` -- compensates codebook error (~1.2% PPL improvement)
 6. **Sign Bits:** Store precomputed signs in `sb[4]` (32 bits = 32 signs)
 
-### Dequantization Pipeline
+### KTQ Dequantization (K-Cache, Hadamard-domain dot product)
 
-1. **Codebook lookup:** Index -> centroid value (rotated space)
-2. **Inverse FWHT:** Walsh-Hadamard transform
-3. **Inverse signs:** Read from `sb[4]` -- **no Philox at dequant time**
-4. **Scale:** Multiply by corrected norm
+Instead of inverse-FWHT on K, the FA kernel applies FWHT to Q once per block and dots directly against codebook values:
+```
+score = norm * dot(FWHT(sign * Q), codebook_values)
+```
+Mathematically exact (FWHT is orthogonal). No gathers, no branch divergence.
 
-### Block Layout
+### VTQ Quantization Pipeline (V-Cache)
 
 ```
-TQ1_1 (10 bytes, 2.5 bpw):
-+--------+----------+--------+
-| d (2B) | qs[4] 1b | sb[4]  |
-|  norm   | indices  | signs  |
-+--------+----------+--------+
-
-TQ2_1 (14 bytes, 3.5 bpw):
-+--------+----------+--------+
-| d (2B) | qs[8] 2b | sb[4]  |
-|  norm   | indices  | signs  |
-+--------+----------+--------+
-
-TQ3_1 (18 bytes, 4.5 bpw):
-+--------+-----------+--------+
-| d (2B) | qs[12] 3b | sb[4]  |
-|  norm   |  indices  | signs  |
-+--------+-----------+--------+
-
-TQ4_1 (22 bytes, 5.5 bpw):
-+--------+-----------+--------+
-| d (2B) | qs[16] 4b | sb[4]  |
-|  norm   |  indices  | signs  |
-+--------+-----------+--------+
+float[d_head] -> graph-level R * v -> [cache write] -> per-block: normalize -> codebook -> norm correction -> pack
+                     (self_v_rot)                                                                              |
+                                                                                          [NO signs, NO FWHT]
 ```
 
-### Codebooks (Lloyd-Max for Beta(15.5, 15.5), d=32)
+1. **Pre-rotation:** `v_rot = R * v` applied at graph level via `self_v_rot` before cache write
+2. **Normalize:** `x_hat = block / ||block||`
+3. **Lloyd-Max Quantization:** Same shared PolarQuant codebooks as KTQ
+4. **Norm Correction:** Same approach as KTQ
+5. **Pack:** `d` + `qs` only -- NO `sb[4]` sign bits
+
+### VTQ Dequantization (V-Cache, in FA kernel)
+
+```cuda
+v_approx[j] = CB[q_j] * scale    // codebook lookup + scale multiply
+                                  // NO FWHT, NO sign flip, ~8 registers
+```
+
+Values are in the rotated (Hadamard) domain. After the FA kernel accumulates the weighted sum, a post-FA matmul applies the inverse rotation:
+```
+VKQ_final = R^T * VKQ_rotated    // graph-level matmul via self_v_rot
+```
+
+### Shared PolarQuant Codebooks (PQ_CODEBOOK_*)
+
+Both KTQ and VTQ use the same Lloyd-Max codebooks, optimal for Beta(15.5, 15.5) with d=32:
 
 - **1-bit (2 centroids):** `{-0.7979, 0.7979}` (= sqrt(2/pi))
 - **2-bit (4 centroids):** `{-1.4896, -0.4514, 0.4514, 1.4896}`
 - **3-bit (8 centroids):** `{-2.0719, -1.3150, -0.7453, -0.2424, 0.2424, 0.7453, 1.3150, 2.0719}`
 - **4-bit (16 centroids):** `{-2.7326, -2.0690, -1.6180, -1.2562, -0.9423, -0.6568, -0.3880, -0.1284, 0.1284, 0.3880, 0.6568, 0.9423, 1.2562, 1.6180, 2.0690, 2.7326}`
 
-All scaled by `1/sqrt(32)`.
+All scaled by `1/sqrt(32)`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_CUDA_CB_*BIT`.
+
+### Block Layouts
+
+**KTQ (K-Cache) -- includes sb[4] sign bits:**
+```
+KTQ1_1 (10 bytes, 2.5 bpw):  [d:2B] [qs:4B 1-bit] [sb:4B signs]
+KTQ2_1 (14 bytes, 3.5 bpw):  [d:2B] [qs:8B 2-bit] [sb:4B signs]
+KTQ3_1 (18 bytes, 4.5 bpw):  [d:2B] [qs:12B 3-bit] [sb:4B signs]
+KTQ4_1 (22 bytes, 5.5 bpw):  [d:2B] [qs:16B 4-bit] [sb:4B signs]
+```
+
+**VTQ (V-Cache) -- NO sign bits, data pre-rotated:**
+```
+VTQ1_1 (6 bytes, 1.5 bpw):   [d:2B] [qs:4B 1-bit]
+VTQ2_1 (10 bytes, 2.5 bpw):  [d:2B] [qs:8B 2-bit]
+VTQ3_1 (16 bytes, 4.0 bpw):  [d:2B] [qs:14B 3-bit]  (12B indices + 2B padding)
+VTQ4_1 (18 bytes, 4.5 bpw):  [d:2B] [qs:16B 4-bit]
+```
+
+## KTQ vs VTQ V-Dequant Comparison
+
+| Operation | KTQ V-dequant (old) | VTQ V-dequant |
+|-----------|---------------------|---------------|
+| Load block data | qs + sb + d | qs + d |
+| Codebook lookup | 32 lookups | ne lookups (4 typical) |
+| Serial FWHT | **32-element butterfly (160 FMA)** | **NONE** |
+| Sign flip | 32 branchless mul | **NONE** |
+| Scale multiply | 32 mul | ne mul |
+| Post-FA rotation | None | R^T matmul (once per layer) |
+| Registers | **~40 floats** | **~8 floats** |
+| Can `__forceinline__` | No (`__noinline__` required) | **Yes** |
+| Register spilling | Severe (corruption root cause) | **None** |
 
 ## v7 Optimizations
 
 ### 1. Hadamard-Domain KQ Dot Product (v7)
 
-The key mathematical insight: since FWHT is orthogonal, `<K_dequant, Q> = norm * sum_i(cb[idx_i] * FWHT(sign * Q)[i])`.
+Since FWHT is orthogonal, `<K_dequant, Q> = norm * sum_i(cb[idx_i] * FWHT(sign * Q)[i])`.
 
-Instead of inverse-FWHT on K (5 shuffles per block + 4 gather shuffles), apply FWHT to Q once per block and dot directly against codebook values. No gathers, no branch divergence.
+Instead of inverse-FWHT on K (5 shuffles per block + 4 gather shuffles), apply FWHT to Q once per block and dot directly against codebook values.
 
 | Metric | v6 | v7 |
 |--------|:--:|:--:|
@@ -209,71 +237,67 @@ Instead of inverse-FWHT on K (5 shuffles per block + 4 gather shuffles), apply F
 | Gather shuffles | 16 | **0** |
 | Branch divergence | Yes | **No** |
 
-### 2. Precomputed Sign Bits (`sb[4]`)
+### 2. Precomputed Sign Bits (`sb[4]`) in KTQ
 
-Signs are computed once during quantization and stored as 32 bits in `sb[4]`. All dequant paths read signs directly -- **zero Philox calls at dequant time**. Eliminates ~320 multiply-XOR operations per block.
+Signs are computed once during quantization and stored as 32 bits in `sb[4]`. All KTQ dequant paths read signs directly -- **zero Philox calls at dequant time**. Eliminates ~320 multiply-XOR operations per block.
 
-### 3. Warp-Cooperative FWHT in Flash Attention (v6)
+### 3. VTQ: Register-Light V-Dequant
+
+VTQ eliminates the 32-element FWHT butterfly and sign bit reads from the FA inner loop. V-dequant reduces to `codebook[idx] * scale` -- inlineable, no LMEM spills, no FA accumulator corruption.
+
+### 4. Warp-Cooperative FWHT in Flash Attention (v6)
 
 Each warp lane holds one element; 5 `__shfl_xor_sync` rounds perform the full 32-point transform. Eliminates the 80 serial butterfly ops that bottlenecked CC 6.1.
 
-### 4. Norm Correction
+### 5. Norm Correction
 
-Stores `||x|| / ||reconstruction||` instead of raw `||x||`. Compensates systematic magnitude loss from codebook quantization. ~1.2% PPL improvement at zero dequant cost.
+Stores `||x|| / ||reconstruction||` instead of raw `||x||`. Compensates systematic magnitude loss from codebook quantization. ~1.2% PPL improvement at zero dequant cost. Used by both KTQ and VTQ.
 
-### 5. Sparse V Dequant
+### 6. Sparse V Dequant
 
-In Flash Attention V-accumulation: skip dequant for positions where attention weight < 1e-6. At 32K+ context, >90% of positions are skipped. +22% decode speedup.
+In Flash Attention V-accumulation: skip dequant for positions where attention weight < 1e-6. At 32K+ context, >90% of positions are skipped. +22% decode speedup. Works with both KTQ and VTQ V types.
 
-### 6. Branchless Sign x Norm Fusion (v7)
+### 7. Branchless Sign x Norm Fusion (v7)
 
-`(1.0f - 2.0f * bit) * norm` replaces ternary `(bit ? 1.0f : -1.0f) * ... * norm` across all dequant paths. Eliminates warp divergence.
-
-## Recommended Configurations
-
-| Model Weights | K-Cache | V-Cache | Notes |
-|--------------|---------|---------|-------|
-| Q8_0+ (high quality) | `tq2_1` | `tq2_1` | Symmetric OK |
-| Q4_K_M (quantized) | `q8_0` | `tq2_1` | K precision critical |
-| Maximum context | `tq2_1` | `tq2_1` | V compression is "free" |
-| Best quality | `tq4_1` | `tq4_1` | Better PPL than q4_0 |
+`(1.0f - 2.0f * bit) * norm` replaces ternary `(bit ? 1.0f : -1.0f) * ... * norm` across KTQ dequant paths. Eliminates warp divergence.
 
 ## CUDA Implementation Details
 
 | Feature | Description |
 |---------|-------------|
-| Hadamard-domain KQ dot | FWHT on Q, dot against codebook values. 39% fewer shuffles |
-| Warp-parallel FWHT | 32 threads, `__shfl_xor_sync` butterfly -- zero shared memory |
-| Branchless sign x norm | `(1 - 2*bit) * norm` replaces ternary branch |
-| Sign lookup | Single bit-extract from `sb[]` per thread -- replaces 10-round Philox |
-| FA FWHT | Warp-cooperative FWHT replaces serial butterfly in FA vec kernel |
-| FA V-dequant | Warp-cooperative inverse-FWHT for symmetric TQ V-cache |
-| SET_ROWS | `k_set_rows_tq` kernel for non-contiguous KV cache writes |
-| FA Dispatch | TQ2_1, TQ3_1, TQ4_1 registered in `fattn.cu` dispatch + `fattn-vec.cuh` templates |
+| Hadamard-domain KQ dot | FWHT on Q, dot against codebook values. 39% fewer shuffles (KTQ) |
+| Warp-parallel FWHT | 32 threads, `__shfl_xor_sync` butterfly -- zero shared memory (KTQ) |
+| Branchless sign x norm | `(1 - 2*bit) * norm` replaces ternary branch (KTQ) |
+| Sign lookup | Single bit-extract from `sb[]` per thread (KTQ) |
+| VTQ V-dequant | `codebook[idx] * scale`, `__forceinline__`, ~8 registers |
+| VTQ pre-rotation | `self_v_rot` matmul before cache write + inverse after FA |
+| Shared codebooks | `PQ_CUDA_CB_*BIT` constants used by both KTQ and VTQ |
+| FA Dispatch | KTQ1_1..KTQ4_1 (K+V), VTQ1_1..VTQ4_1 (V-only) |
+| SET_ROWS | `k_set_rows_ktq*` + `k_set_rows_vtq*` kernels |
 | Compute Capability | CC 6.1+ tested (CC 6.1, CC 7.5) |
 
 ## Source Files
 
 | File | Description |
 |------|-------------|
-| `ggml/include/ggml.h` | Type enum: TQ1_1=42, TQ2_1=43, TQ3_1=44, TQ4_1=45 |
-| `ggml/src/ggml-common.h` | Block structs (14B, 18B, 22B) |
-| `ggml/src/ggml-cuda/turboquant.cuh` | CUDA kernels: Philox, FWHT, quantize, dequant, get-rows |
-| `ggml/src/ggml-cuda/fattn-common.cuh` | FA: vec_dot_KQ_tq*, dequantize_V_tq*, Sparse V guard |
-| `ggml/src/ggml-cuda/convert.cu` | CUDA dequant dispatch (contiguous + NC) |
-| `ggml/src/ggml-quants.c` | CPU quantize/dequantize/vec_dot |
-| `common/arg.cpp` | CLI: `--cache-type-k tq2_1` etc. |
+| `ggml/include/ggml.h` | Type enums: KTQ1_1=45, KTQ2_1=42, KTQ3_1=43, KTQ4_1=44, VTQ1_1=46, VTQ2_1=47, VTQ3_1=48, VTQ4_1=49 |
+| `ggml/src/ggml-common.h` | Block structs: `block_ktq*` (with sb[4]) + `block_vtq*` (without sb) |
+| `ggml/src/ggml-cuda/turboquant.cuh` | CUDA kernels: KTQ (Philox, FWHT, quantize, dequant) + VTQ (quantize, dequant -- no FWHT) |
+| `ggml/src/ggml-cuda/fattn-common.cuh` | FA: `vec_dot_KQ_ktq*`, `dequantize_V_ktq*`, `dequantize_V_vtq*`, Sparse V guard |
+| `ggml/src/ggml-cuda/convert.cu` | CUDA dequant dispatch (contiguous + NC) for KTQ + VTQ |
+| `ggml/src/ggml-quants.c` | CPU quantize/dequantize for KTQ + VTQ, shared `PQ_CODEBOOK_*` |
+| `common/arg.cpp` | CLI: `--cache-type-k ktq2_1 --cache-type-v vtq2_1` etc. |
 
 ## Roadmap
 
-### Asymmetric V-Dequant Optimization (HIGH)
-Warp-cooperative V-dequant currently only works when K and V use the same TQ type. Asymmetric configurations fall back to serial FWHT.
-
 ### Deferred K-Cache Quantization (HIGH)
-K-Cache stays f16 during prefill, quantized to TQ only at decode time. 3x better PPL, eliminates dequant overhead during prefill entirely.
+K-Cache stays f16 during prefill, quantized to KTQ only at decode time. 3x better PPL, eliminates dequant overhead during prefill entirely.
 
 ### Boundary Layer Protection (MEDIUM)
-First 2 + last 2 transformer layers use q8_0 instead of TQ for K/V cache. Recovers 37-91% of quality gap with zero speed penalty.
+First 2 + last 2 transformer layers use q8_0 instead of KTQ/VTQ for K/V cache. Recovers 37-91% of quality gap with zero speed penalty.
+
+### VTQ-Specific Codebooks (LOW)
+The fixed Hadamard rotation (without per-block random signs) produces slightly different marginal distributions than the full RHT. Re-optimized Lloyd-Max codebooks for fixed-Hadamard marginals could improve VTQ quality by ~0.5-1% PPL.
 
 ### Block Size 128 Rotation (LOW)
 WHT rotation over 128 elements (full head_dim) instead of 32. Better decorrelation (5.12x vs 4.57x compression). Significant architecture change.
@@ -283,60 +307,9 @@ WHT rotation over 128 elements (full head_dim) instead of 32. Better decorrelati
 **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate**
 Google Research, ICLR 2026 -- https://arxiv.org/abs/2504.19874
 
-## KTQ: K-Cache Optimized TurboQuant
-
-The existing TQ types (TQ1_1 through TQ4_1) are referred to as **KTQ** -- they are optimized for K-cache quantization.
-
-### Why KTQ Works for K-Cache
-
-The Flash Attention kernel computes `score = dot(Q, K)` for every query-key pair. KTQ exploits a mathematical property of the Hadamard transform: because FWHT is orthogonal, the dot product is invariant under rotation. Instead of dequantizing K (inverse-FWHT per block), the FA kernel applies FWHT to Q once per block and dots directly against the stored codebook values in the rotated domain.
-
-```
-Standard:  score = dot(Q, dequant(K))     -- requires inverse-FWHT per K block
-KTQ:       score = norm * dot(FWHT(sign * Q), codebook_values)  -- FWHT on Q only
-```
-
-This Hadamard-domain dot product is mathematically exact (no approximation) and eliminates all gather shuffles and branch divergence from K-dequant.
-
-### KTQ V-Dequant: Known Issue
-
-TQ V-dequant in the FA kernel has a known correctness issue. The V accumulation path requires full dequantization (codebook lookup, inverse-FWHT, inverse signs, scale) back to float values before weighted summation. Both the serial FWHT path (float buf[32]) and the warp-cooperative path (5 `__shfl_xor_sync` rounds + shfl_sync gather) produce corrupted output when invoked within the FA kernel context, despite producing correct values in isolation.
-
-**Root cause:** The per-block sign bits stored in `sb[4]` prevent two otherwise promising optimization strategies:
-- **Lazy V (skip inverse-FWHT, accumulate in rotated domain):** Not possible because each block has unique random signs -- sign inversion must happen per-block before FWHT, so the rotated domains are not aligned across blocks.
-- **Graph-Level inverse (single FWHT after attention-weighted sum):** Not possible because the random signs differ per block -- you cannot factor a single inverse rotation out of a weighted sum of differently-rotated blocks.
-
-The serial FWHT fallback corrupts register state in the kernel context (likely an NVCC optimization artifact that reorders or spills the 32-element butterfly buffer). This is not fixable with `__forceinline__` or warp-cooperative rewrites.
-
-### Recommended Configuration
-
-Use KTQ for K-cache and a standard quantization type for V-cache:
-
-| Config | K bpw | V bpw | Effective bpw | vs f16+f16 | Notes |
-|--------|-------|-------|---------------|------------|-------|
-| **K=tq2_1 + V=q4_0** | 3.5 | 4.5 | 4.0 | **-75%** | Best compression, recommended |
-| K=tq2_1 + V=q8_0 | 3.5 | 8.5 | 6.0 | -63% | Higher V quality |
-| K=tq3_1 + V=q4_0 | 4.5 | 4.5 | 4.5 | -72% | Balanced |
-| K=tq4_1 + V=q8_0 | 5.5 | 8.5 | 7.0 | -56% | Maximum quality |
-
-```bash
-# Recommended: maximum compression with proven stability
-llama-server -m model.gguf \
-    --cache-type-k tq2_1 --cache-type-v q4_0 \
-    -fa on -ngl 99
-
-# Higher V quality
-llama-server -m model.gguf \
-    --cache-type-k tq2_1 --cache-type-v q8_0 \
-    -fa on -ngl 99
-```
-
-### Future: VTQ (V-Cache Optimized Format)
-
-A dedicated VTQ format is planned that uses fixed (non-random) rotation, enabling Graph-Level inverse FWHT after the attention-weighted sum. This would allow V-cache compression at TQ-level bitrates while keeping the inverse transform outside the inner loop of the FA kernel.
-
 ## Version History
 
+- **v7+VTQ** (2026-04-16): KTQ/VTQ split. VTQ types (VTQ1_1..VTQ4_1) for V-cache -- no FWHT, no sign bits, `__forceinline__` dequant. TQ renamed to KTQ. Shared PQ_CODEBOOK constants.
 - **v7** (2026-04-14): Hadamard-domain KQ dot product, branchless sign x norm fusion. PP +13% on CC 6.1, TG +65% on CC 7.5 vs v6.
 - **v6** (2026-04-13): Warp-cooperative FWHT in FA, SET_ROWS kernel, FA dispatch registration, warp-cooperative V-dequant.
 - **v5** (2026-04-10): Precomputed sign bits, struct compaction (3.5/4.5/5.5 bpw), norm correction, Philox 6r.
