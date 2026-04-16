@@ -5491,7 +5491,7 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
 }
 
 // =====================================================================
-// TurboQuant v7 (TQ2_1 / TQ3_1 / TQ4_1) — PolarQuant + precomputed sign bits
+// TurboQuant v7 (TQ2_1 / TQ3_1 / TQ4_1) — RHT + Lloyd-Max codebook + precomputed sign bits
 // =====================================================================
 
 // --- Philox 2x32 Counter-Based PRNG — O(1) random access ---

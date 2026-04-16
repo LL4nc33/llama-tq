@@ -3,14 +3,14 @@
 #include "common.cuh"
 #include "ggml-common.h"
 
-// TurboQuant CUDA v7 — KTQ (K-cache) + VTQ (V-cache) PolarQuant
-// Based on arXiv:2504.19874. v7: Hadamard-domain KQ dot, branchless sign×norm.
-// KTQ: PolarQuant + Hadamard + precomputed sign bits (K-cache).
-// VTQ: PolarQuant codebook only, no FWHT/sign bits (V-cache).
-// PQ_CUDA_CB_*: shared PolarQuant codebook constants (Lloyd-Max for Beta(15.5, 15.5), d=32).
+// TurboQuant CUDA v7 — KTQ (K-cache) + VTQ (V-cache)
+// Inspired by TurboQuant (arXiv:2504.19874). v7: Hadamard-domain KQ dot, branchless sign×norm.
+// KTQ: RHT + codebook + precomputed sign bits (K-cache).
+// VTQ: codebook only, no FWHT/sign bits (V-cache).
+// PQ_CUDA_CB_*: shared codebook constants (Lloyd-Max optimal, ≈ Beta(15.5, 15.5) at d=32).
 
 // ============================================================
-// Codebook constants (Lloyd-Max for Beta(15.5, 15.5), d=32, v3) — __constant__ for GPU cache
+// Codebook constants (Lloyd-Max optimal, ≈ Beta(15.5, 15.5) at d=32, v3) — __constant__ for GPU cache
 // ============================================================
 __device__ __constant__ static float PQ_CUDA_CB_1BIT[2] = {
     -0.797885f, 0.797885f
@@ -101,7 +101,7 @@ static __device__ __forceinline__ uint16_t ktq_cuda_derive_seed(int64_t block_in
 }
 
 // ============================================================
-// Stochastic Rounding for PolarQuant — makes E[K_q] = K (unbiased)
+// Stochastic Rounding — makes E[K_q] = K (unbiased)
 // Probabilistically chooses between two nearest centroids.
 // This eliminates first-order softmax perturbation when K+V are both quantized.
 // ============================================================
@@ -175,7 +175,7 @@ static __device__ __forceinline__ float ktq_cuda_gaussian(uint32_t i, uint32_t j
 }
 
 // ============================================================
-// Block-level dequantize kernel: TQ1_1 (1-bit PolarQuant + Hadamard, NO QJL)
+// Block-level dequantize kernel: TQ1_1 (1-bit codebook + Hadamard, NO QJL)
 // One CUDA block = one TQ block = 32 threads = 32 elements
 //
 // TQ1_1 is the simplest TurboQuant variant: 1-bit codebook {-0.7979, +0.7979}.
@@ -199,7 +199,7 @@ static __global__ void dequantize_block_ktq1_1_v2(
         return;
     }
 
-    // Step 1: PolarQuant codebook lookup (in rotated space) — 1-bit index
+    // Step 1: codebook lookup (in rotated space) — 1-bit index
     const int idx = (x[ib].qs[tid / 8] >> (tid % 8)) & 0x1;
     float val = PQ_CUDA_CB_1BIT[idx] * PQ_CUDA_CB_SCALE;
 
@@ -214,12 +214,12 @@ static __global__ void dequantize_block_ktq1_1_v2(
 }
 
 // ============================================================
-// Block-level dequantize kernel: TQ2_1 (PolarQuant + Hadamard, NO QJL)
+// Block-level dequantize kernel: TQ2_1 (2-bit codebook + Hadamard, NO QJL)
 // One CUDA block = one TQ block = 32 threads = 32 elements
 //
 // QJL is intentionally disabled everywhere for KV cache attention:
 // Multiple independent groups confirmed QJL eliminates bias but explodes
-// variance, which softmax amplifies. PolarQuant-only gives better quality.
+// variance, which softmax amplifies. Codebook-only gives better quality.
 // See: TheTom/turboquant_plus turbo4-resurrection, scos-lab, Arclabs001/YATQ
 // ============================================================
 template <typename dst_t>
@@ -240,7 +240,7 @@ static __global__ void dequantize_block_ktq2_1_v2(
         return;
     }
 
-    // Step 1: PolarQuant codebook lookup (in rotated space)
+    // Step 1: codebook lookup (in rotated space)
     const int idx = (x[ib].qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
     float val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
 
@@ -255,7 +255,7 @@ static __global__ void dequantize_block_ktq2_1_v2(
 }
 
 // ============================================================
-// Block-level dequantize kernel: TQ3_1 (PolarQuant + Hadamard, NO QJL)
+// Block-level dequantize kernel: TQ3_1 (3-bit codebook + Hadamard, NO QJL)
 // ============================================================
 template <typename dst_t>
 static __global__ void dequantize_block_ktq3_1_v2(
@@ -320,7 +320,7 @@ static void dequantize_row_ktq3_1_cuda(const void * vx, dst_t * y, const int64_t
 
 // ============================================================
 // Quantize block: TQ1_1 (for set-rows / cpy — single-thread per block)
-// normalize -> random signs -> FWHT -> PolarQuant (1-bit) -> sign bits
+// normalize -> random signs -> FWHT -> codebook quantize (1-bit) -> sign bits
 // ============================================================
 static __device__ void ktq_cuda_quantize_ktq1_1_block(const float * __restrict__ x, block_ktq1_1 * __restrict__ y, int64_t block_index) {
     // Step 1: Compute L2 norm
@@ -349,7 +349,7 @@ static __device__ void ktq_cuda_quantize_ktq1_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: PolarQuant — 1-bit: stochastic rounding between centroids
+    // Step 4: 1-bit quantization — stochastic rounding between centroids
     // P(idx=1) = (val - c0) / (c1 - c0) where c0=-0.798, c1=+0.798 (scaled)
     memset(y->qs, 0, 4);
     for (int j = 0; j < 32; j++) {
@@ -390,7 +390,7 @@ static __device__ void ktq_cuda_quantize_ktq1_1_block(const float * __restrict__
 
 // ============================================================
 // Quantize block: TQ2_1 (for set-rows / cpy — single-thread per block)
-// normalize -> random signs -> FWHT -> PolarQuant -> QJL sign bits
+// normalize -> random signs -> FWHT -> codebook quantize -> sign bits
 // ============================================================
 static __device__ void ktq_cuda_quantize_ktq2_1_block(const float * __restrict__ x, block_ktq2_1 * __restrict__ y, int64_t block_index) {
     // Step 1: Compute L2 norm
@@ -419,7 +419,7 @@ static __device__ void ktq_cuda_quantize_ktq2_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: PolarQuant — stochastic rounding (makes E[K_q] = K, unbiased)
+    // Step 4: codebook quantize — stochastic rounding (makes E[K_q] = K, unbiased)
     memset(y->qs, 0, 8);
     for (int j = 0; j < 32; j++) {
         const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
@@ -478,7 +478,7 @@ static __device__ void ktq_cuda_quantize_ktq3_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // PolarQuant with 3-bit codebook — stochastic rounding
+    // 3-bit codebook quantize — stochastic rounding
     memset(y->qs, 0, 12);
     for (int j = 0; j < 32; j++) {
         const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
@@ -571,7 +571,7 @@ static __global__ void k_get_rows_ktq1_1(
         return;
     }
 
-    // PolarQuant codebook lookup — 1-bit index (rotated space)
+    // codebook lookup — 1-bit index (rotated space)
     const int idx = (xb->qs[tid / 8] >> (tid % 8)) & 0x1;
     float val = PQ_CUDA_CB_1BIT[idx] * PQ_CUDA_CB_SCALE;
 
@@ -619,7 +619,7 @@ static __global__ void k_get_rows_ktq2_1(
         return;
     }
 
-    // PolarQuant codebook lookup (rotated space)
+    // codebook lookup (rotated space)
     const int idx = (xb->qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
     float val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
 
@@ -759,10 +759,10 @@ static void get_rows_cuda_ktq3_1(
 }
 
 // ============================================================
-// Block-level dequantize kernel: TQ4_1 (4-bit PolarQuant + Hadamard, NO QJL)
+// Block-level dequantize kernel: TQ4_1 (4-bit codebook + Hadamard, NO QJL)
 // One CUDA block = one TQ block = 32 threads = 32 elements
 //
-// TQ4_1 uses 16 centroids (Lloyd-Max for Beta(15.5,15.5), d=32) with
+// TQ4_1 uses 16 centroids (Lloyd-Max optimal, ≈ Beta(15.5, 15.5) at d=32) with
 // nibble-packed indices + precomputed sign bits (v5).
 // Same dequant pipeline: codebook lookup -> inverse FWHT -> inverse signs -> scale.
 // ============================================================
@@ -784,7 +784,7 @@ static __global__ void dequantize_block_ktq4_1_v2(
         return;
     }
 
-    // Step 1: PolarQuant codebook lookup — nibble unpack (in rotated space)
+    // Step 1: codebook lookup — nibble unpack (in rotated space)
     const int idx = (x[ib].qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
     float val = PQ_CUDA_CB_4BIT[idx] * PQ_CUDA_CB_SCALE;
 
@@ -810,7 +810,7 @@ static void dequantize_row_ktq4_1_cuda(const void * vx, dst_t * y, const int64_t
 
 // ============================================================
 // Quantize block: TQ4_1 (for set-rows / cpy — single-thread per block)
-// normalize -> random signs -> FWHT -> PolarQuant (16 centroids, nibble-pack)
+// normalize -> random signs -> FWHT -> codebook quantize (16 centroids, nibble-pack)
 // v5: sign bits precomputed in sb[], no Philox at dequant time.
 // ============================================================
 static __device__ void ktq_cuda_quantize_ktq4_1_block(const float * __restrict__ x, block_ktq4_1 * __restrict__ y, int64_t block_index) {
@@ -840,7 +840,7 @@ static __device__ void ktq_cuda_quantize_ktq4_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: PolarQuant — stochastic rounding with 16 centroids
+    // Step 4: codebook quantize — stochastic rounding with 16 centroids
     memset(y->qs, 0, 16);
     for (int j = 0; j < 32; j++) {
         const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
@@ -910,7 +910,7 @@ static __global__ void k_get_rows_ktq4_1(
         return;
     }
 
-    // PolarQuant codebook lookup — nibble unpack (rotated space)
+    // codebook lookup — nibble unpack (rotated space)
     const int idx = (xb->qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
     float val = PQ_CUDA_CB_4BIT[idx] * PQ_CUDA_CB_SCALE;
 

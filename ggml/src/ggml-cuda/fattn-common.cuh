@@ -306,7 +306,7 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq1_1(
     const float norm = (float)x[ib].d;
     // NOTE: no early return for norm==0 — all lanes must participate in FWHT warp shuffle
 
-    // Step 1: PolarQuant codebook lookup (in rotated space) — 1-bit index
+    // Step 1: codebook lookup (in rotated space) — 1-bit index
     const int idx = (x[ib].qs[lane / 8] >> (lane % 8)) & 0x1;
     float val = PQ_CUDA_CB_1BIT[idx] * PQ_CUDA_CB_SCALE;
 
@@ -323,7 +323,7 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq2_1(
     const float norm = (float)x[ib].d;
     // NOTE: no early return for norm==0 — all lanes must participate in FWHT warp shuffle
 
-    // Step 1: PolarQuant codebook lookup (in rotated space)
+    // Step 1: codebook lookup (in rotated space)
     const int idx = (x[ib].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
     float val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
 
