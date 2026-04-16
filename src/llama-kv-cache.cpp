@@ -17,6 +17,16 @@ static bool ggml_is_power_of_2(int n) {
     return (n & (n - 1)) == 0;
 }
 
+// Deterministic sign vector from seed (Philox-based, same as KTQ)
+static void gen_diagonal_signs(float * signs, int n, uint32_t seed) {
+    for (int i = 0; i < n; i++) {
+        // Simple hash: mix seed + index
+        uint32_t h = seed ^ (uint32_t)i;
+        h *= 0x9e3779b9u; h ^= h >> 16; h *= 0x85ebca6bu; h ^= h >> 13;
+        signs[i] = (h & 1) ? 1.0f : -1.0f;
+    }
+}
+
 // orthonormal Walsh-Hadamard rotation matrix
 // note: res^2 == I
 static void ggml_gen_hadamard(ggml_tensor * tensor) {
@@ -385,8 +395,14 @@ llama_kv_cache::llama_kv_cache(
     LLAMA_LOG_INFO("%s: attn_rot_k = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_k, n_embd_head_k_all);
     LLAMA_LOG_INFO("%s: attn_rot_v = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_v, n_embd_head_v_all);
 
-    // pre-compute the haramard matrices and keep them in host memory
-    // TODO: in the future, we can make copies in the backend buffers to avoid host -> device transfers
+    // pre-compute the rotation matrices and keep them in host memory
+    // K uses bare Hadamard H (upstream compatible).
+    // V uses D*H*D (randomized Hadamard) when VTQ types are active —
+    // the diagonal signs make coordinates i.i.d., critical for 2-bit codebook quality.
+    // D*H*D is self-transpose (since D=D^T and H=H^T), so self_v_rot works unchanged.
+    const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 ||
+                           type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1);
+
     if (attn_rot_k || attn_rot_v) {
         for (int64_t n = 64; n <= std::max(n_embd_head_k_all, n_embd_head_v_all); n *= 2) {
             attn_rot_hadamard[n] = std::vector<float>(n*n);
@@ -403,6 +419,26 @@ llama_kv_cache::llama_kv_cache(
             tmp->data = attn_rot_hadamard[n].data();
 
             ggml_gen_hadamard(tmp);
+        }
+
+        // For VTQ V-cache: apply D*H*D (randomized diagonal) to V rotation matrices.
+        // This makes rotated coordinates approximately i.i.d., improving 2-bit codebook accuracy.
+        // Seed = 0x56545121 ("VTQ!"), deterministic across runs.
+        if (is_vtq_v && attn_rot_v) {
+            const int64_t nrot_v = 64;  // V uses 64x64 rotation (upstream default)
+            auto it = attn_rot_hadamard.find(nrot_v);
+            if (it != attn_rot_hadamard.end()) {
+                std::vector<float> signs(nrot_v);
+                gen_diagonal_signs(signs.data(), nrot_v, 0x56545121u);  // "VTQ!" seed
+                float * H = it->second.data();
+                // R[i][j] = D[i] * H[i][j] * D[j]  (D*H*D, self-transpose)
+                for (int64_t i = 0; i < nrot_v; i++) {
+                    for (int64_t j = 0; j < nrot_v; j++) {
+                        H[i * nrot_v + j] *= signs[i] * signs[j];
+                    }
+                }
+                LLAMA_LOG_INFO("%s: VTQ V-cache active — using D*H*D randomized rotation for better 2-bit quality\n", __func__);
+            }
         }
     }
 
