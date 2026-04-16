@@ -1268,3 +1268,90 @@ static void get_rows_cuda_vtq2_1(
     const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
     k_get_rows_vtq2_1<<<grid_dims, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
 }
+
+// --- VTQ3_1 get_rows ---
+template <typename dst_t>
+static __global__ void k_get_rows_vtq3_1(
+        const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const int64_t ne00, const int64_t ne11, const int64_t ne12,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+    const int i10 = blockIdx.x;
+    const int ib_in_row = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int64_t z = blockIdx.z;
+    const int i11 = z / ne12;
+    const int i12 = z % ne12;
+    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+    dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
+    const block_vtq3_1 * src0_row = (const block_vtq3_1 *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
+    const int64_t nb_per_row = ne00 / QK_VTQ;
+    if (ib_in_row >= nb_per_row) return;
+    const block_vtq3_1 * xb = &src0_row[ib_in_row];
+    const int64_t out_base = ib_in_row * QK_VTQ;
+    const float norm = (float)xb->d;
+    const int bit_offset = tid * 3;
+    const int byte_idx = bit_offset / 8;
+    const int bit_pos = bit_offset % 8;
+    const int idx = ((xb->qs[byte_idx] >> bit_pos) | (xb->qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
+    float val = TQ_CUDA_CB_3BIT[idx] * TQ_CUDA_CB_SCALE * norm;
+    if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
+}
+
+template <typename dst_t>
+static void get_rows_cuda_vtq3_1(
+        const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
+        const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
+        const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
+        const size_t nb1, const size_t nb2, const size_t nb3, cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_VTQ == 0);
+    const int64_t nb_per_row = ne00 / QK_VTQ;
+    const size_t s1 = nb1/sizeof(dst_t), s2 = nb2/sizeof(dst_t), s3 = nb3/sizeof(dst_t);
+    const size_t s10 = nb10/sizeof(int32_t), s11 = nb11/sizeof(int32_t), s12 = nb12/sizeof(int32_t);
+    const dim3 block_dims(32);
+    const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
+    k_get_rows_vtq3_1<<<grid_dims, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
+}
+
+// --- VTQ4_1 get_rows ---
+template <typename dst_t>
+static __global__ void k_get_rows_vtq4_1(
+        const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const int64_t ne00, const int64_t ne11, const int64_t ne12,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+    const int i10 = blockIdx.x;
+    const int ib_in_row = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int64_t z = blockIdx.z;
+    const int i11 = z / ne12;
+    const int i12 = z % ne12;
+    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+    dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
+    const block_vtq4_1 * src0_row = (const block_vtq4_1 *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
+    const int64_t nb_per_row = ne00 / QK_VTQ;
+    if (ib_in_row >= nb_per_row) return;
+    const block_vtq4_1 * xb = &src0_row[ib_in_row];
+    const int64_t out_base = ib_in_row * QK_VTQ;
+    const float norm = (float)xb->d;
+    const int idx = (xb->qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
+    float val = TQ_CUDA_CB_4BIT[idx] * TQ_CUDA_CB_SCALE * norm;
+    if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
+}
+
+template <typename dst_t>
+static void get_rows_cuda_vtq4_1(
+        const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
+        const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
+        const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
+        const size_t nb1, const size_t nb2, const size_t nb3, cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_VTQ == 0);
+    const int64_t nb_per_row = ne00 / QK_VTQ;
+    const size_t s1 = nb1/sizeof(dst_t), s2 = nb2/sizeof(dst_t), s3 = nb3/sizeof(dst_t);
+    const size_t s10 = nb10/sizeof(int32_t), s11 = nb11/sizeof(int32_t), s12 = nb12/sizeof(int32_t);
+    const dim3 block_dims(32);
+    const dim3 grid_dims(ne10, (unsigned int)MIN(nb_per_row, (int64_t)UINT16_MAX), (unsigned int)MIN(ne11*ne12, (int64_t)UINT16_MAX));
+    k_get_rows_vtq4_1<<<grid_dims, block_dims, 0, stream>>>(src0_d, src1_d, dst_d, ne00, ne11, ne12, s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
+}
