@@ -919,7 +919,11 @@ static void get_rows_cuda_tq4_1(
 // The only difference is index extraction (2/3/4-bit packing).
 // ============================================================
 
-// --- VTQ index decode: extract codebook index for element j from qs[] ---
+// --- VTQ index decode: extract codebook value for element j from qs[] ---
+
+static __device__ __forceinline__ float vtq_decode_1bit(const uint8_t * qs, int j) {
+    return TQ_CUDA_CB_1BIT[(qs[j / 8] >> (j % 8)) & 0x1] * TQ_CUDA_CB_SCALE;
+}
 
 static __device__ __forceinline__ float vtq_decode_2bit(const uint8_t * qs, int j) {
     return TQ_CUDA_CB_2BIT[(qs[j / 4] >> (2 * (j % 4))) & 0x3] * TQ_CUDA_CB_SCALE;
@@ -938,6 +942,10 @@ static __device__ __forceinline__ float vtq_decode_4bit(const uint8_t * qs, int 
 }
 
 // --- VTQ index encode: pack codebook index for element j into qs[] ---
+
+static __device__ __forceinline__ void vtq_encode_1bit(uint8_t * qs, int j, int idx) {
+    qs[j / 8] |= (uint8_t)(idx << (j % 8));
+}
 
 static __device__ __forceinline__ void vtq_encode_2bit(uint8_t * qs, int j, int idx) {
     qs[j / 4] |= (uint8_t)(idx << (2 * (j % 4)));
@@ -996,6 +1004,9 @@ static __device__ void vtq_cuda_quantize_block(
 }
 
 // Concrete quantize-block wrappers (signature matches set_rows_cuda_tq template)
+static __device__ void vtq_cuda_quantize_vtq1_1_block(const float * __restrict__ x, block_vtq1_1 * __restrict__ y, int64_t) {
+    vtq_cuda_quantize_block<block_vtq1_1, 2>(x, y, TQ_CUDA_CB_1BIT, vtq_decode_1bit, vtq_encode_1bit);
+}
 static __device__ void vtq_cuda_quantize_vtq2_1_block(const float * __restrict__ x, block_vtq2_1 * __restrict__ y, int64_t) {
     vtq_cuda_quantize_block<block_vtq2_1, 4>(x, y, TQ_CUDA_CB_2BIT, vtq_decode_2bit, vtq_encode_2bit);
 }
@@ -1030,6 +1041,10 @@ static void vtq_dequantize_row_cuda(const void * vx, dst_t * y, const int64_t ne
 }
 
 // Concrete row dequant wrappers (signature matches convert.cu dispatcher)
+template <typename dst_t>
+static void dequantize_row_vtq1_1_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
+    vtq_dequantize_row_cuda<block_vtq1_1>(vx, y, ne, stream, vtq_decode_1bit);
+}
 template <typename dst_t>
 static void dequantize_row_vtq2_1_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
     vtq_dequantize_row_cuda<block_vtq2_1>(vx, y, ne, stream, vtq_decode_2bit);
@@ -1085,6 +1100,12 @@ static void vtq_dequantize_nc_cuda(const void * vx, dst_t * y,
 }
 
 // Concrete NC wrappers (signature matches convert.cu dispatcher)
+template <typename dst_t>
+static void dequantize_block_vtq1_1_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    vtq_dequantize_nc_cuda<block_vtq1_1>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream, vtq_decode_1bit);
+}
 template <typename dst_t>
 static void dequantize_block_vtq2_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
@@ -1147,6 +1168,14 @@ static void vtq_get_rows_cuda(
 }
 
 // Concrete get_rows wrappers (signature matches getrows.cu dispatcher)
+template <typename dst_t>
+static void get_rows_cuda_vtq1_1(
+        const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
+        const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
+        const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
+        const size_t nb1, const size_t nb2, const size_t nb3, cudaStream_t stream) {
+    vtq_get_rows_cuda<block_vtq1_1>(src0_d, src1_d, dst_d, ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream, vtq_decode_1bit);
+}
 template <typename dst_t>
 static void get_rows_cuda_vtq2_1(
         const void * src0_d, const int32_t * src1_d, dst_t * dst_d,

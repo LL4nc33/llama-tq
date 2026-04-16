@@ -236,7 +236,7 @@ llama_kv_cache::llama_kv_cache(
         if (tq_protect_layers > 0) {
             const bool is_tq_k = (type_k == GGML_TYPE_TQ1_1 || type_k == GGML_TYPE_TQ2_1 || type_k == GGML_TYPE_TQ3_1 || type_k == GGML_TYPE_TQ4_1);
             const bool is_tq_v = (type_v == GGML_TYPE_TQ1_1 || type_v == GGML_TYPE_TQ2_1 || type_v == GGML_TYPE_TQ3_1 || type_v == GGML_TYPE_TQ4_1);
-            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ2_1 || type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1);
+            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 || type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1);
 
             if (is_tq_k || is_tq_v || is_vtq_v) {
                 uint32_t kv_layer_idx = 0;

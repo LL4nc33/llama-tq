@@ -283,6 +283,58 @@ WHT rotation over 128 elements (full head_dim) instead of 32. Better decorrelati
 **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate**
 Google Research, ICLR 2026 -- https://arxiv.org/abs/2504.19874
 
+## KTQ: K-Cache Optimized TurboQuant
+
+The existing TQ types (TQ1_1 through TQ4_1) are referred to as **KTQ** -- they are optimized for K-cache quantization.
+
+### Why KTQ Works for K-Cache
+
+The Flash Attention kernel computes `score = dot(Q, K)` for every query-key pair. KTQ exploits a mathematical property of the Hadamard transform: because FWHT is orthogonal, the dot product is invariant under rotation. Instead of dequantizing K (inverse-FWHT per block), the FA kernel applies FWHT to Q once per block and dots directly against the stored codebook values in the rotated domain.
+
+```
+Standard:  score = dot(Q, dequant(K))     -- requires inverse-FWHT per K block
+KTQ:       score = norm * dot(FWHT(sign * Q), codebook_values)  -- FWHT on Q only
+```
+
+This Hadamard-domain dot product is mathematically exact (no approximation) and eliminates all gather shuffles and branch divergence from K-dequant.
+
+### KTQ V-Dequant: Known Issue
+
+TQ V-dequant in the FA kernel has a known correctness issue. The V accumulation path requires full dequantization (codebook lookup, inverse-FWHT, inverse signs, scale) back to float values before weighted summation. Both the serial FWHT path (float buf[32]) and the warp-cooperative path (5 `__shfl_xor_sync` rounds + shfl_sync gather) produce corrupted output when invoked within the FA kernel context, despite producing correct values in isolation.
+
+**Root cause:** The per-block sign bits stored in `sb[4]` prevent two otherwise promising optimization strategies:
+- **Lazy V (skip inverse-FWHT, accumulate in rotated domain):** Not possible because each block has unique random signs -- sign inversion must happen per-block before FWHT, so the rotated domains are not aligned across blocks.
+- **Graph-Level inverse (single FWHT after attention-weighted sum):** Not possible because the random signs differ per block -- you cannot factor a single inverse rotation out of a weighted sum of differently-rotated blocks.
+
+The serial FWHT fallback corrupts register state in the kernel context (likely an NVCC optimization artifact that reorders or spills the 32-element butterfly buffer). This is not fixable with `__forceinline__` or warp-cooperative rewrites.
+
+### Recommended Configuration
+
+Use KTQ for K-cache and a standard quantization type for V-cache:
+
+| Config | K bpw | V bpw | Effective bpw | vs f16+f16 | Notes |
+|--------|-------|-------|---------------|------------|-------|
+| **K=tq2_1 + V=q4_0** | 3.5 | 4.5 | 4.0 | **-75%** | Best compression, recommended |
+| K=tq2_1 + V=q8_0 | 3.5 | 8.5 | 6.0 | -63% | Higher V quality |
+| K=tq3_1 + V=q4_0 | 4.5 | 4.5 | 4.5 | -72% | Balanced |
+| K=tq4_1 + V=q8_0 | 5.5 | 8.5 | 7.0 | -56% | Maximum quality |
+
+```bash
+# Recommended: maximum compression with proven stability
+llama-server -m model.gguf \
+    --cache-type-k tq2_1 --cache-type-v q4_0 \
+    -fa on -ngl 99
+
+# Higher V quality
+llama-server -m model.gguf \
+    --cache-type-k tq2_1 --cache-type-v q8_0 \
+    -fa on -ngl 99
+```
+
+### Future: VTQ (V-Cache Optimized Format)
+
+A dedicated VTQ format is planned that uses fixed (non-random) rotation, enabling Graph-Level inverse FWHT after the attention-weighted sum. This would allow V-cache compression at TQ-level bitrates while keeping the inverse transform outside the inner loop of the FA kernel.
+
 ## Version History
 
 - **v7** (2026-04-14): Hadamard-domain KQ dot product, branchless sign x norm fusion. PP +13% on CC 6.1, TG +65% on CC 7.5 vs v6.

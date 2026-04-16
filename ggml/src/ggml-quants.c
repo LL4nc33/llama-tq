@@ -5936,6 +5936,57 @@ void dequantize_row_tq4_1(const block_tq4_1 * GGML_RESTRICT x, float * GGML_REST
 // Data arrives pre-rotated via self_v_rot. Dequant = CB * scale.
 // ============================================================
 
+void quantize_row_vtq1_1_ref(const float * GGML_RESTRICT x, block_vtq1_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_VTQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) { memset(y[i].qs, 0, sizeof(y[i].qs)); continue; }
+
+        const float inv_norm = 1.0f / norm;
+        memset(y[i].qs, 0, sizeof(y[i].qs));
+        for (int j = 0; j < QK_VTQ; j++) {
+            float val = xi[j] * inv_norm;
+            // 1-bit: positive → 1, negative → 0
+            uint8_t idx = (val >= 0.0f) ? 1 : 0;
+            y[i].qs[j / 8] |= (idx << (j % 8));
+        }
+
+        // Norm correction
+        float recon_sq = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) {
+            int idx = (y[i].qs[j / 8] >> (j % 8)) & 0x1;
+            float r = TQ_CODEBOOK_1BIT[idx] * cb_scale;
+            recon_sq += r * r;
+        }
+        float recon_norm = sqrtf(recon_sq);
+        y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+    }
+}
+
+void dequantize_row_vtq1_1(const block_vtq1_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_VTQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_VTQ * sizeof(float)); continue; }
+        for (int j = 0; j < QK_VTQ; j++) {
+            int idx = (x[i].qs[j / 8] >> (j % 8)) & 0x1;
+            yb[j] = TQ_CODEBOOK_1BIT[idx] * cb_scale * norm;
+        }
+    }
+}
+
 void quantize_row_vtq2_1_ref(const float * GGML_RESTRICT x, block_vtq2_1 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_VTQ == 0);
     const int nb = k / QK_VTQ;
