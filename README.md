@@ -1,22 +1,12 @@
 # llama-tq
 
-**TurboQuant v7 for llama.cpp** -- KV cache quantization via PolarQuant (2.5-5.5 bpw)
+**KTQ + VTQ KV-Cache Quantization for llama.cpp** -- PolarQuant-based, up to 84% VRAM savings
 
-Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) implementing [TurboQuant](https://arxiv.org/abs/2504.19874) (Google Research, ICLR 2026). Up to **84% less KV-Cache VRAM** vs f16, enabling 6x longer context in the same memory.
+Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) implementing asymmetric KV-cache quantization based on [TurboQuant/PolarQuant](https://arxiv.org/abs/2504.19874) (Google Research, ICLR 2026).
 
-## What Makes This Fork Different
-
-| Feature | llama-tq (this) | Other TQ forks |
-|---------|:---:|:---:|
-| **Hadamard-domain KQ dot product** | yes | -- |
-| Warp-cooperative FWHT in Flash Attention | yes | -- |
-| Branchless sign x norm fusion | yes | -- |
-| Precomputed sign bits (zero Philox at dequant) | yes | some |
-| Sparse V Dequant (+22% decode) | yes | some |
-| CUDA (CC 6.1+) | **yes** | yes |
-| Metal (Apple Silicon) | -- | yes (TheTom) |
-
-**Key innovation:** Instead of inverse-FWHT on K (expensive, per-block in the inner loop), we apply FWHT to Q once and dot directly against codebook values. This exploits FWHT orthogonality to eliminate all gather shuffles and branch divergence -- **39% fewer warp shuffles** per vec_dot call.
+Two separate type families optimized for their role:
+- **KTQ** (K-Cache TurboQuant) -- per-block RHT + Hadamard-domain dot product in FA kernel
+- **VTQ** (V-Cache TurboQuant) -- graph-level D\*H\*D rotation, lightweight `__forceinline__` dequant (~8 registers)
 
 ## Quick Start
 
@@ -24,69 +14,108 @@ Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) implementing [TurboQu
 cmake -B build -DGGML_CUDA=ON
 cmake --build build -j$(nproc) --target llama-server
 
-# Maximum compression (3.5 bpw) -- 384K context on 12GB VRAM
+# Recommended: q8_0 K + vtq2_1 V (near-lossless, 65% VRAM savings)
 ./build/bin/llama-server -m model.gguf \
-    --cache-type-k tq2_1 --cache-type-v tq2_1 \
+    --cache-type-k q8_0 --cache-type-v vtq2_1 \
+    -fa on -ngl 99
+
+# Balanced: q4_0 K + vtq3_1 V (73% VRAM savings)
+./build/bin/llama-server -m model.gguf \
+    --cache-type-k q4_0 --cache-type-v vtq3_1 \
     -fa on -ngl 99
 ```
 
-### Available Types
+## Available Types
 
-| Type | bpw | VRAM vs f16 | Use Case |
-|------|-----|-------------|----------|
-| `tq1_1` | 2.5 | **-84%** | Extreme compression (V-cache recommended) |
-| `tq2_1` | 3.5 | -78% | Maximum compression, long context |
-| `tq3_1` | 4.5 | -72% | Balanced quality/compression |
-| `tq4_1` | 5.5 | -66% | Best quality, better PPL than q4_0 |
+### KTQ (K-Cache) -- Hadamard-domain dot product, per-block RHT
 
-## Benchmarks
+| Type | bpw | Block Size | Description |
+|------|:---:|:---:|---|
+| `ktq1_1` | 2.5 | 10B | 1-bit PolarQuant, extreme compression |
+| `ktq2_1` | 3.5 | 14B | 2-bit PolarQuant, good quality |
+| `ktq3_1` | 4.5 | 18B | 3-bit PolarQuant, near-lossless |
+| `ktq4_1` | 5.5 | 22B | 4-bit PolarQuant, best quality |
 
-### CC 7.5 (12 GB) -- Qwen3.5-35B-A3B IQ2_XS
+### VTQ (V-Cache) -- Graph-level D\*H\*D rotation, no FWHT in FA kernel
 
-| KV Cache | bpw | pp512 | tg32 | TG vs q4_0 |
-|----------|-----|:---:|:---:|:---:|
-| q4_0 | 4.5 | 838 | 69.5 | -- |
-| **tq2_1 v7** | 3.5 | 634 | 63.4 | -8.8% |
+| Type | bpw | Block Size | Description |
+|------|:---:|:---:|---|
+| `vtq1_1` | 1.5 | 6B | 1-bit, maximum compression |
+| `vtq2_1` | 2.5 | 10B | 2-bit, Laplace-optimized codebook |
+| `vtq3_1` | 4.0 | 16B | 3-bit, near-lossless |
+| `vtq4_1` | 4.5 | 18B | 4-bit, near-lossless |
 
-8.8% TG penalty with 78% less VRAM. v7 is **+65% faster** than v6 on this GPU.
+## Perplexity Benchmarks
 
-### CC 6.1 (6 GB) -- Ministral 3B IQ2_M
+Qwen3.5-35B-A3B IQ2_XS, wikitext-2, 512 ctx -- 2x RTX 2060 12GB:
 
-| KV Cache | bpw | pp128 | tg32 | TG vs q4_0 |
-|----------|-----|:---:|:---:|:---:|
-| q4_0 | 4.5 | 798 | 43.0 | -- |
-| **tq2_1 v7** | 3.5 | 211 | 33.3 | -22.6% |
+| K-Cache | V-Cache | Avg bpw | PPL | Delta | Status |
+|---------|---------|:---:|:---:|:---:|---|
+| f16 | f16 | 16.0 | **6.60** | baseline | -- |
+| q8_0 | q8_0 | 8.5 | 6.60 | +0.04% | lossless |
+| q4_0 | q4_0 | 4.5 | 6.62 | +0.3% | near-lossless |
+| f16 | vtq3_1 | 10.0 | 6.59 | -0.1% | **near-lossless** |
+| f16 | vtq4_1 | 10.3 | 6.64 | +0.6% | near-lossless |
+| **q8_0** | **vtq2_1** | **5.5** | **6.99** | **+5.9%** | **recommended** |
+| f16 | vtq2_1 | 9.3 | 6.97 | +5.6% | good |
+| ktq2_1 | f16 | 9.8 | 6.77 | +2.6% | good |
 
-### Example: 400K Context on 12 GB
+## Throughput Benchmarks
 
-Qwen3.5-35B-A3B IQ2_XS with tq2_1 KV on CC 7.5 (12 GB):
+llama-bench, Qwen3.5-35B-A3B IQ2_XS, 2x RTX 2060 12GB:
 
-| Detail | Value |
-|--------|-------|
-| Context | **400K tokens** |
-| Parallel Slots | 2 |
-| KV-Cache | 1,711 MB (vs ~10,400 MB with q4_0) |
-| VRAM | 9.0 / 12 GB |
+| K-Cache | V-Cache | PP512 (tok/s) | TG128 (tok/s) | KV VRAM |
+|---------|---------|:---:|:---:|:---:|
+| f16 | f16 | **730** | **58.9** | 100% |
+| f16 | vtq2_1 | 691 (-5%) | 58.1 (-1%) | 58% |
+| f16 | vtq1_1 | 693 (-5%) | 58.0 (-2%) | 55% |
+| ktq2_1 | vtq2_1 | 567 (-22%) | 55.0 (-7%) | 19% |
+| ktq3_1 | vtq2_1 | 556 (-24%) | 54.3 (-8%) | 22% |
 
-Without TQ: q4_0 can't fit 400K on 12 GB. Even 200K is tight.
+VTQ V-dequant overhead: **<2% TG** (the `__forceinline__` codebook lookup is nearly free).
 
-See [docs/turboquant.md](docs/turboquant.md) for full benchmarks including deployment configs, v6-v7 deltas, and memory savings tables.
+## Key Technical Innovations
+
+### KTQ: Hadamard-Domain K Dot Product
+Instead of inverse-FWHT on K (per-block, expensive), FWHT is applied to Q once and dotted directly against codebook values. 39% fewer warp shuffles per vec_dot call.
+
+### VTQ: Graph-Level Rotation + Lightweight FA Dequant
+V values are pre-rotated via `self_v_rot` (D\*H\*D randomized Hadamard) before cache write. The FA kernel dequant reduces to `codebook[idx] * scale` -- only ~8 float registers vs ~40 for KTQ. Post-FA inverse rotation via existing `ggml_mul_mat_aux`.
+
+### D\*H\*D Randomized Rotation
+Fixed Hadamard H produces non-i.i.d. coordinates (DC component captures mean). D\*H\*D with deterministic per-head diagonal signs distributes the DC component uniformly. This reduced VTQ2_1 PPL from 24.19 to 6.97.
+
+### Separate Codebooks (PolarQuant)
+KTQ uses Beta(15.5,15.5)-optimal Lloyd-Max codebooks (for per-block RHT distribution).
+VTQ uses Laplace-optimal codebooks (for D\*H\*D fixed rotation distribution).
+Shared scale factor: `1/sqrt(32)`.
+
+## Recommended Configurations
+
+| Use Case | K-Cache | V-Cache | Avg bpw | PPL Impact |
+|----------|---------|---------|:---:|---|
+| **Production (quality)** | q8_0 | vtq2_1 | 5.5 | +5.9% |
+| **Production (balanced)** | q4_0 | vtq3_1 | 4.25 | ~+1% |
+| **Production (safe)** | q8_0 | vtq3_1 | 6.25 | <0.5% |
+| Maximum compression | ktq2_1 | vtq3_1 | 3.75 | ~+5% |
+| Long context (400K+) | ktq2_1 | vtq2_1 | 3.0 | higher |
+
+**Note:** Combining KTQ K + VTQ V at low bit-widths (both <= 2-bit) causes super-additive PPL degradation through softmax error amplification. Use q8_0/q4_0 for K when using vtq2_1/vtq1_1 for V.
 
 ## Documentation
 
 | Doc | Description |
 |-----|-------------|
-| [docs/turboquant.md](docs/turboquant.md) | Technical deep-dive, CUDA implementation, benchmarks, roadmap |
-| [docs/DELTA.md](docs/DELTA.md) | Complete file-by-file delta from upstream llama.cpp |
+| [docs/turboquant.md](docs/turboquant.md) | Technical deep-dive: KTQ/VTQ architecture, CUDA kernels, codebooks |
+| [docs/plans/2026-04-16-vtq-design.md](docs/plans/2026-04-16-vtq-design.md) | VTQ design spec and mathematical proofs |
 
 ## Related Projects
 
 | Project | Focus | Hardware |
 |---------|-------|----------|
-| [LL4nc33/on-llama-tq](https://git.oidanice.at/LL4nc33/on-llama-tq) | Original dev repo (TQ + Cortex Tools) | CUDA |
-| [TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus) | Reference community fork | Metal + CUDA + CPU |
-| [spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda) | Trellis-constrained quantization | CUDA (RTX 3090) |
-| [Discussion #20969](https://github.com/ggml-org/llama.cpp/discussions/20969) | Community coordination thread | -- |
+| [TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus) | Community TQ fork | Metal + CUDA + CPU |
+| [spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda) | Trellis-constrained TQ | CUDA |
+| [Discussion #20969](https://github.com/ggml-org/llama.cpp/discussions/20969) | Community coordination | -- |
 
 ## Paper
 
