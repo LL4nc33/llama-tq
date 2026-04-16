@@ -5933,8 +5933,21 @@ void dequantize_row_ktq4_1(const block_ktq4_1 * GGML_RESTRICT x, float * GGML_RE
 
 // ============================================================
 // VTQ (Value TurboQuant) — V-cache optimized, NO FWHT/sign bits
-// Data arrives pre-rotated via self_v_rot. Dequant = CB * scale.
+// Data arrives pre-rotated via self_v_rot (D*H*D). Dequant = CB * scale.
+// VTQ uses Laplace-optimized codebooks (sharper peak, heavier tails than Beta).
 // ============================================================
+
+static const float VTQ_CODEBOOK_1BIT[2] = {
+    -0.797885f, 0.797885f  // same as PQ (only 2 centroids)
+};
+
+static const float VTQ_CODEBOOK_2BIT[4] = {
+    -1.810000f, -0.395000f, 0.395000f, 1.810000f  // Laplace-optimal for D*H*D rotation
+};
+
+// 3-bit/4-bit: PQ codebooks work fine (near-lossless anyway)
+#define VTQ_CODEBOOK_3BIT PQ_CODEBOOK_3BIT
+#define VTQ_CODEBOOK_4BIT PQ_CODEBOOK_4BIT
 
 void quantize_row_vtq1_1_ref(const float * GGML_RESTRICT x, block_vtq1_1 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_VTQ == 0);
@@ -5963,7 +5976,7 @@ void quantize_row_vtq1_1_ref(const float * GGML_RESTRICT x, block_vtq1_1 * GGML_
         float recon_sq = 0.0f;
         for (int j = 0; j < QK_VTQ; j++) {
             int idx = (y[i].qs[j / 8] >> (j % 8)) & 0x1;
-            float r = PQ_CODEBOOK_1BIT[idx] * cb_scale;
+            float r = VTQ_CODEBOOK_1BIT[idx] * cb_scale;
             recon_sq += r * r;
         }
         float recon_norm = sqrtf(recon_sq);
@@ -5982,7 +5995,7 @@ void dequantize_row_vtq1_1(const block_vtq1_1 * GGML_RESTRICT x, float * GGML_RE
         if (norm < 1e-30f) { memset(yb, 0, QK_VTQ * sizeof(float)); continue; }
         for (int j = 0; j < QK_VTQ; j++) {
             int idx = (x[i].qs[j / 8] >> (j % 8)) & 0x1;
-            yb[j] = PQ_CODEBOOK_1BIT[idx] * cb_scale * norm;
+            yb[j] = VTQ_CODEBOOK_1BIT[idx] * cb_scale * norm;
         }
     }
 }
@@ -6009,7 +6022,7 @@ void quantize_row_vtq2_1_ref(const float * GGML_RESTRICT x, block_vtq2_1 * GGML_
             float best_dist = FLT_MAX;
             uint8_t best_idx = 0;
             for (int c = 0; c < 4; c++) {
-                float centroid = PQ_CODEBOOK_2BIT[c] * cb_scale;
+                float centroid = VTQ_CODEBOOK_2BIT[c] * cb_scale;
                 float dist = (val - centroid) * (val - centroid);
                 if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
             }
@@ -6020,7 +6033,7 @@ void quantize_row_vtq2_1_ref(const float * GGML_RESTRICT x, block_vtq2_1 * GGML_
         float recon_sq = 0.0f;
         for (int j = 0; j < QK_VTQ; j++) {
             int idx = (y[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
-            float r = PQ_CODEBOOK_2BIT[idx] * cb_scale;
+            float r = VTQ_CODEBOOK_2BIT[idx] * cb_scale;
             recon_sq += r * r;
         }
         float recon_norm = sqrtf(recon_sq);
@@ -6049,7 +6062,7 @@ void quantize_row_vtq3_1_ref(const float * GGML_RESTRICT x, block_vtq3_1 * GGML_
             float best_dist = FLT_MAX;
             uint8_t best_idx = 0;
             for (int c = 0; c < 8; c++) {
-                float centroid = PQ_CODEBOOK_3BIT[c] * cb_scale;
+                float centroid = VTQ_CODEBOOK_3BIT[c] * cb_scale;
                 float dist = (val - centroid) * (val - centroid);
                 if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
             }
@@ -6070,7 +6083,7 @@ void quantize_row_vtq3_1_ref(const float * GGML_RESTRICT x, block_vtq3_1 * GGML_
             int byte_idx = bit_offset / 8;
             int bit_pos = bit_offset % 8;
             int idx = ((y[i].qs[byte_idx] >> bit_pos) | (y[i].qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-            float r = PQ_CODEBOOK_3BIT[idx] * cb_scale;
+            float r = VTQ_CODEBOOK_3BIT[idx] * cb_scale;
             recon_sq += r * r;
         }
         float recon_norm = sqrtf(recon_sq);
@@ -6099,7 +6112,7 @@ void quantize_row_vtq4_1_ref(const float * GGML_RESTRICT x, block_vtq4_1 * GGML_
             float best_dist = FLT_MAX;
             uint8_t best_idx = 0;
             for (int c = 0; c < 16; c++) {
-                float centroid = PQ_CODEBOOK_4BIT[c] * cb_scale;
+                float centroid = VTQ_CODEBOOK_4BIT[c] * cb_scale;
                 float dist = (val - centroid) * (val - centroid);
                 if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
             }
@@ -6110,7 +6123,7 @@ void quantize_row_vtq4_1_ref(const float * GGML_RESTRICT x, block_vtq4_1 * GGML_
         float recon_sq = 0.0f;
         for (int j = 0; j < QK_VTQ; j++) {
             int idx = (y[i].qs[j / 2] >> (4 * (j % 2))) & 0xF;
-            float r = PQ_CODEBOOK_4BIT[idx] * cb_scale;
+            float r = VTQ_CODEBOOK_4BIT[idx] * cb_scale;
             recon_sq += r * r;
         }
         float recon_norm = sqrtf(recon_sq);
@@ -6130,7 +6143,7 @@ void dequantize_row_vtq2_1(const block_vtq2_1 * GGML_RESTRICT x, float * GGML_RE
         // No inverse RHT — output stays in rotated space (post-FA matmul handles inverse)
         for (int j = 0; j < QK_VTQ; j++) {
             int idx = (x[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
-            yb[j] = PQ_CODEBOOK_2BIT[idx] * cb_scale * norm;
+            yb[j] = VTQ_CODEBOOK_2BIT[idx] * cb_scale * norm;
         }
     }
 }
@@ -6149,7 +6162,7 @@ void dequantize_row_vtq3_1(const block_vtq3_1 * GGML_RESTRICT x, float * GGML_RE
             int byte_idx = bit_offset / 8;
             int bit_pos = bit_offset % 8;
             int idx = ((x[i].qs[byte_idx] >> bit_pos) | (x[i].qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-            yb[j] = PQ_CODEBOOK_3BIT[idx] * cb_scale * norm;
+            yb[j] = VTQ_CODEBOOK_3BIT[idx] * cb_scale * norm;
         }
     }
 }
@@ -6165,7 +6178,7 @@ void dequantize_row_vtq4_1(const block_vtq4_1 * GGML_RESTRICT x, float * GGML_RE
         if (norm < 1e-30f) { memset(yb, 0, QK_VTQ * sizeof(float)); continue; }
         for (int j = 0; j < QK_VTQ; j++) {
             int idx = (x[i].qs[j / 2] >> (4 * (j % 2))) & 0xF;
-            yb[j] = PQ_CODEBOOK_4BIT[idx] * cb_scale * norm;
+            yb[j] = VTQ_CODEBOOK_4BIT[idx] * cb_scale * norm;
         }
     }
 }

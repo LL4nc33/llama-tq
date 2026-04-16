@@ -34,6 +34,22 @@ __device__ __constant__ static float PQ_CUDA_CB_4BIT[16] = {
 
 #define PQ_CUDA_CB_SCALE 0.17677669529663689f // 1/sqrt(32)
 
+// VTQ-specific codebooks: optimized for Laplacian distribution (D*H*D rotation)
+// The fixed Hadamard with diagonal signs produces leptokurtic (sharper peak, heavier tails)
+// coordinates compared to the Beta(15.5,15.5) of full per-block RHT.
+// Inner centroids closer to zero, outer centroids further out.
+__device__ __constant__ static float VTQ_CUDA_CB_1BIT[2] = {
+    -0.797885f, 0.797885f  // 1-bit: same as PQ (only 2 centroids, sign-based)
+};
+
+__device__ __constant__ static float VTQ_CUDA_CB_2BIT[4] = {
+    -1.810000f, -0.395000f, 0.395000f, 1.810000f  // Laplace-optimal (vs Beta: -1.49, -0.45, +0.45, +1.49)
+};
+
+// 3-bit and 4-bit: use PQ codebooks (already near-lossless, no benefit from re-optimization)
+#define VTQ_CUDA_CB_3BIT PQ_CUDA_CB_3BIT
+#define VTQ_CUDA_CB_4BIT PQ_CUDA_CB_4BIT
+
 // ============================================================
 // Philox 2x32 Counter-Based PRNG — O(1) random access
 // Each (counter, key) pair deterministically produces a random uint32.
@@ -924,11 +940,11 @@ static void get_rows_cuda_ktq4_1(
 // --- VTQ index decode: extract codebook value for element j from qs[] ---
 
 static __device__ __forceinline__ float vtq_decode_1bit(const uint8_t * qs, int j) {
-    return PQ_CUDA_CB_1BIT[(qs[j / 8] >> (j % 8)) & 0x1] * PQ_CUDA_CB_SCALE;
+    return VTQ_CUDA_CB_1BIT[(qs[j / 8] >> (j % 8)) & 0x1] * PQ_CUDA_CB_SCALE;
 }
 
 static __device__ __forceinline__ float vtq_decode_2bit(const uint8_t * qs, int j) {
-    return PQ_CUDA_CB_2BIT[(qs[j / 4] >> (2 * (j % 4))) & 0x3] * PQ_CUDA_CB_SCALE;
+    return VTQ_CUDA_CB_2BIT[(qs[j / 4] >> (2 * (j % 4))) & 0x3] * PQ_CUDA_CB_SCALE;
 }
 
 static __device__ __forceinline__ float vtq_decode_3bit(const uint8_t * qs, int j) {
@@ -936,11 +952,11 @@ static __device__ __forceinline__ float vtq_decode_3bit(const uint8_t * qs, int 
     const int byte_idx = bit_offset / 8;
     const int bit_pos = bit_offset % 8;
     const int idx = ((qs[byte_idx] >> bit_pos) | (qs[byte_idx + 1] << (8 - bit_pos))) & 0x7;
-    return PQ_CUDA_CB_3BIT[idx] * PQ_CUDA_CB_SCALE;
+    return VTQ_CUDA_CB_3BIT[idx] * PQ_CUDA_CB_SCALE;
 }
 
 static __device__ __forceinline__ float vtq_decode_4bit(const uint8_t * qs, int j) {
-    return PQ_CUDA_CB_4BIT[(qs[j / 2] >> (4 * (j % 2))) & 0xF] * PQ_CUDA_CB_SCALE;
+    return VTQ_CUDA_CB_4BIT[(qs[j / 2] >> (4 * (j % 2))) & 0xF] * PQ_CUDA_CB_SCALE;
 }
 
 // --- VTQ index encode: pack codebook index for element j into qs[] ---
@@ -1007,10 +1023,10 @@ static __device__ void vtq_cuda_quantize_block(
 
 // Concrete quantize-block wrappers (signature matches set_rows_cuda_tq template)
 static __device__ void vtq_cuda_quantize_vtq1_1_block(const float * __restrict__ x, block_vtq1_1 * __restrict__ y, int64_t) {
-    vtq_cuda_quantize_block<block_vtq1_1, 2>(x, y, PQ_CUDA_CB_1BIT, vtq_decode_1bit, vtq_encode_1bit);
+    vtq_cuda_quantize_block<block_vtq1_1, 2>(x, y, VTQ_CUDA_CB_1BIT, vtq_decode_1bit, vtq_encode_1bit);
 }
 static __device__ void vtq_cuda_quantize_vtq2_1_block(const float * __restrict__ x, block_vtq2_1 * __restrict__ y, int64_t) {
-    vtq_cuda_quantize_block<block_vtq2_1, 4>(x, y, PQ_CUDA_CB_2BIT, vtq_decode_2bit, vtq_encode_2bit);
+    vtq_cuda_quantize_block<block_vtq2_1, 4>(x, y, VTQ_CUDA_CB_2BIT, vtq_decode_2bit, vtq_encode_2bit);
 }
 static __device__ void vtq_cuda_quantize_vtq3_1_block(const float * __restrict__ x, block_vtq3_1 * __restrict__ y, int64_t) {
     vtq_cuda_quantize_block<block_vtq3_1, 8>(x, y, PQ_CUDA_CB_3BIT, vtq_decode_3bit, vtq_encode_3bit);
