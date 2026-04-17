@@ -1307,3 +1307,44 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
     assert(k % QK_K == 0);
     quantize_iq4_xs(x, y, 1, k, NULL);
 }
+
+// --- VTQ_2 (Trellis v2) vec_dot: dequantize then fp32 dot product ---
+// Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2.
+
+#include <alloca.h>
+
+void ggml_vec_dot_vtq2_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    float * tmp = (float *)alloca((size_t)n * sizeof(float));
+    dequantize_row_vtq2_2((const block_vtq2_2 *)vx, tmp, n);
+    const float * y = (const float *)vy;
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    *s = (float)sum;
+}
+
+void ggml_vec_dot_vtq3_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    float * tmp = (float *)alloca((size_t)n * sizeof(float));
+    dequantize_row_vtq3_2((const block_vtq3_2 *)vx, tmp, n);
+    const float * y = (const float *)vy;
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    *s = (float)sum;
+}
+
+void ggml_vec_dot_vtq4_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    float * tmp = (float *)alloca((size_t)n * sizeof(float));
+    dequantize_row_vtq4_2((const block_vtq4_2 *)vx, tmp, n);
+    const float * y = (const float *)vy;
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    *s = (float)sum;
+}
