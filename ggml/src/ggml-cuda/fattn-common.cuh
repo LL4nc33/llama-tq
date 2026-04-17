@@ -290,30 +290,38 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
 }
 
 // ============================================================
-// TurboQuant Flash Attention Helpers — Warp-Cooperative Dequant
+// KTQ Flash-Attention dequant helpers — warp-cooperative, one lane per element.
 //
-// The warp-cooperative variants use ktq_cuda_fwht_warp() (5 warp shuffles)
-// instead of ktq_cuda_fwht_32_serial() (80 butterfly ops in a single thread).
-// This is ~16x fewer instructions and eliminates the local memory buf[32].
+// Serial FWHT:     5 stages × 32 butterflies = 160 add/sub ops performed by
+//                  one thread over a 32-float local buffer.
+// Warp FWHT:       same 160 butterflies but distributed across 32 lanes
+//                  using __shfl_xor_sync — only 5 shuffles per lane, no
+//                  local/shared buffer, no per-thread 32-float staging.
 //
-// Each thread in the warp handles one element of the 32-element TQ block.
-// The lane index within the block is passed as `lane` (0..31).
-// Returns the single dequantized element for this thread's lane.
+// The warp variants are used inside the FA kernels, where the 32-float
+// buffer would push register usage past the point the FA kernel can sustain
+// its chosen block size without spilling. See ktq_cuda_fwht_warp in
+// turboquant.cuh for the butterfly/sign-convention notes.
+//
+// `lane` is the thread's index within the 32-thread group covering one
+// QK_KTQ block. Returns the dequantized value for that lane's element.
 // ============================================================
 
 static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq1_1(
         const block_ktq1_1 * __restrict__ x, const int64_t ib, const int lane) {
     const float norm = (float)x[ib].d;
-    // NOTE: no early return for norm==0 — all lanes must participate in FWHT warp shuffle
+    // No early return for norm==0: the FWHT uses __shfl_xor_sync, which
+    // requires every lane in the mask to be active. We let norm==0 fall
+    // through and zero the result via the final multiply.
 
-    // Step 1: codebook lookup (in rotated space) — 1-bit index
+    // 1-bit index → Hadamard-space codebook value.
     const int idx = (x[ib].qs[lane / 8] >> (lane % 8)) & 0x1;
     float val = PQ_CUDA_CB_1BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Step 2: Inverse FWHT via warp shuffles (5 steps, not 80 butterfly ops)
+    // Inverse RHT part 1: normalized FWHT (self-inverse).
     val = ktq_cuda_fwht_warp(val);
 
-    // Step 3: Fused sign*norm — branchless. norm==0 naturally zeros the result.
+    // Inverse RHT part 2 + scale: branchless sign flip; norm==0 zeros result.
     const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
     return val * (1.0f - 2.0f * sign_bit) * norm;
 }
@@ -321,16 +329,16 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq1_1(
 static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq2_1(
         const block_ktq2_1 * __restrict__ x, const int64_t ib, const int lane) {
     const float norm = (float)x[ib].d;
-    // NOTE: no early return for norm==0 — all lanes must participate in FWHT warp shuffle
+    // See KTQ1_1 note: no early-out — all lanes must reach the FWHT shuffle.
 
-    // Step 1: codebook lookup (in rotated space)
+    // 2-bit index → Hadamard-space codebook value.
     const int idx = (x[ib].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
     float val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Step 2: Inverse FWHT via warp shuffles (5 steps, not 80 butterfly ops)
+    // Inverse RHT part 1.
     val = ktq_cuda_fwht_warp(val);
 
-    // Step 3: Fused sign×norm — branchless. norm==0 naturally zeros the result.
+    // Inverse RHT part 2 + scale.
     const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
     return val * (1.0f - 2.0f * sign_bit) * norm;
 }
@@ -458,14 +466,24 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq4_1(const bloc
     }
 }
 
-// vec_dot_KQ for TurboQuant types — Warp-Cooperative
+// K·Q vec-dot for KTQ types — v7 Hadamard-domain formulation.
 //
-// When nthreads == WARP_SIZE (D >= 128): all 32 threads cooperate via ktq_cuda_fwht_warp
-// (5 warp shuffles per block) + 4 gather shuffles per thread. Total: ~9 * nblocks shuffles
-// vs 80 * nblocks serial butterfly ops in the old code.
+// For an RHT-quantized K-block we have K = D_s · H_n · c (D_s diagonal signs
+// from sb[], H_n normalized 32-point Hadamard, c codebook reconstruction).
+// Then  K · Q = c · (H_n^T · D_s^T · Q) = c · (H_n · (D_s · Q))  because
+// H_n is orthogonal (self-transpose, self-inverse) and D_s is its own inverse.
+// We therefore transform *Q* into Hadamard space once per K-block (5 shuffles)
+// and dot against the codebook value directly, skipping the per-element
+// inverse FWHT and the gather shuffles the v6 path needed.
 //
-// When nthreads < WARP_SIZE (D == 64): fall back to serial FWHT since the warp is split
-// into multiple groups that cannot safely cooperate on a 32-element FWHT.
+// Warp-parallel path (nthreads == WARP_SIZE, i.e. head dim D ≥ 128): every
+// lane owns one element of each 32-element block; the FWHT and dot both
+// fit inside a single warp shuffle pattern.
+//
+// Serial fallback (nthreads < WARP_SIZE, typically D == 64): the warp is
+// already split across heads, so cooperating on a 32-element FWHT is
+// unsafe — drop back to ktq_fattn_dequant_block_* (serial FWHT into a
+// 32-float buffer) and do the dot in registers.
 //
 template <int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq1_1(
@@ -540,13 +558,14 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq2_1(
     const int lane = threadIdx.x;
 
     if constexpr (nthreads == WARP_SIZE) {
-        // v7 Hadamard-domain dot product: FWHT on Q (once per block), dot in rotated space.
-        // Eliminates all gather shuffles and branch divergence.
-        // v7: Shuffles: 4 blocks × 5 FWHT = 20 + 5 reduce = 25 (was 41 in v6).
+        // Hadamard-domain dot (see v7 note above the template). For D=128
+        // this is 4 blocks × 5 FWHT shuffles + 5 reduction shuffles = 25
+        // warp shuffles total (was 41 in the v6 inverse-FWHT-on-K path).
         //
-        // Q_v layout: float[D/WARP_SIZE] per thread. Thread t holds Q values at
-        // positions [0*32+t, 1*32+t, 2*32+t, 3*32+t] (for D=128).
-        // So Q_f32[bi] = Q value at position bi*32 + threadIdx.x.
+        // Q_v layout: each thread holds D / WARP_SIZE = D/32 scalars of Q,
+        // striped so that lane t holds Q[bi·32 + t] for bi = 0..nblocks-1.
+        // This matches the element-per-lane layout of the K-block so the
+        // FWHT operates on Q directly with no reshuffle.
         const float * Q_f32 = (const float *) Q_v;
         GGML_UNUSED(Q_q8);
         GGML_UNUSED(Q_ds_v);
@@ -557,21 +576,22 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq2_1(
         #pragma unroll
         for (int bi = 0; bi < nblocks; ++bi) {
             const float norm = (float)K_tq[bi].d;
-            // NOTE: no early-exit for norm==0 — all lanes must participate in FWHT
-            // (warp shuffle requires all 32 threads to be active, otherwise deadlock)
+            // All 32 lanes must reach the FWHT below: __shfl_xor_sync on a
+            // partial mask would desync the warp. norm==0 is handled by the
+            // final multiply instead of an early return.
 
-            // 1. Sign-flip Q for this K-block (branchless)
-            // Q_f32[bi] is the Q value at position bi*32 + lane (this thread's element)
+            // 1. Apply D_s (diagonal signs from sb[]) to Q — pushing the
+            //    inverse of the quantizer's RHT onto the query side.
             const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
             float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
 
-            // 2. FWHT(Q_signed) → rotate Q into Hadamard space (5 shuffles)
+            // 2. Rotate Q into Hadamard space: H_n · (D_s · Q).
             float Q_rot = ktq_cuda_fwht_warp(Q_signed);
 
-            // 3. Codebook lookup (stays in Hadamard/rotated space — no inverse FWHT needed!)
+            // 3. K stays in Hadamard space as a codebook index — no inverse FWHT.
             const int idx = (K_tq[bi].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
 
-            // 4. Multiply + accumulate: norm==0 naturally zeros the contribution
+            // 4. Dot in Hadamard space. norm==0 zeros this block's contribution.
             accum += PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE * Q_rot * norm;
         }
 
@@ -720,7 +740,14 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq4_1(
     }
 }
 
-// dequantize_V for TurboQuant types
+// V-dequant for KTQ types, used inside the FA P·V loop.
+//
+// These are __noinline__ on purpose: each call materializes a 32-float
+// buffer and runs a serial FWHT over it. Inlining into the FA kernel would
+// add ~32 live floats + FWHT temporaries to an already register-tight loop
+// and force spills to local memory (measured: ~15-20% FA decode slowdown
+// on sm_75/sm_89 in our runs). Keeping them as a separate call lets nvcc
+// allocate the transient state in the callee frame.
 template <typename T, int ne>
 static __device__ __noinline__ void dequantize_V_ktq1_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_ktq1_1 * x = (const block_ktq1_1 *) vx;
@@ -796,9 +823,14 @@ static __device__ __noinline__ void dequantize_V_ktq4_1(const void * __restrict_
 }
 
 // ============================================================
-// VTQ V-Dequant — the key improvement: NO FWHT, NO sign bits
-// Only codebook lookup * scale. ~8 registers, __forceinline__.
-// Uses vtq_decode_* helpers from turboquant.cuh.
+// VTQ V-dequant — codebook lookup · scale, nothing else.
+//
+// VTQ moves the rotation out of the cache path (self_v_rot runs once per
+// graph, not per cache block), so there is no FWHT and no per-block sign
+// bits at read time. The live set is ~8 registers (block pointer, ib, il,
+// scale, loop index, decoded value, ne, output pointer) which is small
+// enough to __forceinline__ into the FA kernel without degrading its
+// occupancy. See vtq_decode_* helpers in turboquant.cuh.
 // ============================================================
 
 template <typename block_t, typename T, int ne, auto decode_fn>

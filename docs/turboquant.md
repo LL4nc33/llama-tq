@@ -7,9 +7,9 @@ TurboQuant implements KV cache quantization for GGML, inspired by [TurboQuant](h
 Two type families exist, split by cache role:
 
 - **KTQ** (K-Cache TurboQuant) -- Hadamard rotation (RHT) with per-block sign bits. The FA kernel uses a Hadamard-domain dot product (FWHT on Q, not inverse-FWHT on K), eliminating gather shuffles and branch divergence. 39% fewer warp shuffles per vec_dot call.
-- **VTQ** (V-Cache TurboQuant) -- codebook-only quantization without FWHT or sign bits. V values are pre-rotated via `self_v_rot` (graph-level Hadamard). FA V-dequant is `codebook[idx] * scale` -- `__forceinline__`, ~8 registers (vs ~40 for KTQ). Inverse rotation applied as a single post-FA matmul.
+- **VTQ** (V-Cache TurboQuant) -- codebook-only quantization without FWHT or sign bits. V values are pre-rotated via `self_v_rot` (graph-level Hadamard). FA V-dequant is `codebook[idx] * scale` -- `__forceinline__`, ~8 thread-local float registers (vs ~40 per thread for KTQ's buf[32] staging array plus intermediates). Inverse rotation applied as a single post-FA matmul.
 
-The KTQ/VTQ split was motivated by a V-dequant register spilling bug in the FA kernel: KTQ's full dequant path (32-element FWHT butterfly + sign bits) requires ~40 float registers, forcing `__noinline__` and causing LMEM spills that corrupt the FA accumulator state. VTQ eliminates this by moving the rotation out of the FA hot loop.
+The KTQ/VTQ split was motivated by a V-dequant register spilling bug in the FA kernel. KTQ's full dequant path needs a 32-element staging buffer (the FWHT operates over all 32 lanes) plus sign-bit state and codebook lookups -- NVCC's register allocator sees this inside an already register-heavy FA inner loop and responds in two ways: it refuses to inline (falls back to `__noinline__`), and it spills the buf[32] array to local memory (LMEM, which is per-thread global memory, ~400-cycle latency). The LMEM traffic interleaves with FA's `VKQ`/`KQ_max` accumulator state across warp iterations, producing visible numerical corruption. VTQ eliminates the staging buffer entirely by moving the rotation out of the FA hot loop.
 
 ## Quick Start
 
@@ -140,19 +140,22 @@ float[32] -> normalize -> random signs -> FWHT -> codebook -> norm correction ->
 ```
 
 1. **Normalize:** `x_hat = x / ||x||`
-2. **Random Signs:** Apply deterministic +/-1 signs (Philox 6-round PRNG from block-index seed)
-3. **FWHT:** Fast Walsh-Hadamard Transform, scaled by `1/sqrt(32)`
-4. **Lloyd-Max Quantization:** Nearest centroid from Beta(15.5, 15.5)-approximate codebook (d=32 approximation of the TurboQuant marginal distribution)
-5. **Norm Correction:** Reconstruct, measure `||recon||`, store `norm / ||recon||` -- compensates codebook error (~1.2% PPL improvement)
-6. **Sign Bits:** Store precomputed signs in `sb[4]` (32 bits = 32 signs)
+2. **Random Signs:** Apply deterministic +/-1 signs from Philox 2x32, 6-round counter-based PRNG (Salmon et al. 2011) keyed by block index. 6 rounds is sufficient for non-cryptographic RHT sign generation; the full 10-round variant is reserved for the (disabled) QJL path.
+3. **FWHT:** Fast Walsh-Hadamard Transform, scaled by `1/sqrt(32)` for orthonormality (`H^T H = I`, and with normalization `H = H^T`, so FWHT is its own inverse).
+4. **Lloyd-Max Quantization:** Nearest-centroid scalar quantization. The codebooks are Lloyd-Max optimal for Beta(15.5, 15.5), which is the marginal distribution of a single coordinate of a unit vector in R^32 after random rotation: a unit vector's squared coordinates follow Dirichlet(1/2, ..., 1/2), so each coordinate squared is Beta(1/2, (d-1)/2); the signed coordinate `x_i` satisfies `(x_i + 1)/2 ~ Beta((d-1)/2, (d-1)/2)`, giving Beta(15.5, 15.5) at d=32. The D\*H\*D composition (random sign diag D, Hadamard H, random sign diag D) is what makes this distribution hold: bare H maps the standard basis to another fixed orthonormal basis and does not randomize across directions; the flanking sign flips break that symmetry and deliver coordinates that are approximately i.i.d. from the Beta marginal.
+5. **Norm Correction:** After quantization, measure `||reconstruction||` (where reconstruction applies the stored centroid values) and store `||x|| / ||reconstruction||` instead of raw `||x||`. Lloyd-Max centroids minimize MSE but systematically bias `|x_q| < |x|` for heavy-tailed input distributions (centroids are pulled toward zero by the density mass there), so storing raw `||x||` underestimates the true magnitude at reconstruction time. The stored ratio cancels that bias exactly: `||x|| / ||recon|| * recon` has norm `||x||`. Empirically: ~1.2% PPL improvement at zero dequant-time cost.
+6. **Sign Bits:** Store precomputed signs in `sb[4]` (32 bits = 32 signs), so the dequant path reads the signs rather than re-running Philox.
 
 ### KTQ Dequantization (K-Cache, Hadamard-domain dot product)
 
 Instead of inverse-FWHT on K, the FA kernel applies FWHT to Q once per block and dots directly against codebook values:
 ```
-score = norm * dot(FWHT(sign * Q), codebook_values)
+score = norm * <K_dequant, Q>
+      = norm * <sign * FWHT^{-1}(codebook_values), Q>     (K dequant is sign * FWHT^{-1}(centroids))
+      = norm * <codebook_values, FWHT(sign * Q)>           (FWHT is orthogonal: <A x, y> = <x, A^T y>)
+      = norm * <codebook_values, FWHT(sign * Q)>           (and FWHT is self-inverse when normalized)
 ```
-Mathematically exact (FWHT is orthogonal). No gathers, no branch divergence.
+This identity holds because the normalized FWHT matrix `H` satisfies `H^T H = I` and `H = H^T`, so moving `H` across the inner product costs nothing. The rearrangement shifts the 32-element FWHT from a per-K-block operation (gather + butterfly in the hot loop) to a single per-Q FWHT that amortizes across all K blocks a given Q attends to. No gathers, no branch divergence at dequant time.
 
 ### VTQ Quantization Pipeline (V-Cache)
 
@@ -182,7 +185,7 @@ VKQ_final = R^T * VKQ_rotated    // graph-level matmul via self_v_rot
 
 ### Shared Codebooks (PQ_CODEBOOK_*)
 
-Both KTQ and VTQ use the same Lloyd-Max codebooks, optimal for the TurboQuant marginal distribution ≈ Beta(15.5, 15.5) at d=32:
+Both KTQ and VTQ use the same Lloyd-Max codebooks, optimal for the coordinate marginal `Beta((d-1)/2, (d-1)/2) = Beta(15.5, 15.5)` at d=32 (see Quantization Pipeline step 4 for the derivation):
 
 - **1-bit (2 centroids):** `{-0.7979, 0.7979}` (= sqrt(2/pi))
 - **2-bit (4 centroids):** `{-1.4896, -0.4514, 0.4514, 1.4896}`
@@ -215,7 +218,7 @@ VTQ4_1 (18 bytes, 4.5 bpw):  [d:2B] [qs:16B 4-bit]
 |-----------|---------------------|---------------|
 | Load block data | qs + sb + d | qs + d |
 | Codebook lookup | 32 lookups | ne lookups (4 typical) |
-| Serial FWHT | **32-element butterfly (160 FMA)** | **NONE** |
+| Serial FWHT | **32-element butterfly: log2(32)=5 stages x 16 add/sub pairs = ~160 FLOPs** | **NONE** |
 | Sign flip | 32 branchless mul | **NONE** |
 | Scale multiply | 32 mul | ne mul |
 | Post-FA rotation | None | R^T matmul (once per layer) |
@@ -227,9 +230,10 @@ VTQ4_1 (18 bytes, 4.5 bpw):  [d:2B] [qs:16B 4-bit]
 
 ### 1. Hadamard-Domain KQ Dot Product (v7)
 
-Since FWHT is orthogonal, `<K_dequant, Q> = norm * sum_i(cb[idx_i] * FWHT(sign * Q)[i])`.
+Since the normalized FWHT matrix `H` is orthogonal and self-inverse (`H = H^T`, `H^T H = I`),
+`<K_dequant, Q> = <sign * H(cb), Q> = <cb, H(sign * Q)> = norm * sum_i(cb[idx_i] * FWHT(sign * Q)[i])`.
 
-Instead of inverse-FWHT on K (5 shuffles per block + 4 gather shuffles), apply FWHT to Q once per block and dot directly against codebook values.
+Instead of inverse-FWHT on K (5 butterfly stages = log2(32), implemented as 5 `__shfl_xor_sync` rounds in the warp-cooperative variant, plus 4 gather shuffles for the per-lane element rearrangement), apply FWHT to Q once and dot directly against codebook values.
 
 | Metric | v6 | v7 |
 |--------|:--:|:--:|
@@ -247,11 +251,11 @@ VTQ eliminates the 32-element FWHT butterfly and sign bit reads from the FA inne
 
 ### 4. Warp-Cooperative FWHT in Flash Attention (v6)
 
-Each warp lane holds one element; 5 `__shfl_xor_sync` rounds perform the full 32-point transform. Eliminates the 80 serial butterfly ops that bottlenecked CC 6.1.
+Each warp lane holds one element of the 32-element vector; 5 `__shfl_xor_sync` rounds (with XOR masks 1, 2, 4, 8, 16) perform the full 32-point butterfly, replacing the serial version's 5 stages x 16 FMAs = 80 serial FMAs with 5 parallel shuffle+FMA rounds across 32 lanes. This path needs no shared memory. It eliminates the serial-butterfly bottleneck that dominated CC 6.1 runtime.
 
 ### 5. Norm Correction
 
-Stores `||x|| / ||reconstruction||` instead of raw `||x||`. Compensates systematic magnitude loss from codebook quantization. ~1.2% PPL improvement at zero dequant cost. Used by both KTQ and VTQ.
+Stores `||x|| / ||reconstruction||` instead of raw `||x||`. Lloyd-Max centroids minimize MSE but bias reconstructed magnitudes toward zero for the Beta(15.5, 15.5) marginal; storing raw `||x||` would inherit that bias. The ratio compensates exactly at reconstruction time. ~1.2% PPL improvement at zero dequant-time cost. Used by both KTQ and VTQ.
 
 ### 6. Sparse V Dequant
 
@@ -274,7 +278,7 @@ In Flash Attention V-accumulation: skip dequant for positions where attention we
 | Shared codebooks | `PQ_CUDA_CB_*BIT` constants used by both KTQ and VTQ |
 | FA Dispatch | KTQ1_1..KTQ4_1 (K+V), VTQ1_1..VTQ4_1 (V-only) |
 | SET_ROWS | `k_set_rows_ktq*` + `k_set_rows_vtq*` kernels |
-| Compute Capability | CC 6.1+ tested (CC 6.1, CC 7.5) |
+| Compute Capability | Tested on CC 6.1 (GTX 1060-class, Pascal) and CC 7.5 (RTX 2060, Turing). Should build for CC 6.0+ (anything with `__shfl_xor_sync`); untested on Ampere/Ada/Hopper |
 
 ## Source Files
 

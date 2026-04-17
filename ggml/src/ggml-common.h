@@ -289,74 +289,92 @@ typedef struct {
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
 
-// KTQ (K-Cache TurboQuant) block structures — inspired by TurboQuant (arXiv:2504.19874)
-// v5: RHT + Lloyd-Max codebook with precomputed sign bits. QJL removed.
+// KTQ (K-cache TurboQuant) block structures.
+// Reference: Zandieh, Daliri, Hadian, Mirrokni; arXiv:2504.19874.
+//
+// Layout per 32-element block:
+//   d   ggml_half — the post-correction L2 norm of the block. After codebook
+//       quantization we recompute ||reconstructed|| and store norm / ||recon||
+//       here so that E[||dequantized|| ] = ||original||  (v5 norm correction).
+//   qs  codebook indices of each element (b bits × 32 elements, packed).
+//   sb  1 bit per element — the RHT diagonal sign used at quantize time.
+//       Precomputed so that dequant (read-heavy) never invokes Philox;
+//       only the one-shot quantize (write) pays the PRNG cost.
+//
+// bpw = (16 + 32·b + 32·1) / 32 = b + 1.5 for KTQ_b_1.
 
-#define QK_KTQ 32  // KTQ block size
+#define QK_KTQ 32  // KTQ block size (one CUDA warp per block)
 
-// KTQ1_1: 1-bit quantization = 2.5 bpw (sign-only, maximum compression)
+// KTQ1_1 — 1-bit codebook, 2.5 bpw. Sign-only K quantization.
 typedef struct {
-    ggml_half d;               // 2B: vector L2 norm (scale factor)
-    uint8_t   qs[QK_KTQ / 8]; // 4B: 1-bit codebook indices (8 per byte)
-    uint8_t   sb[QK_KTQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
-} block_ktq1_1;                // = 10 bytes for 32 elements
+    ggml_half d;              // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ / 8]; // 1-bit codebook indices, 8/byte
+    uint8_t   sb[QK_KTQ / 8]; // RHT sign bits, 1 bit/element
+} block_ktq1_1;
 static_assert(sizeof(block_ktq1_1) == sizeof(ggml_half) + QK_KTQ/8 + QK_KTQ/8, "wrong ktq1_1 block size/padding");
 
-// KTQ2_1: 2-bit codebook = 3.5 bpw (v5: compact, sign bits precomputed)
+// KTQ2_1 — 2-bit codebook, 3.5 bpw.
 typedef struct {
-    ggml_half d;               // 2B: vector L2 norm (scale factor)
-    uint8_t   qs[QK_KTQ / 4]; // 8B: 2-bit codebook indices (4 per byte)
-    uint8_t   sb[QK_KTQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
-} block_ktq2_1;                // = 14 bytes for 32 elements
+    ggml_half d;              // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ / 4]; // 2-bit indices, 4/byte
+    uint8_t   sb[QK_KTQ / 8]; // RHT sign bits
+} block_ktq2_1;
 static_assert(sizeof(block_ktq2_1) == sizeof(ggml_half) + QK_KTQ/4 + QK_KTQ/8, "wrong ktq2_1 block size/padding");
 
-// KTQ3_1: 3-bit codebook = 4.5 bpw (v5: compact, sign bits precomputed)
+// KTQ3_1 — 3-bit codebook, 4.5 bpw. Indices are bit-packed (not byte-aligned).
 typedef struct {
-    ggml_half d;                   // 2B: vector L2 norm
-    uint8_t   qs[QK_KTQ * 3 / 8]; // 12B: 3-bit codebook indices (packed)
-    uint8_t   sb[QK_KTQ / 8];     // 4B: precomputed RHT sign bits (1 bit per element)
-} block_ktq3_1;                    // = 18 bytes for 32 elements
+    ggml_half d;                   // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ * 3 / 8];  // 3-bit indices, packed across bytes
+    uint8_t   sb[QK_KTQ / 8];      // RHT sign bits
+} block_ktq3_1;
 static_assert(sizeof(block_ktq3_1) == sizeof(ggml_half) + QK_KTQ*3/8 + QK_KTQ/8, "wrong ktq3_1 block size/padding");
 
-// KTQ4_1: 4-bit codebook = 5.5 bpw (v5: sign bits precomputed)
+// KTQ4_1 — 4-bit codebook, 5.5 bpw. Nibble-packed.
 typedef struct {
-    ggml_half d;               // 2B: vector L2 norm
-    uint8_t   qs[QK_KTQ / 2]; // 16B: 4-bit codebook indices (2 per byte, nibble-packed)
-    uint8_t   sb[QK_KTQ / 8]; // 4B: precomputed RHT sign bits (1 bit per element)
-} block_ktq4_1;                // = 22 bytes for 32 elements
+    ggml_half d;              // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ / 2]; // 4-bit indices, 2/byte
+    uint8_t   sb[QK_KTQ / 8]; // RHT sign bits
+} block_ktq4_1;
 static_assert(sizeof(block_ktq4_1) == sizeof(ggml_half) + QK_KTQ/2 + QK_KTQ/8, "wrong ktq4_1 block size/padding");
 
-// VTQ (Value TurboQuant) — V-cache optimized, NO FWHT/sign bits.
-// Data arrives pre-rotated via self_v_rot (graph-level Hadamard).
-// Dequant = codebook lookup * scale — ~8 registers, __forceinline__.
-#define QK_VTQ 32  // block size (same as KTQ)
+// VTQ (V-cache TurboQuant) block structures.
+// V is rotated once at graph level (self_v_rot), so per-block storage drops
+// the RHT sign bits; dequant is a single codebook lookup · scale. This keeps
+// the per-lane live set small enough that the FA P·V inner loop can consume
+// VTQ dequant via __forceinline__.
+//
+// bpw = (16 + 32·b) / 32 = b + 0.5 for VTQ_b_1 (plus padding noted below).
 
-// VTQ1_1: 1-bit codebook, NO sign bits = 1.5 bpw (maximum V compression)
+#define QK_VTQ 32
+
+// VTQ1_1 — 1-bit codebook, 1.5 bpw. Smallest V.
 typedef struct {
-    ggml_half d;               // 2B: block L2 norm (scale)
-    uint8_t   qs[QK_VTQ / 8]; // 4B: 1-bit codebook indices (8 per byte)
-} block_vtq1_1;                // = 6 bytes for 32 elements
+    ggml_half d;              // block scale (L2 norm after graph-level rotation)
+    uint8_t   qs[QK_VTQ / 8]; // 1-bit indices, 8/byte
+} block_vtq1_1;
 static_assert(sizeof(block_vtq1_1) == 6, "wrong vtq1_1 block size");
 
-// VTQ2_1: 2-bit codebook, NO sign bits = 2.5 bpw
+// VTQ2_1 — 2-bit codebook, 2.5 bpw.
 typedef struct {
-    ggml_half d;               // 2B: block L2 norm (scale)
-    uint8_t   qs[QK_VTQ / 4]; // 8B: 2-bit codebook indices (4 per byte)
-} block_vtq2_1;                // = 10 bytes for 32 elements
+    ggml_half d;              // block scale
+    uint8_t   qs[QK_VTQ / 4]; // 2-bit indices, 4/byte
+} block_vtq2_1;
 static_assert(sizeof(block_vtq2_1) == 10, "wrong vtq2_1 block size");
 
-// VTQ3_1: 3-bit codebook = 3.5 bpw (effective 4.0 bpw with padding)
+// VTQ3_1 — 3-bit codebook, 3.5 bpw.
+// The +2-byte pad lets the bit-straddling decode read two bytes unconditionally
+// (including for the last element, j=31) without a bounds branch.
 typedef struct {
-    ggml_half d;                       // 2B: block L2 norm
-    uint8_t   qs[QK_VTQ * 3 / 8 + 2]; // 14B: 12B 3-bit indices + 2B padding for safe 2-byte reads
-} block_vtq3_1;                        // = 16 bytes for 32 elements
+    ggml_half d;                       // block scale
+    uint8_t   qs[QK_VTQ * 3 / 8 + 2];  // 12 B indices + 2 B tail pad for safe 2-byte reads
+} block_vtq3_1;
 static_assert(sizeof(block_vtq3_1) == 16, "wrong vtq3_1 block size");
 
-// VTQ4_1: 4-bit codebook = 4.5 bpw
+// VTQ4_1 — 4-bit codebook, 4.5 bpw. Nibble-packed.
 typedef struct {
-    ggml_half d;               // 2B: block L2 norm
-    uint8_t   qs[QK_VTQ / 2]; // 16B: 4-bit indices (nibble-packed)
-} block_vtq4_1;                // = 18 bytes for 32 elements
+    ggml_half d;              // block scale
+    uint8_t   qs[QK_VTQ / 2]; // 4-bit indices, 2/byte
+} block_vtq4_1;
 static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
 
 //

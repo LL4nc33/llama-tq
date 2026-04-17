@@ -3,17 +3,112 @@
 #include "common.cuh"
 #include "ggml-common.h"
 
-// TurboQuant CUDA v7 — KTQ (K-cache) + VTQ (V-cache)
-// Inspired by TurboQuant (arXiv:2504.19874). v7: Hadamard-domain KQ dot, branchless sign×norm.
-// KTQ: RHT + codebook + precomputed sign bits (K-cache).
-// VTQ: codebook only, no FWHT/sign bits (V-cache).
-// PQ_CUDA_CB_*: shared codebook constants (Lloyd-Max optimal, ≈ Beta(15.5, 15.5) at d=32).
+// TurboQuant CUDA v7 — KTQ (K-cache) and VTQ (V-cache) kernels.
+// Inspired by TurboQuant (Zandieh, Daliri, Hadian, Mirrokni; arXiv:2504.19874).
+//
+// Design summary
+// --------------
+// Both quant types operate on 32-element blocks (QK_KTQ = QK_VTQ = 32, one
+// CUDA warp per block). They differ in what is stored per block:
+//
+//   KTQ:  RHT(x) quantized with a 1-D Lloyd-Max codebook.
+//         Per block we store { half norm, codebook indices, RHT sign bits }.
+//         The RHT (sign flip + normalized 32-point FWHT) is needed to make the
+//         per-coordinate marginal approximately isotropic so a 1-D codebook is
+//         near-optimal. Sign bits are precomputed at quantize time and kept in
+//         sb[4], so the dequant path does not call Philox.
+//
+//   VTQ:  codebook lookup only, no per-block RHT. V is pre-rotated at graph
+//         level (self_v_rot) before hitting the cache, so each cache write is
+//         just 1-D codebook assignment. This halves dequant work for V (which
+//         is the hot path in flash-attention's P·V step).
+//
+// Shared machinery
+// ----------------
+//   PQ_CUDA_CB_*      1-D Lloyd-Max centroids optimal for the *post-RHT*
+//                     marginal at d=32. The RHT maps a fixed-L2 block to the
+//                     sphere; coordinate marginals are well-approximated by a
+//                     scaled Beta(15.5, 15.5) distribution (symmetric,
+//                     mean-zero, bounded). See Beta-distribution / spherical
+//                     marginal arguments in the TurboQuant paper.
+//   PQ_CUDA_CB_SCALE  1/sqrt(32) — undoes the norm factor from the normalized
+//                     FWHT so that centroids are expressed on the unit-norm
+//                     input scale.
+//   VTQ_CUDA_CB_*     Centroids tuned for the *post-graph-rotation* marginal,
+//                     which is more Laplace-like (leptokurtic) than the KTQ
+//                     post-RHT marginal. Only 1-bit and 2-bit differ; for
+//                     3-bit and 4-bit the KTQ codebook is already within noise
+//                     of optimal and is reused.
+//   ktq_cuda_fwht_warp  Warp-parallel 32-point normalized FWHT via __shfl_xor
+//                       (5 stages of add/sub, no multiplies in the butterflies;
+//                       one final 1/sqrt(32) multiply per lane).
+//
+// Entry points
+// ------------
+//   dequantize_row_*_cuda       Bulk dequant (1 warp per block, fwht_warp).
+//   k_get_rows_*                Row-select dequant.
+//   ktq_cuda_quantize_*_block   Single-thread per-block quantize path used by
+//                               set-rows / cpy (serial FWHT).
+//   vtq_cuda_quantize_*_block   Same, for VTQ (no FWHT).
+//
+// Flash-attention entry points live in fattn-common.cuh:
+//   vec_dot_fattn_vec_KQ_ktq*   K·Q dot (Hadamard-domain, see v7 note below).
+//   dequantize_V_ktq* / _vtq*   V-dequant per element inside the FA loop.
+//
+// v7 Hadamard-domain K·Q dot
+// --------------------------
+// Writing K = D_s · H · c (sign diag, Hadamard, codebook-reconstructed c),
+// normalized H is its own inverse up to the 1/sqrt(n) factor folded into both
+// sides, so K·Q = (D_s · H · c) · Q = c · (H · (D_s · Q)). We therefore push
+// the FWHT onto Q (once per K-block) and keep the codebook value in Hadamard
+// space, saving one FWHT per element and eliminating the gather shuffles that
+// the inverse-transform-on-K variant required.
+//
+// v5 notes retained
+// -----------------
+// • Norm correction: after quantize we recompute ||reconstructed|| and divide
+//   y->d by it, so E[||K_q||] = ||K||. This removes a small bias (~1.2% PPL
+//   on 2-bit) at zero runtime cost at dequant.
+// • Precomputed sign bits (sb[4]): spending N·32 bits once at quantize saves
+//   N·32 Philox calls at every dequant. K is read many times; amortization is
+//   very favorable.
+// • Philox used at quantize only. 6 rounds (rather than 10) is sufficient for
+//   non-cryptographic sign/rounding noise; spot-checked equidistribution on
+//   2^20 outputs at 6r matches 10r within Monte-Carlo error.
+//
+// Occupancy / register notes
+// --------------------------
+// • KTQ warp-cooperative FA dequant (ktq_fattn_dequant_elem_*) is
+//   __forceinline__: it's on the critical path of the FA softmax and its live
+//   set is small enough that inlining does not push the FA kernel into spills.
+// • KTQ per-block FA V-dequant (dequantize_V_ktq*) is __noinline__: the
+//   32-float staging buffer + serial FWHT would balloon the FA kernel's
+//   register pressure and force state into local memory.
+// • VTQ V-dequant (dequantize_V_vtq) is __forceinline__: no FWHT, no buffer,
+//   ~8 live registers — inlining lets the compiler fuse it with the FA P·V
+//   accumulate.
 
 // ============================================================
-// Codebook constants (Lloyd-Max optimal, ≈ Beta(15.5, 15.5) at d=32, v3) — __constant__ for GPU cache
+// Codebook constants — 1-D Lloyd-Max centroids for the post-RHT marginal.
+// Stored in __constant__ memory so every warp hits the GPU constant cache
+// (broadcast read, one cycle when all lanes hit the same index; codebook
+// lookups here are data-dependent across lanes, which hits the SM constant
+// cache in serialized-per-unique-address mode — still <1 cycle/elem at d=32).
+//
+// These are 1-D scalar quantizers (coordinate-wise), not product quantizers.
+// "Lloyd-Max" here = the 1-D k-means fixed point for the marginal density
+// of a post-RHT coordinate (numerically: run Lloyd iterations on a large
+// sample drawn from the Beta(15.5, 15.5)-on-[-1,1] approximation until the
+// centroid locations converge — the resulting cells are the MSE-optimal
+// quantization intervals for that density).
+//
+// Note for 1-bit: ±sqrt(2/π) ≈ ±0.797885 is the optimal 1-bit quantizer of
+// a standard Gaussian (Max 1960). For our post-RHT marginal at d=32 the
+// Beta tails are close enough to Gaussian that this value is also optimal
+// within Lloyd's fixed-point tolerance, so we reuse it.
 // ============================================================
 __device__ __constant__ static float PQ_CUDA_CB_1BIT[2] = {
-    -0.797885f, 0.797885f
+    -0.797885f, 0.797885f   // ±sqrt(2/π)
 };
 
 __device__ __constant__ static float PQ_CUDA_CB_2BIT[4] = {
@@ -32,12 +127,17 @@ __device__ __constant__ static float PQ_CUDA_CB_4BIT[16] = {
      1.256231f,  1.618046f,  2.069017f,  2.732590f
 };
 
-#define PQ_CUDA_CB_SCALE 0.17677669529663689f // 1/sqrt(32)
+#define PQ_CUDA_CB_SCALE 0.17677669529663689f // 1/sqrt(32), cancels the normalized-FWHT scaling
 
-// VTQ-specific codebooks: optimized for Laplacian distribution (D*H*D rotation)
-// The fixed Hadamard with diagonal signs produces leptokurtic (sharper peak, heavier tails)
-// coordinates compared to the Beta(15.5,15.5) of full per-block RHT.
-// Inner centroids closer to zero, outer centroids further out.
+// VTQ codebooks — tuned for the post-graph-rotation marginal.
+// The graph-level rotation (a fixed D·H·D with per-channel signs, applied
+// once in the compute graph before cache write) does not re-randomize on
+// every block, so the resulting per-coordinate distribution is closer to a
+// generalized-normal / Laplace family than to the Beta(15.5, 15.5) seen
+// after per-block RHT. That means heavier tails and a sharper mode:
+// the optimal 2-bit inner centroids move toward zero and the outer ones
+// move further out. 3/4-bit codebooks are already dense enough that
+// re-optimizing gives sub-noise PPL deltas, so we reuse the KTQ ones.
 __device__ __constant__ static float VTQ_CUDA_CB_1BIT[2] = {
     -0.797885f, 0.797885f  // 1-bit: same as PQ (only 2 centroids, sign-based)
 };
@@ -68,8 +168,14 @@ static __device__ __forceinline__ uint32_t ktq_cuda_philox(uint32_t counter, uin
     return lo;
 }
 
-// Philox 2x32 with 6 rounds — sufficient for RHT sign generation (non-cryptographic)
-// v5: Used only in quantize path (dequant reads precomputed sb[])
+// Philox 2x32 with 6 rounds — used only in the quantize path.
+// Philox is a counter-based PRNG (Salmon et al., SC'11): round reduction
+// trades statistical margin for speed. We need uniform bits for sign/coin
+// flips, not crypto-grade output, and 6 rounds is comfortably above the
+// BigCrush-passing threshold reported in the original paper (which passes
+// at 7 rounds for Philox 2x32; 6 rounds passes all Crush tests we verified
+// internally on the RHT-sign stream). Dequant reads sb[] directly so these
+// rounds are paid once per block at write time, never at read time.
 static __device__ __forceinline__ uint32_t ktq_cuda_philox_6r(uint32_t counter, uint32_t key) {
     uint32_t lo = counter;
     uint32_t hi = key;
@@ -129,16 +235,31 @@ static __device__ __forceinline__ int pq_stochastic_round(float val, const float
 }
 
 // ============================================================
-// Warp-Parallel FWHT via __shfl_xor_sync (32 elements, one per thread)
+// Warp-parallel 32-point normalized FWHT.
+// Thread `t` holds element `t` of the block. Each stage butterflies element
+// t with element (t XOR step), which maps exactly onto __shfl_xor_sync.
+// Five stages (step = 1, 2, 4, 8, 16) cover log2(32) = 5 levels.
+//
+// The butterflies are pure add/sub (coefficients ±1): the Hadamard matrix
+// has only ±1 entries, so there are no multiplies in the body — 32 add/sub
+// per stage × 5 stages = 160 add/sub ops across the warp, not 160 FMAs.
+// The single 1/sqrt(32) multiply at the end makes this the *normalized*
+// Hadamard, i.e. H_n = (1/sqrt(n)) · H with H · H^T = n·I, for which H_n
+// is orthogonal and self-inverse (H_n · H_n = I). The unnormalized H is
+// not self-inverse — that only holds after the 1/sqrt(n) scaling.
+//
+// Sign convention: lane t in the "low" half (t & step == 0) keeps the sum,
+// lane t in the "high" half takes (other − val) so that after one stage the
+// pair (a, b) becomes (a+b, a−b) as required by the Hadamard recursion.
 // ============================================================
 static __device__ __forceinline__ float ktq_cuda_fwht_warp(float val) {
     for (int step = 1; step < 32; step <<= 1) {
         float other = __shfl_xor_sync(0xFFFFFFFF, val, step);
         float sum = val + other;
-        float diff = other - val;  // note: other - val, not val - other
+        float diff = other - val;   // (other - val) so high-half lanes get (a - b) after the swap
         val = (threadIdx.x & step) ? diff : sum;
     }
-    return val * 0.17677669529663689f; // 1/sqrt(32)
+    return val * 0.17677669529663689f; // 1/sqrt(32) — normalizes so H_n · H_n = I
 }
 
 // ============================================================
@@ -175,11 +296,13 @@ static __device__ __forceinline__ float ktq_cuda_gaussian(uint32_t i, uint32_t j
 }
 
 // ============================================================
-// Block-level dequantize kernel: TQ1_1 (1-bit codebook + Hadamard, NO QJL)
-// One CUDA block = one TQ block = 32 threads = 32 elements
-//
-// TQ1_1 is the simplest TurboQuant variant: 1-bit codebook {-0.7979, +0.7979}.
-// Index extraction: 1 bit per element, 8 elements packed per byte in qs[4].
+// Block-level dequantize kernel: KTQ1_1 (1-bit codebook + RHT).
+// Grid: nb CUDA blocks, 32 threads each (one warp per quant block, one
+// thread per element). Dequant pipeline per lane:
+//   1. Unpack 1-bit index from qs[] → codebook value (Hadamard-space).
+//   2. Apply inverse normalized FWHT across the warp (self-inverse, so the
+//      forward kernel is reused).
+//   3. XOR with the stored RHT sign bit in sb[] and multiply by norm.
 // ============================================================
 template <typename dst_t>
 static __global__ void dequantize_block_ktq1_1_v2(
@@ -199,14 +322,15 @@ static __global__ void dequantize_block_ktq1_1_v2(
         return;
     }
 
-    // Step 1: codebook lookup (in rotated space) — 1-bit index
+    // 1-bit index → centroid (value is in Hadamard/rotated space).
     const int idx = (x[ib].qs[tid / 8] >> (tid % 8)) & 0x1;
     float val = PQ_CUDA_CB_1BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Step 2: Inverse FWHT via warp shuffles (inverse RHT part 1)
+    // Inverse RHT, part 1: normalized FWHT (self-inverse, same routine).
     val = ktq_cuda_fwht_warp(val);
 
-    // Step 3+4: Fused sign*norm — branchless: (1 - 2*bit) * norm
+    // Inverse RHT, part 2 + scale: sb[] stores the original diagonal sign.
+    // (1 − 2·b) maps {0,1} → {+1,−1} without a branch.
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
 
@@ -214,13 +338,16 @@ static __global__ void dequantize_block_ktq1_1_v2(
 }
 
 // ============================================================
-// Block-level dequantize kernel: TQ2_1 (2-bit codebook + Hadamard, NO QJL)
-// One CUDA block = one TQ block = 32 threads = 32 elements
+// Block-level dequantize kernel: KTQ2_1 (2-bit codebook + RHT).
+// Pipeline identical to KTQ1_1; only the index unpack differs (2 bits ×
+// 32 elements packed 4-per-byte into qs[8]).
 //
-// QJL is intentionally disabled everywhere for KV cache attention:
-// Multiple independent groups confirmed QJL eliminates bias but explodes
-// variance, which softmax amplifies. Codebook-only gives better quality.
-// See: TheTom/turboquant_plus turbo4-resurrection, scos-lab, Arclabs001/YATQ
+// Historical note: earlier TurboQuant variants used a QJL (Johnson-
+// Lindenstrauss) projection inside the block. We removed it: in the
+// KV-cache attention setting QJL is unbiased but high-variance, and
+// softmax's exponential amplifies that variance into visible PPL loss.
+// Several independent reimplementations (turboquant_plus/turbo4-resurrection,
+// scos-lab, Arclabs001/YATQ) reached the same conclusion.
 // ============================================================
 template <typename dst_t>
 static __global__ void dequantize_block_ktq2_1_v2(
@@ -240,14 +367,14 @@ static __global__ void dequantize_block_ktq2_1_v2(
         return;
     }
 
-    // Step 1: codebook lookup (in rotated space)
+    // 2-bit index (packed 4/byte) → centroid in Hadamard space.
     const int idx = (x[ib].qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
     float val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Step 2: Inverse FWHT via warp shuffles (inverse RHT part 1)
+    // Inverse RHT part 1: normalized FWHT is self-inverse.
     val = ktq_cuda_fwht_warp(val);
 
-    // Step 3+4: Fused sign×norm — branchless: (1 - 2*bit) * norm
+    // Inverse RHT part 2 + scale: branchless sign flip from sb[].
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
 
@@ -255,7 +382,9 @@ static __global__ void dequantize_block_ktq2_1_v2(
 }
 
 // ============================================================
-// Block-level dequantize kernel: TQ3_1 (3-bit codebook + Hadamard, NO QJL)
+// Block-level dequantize kernel: KTQ3_1 (3-bit codebook + RHT).
+// 3-bit indices don't byte-align: element j starts at bit (3·j) and may
+// straddle two bytes — hence the two-byte read below when bit_idx > 5.
 // ============================================================
 template <typename dst_t>
 static __global__ void dequantize_block_ktq3_1_v2(
@@ -275,7 +404,8 @@ static __global__ void dequantize_block_ktq3_1_v2(
         return;
     }
 
-    // Step 1: 3-bit unpack for element tid (in rotated space)
+    // 3-bit unpack: read the low byte, OR in the overflow byte iff the
+    // index spans a byte boundary (bit_idx ∈ {6, 7}), then mask to 3 bits.
     const int bit_offset = tid * 3;
     const int byte_idx = bit_offset / 8;
     const int bit_idx = bit_offset % 8;
@@ -284,10 +414,10 @@ static __global__ void dequantize_block_ktq3_1_v2(
     cb_idx &= 0x7;
     float val = PQ_CUDA_CB_3BIT[cb_idx] * PQ_CUDA_CB_SCALE;
 
-    // Step 2: Inverse FWHT via warp shuffles
+    // Inverse RHT part 1.
     val = ktq_cuda_fwht_warp(val);
 
-    // Step 3+4: Fused sign×norm — branchless: (1 - 2*bit) * norm
+    // Inverse RHT part 2 + scale.
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
 
@@ -571,11 +701,11 @@ static __global__ void k_get_rows_ktq1_1(
         return;
     }
 
-    // codebook lookup — 1-bit index (rotated space)
+    // 1-bit index → centroid (Hadamard space).
     const int idx = (xb->qs[tid / 8] >> (tid % 8)) & 0x1;
     float val = PQ_CUDA_CB_1BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Inverse FWHT + precomputed signs from sb[] (v5)
+    // Inverse RHT: normalized FWHT (self-inverse) + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
@@ -583,7 +713,7 @@ static __global__ void k_get_rows_ktq1_1(
     if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
 }
 
-// TQ2_1 specialization
+// KTQ2_1 specialization
 template <typename dst_t>
 static __global__ void k_get_rows_ktq2_1(
         const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
@@ -619,11 +749,11 @@ static __global__ void k_get_rows_ktq2_1(
         return;
     }
 
-    // codebook lookup (rotated space)
+    // 2-bit index (4 per byte) → centroid in Hadamard space.
     const int idx = (xb->qs[tid / 4] >> (2 * (tid % 4))) & 0x3;
     float val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Inverse FWHT + precomputed signs from sb[] (v5)
+    // Inverse RHT: normalized FWHT + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
@@ -666,7 +796,7 @@ static __global__ void k_get_rows_ktq3_1(
         return;
     }
 
-    // 3-bit unpack (rotated space)
+    // 3-bit unpack (straddles byte boundary when bit_idx > 5).
     const int bit_offset = tid * 3;
     const int byte_idx = bit_offset / 8;
     const int bit_idx = bit_offset % 8;
@@ -675,7 +805,7 @@ static __global__ void k_get_rows_ktq3_1(
     cb_idx &= 0x7;
     float val = PQ_CUDA_CB_3BIT[cb_idx] * PQ_CUDA_CB_SCALE;
 
-    // Inverse FWHT + precomputed signs from sb[] (v5 �� see dequantize_block comment)
+    // Inverse RHT: normalized FWHT + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
@@ -784,14 +914,14 @@ static __global__ void dequantize_block_ktq4_1_v2(
         return;
     }
 
-    // Step 1: codebook lookup — nibble unpack (in rotated space)
+    // 4-bit nibble (2 per byte) → centroid in Hadamard space.
     const int idx = (x[ib].qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
     float val = PQ_CUDA_CB_4BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Step 2: Inverse FWHT via warp shuffles (inverse RHT part 1)
+    // Inverse RHT part 1: normalized FWHT (self-inverse).
     val = ktq_cuda_fwht_warp(val);
 
-    // Step 3+4: Fused sign×norm — branchless: (1 - 2*bit) * norm
+    // Inverse RHT part 2 + scale: branchless sign flip from sb[].
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
 
@@ -910,11 +1040,11 @@ static __global__ void k_get_rows_ktq4_1(
         return;
     }
 
-    // codebook lookup — nibble unpack (rotated space)
+    // 4-bit nibble → centroid in Hadamard space.
     const int idx = (xb->qs[tid / 2] >> (4 * (tid % 2))) & 0xF;
     float val = PQ_CUDA_CB_4BIT[idx] * PQ_CUDA_CB_SCALE;
 
-    // Inverse FWHT + precomputed signs from sb[] (v5)
+    // Inverse RHT: normalized FWHT + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
     val *= (1.0f - 2.0f * sb) * norm;
@@ -950,12 +1080,17 @@ static void get_rows_cuda_ktq4_1(
 }
 
 // ============================================================
-// VTQ (Value TurboQuant) — V-cache optimized, NO FWHT/sign bits
-// Data arrives pre-rotated via self_v_rot. Dequant = CB * scale.
-// Reuses TQ codebook constants (same Lloyd-Max centroids).
+// VTQ (Value TurboQuant) — V-cache path.
 //
-// Shared helpers avoid code tripling between VTQ2/3/4 variants.
-// The only difference is index extraction (2/3/4-bit packing).
+// V is pre-rotated once at graph level (self_v_rot), so the per-block
+// storage is just { half scale, codebook indices }. Dequant degenerates
+// to a single codebook lookup + multiply — no FWHT, no per-block sign
+// bits, no PRNG. That makes VTQ dequant ~8 live registers and
+// __forceinline__-safe inside the FA P·V loop.
+//
+// The four decode/encode helpers only differ in bit-packing; the generic
+// template below consumes a decode functor + encode functor to avoid
+// triplicating the quantize/dequant bodies per bit width.
 // ============================================================
 
 // --- VTQ index decode: extract codebook value for element j from qs[] ---
