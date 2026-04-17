@@ -209,7 +209,13 @@ llama_kv_cache::llama_kv_cache(
 
         ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
 
-        if (offload) {
+        // Force CPU buffer for VTQ_2 V-cache: CUDA path not yet implemented
+        // (no set_rows/FA kernel for these types in Phase-2a).
+        const bool force_cpu_for_vtq2 = (type_v == GGML_TYPE_VTQ2_2 ||
+                                         type_v == GGML_TYPE_VTQ3_2 ||
+                                         type_v == GGML_TYPE_VTQ4_2);
+
+        if (offload && !force_cpu_for_vtq2) {
             auto * dev = model.dev_layer(il);
             buft = ggml_backend_dev_buffer_type(dev);
 
