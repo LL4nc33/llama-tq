@@ -11,17 +11,18 @@
 #include <string.h>
 
 // Format: L, K, QK, beam, norm, group, shared_d, group_viterbi, code, label
+// Final Phase-1 leaderboard configs for real-V-weight validation.
 static const trellis_config CONFIGS[] = {
-    // --- baseline: current best ---
-    {16, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_Q256_G4"  },  // 2.031 bpw
-    // --- QK=512 variants ---
-    {16, 2, 512, 0, 1, 1, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G1"  },  // 2.062 bpw
-    {16, 2, 512, 0, 1, 2, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G2"  },  // 2.047 bpw
-    {16, 2, 512, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G4"  },  // 2.039 bpw
-    {16, 2, 512, 0, 1, 8, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G8"  },  // 2.035 bpw
-    // --- 3-bit Q=256 vs Q=512 ---
-    {16, 3, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_K3_Q256_G4"},  // 3.031 bpw
-    {16, 3, 512, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_K3_Q512_G4"},  // 3.016 bpw
+    // --- 2-bit path: bpw floor sweep ---
+    {16, 2, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "Q128_G4_group"     },  // 2.063 bpw
+    {16, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "Q256_G4_group"     },  // 2.031 bpw
+    {16, 2, 512, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "Q512_G4_group"     },  // 2.016 bpw
+    {16, 2, 512, 0, 1, 8, 1, 1, TRELLIS_CODE_TABLE, "Q512_G8_group"     },  // 2.008 bpw
+    // --- 3-bit path: same sweep ---
+    {16, 3, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "K3_Q128_G4_group"  },  // 3.063 bpw
+    {16, 3, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "K3_Q256_G4_group"  },  // 3.031 bpw
+    {16, 3, 512, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "K3_Q512_G4_group"  },  // 3.016 bpw
+    {16, 3, 512, 0, 1, 8, 1, 1, TRELLIS_CODE_TABLE, "K3_Q512_G8_group"  },  // 3.008 bpw
 };
 
 static const size_t N_CONFIGS = sizeof(CONFIGS) / sizeof(CONFIGS[0]);
