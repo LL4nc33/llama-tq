@@ -135,7 +135,8 @@ float trellis_encode_block(const trellis_config * cfg, const float * x, trellis_
     uint16_t * bt = (uint16_t *)malloc((size_t)N * S * sizeof(uint16_t));
     if (!dp || !bt) { free(dp); free(bt); free(xn); return -1.0f; }
 
-    for (uint32_t s = 0; s < S; s++) dp[s] = (s == 0) ? 0.0f : FLT_MAX;
+    // Open start state: every state reachable at cost 0.
+    for (uint32_t s = 0; s < S; s++) dp[s] = 0.0f;
 
     for (int i = 0; i < N; i++) {
         float * dp_cur  = dp + (size_t)i * S;
@@ -176,6 +177,7 @@ float trellis_encode_block(const trellis_config * cfg, const float * x, trellis_
     for (int i = N - 1; i >= 0; i--) {
         states[i] = bt[(size_t)i * S + states[i + 1]];
     }
+    out->start_state = (uint16_t)states[0];
 
     int qs_len = qs_bytes_exact(N, K);
     if (qs_len > (int)sizeof(out->qs)) { free(states); free(dp); free(bt); free(xn); return -2.0f; }
@@ -225,19 +227,14 @@ void trellis_decode_block(const trellis_config * cfg, const trellis_block * in, 
     // That window contains: high bits = prior emitted bits (implicit state),
     // low K bits = bits emitted to produce sample i.
     // Bitshift property: start of window is at offset K·(i+1) - L.
+    // Reconstruct each state by running the shift register from start_state.
+    // state_{i+1} = (state_i >> K) | (bits_i << (L-K))
+    const uint32_t Lmask = (L >= 32) ? 0xFFFFFFFFu : ((1u << L) - 1u);
+    const uint32_t Kmask = (1u << K) - 1u;
+    uint32_t state = in->start_state & Lmask;
     for (int i = 0; i < N; i++) {
-        int start = (i + 1) * K - L;
-        uint32_t state;
-        if (start >= 0) {
-            state = read_bits(in->qs, qs_len, start, L);
-        } else {
-            // Early samples: window runs into implicit zero-init state bits.
-            // bits_0..bits_i occupy the TOP of state_{i+1}; the bitstream
-            // stores them LSB-first, so they go into the high end of state.
-            int have = K * (i + 1);
-            uint32_t avail = read_bits(in->qs, qs_len, 0, have);
-            state = (avail << (L - have)) & ((1u << L) - 1u);
-        }
+        uint32_t bits = read_bits(in->qs, qs_len, i * K, K) & Kmask;
+        state = ((state >> K) | (bits << (L - K))) & Lmask;
         float code = trellis_code(cfg->code, state, L) * cb_scale;
         y[i] = code * d;
     }

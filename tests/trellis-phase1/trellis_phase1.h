@@ -27,10 +27,12 @@ typedef struct {
     const char * label;        // for CSV output
 } trellis_config;
 
-// Encoded block: fp16 scale `d` + packed bit stream `qs`.
+// Encoded block: fp16 scale `d` + start state + packed bit stream `qs`.
 // qs length depends on QK and K: ceil(QK*K/8) + window pad.
+// start_state costs L bits per block (stored separately here for clarity).
 typedef struct {
     uint16_t d;                // fp16 scale (norm after quant)
+    uint16_t start_state;      // L bits of the open start state (encoder's choice)
     uint8_t  qs[64];           // max: QK=128, K=3 → 48B + 2B pad = 50B. 64B reserve.
 } trellis_block;
 
