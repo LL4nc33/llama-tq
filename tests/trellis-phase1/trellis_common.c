@@ -8,6 +8,8 @@
 #include <string.h>
 #include <time.h>
 
+static float uniform01(void);
+
 // --- RNG: SplitMix64 + Box-Muller ---
 
 static uint64_t g_rng_state = 0x9E3779B97F4A7C15ULL;
@@ -43,6 +45,69 @@ void trellis_gen_gaussian(float * buf, size_t n) {
         float u2 = uniform01();
         if (u1 < 1e-30f) u1 = 1e-30f;
         buf[n - 1] = sqrtf(-2.0f * logf(u1)) * cosf(6.28318530717958647692f * u2);
+    }
+}
+
+// Laplace(0, 1): inverse CDF, unit variance needs scale 1/sqrt(2).
+void trellis_gen_laplace(float * buf, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float u = uniform01() - 0.5f;          // (-0.5, 0.5)
+        float s = (u >= 0.0f) ? 1.0f : -1.0f;
+        float a = fabsf(u);
+        if (a < 1e-30f) a = 1e-30f;
+        buf[i] = -s * logf(1.0f - 2.0f * a) / 1.4142135624f;
+    }
+}
+
+// Student-t with nu dof: chi-squared / Z. Heavy-tailed for nu small.
+void trellis_gen_student_t(float * buf, size_t n, float nu) {
+    for (size_t i = 0; i < n; i++) {
+        // generate Gaussian Z
+        float u1 = uniform01(); if (u1 < 1e-30f) u1 = 1e-30f;
+        float u2 = uniform01();
+        float z = sqrtf(-2.0f * logf(u1)) * cosf(6.28318530717958647692f * u2);
+        // chi-squared(nu) approx as sum of nu squared Gaussians (slow for large nu)
+        // use rejection-free: chi2(nu) ≈ nu * (1 - 2/(9nu) + Z'/sqrt(9nu/2))^3
+        float u3 = uniform01(); if (u3 < 1e-30f) u3 = 1e-30f;
+        float u4 = uniform01();
+        float zp = sqrtf(-2.0f * logf(u3)) * cosf(6.28318530717958647692f * u4);
+        float term = 1.0f - 2.0f/(9.0f*nu) + zp / sqrtf(9.0f*nu/2.0f);
+        float chi = nu * term * term * term;
+        if (chi < 1e-10f) chi = 1e-10f;
+        // variance of t is nu/(nu-2); rescale to unit variance
+        float scale = sqrtf((nu - 2.0f) / nu);
+        buf[i] = z / sqrtf(chi / nu) * scale;
+    }
+}
+
+// Bimodal: 50/50 mix of N(-1.5, 0.5) and N(+1.5, 0.5). Unit variance.
+void trellis_gen_bimodal(float * buf, size_t n) {
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        float u1 = uniform01(); if (u1 < 1e-30f) u1 = 1e-30f;
+        float u2 = uniform01();
+        float r = sqrtf(-2.0f * logf(u1));
+        float theta = 6.28318530717958647692f * u2;
+        float z0 = r * cosf(theta);
+        float z1 = r * sinf(theta);
+        // assign each to one mode
+        float m0 = (uniform01() < 0.5f) ? -1.5f : 1.5f;
+        float m1 = (uniform01() < 0.5f) ? -1.5f : 1.5f;
+        // scale: total var = E[X²] - E[X]² = (0.25 + 2.25) - 0 = 2.5, std ≈ 1.58
+        buf[i]     = (0.5f * z0 + m0) / 1.5811388f;
+        buf[i + 1] = (0.5f * z1 + m1) / 1.5811388f;
+    }
+    if (n & 1) buf[n - 1] = 0.0f;
+}
+
+// V-cache like: base Gaussian + 5% outlier samples scaled to ~4-6 sigma.
+// Simulates a post-rotation tensor that is near-Gaussian but not perfectly so.
+void trellis_gen_vcache_like(float * buf, size_t n) {
+    trellis_gen_gaussian(buf, n);
+    for (size_t i = 0; i < n; i++) {
+        if (uniform01() < 0.05f) {
+            float sign = (buf[i] >= 0.0f) ? 1.0f : -1.0f;
+            buf[i] = sign * (4.0f + 2.0f * uniform01());  // 4-6 sigma
+        }
     }
 }
 

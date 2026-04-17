@@ -12,9 +12,10 @@ extern "C" {
 #endif
 
 typedef enum {
-    TRELLIS_CODE_3GAUSS = 0,   // Weyl hash + 3-byte CLT
+    TRELLIS_CODE_3GAUSS = 0,   // Weyl hash + 3-byte CLT (bounded ±3σ)
     TRELLIS_CODE_1MAD   = 1,   // Single modular multiply
-    TRELLIS_CODE_TABLE  = 2,   // Precomputed 2^L Gaussians
+    TRELLIS_CODE_TABLE  = 2,   // Precomputed 2^L Gaussians via inv-CDF
+    TRELLIS_CODE_T5     = 3,   // Precomputed 2^L Student-t(5) via inv-CDF: heavy tails
 } trellis_code_fn;
 
 typedef struct {
@@ -62,6 +63,10 @@ void  trellis_decode_block(const trellis_config * cfg,
 // RNG + test data.
 void  trellis_seed_rng(uint64_t seed);
 void  trellis_gen_gaussian(float * buf, size_t n);  // N(0,1)
+void  trellis_gen_laplace(float * buf, size_t n);   // Laplace(0,1), heavier tails
+void  trellis_gen_student_t(float * buf, size_t n, float nu);  // Student-t, very heavy
+void  trellis_gen_bimodal(float * buf, size_t n);   // 0.5·N(-1.5,0.5) + 0.5·N(1.5,0.5)
+void  trellis_gen_vcache_like(float * buf, size_t n);  // Gaussian + 5% outliers (3σ+)
 int   trellis_load_binary(const char * path, float * buf, size_t n);
 
 // Timing.

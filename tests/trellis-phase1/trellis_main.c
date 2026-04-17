@@ -11,24 +11,15 @@
 #include <string.h>
 
 static const trellis_config CONFIGS[] = {
-    // Group-size sweep on L16_K2_Q32_TBL. G=1 matches Run 1b; larger G
-    // shares one start_state across G blocks, reducing bpw overhead from
-    // 0.5 (per-block) to 0.5/G. G=4 is a head_dim=128 row (4 blocks).
-    // Format: L, K, QK, beam, norm, group, code, label
-    {16, 2,  32, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q32_G1" },
-    {16, 2,  32, 0, 1, 2, TRELLIS_CODE_TABLE, "L16_K2_Q32_G2" },
-    {16, 2,  32, 0, 1, 4, TRELLIS_CODE_TABLE, "L16_K2_Q32_G4" },
-    {16, 2,  32, 0, 1, 8, TRELLIS_CODE_TABLE, "L16_K2_Q32_G8" },
-    // Same for Q=64
-    {16, 2,  64, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q64_G1" },
-    {16, 2,  64, 0, 1, 2, TRELLIS_CODE_TABLE, "L16_K2_Q64_G2" },
-    {16, 2,  64, 0, 1, 4, TRELLIS_CODE_TABLE, "L16_K2_Q64_G4" },
-    // Q=128 (row-size for head_dim=128)
-    {16, 2, 128, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q128_G1" },
-    {16, 2, 128, 0, 1, 2, TRELLIS_CODE_TABLE, "L16_K2_Q128_G2" },
-    // And 3-bit
-    {16, 3,  32, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K3_Q32_G1" },
-    {16, 3,  32, 0, 1, 4, TRELLIS_CODE_TABLE, "L16_K3_Q32_G4" },
+    // Compare TABLE (Gaussian) vs T5 (Student-t(5), heavy tails).
+    {16, 2,  32, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q32_TBL" },
+    {16, 2,  32, 0, 1, 1, TRELLIS_CODE_T5,    "L16_K2_Q32_T5" },
+    {16, 2,  64, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q64_TBL" },
+    {16, 2,  64, 0, 1, 1, TRELLIS_CODE_T5,    "L16_K2_Q64_T5" },
+    {16, 2, 128, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q128_TBL" },
+    {16, 2, 128, 0, 1, 1, TRELLIS_CODE_T5,    "L16_K2_Q128_T5" },
+    {16, 3,  32, 0, 1, 4, TRELLIS_CODE_TABLE, "L16_K3_Q32_TBL_G4" },
+    {16, 3,  32, 0, 1, 4, TRELLIS_CODE_T5,    "L16_K3_Q32_T5_G4" },
 };
 
 static const size_t N_CONFIGS = sizeof(CONFIGS) / sizeof(CONFIGS[0]);
@@ -119,6 +110,14 @@ int main(int argc, char ** argv) {
 
     if (!strcmp(mode, "gauss")) {
         trellis_gen_gaussian(data, n);
+    } else if (!strcmp(mode, "laplace")) {
+        trellis_gen_laplace(data, n);
+    } else if (!strcmp(mode, "student5")) {
+        trellis_gen_student_t(data, n, 5.0f);
+    } else if (!strcmp(mode, "bimodal")) {
+        trellis_gen_bimodal(data, n);
+    } else if (!strcmp(mode, "vcachelike")) {
+        trellis_gen_vcache_like(data, n);
     } else if (!strcmp(mode, "real")) {
         if (!data_path) { fprintf(stderr, "--data required in real mode\n"); return 1; }
         if (trellis_load_binary(data_path, data, n) != 0) {
@@ -127,6 +126,12 @@ int main(int argc, char ** argv) {
     } else {
         fprintf(stderr, "unknown mode: %s\n", mode); return 1;
     }
+
+    // Empirical variance diagnostic
+    double vsum = 0.0, vsum2 = 0.0;
+    for (size_t i = 0; i < n; i++) { vsum += data[i]; vsum2 += (double)data[i]*data[i]; }
+    double vmean = vsum/n, vvar = vsum2/n - vmean*vmean;
+    fprintf(stderr, "data stats: mean=%+.4f var=%.4f std=%.4f\n", vmean, vvar, sqrt(vvar));
 
     fprintf(stderr, "loaded %zu %s samples\n", n, mode);
     run_sweep(data, n, out_path, mode);
