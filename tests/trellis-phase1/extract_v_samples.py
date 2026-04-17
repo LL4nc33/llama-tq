@@ -52,22 +52,57 @@ def rht(x: np.ndarray, seed: int = 42) -> np.ndarray:
 
 
 def extract_v_weights(model_path: str, layer_filter=None):
-    """Yield (layer_idx, tensor_name, f32 array) for each V-projection weight."""
+    """Yield (layer_idx, tensor_name, f32 array) for each V-projection weight.
+
+    Supports two layouts:
+      - Separate: blk.N.attn_v.weight
+      - Fused:    blk.N.attn_qkv.weight (V is the last kv_dim slice)
+    """
     reader = gguf.GGUFReader(model_path, "r")
+
+    # Pull attention metadata to split the fused qkv layout
+    def field(key):
+        for fk, f in reader.fields.items():
+            if fk.endswith(key):
+                try:
+                    return int(f.parts[-1][0])
+                except Exception:
+                    return int(f.parts[-1])
+        return None
+
+    n_head    = field("attention.head_count") or 1
+    n_kv_head = field("attention.head_count_kv") or n_head
+    v_len     = field("attention.value_length")  # None = embed / n_head
+
     for tensor in reader.tensors:
         name = tensor.name
-        # V-projection weights: blk.N.attn_v.weight
-        if ".attn_v.weight" not in name:
-            continue
         try:
             layer_idx = int(name.split(".")[1])
         except (IndexError, ValueError):
             continue
         if layer_filter is not None and layer_idx not in layer_filter:
             continue
-        # Convert any dtype to f32 numpy
+
         arr = np.array(tensor.data, copy=False).astype(np.float32)
-        yield layer_idx, name, arr
+
+        if ".attn_v.weight" in name:
+            yield layer_idx, name, arr
+
+        elif ".attn_qkv.weight" in name:
+            # Fused QKV: split out the V slice.
+            # Typical layouts (columns = output dim):
+            #   [n_embd, q_out + k_out + v_out]
+            # where q_out = n_head * head_dim, k_out = v_out = n_kv_head * head_dim
+            # We take the last v_out columns.
+            if arr.ndim != 2:
+                continue
+            head_dim_est = v_len if v_len else (arr.shape[0] // n_head)
+            v_out = n_kv_head * head_dim_est
+            if v_out > arr.shape[1]:
+                # fallback: last 1/3 slice
+                v_out = arr.shape[1] // 3
+            v_slice = arr[:, -v_out:]
+            yield layer_idx, name + "[V-slice]", v_slice
 
 
 def main():
