@@ -5,6 +5,7 @@
 #include <atomic>
 
 // Global device-memory LUT. 256 KiB — too large for __constant__.
+// Definition provides storage; extern in trellis.cuh is the decl.
 __device__ float vtq_trellis_table[1 << VTQ_TRELLIS_L];
 
 static std::atomic<int> g_init_done{0};

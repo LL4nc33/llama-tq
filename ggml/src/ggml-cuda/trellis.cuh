@@ -23,8 +23,10 @@
 #define VTQ_TRELLIS_L  16
 
 // Declared extern; filled once by a host-side init that copies the
-// LUT from ggml-trellis.c.
-extern __device__ float vtq_trellis_table[1 << VTQ_TRELLIS_L];
+// LUT from ggml-trellis.c. Actual definition in trellis.cu.
+// Size is 256 KiB, lives in global memory (__constant__ max is 64 KiB).
+// Note: explicit extern keyword tells nvcc this is forward-declared.
+extern __device__ float vtq_trellis_table[];
 
 // Decode one block: sequential shift register, 256 samples.
 template <int K>
