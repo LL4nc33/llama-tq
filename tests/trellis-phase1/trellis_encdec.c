@@ -132,7 +132,8 @@ static float nth_element_f(float * arr, int n, int k) {
 // prev[i][s] = predecessor state (top L-K bits of s, plus the K emit bits
 //   are implicit in s itself).
 uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
-                              uint32_t start_state_in, trellis_block * out) {
+                              uint32_t start_state_in, float norm_override,
+                              trellis_block * out) {
     const int L = cfg->state_bits;
     const int K = cfg->code_bits;
     const int N = cfg->block_size;
@@ -142,11 +143,16 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
 
     memset(out, 0, sizeof(*out));
 
-    // compute block L2 norm for scaling
-    double n2 = 0.0;
-    for (int j = 0; j < N; j++) n2 += (double)x[j] * x[j];
-    float norm = (float)sqrt(n2);
-    if (norm < 1e-30f) { out->d = 0; return 0.0f; }
+    // block L2 norm for scaling; override allows shared-d across groups
+    float norm;
+    if (norm_override > 0.0f) {
+        norm = norm_override;
+    } else {
+        double n2 = 0.0;
+        for (int j = 0; j < N; j++) n2 += (double)x[j] * x[j];
+        norm = (float)sqrt(n2);
+    }
+    if (norm < 1e-30f) { out->d = 0; return 0; }
     float inv = 1.0f / norm;
 
     // normalize to unit-norm samples (per-block; codebook is N(0,1))
@@ -158,20 +164,22 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     // since g(s) ~ N(0,1), sum over N samples ~ N, so cb_scale = 1/sqrt(N)
     const float cb_scale = 1.0f / sqrtf((float)N);
 
-    // DP tables
-    float * dp  = (float *)malloc((size_t)(N + 1) * S * sizeof(float));
+    // Rolling DP: only need dp_cur and dp_next (2·S), not full N·S history.
+    // Backtrack still needs [N][S] to recover the path.
+    float * dp_cur  = (float *)malloc((size_t)S * sizeof(float));
+    float * dp_next = (float *)malloc((size_t)S * sizeof(float));
     uint16_t * bt = (uint16_t *)malloc((size_t)N * S * sizeof(uint16_t));
-    if (!dp || !bt) { free(dp); free(bt); free(xn); return 0; }
+    if (!dp_cur || !dp_next || !bt) {
+        free(dp_cur); free(dp_next); free(bt); free(xn); return 0;
+    }
 
     const int open_start = (start_state_in == 0xFFFFFFFFu);
     if (open_start) {
-        // Open start: every state reachable at cost 0.
-        for (uint32_t s = 0; s < S; s++) dp[s] = 0.0f;
+        for (uint32_t s = 0; s < S; s++) dp_cur[s] = 0.0f;
     } else {
-        // Forced start: only start_state_in reachable.
         uint32_t ss = start_state_in & Lmask;
-        for (uint32_t s = 0; s < S; s++) dp[s] = FLT_MAX;
-        dp[ss] = 0.0f;
+        for (uint32_t s = 0; s < S; s++) dp_cur[s] = FLT_MAX;
+        dp_cur[ss] = 0.0f;
     }
 
     // Beam pruning: if beam_width > 0 and < S, only keep top-B states per step.
@@ -179,21 +187,21 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     const int use_beam = (beam > 0 && (uint32_t)beam < S);
     float * beam_costs = use_beam ? (float *)malloc((size_t)S * sizeof(float)) : NULL;
 
+    // Precompute per-step: cached codes array would save trellis_code() calls,
+    // but trellis_code for TABLE is a single LUT load — negligible.
     for (int i = 0; i < N; i++) {
-        float * dp_cur  = dp + (size_t)i * S;
-        float * dp_next = dp + (size_t)(i + 1) * S;
         uint16_t * bt_i = bt + (size_t)i * S;
         for (uint32_t s = 0; s < S; s++) dp_next[s] = FLT_MAX;
 
         const int kshift = L - K;
+        const float xi = xn[i];
         for (uint32_t prev = 0; prev < S; prev++) {
             float pc = dp_cur[prev];
             if (pc == FLT_MAX) continue;
             for (uint32_t k = 0; k <= Kmask; k++) {
-                // little-endian emit: new bits go to the top of the state
                 uint32_t next = ((prev >> K) | (k << kshift)) & Lmask;
                 float code = trellis_code(cfg->code, next, L) * cb_scale;
-                float d = xn[i] - code;
+                float d = xi - code;
                 float cost = pc + d * d;
                 if (cost < dp_next[next]) {
                     dp_next[next] = cost;
@@ -203,20 +211,23 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
         }
 
         if (use_beam) {
-            // Find B-th smallest cost via quickselect, prune above threshold.
             memcpy(beam_costs, dp_next, (size_t)S * sizeof(float));
             float thresh = nth_element_f(beam_costs, (int)S, beam - 1);
             for (uint32_t s = 0; s < S; s++) {
                 if (dp_next[s] > thresh) dp_next[s] = FLT_MAX;
             }
         }
+
+        // swap dp_cur / dp_next for next iteration
+        float * tmp = dp_cur; dp_cur = dp_next; dp_next = tmp;
     }
     free(beam_costs);
+    // dp_cur now holds dp[N]. Alias for clarity below.
+    float * dp_end = dp_cur;
 
     // find best end state
     uint32_t best_s = 0;
     float best_c = FLT_MAX;
-    float * dp_end = dp + (size_t)N * S;
     for (uint32_t s = 0; s < S; s++) {
         if (dp_end[s] < best_c) { best_c = dp_end[s]; best_s = s; }
     }
@@ -231,7 +242,7 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     out->start_state = (uint16_t)states[0];
 
     int qs_len = qs_bytes_exact(N, K);
-    if (qs_len > (int)sizeof(out->qs)) { free(states); free(dp); free(bt); free(xn); return 0; }
+    if (qs_len > (int)sizeof(out->qs)) { free(states); free(dp_cur); free(dp_next); free(bt); free(xn); return 0; }
     // bits_i is the high-K chunk of state_{i+1} (matches encoder update)
     const int kshift_emit = L - K;
     for (int i = 0; i < N; i++) {
@@ -249,22 +260,23 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     float recon_norm = (float)sqrt(recon_sq);
     float d_scale = (cfg->norm_correction && recon_norm > 1e-30f)
                     ? (norm / recon_norm) : norm;
-    out->d = fp32_to_fp16(d_scale);
+    // When norm_override is active, caller owns the scale — don't write d.
+    out->d = (norm_override > 0.0f) ? 0 : fp32_to_fp16(d_scale);
 
     uint32_t end_state = states[N];
-    free(states); free(dp); free(bt); free(xn);
+    free(states); free(dp_cur); free(dp_next); free(bt); free(xn);
     return end_state;
 }
 
 // --- Bitshift decoder (parallel read) ---
 void trellis_decode_block(const trellis_config * cfg, const trellis_block * in,
-                          uint32_t start_state_in, float * y) {
+                          uint32_t start_state_in, float d_override, float * y) {
     const int L = cfg->state_bits;
     const int K = cfg->code_bits;
     const int N = cfg->block_size;
     const int qs_len = qs_bytes_exact(N, K);
     const float cb_scale = 1.0f / sqrtf((float)N);
-    const float d = fp16_to_fp32(in->d);
+    const float d = (d_override > 0.0f) ? d_override : fp16_to_fp32(in->d);
     if (d == 0.0f) { memset(y, 0, (size_t)N * sizeof(float)); return; }
 
     // Sample i reads state from the L-bit window ending at bit (K·(i+1)).
