@@ -246,7 +246,7 @@ llama_kv_cache::llama_kv_cache(
         if (tq_protect_layers > 0) {
             const bool is_tq_k = (type_k == GGML_TYPE_KTQ1_1 || type_k == GGML_TYPE_KTQ2_1 || type_k == GGML_TYPE_KTQ3_1 || type_k == GGML_TYPE_KTQ4_1);
             const bool is_tq_v = (type_v == GGML_TYPE_KTQ1_1 || type_v == GGML_TYPE_KTQ2_1 || type_v == GGML_TYPE_KTQ3_1 || type_v == GGML_TYPE_KTQ4_1);
-            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 || type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1);
+            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 || type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 || type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 || type_v == GGML_TYPE_VTQ4_2);
 
             if (is_tq_k || is_tq_v || is_vtq_v) {
                 uint32_t kv_layer_idx = 0;
@@ -401,7 +401,9 @@ llama_kv_cache::llama_kv_cache(
     // the diagonal signs make coordinates i.i.d., critical for 2-bit codebook quality.
     // D*H*D is self-transpose (since D=D^T and H=H^T), so self_v_rot works unchanged.
     const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 ||
-                           type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1);
+                           type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 ||
+                           type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
+                           type_v == GGML_TYPE_VTQ4_2);
 
     if (attn_rot_k || attn_rot_v) {
         for (int64_t n = 64; n <= std::max(n_embd_head_k_all, n_embd_head_v_all); n *= 2) {
