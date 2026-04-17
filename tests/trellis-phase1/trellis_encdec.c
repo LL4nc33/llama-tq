@@ -268,6 +268,179 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     return end_state;
 }
 
+// --- Group-level Viterbi: one path over G·QK samples ---
+// Runs a single encode with effective block_size = G·QK, then splits the
+// output qs bits and per-sample metadata across G output blocks.
+int trellis_encode_group(const trellis_config * cfg, const float * x,
+                         trellis_block * blks) {
+    const int G = cfg->group_size > 0 ? cfg->group_size : 1;
+    const int QK = cfg->block_size;
+    const int K  = cfg->code_bits;
+    const int total_samples = G * QK;
+
+    if (G == 1) {
+        // Degenerate: just forward to block encoder.
+        (void)trellis_encode_block(cfg, x, 0xFFFFFFFFu, -1.0f, &blks[0]);
+        return 0;
+    }
+
+    // Temporary full-size block for the combined Viterbi. We need a qs
+    // buffer big enough for G·QK samples · K bits / 8.
+    int total_qs_bytes = (total_samples * K + 7) / 8;
+    if (total_qs_bytes > (int)sizeof(((trellis_block *)0)->qs) * G) {
+        return -1;  // would overflow G-block combined qs space
+    }
+
+    // Compute group L2 norm (shared_d path) or total norm (otherwise).
+    float norm;
+    {
+        double n2 = 0.0;
+        for (int j = 0; j < total_samples; j++) n2 += (double)x[j] * x[j];
+        norm = (float)sqrt(n2);
+    }
+    if (norm < 1e-30f) {
+        memset(blks, 0, sizeof(trellis_block) * G);
+        return 0;
+    }
+    float inv = 1.0f / norm;
+
+    // Normalize samples
+    float * xn = (float *)malloc((size_t)total_samples * sizeof(float));
+    if (!xn) return -3;
+    for (int j = 0; j < total_samples; j++) xn[j] = x[j] * inv;
+
+    const int L = cfg->state_bits;
+    const uint32_t S = 1u << L;
+    const uint32_t Kmask = (1u << K) - 1u;
+    const uint32_t Lmask = S - 1u;
+    const float cb_scale = 1.0f / sqrtf((float)total_samples);
+
+    // Rolling DP + full backtrack over total_samples × S
+    float * dp_cur  = (float *)malloc((size_t)S * sizeof(float));
+    float * dp_next = (float *)malloc((size_t)S * sizeof(float));
+    uint16_t * bt = (uint16_t *)malloc((size_t)total_samples * S * sizeof(uint16_t));
+    if (!dp_cur || !dp_next || !bt) {
+        free(dp_cur); free(dp_next); free(bt); free(xn);
+        return -4;
+    }
+
+    for (uint32_t s = 0; s < S; s++) dp_cur[s] = 0.0f;  // open start
+    const int kshift = L - K;
+
+    for (int i = 0; i < total_samples; i++) {
+        uint16_t * bt_i = bt + (size_t)i * S;
+        for (uint32_t s = 0; s < S; s++) dp_next[s] = FLT_MAX;
+        const float xi = xn[i];
+        for (uint32_t prev = 0; prev < S; prev++) {
+            float pc = dp_cur[prev];
+            if (pc == FLT_MAX) continue;
+            for (uint32_t kk = 0; kk <= Kmask; kk++) {
+                uint32_t next = ((prev >> K) | (kk << kshift)) & Lmask;
+                float code = trellis_code(cfg->code, next, L) * cb_scale;
+                float d = xi - code;
+                float cost = pc + d * d;
+                if (cost < dp_next[next]) {
+                    dp_next[next] = cost;
+                    bt_i[next] = (uint16_t)prev;
+                }
+            }
+        }
+        float * tmp = dp_cur; dp_cur = dp_next; dp_next = tmp;
+    }
+    float * dp_end = dp_cur;
+
+    uint32_t best_s = 0;
+    float best_c = FLT_MAX;
+    for (uint32_t s = 0; s < S; s++) {
+        if (dp_end[s] < best_c) { best_c = dp_end[s]; best_s = s; }
+    }
+
+    uint32_t * states = (uint32_t *)malloc((size_t)(total_samples + 1) * sizeof(uint32_t));
+    states[total_samples] = best_s;
+    for (int i = total_samples - 1; i >= 0; i--) {
+        states[i] = bt[(size_t)i * S + states[i + 1]];
+    }
+
+    const int kshift_emit = L - K;
+    for (int i = 0; i < total_samples; i++) {
+        uint32_t bits = (states[i + 1] >> kshift_emit) & Kmask;
+        // Write into the BLOCK corresponding to this sample.
+        int bi = i / QK;
+        int off = (i % QK) * K;
+        write_bits(blks[bi].qs, off, bits, K);
+    }
+
+    // Norm correction computed over whole group.
+    // Encoder uses cb_scale = 1/sqrt(G·QK). Decoder uses cb_scale = 1/sqrt(QK).
+    // To match reconstructed magnitude on decoder side, the stored d must
+    // compensate: d_stored · (1/sqrt(QK)) = d_true · (1/sqrt(G·QK))
+    // → d_stored = d_true / sqrt(G).
+    double recon_sq = 0.0;
+    for (int i = 0; i < total_samples; i++) {
+        float code = trellis_code(cfg->code, states[i + 1], L) * cb_scale;
+        recon_sq += (double)code * code;
+    }
+    float recon_norm = (float)sqrt(recon_sq);
+    float d_true = (cfg->norm_correction && recon_norm > 1e-30f)
+                   ? (norm / recon_norm) : norm;
+    float d_scale = d_true / sqrtf((float)G);
+
+    // Metadata: start_state goes into blks[0], d depends on shared_d
+    memset(&blks[0], 0, sizeof(trellis_block));  // clear; qs was already written via pointer
+    // qs was written via pointer so memset on blks[0] clobbered it — redo bits:
+    for (int bi = 0; bi < G; bi++) {
+        memset(blks[bi].qs, 0, sizeof(blks[bi].qs));
+    }
+    for (int i = 0; i < total_samples; i++) {
+        uint32_t bits = (states[i + 1] >> kshift_emit) & Kmask;
+        int bi = i / QK;
+        int off = (i % QK) * K;
+        write_bits(blks[bi].qs, off, bits, K);
+    }
+    blks[0].start_state = (uint16_t)states[0];
+    if (cfg->shared_d) {
+        blks[0].d = fp32_to_fp16(d_scale);
+        for (int bi = 1; bi < G; bi++) blks[bi].d = 0;
+    } else {
+        for (int bi = 0; bi < G; bi++) blks[bi].d = fp32_to_fp16(d_scale);
+    }
+
+    free(states); free(dp_cur); free(dp_next); free(bt); free(xn);
+    return 0;
+}
+
+// --- Group-level decoder ---
+void trellis_decode_group(const trellis_config * cfg, const trellis_block * blks,
+                          float * y) {
+    const int L = cfg->state_bits;
+    const int K = cfg->code_bits;
+    const int QK = cfg->block_size;
+    const int G = cfg->group_size > 0 ? cfg->group_size : 1;
+    const uint32_t Kmask = (1u << K) - 1u;
+    const uint32_t Lmask = (L >= 32) ? 0xFFFFFFFFu : ((1u << L) - 1u);
+    // Encoder used cb_scale = 1/sqrt(total); d absorbs the sqrt(G) factor
+    // so per-block d must be applied with 1/sqrt(QK) to match original magnitude.
+    const float cb_scale = 1.0f / sqrtf((float)QK);
+
+    uint32_t state = blks[0].start_state & Lmask;
+    float d_group = cfg->shared_d ? fp16_to_fp32(blks[0].d) : 0.0f;
+    int qs_len_block = qs_bytes_exact(QK, K);
+
+    for (int bi = 0; bi < G; bi++) {
+        float d_use = cfg->shared_d ? d_group : fp16_to_fp32(blks[bi].d);
+        if (d_use == 0.0f) {
+            memset(y + bi * QK, 0, (size_t)QK * sizeof(float));
+            continue;
+        }
+        for (int i = 0; i < QK; i++) {
+            uint32_t bits = read_bits(blks[bi].qs, qs_len_block, i * K, K) & Kmask;
+            state = ((state >> K) | (bits << (L - K))) & Lmask;
+            float code = trellis_code(cfg->code, state, L) * cb_scale;
+            y[bi * QK + i] = code * d_use;
+        }
+    }
+}
+
 // --- Bitshift decoder (parallel read) ---
 void trellis_decode_block(const trellis_config * cfg, const trellis_block * in,
                           uint32_t start_state_in, float d_override, float * y) {
@@ -275,6 +448,9 @@ void trellis_decode_block(const trellis_config * cfg, const trellis_block * in,
     const int K = cfg->code_bits;
     const int N = cfg->block_size;
     const int qs_len = qs_bytes_exact(N, K);
+    // In group-Viterbi mode, encoder used cb_scale = 1/sqrt(G·QK) and
+    // absorbed the sqrt(G) factor into d. Decoder here still uses
+    // 1/sqrt(N) per-block; the d field carries the compensation.
     const float cb_scale = 1.0f / sqrtf((float)N);
     const float d = (d_override > 0.0f) ? d_override : fp16_to_fp32(in->d);
     if (d == 0.0f) { memset(y, 0, (size_t)N * sizeof(float)); return; }
