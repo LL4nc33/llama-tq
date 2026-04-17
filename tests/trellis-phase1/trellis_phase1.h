@@ -39,7 +39,7 @@ typedef struct {
 // start_state costs L bits per block (stored separately here for clarity).
 typedef struct {
     uint16_t d;                // fp16 scale (norm after quant)
-    uint16_t start_state;      // L bits of the open start state (encoder's choice)
+    uint32_t start_state;      // up to L=20 bits of the open start state
     uint8_t  qs[128];          // max: QK=256, K=3 → 96B + 2B pad. 128B reserve.
 } trellis_block;
 
