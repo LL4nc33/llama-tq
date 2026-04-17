@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.cuh"
+#include "convert.cuh"   // ggml_cuda_cast
 #include "ggml-common.h"
 
 // Trellis v2 CUDA decoders + dequantize kernels for VTQ{2,3,4}_2.
