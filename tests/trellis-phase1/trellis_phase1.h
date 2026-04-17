@@ -40,7 +40,7 @@ typedef struct {
 typedef struct {
     uint16_t d;                // fp16 scale (norm after quant)
     uint32_t start_state;      // up to L=20 bits of the open start state
-    uint8_t  qs[128];          // max: QK=256, K=3 → 96B + 2B pad. 128B reserve.
+    uint8_t  qs[256];          // max: QK=512, K=3 → 192B + pad. 256B reserve.
 } trellis_block;
 
 // Code function interface.
