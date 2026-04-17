@@ -308,12 +308,12 @@ WHT rotation over 128 elements (full head_dim) instead of 32. Better decorrelati
 
 ## References
 
-This implementation is inspired by but deviates from the TurboQuant paper. KTQ uses Hadamard (FWHT) + random signs instead of QR rotation; VTQ uses a fixed D\*H\*D rotation (our own design). Neither uses QJL (removed in v5).
+This implementation is inspired by but deviates from the TurboQuant paper. KTQ uses Hadamard (FWHT) + random signs instead of QR rotation; VTQ uses a fixed D\*H\*D rotation (a design specific to this fork). Neither uses QJL (removed in v5).
 
 | Paper | Authors | arXiv | Relevance |
 |-------|---------|-------|-----------|
 | **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate** | Zandieh, Daliri, Hadian, Mirrokni | [2504.19874](https://arxiv.org/abs/2504.19874) (April 2025) | Primary inspiration: random rotation + Lloyd-Max codebooks |
-| **PolarQuant: Quantizing KV Cache via Polar Coordinate Transformation** | Han, Kacham, Karbasi, Mirrokni, Zandieh | [2502.02617](https://arxiv.org/abs/2502.02617) (Feb 2025) | Different method (polar coordinates), not used in our implementation |
+| **PolarQuant: Quantizing KV Cache via Polar Coordinate Transformation** | Han, Kacham, Karbasi, Mirrokni, Zandieh | [2502.02617](https://arxiv.org/abs/2502.02617) (Feb 2025) | Different method (polar coordinates), not used here |
 | **QJL: 1-Bit Quantized JL Transform for KV Cache Quantization** | Zandieh, Daliri, Han | [2406.03482](https://arxiv.org/abs/2406.03482) (June 2024) | Used in v1-v4, removed in v5 |
 
 ## Version History
