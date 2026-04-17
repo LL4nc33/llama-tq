@@ -1,9 +1,9 @@
 # Trellis v2 Phase-1 Report
 
 **Author:** LL4nc33
-**Date:** 2026-04-17
+**Date:** 2026-04-17 (updated)
 **Branch:** `trellis-v2-phase1`
-**Status:** Phase 1 complete, Phase 2 candidates locked
+**Status:** Phase 1 complete, Phase 2 candidates locked (updated after runs 9-10)
 
 ---
 
@@ -14,10 +14,10 @@ quantization (TCQ) for VTQ replacement. All Phase-1 exit gates cleared
 on real post-RHT V-weight data from Qwen3.5-27B. Two GPU-port
 candidates identified.
 
-**Key result:** a 2-bit trellis config reaches **2.031 bpw** at MSE
-ratio 0.59 vs Lloyd-Max baseline 1.0 on real V-weight data. A 3-bit
-config reaches **3.063 bpw** at MSE ratio 0.17 — below buun's bpw
-target (3.25) while likely competitive on PPL.
+**Key result:** after adding group-Viterbi, QK=512, and uint32_t state
+support, the 2-bit bpw floor dropped to **2.008 bpw** (MSE ratio 0.58)
+and the 3-bit floor to **3.008 bpw** (MSE ratio 0.15) on real V-weight
+data. Both beat buun's 3.25 bpw target on storage.
 
 ---
 
@@ -25,19 +25,21 @@ target (3.25) while likely competitive on PPL.
 
 A self-contained test binary at `tests/trellis-phase1/` with:
 
-- Parametric Viterbi encoder (L ∈ {8, 12, 16, 20}, K ∈ {2, 3},
-  QK ∈ {32, 64, 128, 256})
-- Parallel bitshift decoder
+- Parametric Viterbi encoder (L ∈ {8, 12, 16, 18, 20}, K ∈ {2, 3},
+  QK ∈ {32, 64, 128, 256, 512})
+- Parallel bitshift decoder (iterative shift-register form)
 - Three code functions:
   - **3GAUSS** — Weyl hash + 3-byte CLT sum (GPU-cheapest, bounded ±3σ)
   - **TABLE** — precomputed inverse-Gaussian CDF (quality winner)
   - **T5** — precomputed inverse-Student-t(5) CDF (heavy-tail safety)
 - Data generators: Gaussian, Laplace, Student-t, bimodal, vcache-like,
-  real-weight via GGUF extractor
+  vcache-realistic, real-weight via GGUF extractor
 - Beam-pruned Viterbi (quickselect threshold)
 - Rolling 2-row DP buffer (drops memory from `(N+1)·S` to `2·S` floats)
-- Group-chained start_state with configurable G
+- Group-chained start_state with configurable G (block-boundary Viterbi)
+- Group-level Viterbi (single DP over G·QK samples, shared start+d)
 - Shared-d across group (one fp16 scale per G blocks)
+- uint32_t state / backtrack supporting L up to 20
 
 No ggml dependency. Builds with plain gcc or cmake.
 
@@ -61,6 +63,8 @@ Each CSV is committed alongside a markdown report with interpretation.
 | 7a  | run7_real_vweights.csv                | Qwen3.5-0.8B V-slice + RHT                      |
 | 7b  | run7b_real_27b.csv                    | Qwen3.5-27B V-slice + RHT                       |
 | 8   | run8_bpw_floor.csv                    | QK=256, shared_d, G=4/8 — bpw floor             |
+| 9   | run9_group_viterbi.csv                | group-level Viterbi — -17% MSE at 3-bit         |
+| 10  | run10_final_real.csv                  | final matrix: QK=512, bpw floor 2.008 / 3.008   |
 
 ---
 
@@ -136,34 +140,45 @@ the same G/sharedD settings.
 All numbers vs wikitext-2 PPL for Qwen3.5-27B with vtq V-cache.
 Projections use linear MSE→PPL scaling calibrated on vtq2_1.
 
-| Project              | Config           | bpw   | PPL delta         |
-|----------------------|------------------|-------|-------------------|
-| TheTom turbo4        | Q4_K_M + sym     | 4.25  | +0.23% (measured) |
-| TheTom turbo3        | Q4_K_M + sym     | 3.50  | +1.06% (measured) |
-| buun turbo3_tcq      | 3-bit TCQ        | 3.25  | -0.05% (measured) |
-| **Uns K3_Q128_G4_sharedD** | trellis 3-bit | **3.06** | **~+0.9% (proj)** |
-| TheTom turbo2        | Q4_K_M + sym     | 2.50  | +6.48% (measured) |
-| vtq2_1 (ours, scalar)| Lloyd-Max 2-bit  | 2.50  | +5.10% (measured) |
-| **Uns Q256_G1**      | trellis 2-bit    | **2.13** | **~+2.8% (proj)** |
-| **Uns Q256_G4_sharedD**| trellis 2-bit  | **2.03** | **~+3.0% (proj)** |
+| Project              | Config               | bpw   | PPL delta         |
+|----------------------|----------------------|-------|-------------------|
+| TheTom turbo4        | Q4_K_M + sym         | 4.25  | +0.23% (measured) |
+| TheTom turbo3        | Q4_K_M + sym         | 3.50  | +1.06% (measured) |
+| buun turbo3_tcq      | 3-bit TCQ            | 3.25  | -0.05% (measured) |
+| **Uns K3_Q512_G8_group** | 3-bit trellis+grp | **3.008** | **~+0.75% (proj)** |
+| **Uns K3_Q128_G4_group**  | 3-bit trellis+grp | 3.063 | ~+0.73% (proj) |
+| TheTom turbo2        | Q4_K_M + sym         | 2.50  | +6.48% (measured) |
+| vtq2_1 (ours, scalar)| Lloyd-Max 2-bit      | 2.50  | +5.10% (measured) |
+| **Uns Q256_G4_group**| trellis 2-bit+grp    | 2.031 | ~+2.9% (proj) |
+| **Uns Q512_G8_group**| trellis 2-bit+grp    | **2.008** | **~+2.9% (proj)** |
 
 ---
 
 ## Phase-2 Candidates
 
-**2-bit path: `Q256_G4_sharedD`**
-- L=16, K=2, QK=256, G=4, shared_d=1, code=TABLE
-- 2.031 bpw: 16-bit d shared across group + 16-bit start_state shared
-  across group + 256·2 bit payload per block, averaged
-- Projected +3.0% PPL at 19% lower bpw than vtq2_1
+Recommendation is based on both bpw and GPU-implementation friendliness.
+Q=128 aligns with most head_dims (one block = one row), Q=256/512 save
+0.02-0.05 bpw but complicate tiling.
 
-**3-bit path: `K3_Q128_G4_sharedD`**
-- L=16, K=3, QK=128, G=4, shared_d=1, code=TABLE
-- 3.063 bpw: first fork config that undercuts buun's 3.25 bpw
-- Projected +0.9% PPL
+**Primary 2-bit: `Q256_G4_group`** at 2.031 bpw
+- L=16, K=2, QK=256, G=4, shared_d=1, group_viterbi=1, code=TABLE
+- Real-data MSE ratio 0.570, projected PPL ~+2.9%
+- QK=256 fits 2× head_dim=128, reasonable tiling
 
-Both use the same encoder/decoder with K as a compile-time constant.
-A single GPU kernel can handle both.
+**Alternative 2-bit: `Q512_G8_group`** at 2.008 bpw
+- Same params, QK=512, G=8. 0.02 bpw lower, same MSE
+- Needs 512-wide tile; test in Phase 2 if tile fits register budget
+
+**Primary 3-bit: `K3_Q128_G4_group`** at 3.063 bpw
+- L=16, K=3, QK=128, G=4, shared_d=1, group_viterbi=1, code=TABLE
+- Real-data MSE ratio 0.144, projected PPL ~+0.73%
+- QK=128 matches head_dim exactly, zero indexing math in decoder
+
+**Alternative 3-bit: `K3_Q512_G8_group`** at 3.008 bpw
+- QK=512 variant, 0.06 bpw lower, minimal MSE delta
+
+All use L=16, TABLE code, shared_d=1, group_viterbi=1. Single GPU
+kernel handles both K=2 and K=3 via compile-time template parameter.
 
 ---
 
@@ -254,7 +269,9 @@ tests/trellis-phase1/
     ├── run6b_t5_gauss.csv
     ├── run7_real_vweights.csv
     ├── run7b_real_27b.csv
-    └── run8_bpw_floor.csv
+    ├── run8_bpw_floor.csv
+    ├── run9_group_viterbi.csv
+    └── run10_final_real.csv
 ```
 
 All commits on `trellis-v2-phase1` branch.
