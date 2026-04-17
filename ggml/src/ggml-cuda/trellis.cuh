@@ -3,6 +3,7 @@
 #include "common.cuh"
 #include "convert.cuh"   // ggml_cuda_cast
 #include "ggml-common.h"
+#include "../ggml-trellis.h"  // ggml_trellis_table() host accessor
 
 // Trellis v2 CUDA decoders + dequantize kernels for VTQ{2,3,4}_2.
 // See ggml-trellis.h for the algorithmic description (shift register + LUT).
@@ -22,11 +23,28 @@
 #define QK_VTQ_TRELLIS 256
 #define VTQ_TRELLIS_L  16
 
-// Declared extern; filled once by a host-side init that copies the
-// LUT from ggml-trellis.c. Actual definition in trellis.cu.
-// Size is 256 KiB, lives in global memory (__constant__ max is 64 KiB).
-// Note: explicit extern keyword tells nvcc this is forward-declared.
-extern __device__ float vtq_trellis_table[];
+// Trellis LUT: one per CUDA translation unit that includes this header
+// (template instantiations in convert.cu + kernel launch in trellis.cu).
+// Each is 256 KiB in global memory; both get initialized by the single
+// host-side cudaMemcpyToSymbol call — nvcc mangles the symbol per-TU,
+// so trellis.cu publishes a setter that copies to its own copy AND to
+// convert.cu's copy via cudaMemcpyToSymbol with the right TU-local
+// symbol name. For simplicity, we include the table DEFINITION here
+// as `static` (TU-local) and initialize each copy via its own init.
+static __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
+
+// Host-side init: called once per CUDA context before any dequant.
+// Uses cudaMemcpyToSymbol on the caller's TU symbol.
+#define GGML_CUDA_INIT_TRELLIS_TABLE_IMPL()                              \
+    do {                                                                 \
+        static bool _init_done = false;                                  \
+        if (!_init_done) {                                               \
+            const float * host_tbl = ggml_trellis_table();               \
+            cudaMemcpyToSymbol(vtq_trellis_table_storage, host_tbl,      \
+                               sizeof(float) * (1 << VTQ_TRELLIS_L));    \
+            _init_done = true;                                           \
+        }                                                                \
+    } while (0)
 
 // Decode one block: sequential shift register, 256 samples.
 template <int K>
@@ -60,7 +78,7 @@ void trellis_decode_block(uint16_t start_state, float d, const uint8_t * qs, flo
         uint32_t bits = (w >> shift) & Kmask;
 
         state = ((state >> K) | (bits << (L - K))) & Lmask;
-        y[i] = vtq_trellis_table[state] * ds;
+        y[i] = vtq_trellis_table_storage[state] * ds;
     }
 }
 
@@ -105,6 +123,4 @@ static void dequantize_row_vtq4_2_cuda(const void * vx, dst_t * y, const int64_t
     trellis_dequantize_row_cuda<block_vtq4_2, 4>(vx, y, ne, stream);
 }
 
-// Host-side init: copy LUT from ggml-trellis.c into __device__ memory.
-// Called once per CUDA context.
-void ggml_cuda_init_trellis_table(void);
+// No forward decl — init is done inside convert.cu via the macro.

@@ -779,13 +779,13 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
         case GGML_TYPE_VTQ4_1:
             return dequantize_row_vtq4_1_cuda<half>;
         case GGML_TYPE_VTQ2_2:
-            ggml_cuda_init_trellis_table();
+            GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
             return dequantize_row_vtq2_2_cuda<half>;
         case GGML_TYPE_VTQ3_2:
-            ggml_cuda_init_trellis_table();
+            GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
             return dequantize_row_vtq3_2_cuda<half>;
         case GGML_TYPE_VTQ4_2:
-            ggml_cuda_init_trellis_table();
+            GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
             return dequantize_row_vtq4_2_cuda<half>;
         default:
             return nullptr;
