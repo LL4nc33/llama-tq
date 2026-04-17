@@ -6182,3 +6182,69 @@ void dequantize_row_vtq4_1(const block_vtq4_1 * GGML_RESTRICT x, float * GGML_RE
         }
     }
 }
+
+// --- VTQ{K}_2: Trellis v2 group-level Viterbi. See ggml-trellis.h ---
+#include "ggml-trellis.h"
+
+void quantize_row_vtq2_2_ref(const float * GGML_RESTRICT x, block_vtq2_2 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    for (int i = 0; i < nb; i++) {
+        float d;
+        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 2,
+                                  &y[i].start_state, &d, y[i].qs);
+        y[i].d = GGML_FP32_TO_FP16(d);
+    }
+}
+
+void quantize_row_vtq3_2_ref(const float * GGML_RESTRICT x, block_vtq3_2 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    for (int i = 0; i < nb; i++) {
+        float d;
+        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 3,
+                                  &y[i].start_state, &d, y[i].qs);
+        y[i].d = GGML_FP32_TO_FP16(d);
+    }
+}
+
+void quantize_row_vtq4_2_ref(const float * GGML_RESTRICT x, block_vtq4_2 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    for (int i = 0; i < nb; i++) {
+        float d;
+        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 4,
+                                  &y[i].start_state, &d, y[i].qs);
+        y[i].d = GGML_FP32_TO_FP16(d);
+    }
+}
+
+void dequantize_row_vtq2_2(const block_vtq2_2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        ggml_trellis_decode_group(x[i].start_state, 2, d, x[i].qs,
+                                  y + i * QK_VTQ_TRELLIS);
+    }
+}
+
+void dequantize_row_vtq3_2(const block_vtq3_2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        ggml_trellis_decode_group(x[i].start_state, 3, d, x[i].qs,
+                                  y + i * QK_VTQ_TRELLIS);
+    }
+}
+
+void dequantize_row_vtq4_2(const block_vtq4_2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        ggml_trellis_decode_group(x[i].start_state, 4, d, x[i].qs,
+                                  y + i * QK_VTQ_TRELLIS);
+    }
+}
