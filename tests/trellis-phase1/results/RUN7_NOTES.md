@@ -26,19 +26,30 @@ effectively G=1 — each ggml-block is one Trellis group.
 
 (Data will be appended as sweep completes — see run11_ppl_0.8b.csv)
 
-### Measured PPL (5 chunks, ctx=512)
+### Measured PPL (5 chunks, ctx=512) — COMPLETE
 
 | Config | PPL | Delta % vs f16 | bpw | Time |
 |--------|-----|----------------|-----|------|
 | f16 (baseline) | 15.559 ± 1.32 | 0.0% | 16.0 | 11s |
 | VTQ2_1 | **FAIL** (CPU path null from_float) | — | 2.5 | — |
-| VTQ2_2 | **16.693 ± 1.43** | **+7.3%** | 2.125 | 483s |
-| VTQ3_2 | (pending) | — | 3.125 | ~500s |
-| VTQ4_2 | (pending) | — | 4.125 | ~500s |
+| VTQ2_2 | 16.693 ± 1.43 | **+7.29%** | 2.125 | 483s |
+| VTQ3_2 | 16.092 ± 1.37 | **+3.43%** | 3.125 | 892s |
+| **VTQ4_2** | **15.667 ± 1.33** | **+0.69%** | 4.125 | 3758s |
 
 **Caveat**: 5 chunks × 512 tokens = 2560 samples per PPL — CI is huge
-(±1.4 PPL). The +7.3% delta has substantial noise. Sign is credible
-but magnitude not yet trustworthy. More chunks (or 27B run) needed.
+(±1.3–1.4 PPL). The +0.69% VTQ4_2 delta is **well within noise of f16**
+— statistically indistinguishable. VTQ2_2/3_2 deltas exceed noise
+threshold but confidence intervals overlap with f16 (15.56 ± 1.32
+vs 16.09 ± 1.37 vs 16.69 ± 1.43).
+
+**Surprise**: VTQ4_2 is nearly lossless (+0.69%) at 4.125 bpw. That's
+3.88× compression over f16 with no perceptible quality cost on 0.8B.
+Linear MSE projection predicted +0.2% — measured within noise of that.
+
+**Production implication**: For users who want f16-equivalent quality
+at minimum VRAM cost, VTQ4_2 is the sweet spot. For aggressive
+compression (2-bit), VTQ2_2 matches vtq2_1's +5.10% only within
+CI overlap; real ranking needs 27B + 200+ chunks to resolve.
 
 **VTQ2_1 failure:** Existing VTQ1_1/2_1/3_1/4_1 types have no
 `from_float` in type_traits_cpu[] — they only work in FA CUDA kernels.
