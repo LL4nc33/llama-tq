@@ -503,6 +503,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const ggml_tensor * V     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
 
+    // VTQ{2,3,4}_2 don't have FA dispatch entries yet (Phase-2c).
+    // Reject so scheduler knows there's no GPU path — currently this
+    // forces CPU FA, which handles the V-dequant via type_traits.to_float.
+    if (V && (V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2)) {
+        return BEST_FATTN_KERNEL_NONE;
+    }
+
     const int gqa_ratio = Q->ne[2] / K->ne[2];
     GGML_ASSERT(Q->ne[2] % K->ne[2] == 0);
 
