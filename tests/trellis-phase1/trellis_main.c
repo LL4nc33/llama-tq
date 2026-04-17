@@ -10,25 +10,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Format: L, K, QK, beam, norm, group, shared_d, code, label
+// Format: L, K, QK, beam, norm, group, shared_d, group_viterbi, code, label
 static const trellis_config CONFIGS[] = {
-    // --- Best known baseline (post-RHT Gaussian, real-data-validated) ---
-    {16, 2, 128, 0, 1, 2, 0, TRELLIS_CODE_TABLE, "baseline_Q128_G2"   },  // 2.1875 bpw
-    // --- QK=256 sweep: amortize d and start_state further ---
-    {16, 2, 256, 0, 1, 1, 0, TRELLIS_CODE_TABLE, "Q256_G1"            },  // 2.125 bpw
-    {16, 2, 256, 0, 1, 2, 0, TRELLIS_CODE_TABLE, "Q256_G2"            },  // 2.09375 bpw
-    {16, 2, 256, 0, 1, 4, 0, TRELLIS_CODE_TABLE, "Q256_G4"            },  // 2.078 bpw
-    // --- shared_d variants (one fp16 d per group) ---
-    {16, 2, 128, 0, 1, 2, 1, TRELLIS_CODE_TABLE, "Q128_G2_sharedD"    },  // 2.125 bpw
-    {16, 2, 128, 0, 1, 4, 1, TRELLIS_CODE_TABLE, "Q128_G4_sharedD"    },  // 2.094 bpw
-    {16, 2, 256, 0, 1, 2, 1, TRELLIS_CODE_TABLE, "Q256_G2_sharedD"    },  // 2.063 bpw
-    {16, 2, 256, 0, 1, 4, 1, TRELLIS_CODE_TABLE, "Q256_G4_sharedD"    },  // 2.047 bpw
-    // --- aggressive G on QK=128 ---
-    {16, 2, 128, 0, 1, 4, 0, TRELLIS_CODE_TABLE, "Q128_G4"            },  // 2.156 bpw
-    {16, 2, 128, 0, 1, 8, 0, TRELLIS_CODE_TABLE, "Q128_G8"            },  // 2.141 bpw
-    // --- 3-bit with aggressive amortization ---
-    {16, 3, 128, 0, 1, 4, 0, TRELLIS_CODE_TABLE, "K3_Q128_G4"         },  // 3.156 bpw
-    {16, 3, 128, 0, 1, 4, 1, TRELLIS_CODE_TABLE, "K3_Q128_G4_sharedD" },  // 3.125 bpw
+    // --- Chained block-Viterbi baseline (from Run 5) ---
+    {16, 2, 256, 0, 1, 4, 1, 0, TRELLIS_CODE_TABLE, "Q256_G4_sD_chain"   },  // 2.031 bpw
+    {16, 3, 128, 0, 1, 4, 1, 0, TRELLIS_CODE_TABLE, "K3_Q128_G4_sD_chain"},  // 3.063 bpw
+    // --- Group-Viterbi variants (same bpw, better MSE expected) ---
+    {16, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "Q256_G4_sD_group"   },  // 2.031 bpw
+    {16, 2, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "Q128_G4_sD_group"   },  // 2.094 bpw
+    {16, 2, 128, 0, 1, 2, 1, 1, TRELLIS_CODE_TABLE, "Q128_G2_sD_group"   },  // 2.125 bpw
+    {16, 3, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "K3_Q128_G4_sD_group"},  // 3.063 bpw
+    {16, 3,  64, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "K3_Q64_G4_sD_group" },  // 3.125 bpw
 };
 
 static const size_t N_CONFIGS = sizeof(CONFIGS) / sizeof(CONFIGS[0]);
@@ -66,44 +58,46 @@ static void run_sweep(const float * data, size_t n, const char * out_path, const
         float recon[256];      // enough for QK up to 256
 
         size_t ng = nb / (size_t)G;
-        for (size_t g = 0; g < ng; g++) {
-            // If shared_d: compute group L2 norm, pass as override to each block.
-            float group_norm = -1.0f;
-            if (cfg->shared_d) {
-                double gn2 = 0.0;
-                for (int bi = 0; bi < G; bi++) {
-                    size_t b = g * (size_t)G + bi;
-                    const float * xb = data + b * QK;
-                    for (size_t j = 0; j < QK; j++) gn2 += (double)xb[j] * xb[j];
-                }
-                // per-block effective norm: the encoder scales by `norm`, and
-                // the codebook has E[sum(code²)] ≈ QK; so each block needs
-                // norm = sqrt(sum_per_block). We use sqrt(total / G) as a
-                // uniform per-block scale so the decoder's per-block apply
-                // of this same value reproduces the right magnitude.
-                group_norm = (float)sqrt(gn2 / (double)G);
-            }
+        float group_recon[16 * 512]; // enough for G=16, QK=512
 
-            // Encode G chained blocks.
-            uint32_t prev_end = 0xFFFFFFFFu;
-            for (int bi = 0; bi < G; bi++) {
-                size_t b = g * (size_t)G + bi;
-                const float * xb = data + b * QK;
-                ends[bi] = trellis_encode_block(cfg, xb, prev_end,
-                                                group_norm, &blks[bi]);
-                prev_end = ends[bi];
-            }
-            // Decode G chained blocks.
-            uint32_t dec_start = 0xFFFFFFFFu;
-            for (int bi = 0; bi < G; bi++) {
-                size_t b = g * (size_t)G + bi;
-                const float * xb = data + b * QK;
-                trellis_decode_block(cfg, &blks[bi], dec_start,
-                                     group_norm, recon);
-                dec_start = ends[bi];
-                for (size_t j = 0; j < QK; j++) {
-                    float e = xb[j] - recon[j];
+        for (size_t g = 0; g < ng; g++) {
+            size_t base = g * (size_t)G * QK;
+            const float * xg = data + base;
+
+            if (cfg->group_viterbi) {
+                // One joint Viterbi over G·QK samples.
+                trellis_encode_group(cfg, xg, blks);
+                trellis_decode_group(cfg, blks, group_recon);
+                for (size_t j = 0; j < (size_t)G * QK; j++) {
+                    float e = xg[j] - group_recon[j];
                     sq_err += (double)e * e;
+                }
+            } else {
+                // Chained block-Viterbis with shared_d support.
+                float group_norm = -1.0f;
+                if (cfg->shared_d) {
+                    double gn2 = 0.0;
+                    size_t gtotal = (size_t)G * QK;
+                    for (size_t j = 0; j < gtotal; j++) gn2 += (double)xg[j] * xg[j];
+                    group_norm = (float)sqrt(gn2 / (double)G);
+                }
+                uint32_t prev_end = 0xFFFFFFFFu;
+                for (int bi = 0; bi < G; bi++) {
+                    const float * xb = xg + bi * QK;
+                    ends[bi] = trellis_encode_block(cfg, xb, prev_end,
+                                                    group_norm, &blks[bi]);
+                    prev_end = ends[bi];
+                }
+                uint32_t dec_start = 0xFFFFFFFFu;
+                for (int bi = 0; bi < G; bi++) {
+                    const float * xb = xg + bi * QK;
+                    trellis_decode_block(cfg, &blks[bi], dec_start,
+                                         group_norm, recon);
+                    dec_start = ends[bi];
+                    for (size_t j = 0; j < QK; j++) {
+                        float e = xb[j] - recon[j];
+                        sq_err += (double)e * e;
+                    }
                 }
             }
         }
