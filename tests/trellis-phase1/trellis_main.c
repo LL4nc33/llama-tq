@@ -12,15 +12,14 @@
 
 // Format: L, K, QK, beam, norm, group, shared_d, group_viterbi, code, label
 static const trellis_config CONFIGS[] = {
-    // --- Chained block-Viterbi baseline (from Run 5) ---
-    {16, 2, 256, 0, 1, 4, 1, 0, TRELLIS_CODE_TABLE, "Q256_G4_sD_chain"   },  // 2.031 bpw
-    {16, 3, 128, 0, 1, 4, 1, 0, TRELLIS_CODE_TABLE, "K3_Q128_G4_sD_chain"},  // 3.063 bpw
-    // --- Group-Viterbi variants (same bpw, better MSE expected) ---
-    {16, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "Q256_G4_sD_group"   },  // 2.031 bpw
-    {16, 2, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "Q128_G4_sD_group"   },  // 2.094 bpw
-    {16, 2, 128, 0, 1, 2, 1, 1, TRELLIS_CODE_TABLE, "Q128_G2_sD_group"   },  // 2.125 bpw
-    {16, 3, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "K3_Q128_G4_sD_group"},  // 3.063 bpw
-    {16, 3,  64, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "K3_Q64_G4_sD_group" },  // 3.125 bpw
+    // --- Run 9 best: group-Viterbi baseline ---
+    {16, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_Q256_G4_group"  },  // 2.031 bpw
+    {16, 3, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_K3_Q128_G4_grp" },  // 3.063 bpw
+    // --- L=18 (more states) — bpw+0.015-0.031, expected MSE improvement ---
+    {18, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L18_Q256_G4_group"  },  // 2.047 bpw
+    {18, 3, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L18_K3_Q128_G4_grp" },  // 3.094 bpw
+    // --- L=20 on larger QK to keep bpw down ---
+    {20, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L20_Q256_G4_group"  },  // 2.062 bpw
 };
 
 static const size_t N_CONFIGS = sizeof(CONFIGS) / sizeof(CONFIGS[0]);
