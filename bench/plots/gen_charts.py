@@ -45,76 +45,77 @@ def _savefig(name: str, fig):
 # ----------------------------------------------------------------------------
 
 def chart_ppl_vs_bpw():
-    # Two-panel: left = bpw ≤ 7 (compressed region where points cluster),
-    # right = bpw > 7 (f16-K territory, fewer points)
-    fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 6),
-                                   gridspec_kw={"width_ratios": [3, 1.2]},
-                                   sharey=True)
-
-    markers = {
-        "Qwen3.5-35B-A3B (IQ2_XS)":   ("o", "#1f77b4"),
-        "Qwen3.6-35B-A3B (IQ2_XXS)":  ("s", "#ff7f0e"),
-        "Qwen3.5-35B-A3B (Q4_K_M)":   ("^", "#2ca02c"),
-        "Qwen3.6-35B-A3B (Q4_K_M)":   ("D", "#d62728"),
-        "Qwen3.5-27B Dense (Q4_K_M)": ("v", "#9467bd"),
-    }
-
+    # Grouped bar chart: one group per KV config (sorted by typical avg bpw),
+    # bars within a group = models. Immediately readable.
     have_ppl = df.dropna(subset=["ppl_delta_pct"]).copy()
-    # Rename 'Qwen3.5-27B-Dense' → 'Qwen3.5-27B Dense' for consistency
     have_ppl["model_label"] = have_ppl["model_label"].str.replace(
         "Qwen3.5-27B-Dense", "Qwen3.5-27B Dense"
     )
 
-    for label, (marker, color) in markers.items():
-        sub = have_ppl[have_ppl["model_label"] == label]
-        if sub.empty:
-            continue
-        for ax in (axL, axR):
-            ax.scatter(
-                sub["avg_bpw"], sub["ppl_delta_pct"],
-                marker=marker, color=color, s=85, alpha=0.9,
-                label=label if ax is axL else None,
-                edgecolors="black", linewidth=0.5, zorder=3,
-            )
-
-    # Shade "near-lossless" band on left panel
-    axL.axhspan(-0.5, 1.5, color="#e6f4ea", alpha=0.6, zorder=1,
-                label="_nolegend_")
-    axL.text(6.9, 0.5, "near-lossless (<1.5%)", fontsize=7, color="#2ca02c",
-             ha="right", style="italic")
-
-    # Annotate typical configs (one per cluster, placed outside the point)
-    typical = {
-        3.5:  ("q4_0 + vtq2_1", "3.5 bpw", (0.3, 0.8)),
-        5.5:  ("q8_0 + vtq2_1", "5.5 bpw", (0.3, 0.6)),
-        6.25: ("q8_0 + vtq3_1", "6.25 bpw", (0.3, -1.2)),
-        4.5:  ("q4_0 / q4_0", "4.5 bpw", (0.3, -1.0)),
+    # Only show the representative asymmetric/clean configs (skip broken
+    # KTQ+VTQ and skip redundant f16/f16 baseline which is always 0%)
+    interesting = [
+        ("q8_0/vtq3_1", "q8_0 + vtq3_1 (6.25 bpw)"),
+        ("f16/vtq3_1",  "f16  + vtq3_1 (10.0 bpw)"),
+        ("q4_0/q4_0",   "q4_0 + q4_0   (4.5 bpw)"),
+        ("q8_0/vtq2_1", "q8_0 + vtq2_1 (5.5 bpw)"),
+        ("q4_0/vtq2_1", "q4_0 + vtq2_1 (3.5 bpw)"),
+    ]
+    model_order = [
+        "Qwen3.5-27B Dense (Q4_K_M)",
+        "Qwen3.5-35B-A3B (IQ2_XS)",
+        "Qwen3.6-35B-A3B (IQ2_XXS)",
+        "Qwen3.6-35B-A3B (Q4_K_M)",
+        "Qwen3.5-35B-A3B (Q4_K_M)",
+    ]
+    model_colors = {
+        "Qwen3.5-27B Dense (Q4_K_M)": "#9467bd",
+        "Qwen3.5-35B-A3B (IQ2_XS)":   "#1f77b4",
+        "Qwen3.6-35B-A3B (IQ2_XXS)":  "#ff7f0e",
+        "Qwen3.6-35B-A3B (Q4_K_M)":   "#d62728",
+        "Qwen3.5-35B-A3B (Q4_K_M)":   "#2ca02c",
     }
-    for bpw, (text, _, offset) in typical.items():
-        axL.annotate(text, xy=(bpw, 10), xytext=(bpw + offset[0], 10.8),
-                     fontsize=7.5, color="#333", ha="left",
-                     arrowprops=dict(arrowstyle="-", color="#bbb", lw=0.5))
 
-    for ax in (axL, axR):
-        ax.axhline(0, color="#666", lw=0.7, ls="--", zorder=2)
-        ax.set_xlabel("Average KV-cache bpw (lower means more compression)")
-        ax.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
-        ax.grid(True, ls=":", alpha=0.4, zorder=0)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    n_models = len(model_order)
+    n_configs = len(interesting)
+    width = 0.16
+    x_base = range(n_configs)
 
-    axL.set_ylabel("PPL delta vs f16 (lower is better)")
-    axL.set_xlim(2.8, 7)
-    axR.set_xlim(7.5, 16.8)
-    axL.set_title("Compressed region (K or V below 8 bpw)")
-    axR.set_title("f16 K region")
+    for i, model in enumerate(model_order):
+        vals = []
+        for cfg, _ in interesting:
+            sub = have_ppl[(have_ppl["model_label"] == model)
+                           & (have_ppl["config"] == cfg)]
+            vals.append(sub["ppl_delta_pct"].iloc[0] if not sub.empty else 0)
+        offsets = [xi + (i - (n_models - 1) / 2) * width for xi in x_base]
+        bars = ax.bar(offsets, vals, width, color=model_colors[model],
+                      edgecolor="black", linewidth=0.4, label=model)
+        # Put value on top of each bar
+        for bar, v in zip(bars, vals):
+            if v == 0:
+                continue
+            ax.text(bar.get_x() + bar.get_width() / 2, v + 0.15,
+                    f"{v:.1f}%", ha="center", va="bottom",
+                    fontsize=7, color="#333")
 
-    # Hide duplicated y-axis on right panel
-    axR.tick_params(labelleft=False)
+    # Near-lossless band
+    ax.axhspan(0, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
+    ax.text(n_configs - 0.5, 0.75, "near-lossless zone (<1.5%)",
+            fontsize=7.5, color="#2ca02c", ha="right",
+            style="italic", va="center")
 
-    fig.suptitle("llama-tq: PPL delta vs KV-cache bpw (5 model/quant pairs, 2x RTX 2060)",
-                 fontsize=12, y=0.98)
-    axL.legend(loc="upper right", fontsize=8, framealpha=0.95,
-               title="Model / weight quant")
-    fig.tight_layout()
+    ax.set_xticks(list(x_base))
+    ax.set_xticklabels([label for _, label in interesting], fontsize=9)
+    ax.set_ylabel("PPL delta vs f16 (lower is better)")
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
+    ax.set_title("llama-tq: PPL delta by KV config and model "
+                 "(5 model/quant pairs, 2x RTX 2060)")
+    ax.legend(loc="upper left", fontsize=8, title="Model / weight quant",
+              title_fontsize=8, framealpha=0.95)
+    ax.grid(True, axis="y", ls=":", alpha=0.4, zorder=0)
+    ax.set_axisbelow(True)
+    ax.set_ylim(0, max(12, ax.get_ylim()[1]))
 
     _savefig("ppl_vs_bpw.png", fig)
 
@@ -157,116 +158,103 @@ def chart_decode_throughput():
 # ----------------------------------------------------------------------------
 
 def chart_cross_project():
-    # Show only the representative config per model-quant for llama-tq so the
-    # scatter isn't dominated by near-duplicate points.
+    # Horizontal bar chart: each row is one specific config, sorted by bpw
+    # (most compressed at top). Color = project. No scatter, no overlap.
     have_ppl = df.dropna(subset=["ppl_delta_pct"]).copy()
     have_ppl["model_label"] = have_ppl["model_label"].str.replace(
         "Qwen3.5-27B-Dense", "Qwen3.5-27B Dense"
     )
 
-    # Use the two flagship configs only (vtq3_1 and vtq2_1 with q8_0 K)
-    flagship = have_ppl[
-        have_ppl["config"].isin(["q8_0/vtq3_1", "q8_0/vtq2_1"])
-    ].copy()
+    # Build comparison rows: each row = (label, bpw, ppl_delta, project)
+    rows = []
 
-    fig, ax = plt.subplots(figsize=(11, 6.5))
+    # Pick representative llama-tq configs: two flagship configs × models
+    flagship_configs = ["q8_0/vtq3_1", "q8_0/vtq2_1"]
+    for cfg in flagship_configs:
+        sub = have_ppl[have_ppl["config"] == cfg]
+        for _, r in sub.iterrows():
+            cfg_short = cfg.replace("/", " + ")
+            model_short = r["model_label"].replace("Qwen3.", "Q3.").replace(
+                " Dense", " D").replace("-A3B", "")
+            rows.append({
+                "label": f"llama-tq  {cfg_short}  ({r['avg_bpw']:.2f} bpw)  on {model_short}",
+                "bpw": r["avg_bpw"],
+                "ppl_delta": r["ppl_delta_pct"],
+                "project": "llama-tq",
+            })
 
-    # Per-model colors for llama-tq
-    model_colors = {
-        "Qwen3.5-35B-A3B (IQ2_XS)":   "#1f77b4",
-        "Qwen3.6-35B-A3B (IQ2_XXS)":  "#ff7f0e",
-        "Qwen3.5-35B-A3B (Q4_K_M)":   "#2ca02c",
-        "Qwen3.6-35B-A3B (Q4_K_M)":   "#d62728",
-        "Qwen3.5-27B Dense (Q4_K_M)": "#9467bd",
+    # TheTom configs
+    for _, r in other[other["project"] == "TheTom"].iterrows():
+        rows.append({
+            "label": f"TheTom    {r['config']}  ({r['avg_bpw']:.2f} bpw)  on Q3.5-35B MoE",
+            "bpw": r["avg_bpw"],
+            "ppl_delta": r["ppl_delta_pct"],
+            "project": "TheTom",
+        })
+
+    # buun configs
+    for _, r in other[other["project"] == "buun"].iterrows():
+        rows.append({
+            "label": f"buun      {r['config']}  ({r['avg_bpw']:.2f} bpw)  on Q3.5-27B",
+            "bpw": r["avg_bpw"],
+            "ppl_delta": r["ppl_delta_pct"],
+            "project": "buun",
+        })
+
+    # Sort: by bpw ascending (most compressed at top), then by PPL delta
+    rows.sort(key=lambda x: (x["bpw"], x["ppl_delta"]))
+
+    project_colors = {
+        "llama-tq": "#1f77b4",
+        "TheTom":   "#ff7f0e",
+        "buun":     "#2ca02c",
     }
 
-    # Plot llama-tq points, one marker per model, split by config
-    for label, color in model_colors.items():
-        sub = flagship[flagship["model_label"] == label]
-        if sub.empty:
-            continue
-        # vtq3_1 = circle, vtq2_1 = square (so reader can distinguish configs)
-        v3 = sub[sub["config"] == "q8_0/vtq3_1"]
-        v2 = sub[sub["config"] == "q8_0/vtq2_1"]
-        ax.scatter(v3["avg_bpw"], v3["ppl_delta_pct"],
-                   marker="o", color=color, s=80, alpha=0.9,
-                   edgecolors="black", linewidth=0.5, zorder=4)
-        ax.scatter(v2["avg_bpw"], v2["ppl_delta_pct"],
-                   marker="s", color=color, s=80, alpha=0.9,
-                   edgecolors="black", linewidth=0.5, zorder=4)
+    fig, ax = plt.subplots(figsize=(12, max(6, len(rows) * 0.38)))
+    y_positions = list(range(len(rows)))
+    labels = [r["label"] for r in rows]
+    values = [r["ppl_delta"] for r in rows]
+    colors = [project_colors[r["project"]] for r in rows]
 
-    # TheTom (star)
-    tt = other[other["project"] == "TheTom"]
-    ax.scatter(tt["avg_bpw"], tt["ppl_delta_pct"],
-               marker="*", color="#ff7f0e", s=240, alpha=0.9,
-               edgecolors="black", linewidth=0.7, zorder=5,
-               label="TheTom (M5 Max, Q4_K_M MoE)")
-    for _, row in tt.iterrows():
-        ax.annotate(
-            row["config"],
-            xy=(row["avg_bpw"], row["ppl_delta_pct"]),
-            xytext=(9, 6), textcoords="offset points",
-            fontsize=8, color="#cc5500", fontweight="bold",
-        )
+    bars = ax.barh(y_positions, values, color=colors,
+                   edgecolor="black", linewidth=0.4, height=0.7)
 
-    # buun (diamond)
-    bb = other[other["project"] == "buun"]
-    ax.scatter(bb["avg_bpw"], bb["ppl_delta_pct"],
-               marker="D", color="#2ca02c", s=160, alpha=0.9,
-               edgecolors="black", linewidth=0.7, zorder=5,
-               label="buun TCQ (RTX 3090, Q6_K)")
-    for _, row in bb.iterrows():
-        ax.annotate(
-            row["config"],
-            xy=(row["avg_bpw"], row["ppl_delta_pct"]),
-            xytext=(9, -12), textcoords="offset points",
-            fontsize=8, color="#206020", fontweight="bold",
-        )
+    # Put PPL delta value at the end of each bar
+    for bar, val in zip(bars, values):
+        x_pos = bar.get_width()
+        ax.text(x_pos + (0.2 if val >= 0 else -0.2),
+                bar.get_y() + bar.get_height() / 2,
+                f"{val:+.2f}%" if abs(val) < 1 else f"{val:+.1f}%",
+                va="center", ha="left" if val >= 0 else "right",
+                fontsize=8, color="#222")
 
-    # Custom legend: model colors + project markers (handmade so it's readable)
-    from matplotlib.lines import Line2D
-    model_handles = [
-        Line2D([0], [0], marker="o", color="w", markerfacecolor=c,
-               markeredgecolor="black", markersize=9, label=m)
-        for m, c in model_colors.items()
+    # Near-lossless band
+    ax.axvspan(-0.5, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(labels, fontsize=9, family="monospace")
+    ax.invert_yaxis()  # Top = most compressed
+    ax.set_xlabel("PPL delta vs f16 (lower is better)")
+    ax.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
+    ax.set_title("Cross-project PPL comparison (sorted by KV bpw, most compressed at top)")
+    ax.grid(True, axis="x", ls=":", alpha=0.4, zorder=0)
+    ax.axvline(0, color="#666", lw=0.7)
+    ax.set_axisbelow(True)
+
+    # Legend: project colors
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor=c, edgecolor="black", label=p)
+        for p, c in project_colors.items()
     ]
-    config_handles = [
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#888",
-               markeredgecolor="black", markersize=9,
-               label="llama-tq: q8_0 + vtq3_1"),
-        Line2D([0], [0], marker="s", color="w", markerfacecolor="#888",
-               markeredgecolor="black", markersize=9,
-               label="llama-tq: q8_0 + vtq2_1"),
-        Line2D([0], [0], marker="*", color="w", markerfacecolor="#ff7f0e",
-               markeredgecolor="black", markersize=14,
-               label="TheTom (M5 Max, Q4_K_M MoE)"),
-        Line2D([0], [0], marker="D", color="w", markerfacecolor="#2ca02c",
-               markeredgecolor="black", markersize=10,
-               label="buun TCQ (RTX 3090, Q6_K)"),
-    ]
-    leg_models = ax.legend(handles=model_handles, loc="upper left",
-                           fontsize=8, title="llama-tq: model",
-                           title_fontsize=8, framealpha=0.95)
-    ax.add_artist(leg_models)
-    ax.legend(handles=config_handles, loc="lower left",
-              fontsize=8, title="Config / project", title_fontsize=8,
-              framealpha=0.95)
+    ax.legend(handles=legend_handles, loc="lower right",
+              fontsize=9, framealpha=0.95)
 
-    ax.axhline(0, color="#666", lw=0.7, ls="--", zorder=2)
-    ax.axhspan(-0.5, 1.5, color="#e6f4ea", alpha=0.4, zorder=1)
-
-    ax.set_xlabel("Average KV-cache bpw (lower means more compression)")
-    ax.set_ylabel("PPL delta vs f16 (lower is better)")
-    ax.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
-    ax.set_title("Cross-project PPL comparison (different HW/models, indicative only)")
-    ax.grid(True, ls=":", alpha=0.4, zorder=0)
-    ax.set_xlim(2, 7)
-
-    # Caveat below the chart, outside the plotting area
+    # Caveat below chart
     fig.text(
-        0.5, -0.02,
-        "Note: different hardware, model variants, and PPL methodologies. "
-        "buun uses KL divergence on Q6_K; TheTom uses wikitext-2 on Q4_K_M MoE. "
+        0.5, -0.04 / max(1, len(rows) / 15),
+        "Caveat: different hardware, weight quants, and PPL methodologies. "
+        "TheTom uses Q4_K_M MoE on M5 Max. buun uses Q6_K with KL divergence on RTX 3090. "
         "Direct comparison is approximate.",
         ha="center", fontsize=8, color="#555", style="italic",
     )
