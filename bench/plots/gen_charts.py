@@ -486,8 +486,11 @@ def chart_cross_project_dual():
         "buun":     "#2ca02c",
     }
 
-    fig, (axL, axR) = plt.subplots(1, 2, figsize=(14, 7), sharey=True,
-                                   gridspec_kw={"wspace": 0.08})
+    # Labels on far left only, two data panels on the right with equal width
+    fig, (axL, axR) = plt.subplots(
+        1, 2, figsize=(14, 7.5), sharey=True,
+        gridspec_kw={"wspace": 0.25, "width_ratios": [1, 1]},
+    )
 
     y_pos = list(range(len(picks)))
     labels = [p["label"] for p in picks]
@@ -495,43 +498,47 @@ def chart_cross_project_dual():
     tg_vals = [p["tg"] for p in picks]
     colors = [project_colors[p["project"]] for p in picks]
 
-    # LEFT: PPL delta
-    axL.barh(y_pos, ppl_vals, color=colors, edgecolor="black",
-             linewidth=0.4, height=0.65)
+    # Show the PPL delta as a positive bar (all values are >= 0 anyway).
+    # Bars grow to the right in both panels; "smaller bar = better".
+    abs_ppl = [max(0, v) for v in ppl_vals]
+    abs_tg = [abs(v) for v in tg_vals]
+
+    # LEFT: PPL delta magnitude
+    axL.barh(y_pos, abs_ppl, color=colors, edgecolor="black",
+             linewidth=0.4, height=0.7)
     for i, v in enumerate(ppl_vals):
-        axL.text(v + 0.15, i,
-                 f"{v:+.2f}%" if abs(v) < 1 else f"{v:+.1f}%",
+        axL.text(max(0, v) + 0.15, i,
+                 f"+{v:.2f}%" if abs(v) < 1 else f"+{v:.1f}%",
                  va="center", ha="left", fontsize=9, color="#222",
                  fontweight="bold")
-    axL.axvspan(-0.5, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
-    axL.axvline(0, color="#666", lw=0.7)
-    axL.set_xlabel("PPL delta vs f16 (lower is better ←)")
+    axL.axvspan(0, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
+    axL.set_xlabel("PPL delta vs f16 (shorter is better)")
     axL.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
-    axL.set_title("Quality hit", fontsize=11, pad=10)
+    axL.set_title("Quality hit (PPL increase vs f16)",
+                  fontsize=11, pad=10)
     axL.grid(True, axis="x", ls=":", alpha=0.4, zorder=0)
-    axL.invert_xaxis()  # lower PPL to the right (closer to shared center)
     axL.set_yticks(y_pos)
     axL.set_yticklabels(labels, fontsize=9, family="monospace")
     axL.set_axisbelow(True)
+    axL.set_xlim(0, max(abs_ppl) * 1.2)
 
-    # RIGHT: TG delta (negative values, so mirror visually on the right side)
-    axR.barh(y_pos, tg_vals, color=colors, edgecolor="black",
-             linewidth=0.4, height=0.65)
+    # RIGHT: TG delta magnitude (always a loss vs baseline, so plot magnitude)
+    axR.barh(y_pos, abs_tg, color=colors, edgecolor="black",
+             linewidth=0.4, height=0.7)
     for i, v in enumerate(tg_vals):
-        offset = 0.4 if v >= 0 else -0.4
-        ha = "left" if v >= 0 else "right"
-        axR.text(v + offset, i, f"{v:+.1f}%",
-                 va="center", ha=ha, fontsize=9, color="#222",
+        axR.text(abs(v) + 0.4, i, f"{v:+.1f}%",
+                 va="center", ha="left", fontsize=9, color="#222",
                  fontweight="bold")
-    axR.axvspan(-5, 5, color="#e6f4ea", alpha=0.5, zorder=0)
-    axR.axvline(0, color="#666", lw=0.7)
-    axR.set_xlabel("Decode throughput delta vs f16 (higher is better →)")
+    axR.axvspan(0, 5, color="#e6f4ea", alpha=0.5, zorder=0)
+    axR.set_xlabel("Decode throughput loss vs f16 (shorter is better)")
     axR.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
-    axR.set_title("Decode speed hit", fontsize=11, pad=10)
+    axR.set_title("Speed hit (decode throughput loss vs f16)",
+                  fontsize=11, pad=10)
     axR.grid(True, axis="x", ls=":", alpha=0.4, zorder=0)
     axR.set_axisbelow(True)
+    axR.set_xlim(0, max(abs_tg) * 1.2)
 
-    axL.invert_yaxis()  # best at top
+    axL.invert_yaxis()  # best at top (smallest combined impact)
 
     # Shared legend at top
     from matplotlib.patches import Patch
