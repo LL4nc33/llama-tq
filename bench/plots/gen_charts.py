@@ -158,51 +158,47 @@ def chart_decode_throughput():
 # ----------------------------------------------------------------------------
 
 def chart_cross_project():
-    # Horizontal bar chart: each row is one specific config, sorted by bpw
-    # (most compressed at top). Color = project. No scatter, no overlap.
+    # Two-panel small-multiples approach: one panel per bit-width tier,
+    # comparing the three projects at approximately the same compression
+    # level. This answers "at ~3.5 bpw, how do they compare?" without
+    # forcing readers to parse a long list.
     have_ppl = df.dropna(subset=["ppl_delta_pct"]).copy()
     have_ppl["model_label"] = have_ppl["model_label"].str.replace(
         "Qwen3.5-27B-Dense", "Qwen3.5-27B Dense"
     )
 
-    # Build comparison rows: each row = (label, bpw, ppl_delta, project)
-    rows = []
+    # Tier 1: ~3-3.5 bpw (aggressive compression)
+    tier_low = []
+    tier_low += [
+        ("llama-tq", f"q4_0 + vtq2_1 ({r['avg_bpw']:.1f})",
+         r["model_label"], r["ppl_delta_pct"])
+        for _, r in have_ppl[have_ppl["config"] == "q4_0/vtq2_1"].iterrows()
+    ]
+    for _, r in other[(other["project"] == "TheTom")
+                      & (other["config"].isin(["turbo2", "turbo3"]))].iterrows():
+        tier_low.append(("TheTom", f"{r['config']} ({r['avg_bpw']:.1f})",
+                         "Qwen3.5-35B MoE", r["ppl_delta_pct"]))
+    for _, r in other[(other["project"] == "buun")
+                      & (other["config"] == "turbo3_tcq")].iterrows():
+        tier_low.append(("buun", f"{r['config']} ({r['avg_bpw']:.1f})",
+                         "Qwen3.5-27B", r["ppl_delta_pct"]))
 
-    # Pick representative llama-tq configs: two flagship configs × models
-    flagship_configs = ["q8_0/vtq3_1", "q8_0/vtq2_1"]
-    for cfg in flagship_configs:
-        sub = have_ppl[have_ppl["config"] == cfg]
-        for _, r in sub.iterrows():
-            cfg_short = cfg.replace("/", " + ")
-            model_short = r["model_label"].replace("Qwen3.", "Q3.").replace(
-                " Dense", " D").replace("-A3B", "")
-            rows.append({
-                "label": f"llama-tq  {cfg_short}  ({r['avg_bpw']:.2f} bpw)  on {model_short}",
-                "bpw": r["avg_bpw"],
-                "ppl_delta": r["ppl_delta_pct"],
-                "project": "llama-tq",
-            })
-
-    # TheTom configs
-    for _, r in other[other["project"] == "TheTom"].iterrows():
-        rows.append({
-            "label": f"TheTom    {r['config']}  ({r['avg_bpw']:.2f} bpw)  on Q3.5-35B MoE",
-            "bpw": r["avg_bpw"],
-            "ppl_delta": r["ppl_delta_pct"],
-            "project": "TheTom",
-        })
-
-    # buun configs
-    for _, r in other[other["project"] == "buun"].iterrows():
-        rows.append({
-            "label": f"buun      {r['config']}  ({r['avg_bpw']:.2f} bpw)  on Q3.5-27B",
-            "bpw": r["avg_bpw"],
-            "ppl_delta": r["ppl_delta_pct"],
-            "project": "buun",
-        })
-
-    # Sort: by bpw ascending (most compressed at top), then by PPL delta
-    rows.sort(key=lambda x: (x["bpw"], x["ppl_delta"]))
+    # Tier 2: ~4-6 bpw (balanced)
+    tier_mid = []
+    tier_mid += [
+        ("llama-tq", f"q8_0 + vtq3_1 ({r['avg_bpw']:.1f})",
+         r["model_label"], r["ppl_delta_pct"])
+        for _, r in have_ppl[have_ppl["config"] == "q8_0/vtq3_1"].iterrows()
+    ]
+    tier_mid += [
+        ("llama-tq", f"q8_0 + vtq2_1 ({r['avg_bpw']:.1f})",
+         r["model_label"], r["ppl_delta_pct"])
+        for _, r in have_ppl[have_ppl["config"] == "q8_0/vtq2_1"].iterrows()
+    ]
+    for _, r in other[(other["project"] == "TheTom")
+                      & (other["config"].isin(["turbo4", "q8_0+turbo3"]))].iterrows():
+        tier_mid.append(("TheTom", f"{r['config']} ({r['avg_bpw']:.1f})",
+                         "Qwen3.5-35B MoE", r["ppl_delta_pct"]))
 
     project_colors = {
         "llama-tq": "#1f77b4",
@@ -210,54 +206,71 @@ def chart_cross_project():
         "buun":     "#2ca02c",
     }
 
-    fig, ax = plt.subplots(figsize=(12, max(6, len(rows) * 0.38)))
-    y_positions = list(range(len(rows)))
-    labels = [r["label"] for r in rows]
-    values = [r["ppl_delta"] for r in rows]
-    colors = [project_colors[r["project"]] for r in rows]
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(15, 8), sharex=True)
 
-    bars = ax.barh(y_positions, values, color=colors,
-                   edgecolor="black", linewidth=0.4, height=0.7)
+    for ax, tier, title in [
+        (axL, tier_low, "Aggressive compression (~2.25-3.5 bpw avg)"),
+        (axR, tier_mid, "Balanced / conservative (~4.25-6.25 bpw avg)"),
+    ]:
+        # Sort by PPL delta ascending (best on top)
+        tier = sorted(tier, key=lambda r: r[3])
+        y_pos = list(range(len(tier)))
+        labels = [f"{proj:9s}  {cfg}\n  on {model}" for proj, cfg, model, _ in tier]
+        values = [v for *_, v in tier]
+        colors = [project_colors[proj] for proj, *_ in tier]
 
-    # Put PPL delta value at the end of each bar
-    for bar, val in zip(bars, values):
-        x_pos = bar.get_width()
-        ax.text(x_pos + (0.2 if val >= 0 else -0.2),
-                bar.get_y() + bar.get_height() / 2,
-                f"{val:+.2f}%" if abs(val) < 1 else f"{val:+.1f}%",
-                va="center", ha="left" if val >= 0 else "right",
-                fontsize=8, color="#222")
+        bars = ax.barh(y_pos, values, color=colors,
+                       edgecolor="black", linewidth=0.4, height=0.65)
 
-    # Near-lossless band
-    ax.axvspan(-0.5, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
+        # Value labels
+        for bar, val in zip(bars, values):
+            x_pos = bar.get_width()
+            offset = 0.15 if val >= 0 else -0.15
+            ax.text(x_pos + offset, bar.get_y() + bar.get_height() / 2,
+                    f"{val:+.2f}%" if abs(val) < 1 else f"{val:+.1f}%",
+                    va="center", ha="left" if val >= 0 else "right",
+                    fontsize=9, color="#222", fontweight="bold")
 
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(labels, fontsize=9, family="monospace")
-    ax.invert_yaxis()  # Top = most compressed
-    ax.set_xlabel("PPL delta vs f16 (lower is better)")
-    ax.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
-    ax.set_title("Cross-project PPL comparison (sorted by KV bpw, most compressed at top)")
-    ax.grid(True, axis="x", ls=":", alpha=0.4, zorder=0)
-    ax.axvline(0, color="#666", lw=0.7)
-    ax.set_axisbelow(True)
+        # Near-lossless band
+        ax.axvspan(-0.5, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
 
-    # Legend: project colors
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels, fontsize=8, family="monospace")
+        ax.invert_yaxis()
+        ax.set_title(title, fontsize=11, pad=12)
+        ax.grid(True, axis="x", ls=":", alpha=0.4, zorder=0)
+        ax.axvline(0, color="#666", lw=0.7)
+        ax.set_axisbelow(True)
+
+    axL.set_xlabel("PPL delta vs f16 (lower is better)")
+    axR.set_xlabel("PPL delta vs f16 (lower is better)")
+    axL.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
+
+    # Legend (once, above)
     from matplotlib.patches import Patch
     legend_handles = [
         Patch(facecolor=c, edgecolor="black", label=p)
         for p, c in project_colors.items()
     ]
-    ax.legend(handles=legend_handles, loc="lower right",
-              fontsize=9, framealpha=0.95)
+    fig.legend(handles=legend_handles, loc="upper center",
+               ncol=3, fontsize=11, bbox_to_anchor=(0.5, 0.94),
+               frameon=False)
 
-    # Caveat below chart
+    fig.suptitle("Cross-project PPL comparison at matched bit-widths",
+                 fontsize=14, y=0.99)
+
+    # Caveat below
     fig.text(
-        0.5, -0.04 / max(1, len(rows) / 15),
-        "Caveat: different hardware, weight quants, and PPL methodologies. "
-        "TheTom uses Q4_K_M MoE on M5 Max. buun uses Q6_K with KL divergence on RTX 3090. "
-        "Direct comparison is approximate.",
-        ha="center", fontsize=8, color="#555", style="italic",
+        0.5, 0.02,
+        "Different hardware, weight quants, and PPL methodologies. "
+        "TheTom: M5 Max, Q4_K_M MoE. "
+        "buun: RTX 3090, Q6_K, KL divergence at 2K ctx. "
+        "llama-tq: 2x RTX 2060, wikitext-2 at 3 chunks. "
+        "Comparison is approximate.",
+        ha="center", fontsize=9, color="#555", style="italic",
     )
+
+    fig.tight_layout(rect=[0, 0.06, 1, 0.9])
 
     _savefig("cross_project.png", fig)
 
