@@ -118,6 +118,8 @@ int main(int argc, char ** argv) {
         trellis_gen_bimodal(data, n);
     } else if (!strcmp(mode, "vcachelike")) {
         trellis_gen_vcache_like(data, n);
+    } else if (!strcmp(mode, "vcache_real")) {
+        trellis_gen_vcache_realistic(data, n);
     } else if (!strcmp(mode, "real")) {
         if (!data_path) { fprintf(stderr, "--data required in real mode\n"); return 1; }
         if (trellis_load_binary(data_path, data, n) != 0) {

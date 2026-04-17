@@ -67,6 +67,7 @@ void  trellis_gen_laplace(float * buf, size_t n);   // Laplace(0,1), heavier tai
 void  trellis_gen_student_t(float * buf, size_t n, float nu);  // Student-t, very heavy
 void  trellis_gen_bimodal(float * buf, size_t n);   // 0.5·N(-1.5,0.5) + 0.5·N(1.5,0.5)
 void  trellis_gen_vcache_like(float * buf, size_t n);  // Gaussian + 5% outliers (3σ+)
+void  trellis_gen_vcache_realistic(float * buf, size_t n);  // LLM V-cache model, unit var
 int   trellis_load_binary(const char * path, float * buf, size_t n);
 
 // Timing.
