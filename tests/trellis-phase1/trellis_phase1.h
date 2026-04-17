@@ -19,16 +19,17 @@ typedef enum {
 } trellis_code_fn;
 
 typedef struct {
-    int  state_bits;           // L: 8, 12, 16
+    int  state_bits;           // L: 8, 12, 16, 20
     int  code_bits;            // K: 2, 3
-    int  block_size;           // QK: 32, 64, 128, 256
+    int  block_size;           // QK: 32, 64, 128, 256, 512
     int  beam_width;           // 0 = full Viterbi, >0 = pruned
     int  norm_correction;      // 0 = off, 1 = on
     int  group_size;           // G ≥ 1. Blocks per shared-start-state group.
                                // First block in group stores start_state;
                                // subsequent blocks chain from previous end_state.
-    int  shared_d;             // 0 = per-block d; 1 = one d per group (saves
-                               //     15/(G·QK) bpw at a small MSE cost)
+    int  shared_d;             // 0 = per-block d; 1 = one d per group
+    int  group_viterbi;        // 0 = G chained block-Viterbis; 1 = one
+                               //     joint Viterbi over G·QK samples
     trellis_code_fn code;
     const char * label;        // for CSV output
 } trellis_config;
@@ -68,6 +69,21 @@ void  trellis_decode_block(const trellis_config * cfg,
                            uint32_t start_state_in,
                            float d_override,        // <=0 = use in->d
                            float * y);              // QK output samples
+
+// Group-level encoder: one Viterbi over G·QK samples, output split into
+// G blocks sharing one start_state (in blks[0]) and one d (in blks[0] if
+// shared_d, else per-block).
+// Returns 0 on success, nonzero on error.
+int   trellis_encode_group(const trellis_config * cfg,
+                           const float * x,        // G·QK input samples
+                           trellis_block * blks);  // G output blocks
+
+// Group-level decoder: decodes G·QK samples by running the shift register
+// through all G blocks' qs streams concatenated. Uses blks[0].start_state
+// and blks[0].d (if shared_d) or each block's d otherwise.
+void  trellis_decode_group(const trellis_config * cfg,
+                           const trellis_block * blks,
+                           float * y);             // G·QK output samples
 
 // RNG + test data.
 void  trellis_seed_rng(uint64_t seed);
