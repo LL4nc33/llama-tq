@@ -111,6 +111,29 @@ void trellis_gen_vcache_like(float * buf, size_t n) {
     }
 }
 
+// LLM V-cache realistic model (post-rotation):
+// - Base Gaussian N(0, 1) from RHT effect
+// - 1% of samples are outliers at 5-10 sigma (channel-specific even after
+//   rotation; RHT distributes but does not eliminate them)
+// - Optional: block-level scaling variance (some blocks are "quiet",
+//   others carry most of the energy)
+// Variance of the mixture is normalized to ~1.0 for fair comparison.
+void trellis_gen_vcache_realistic(float * buf, size_t n) {
+    trellis_gen_gaussian(buf, n);
+    for (size_t i = 0; i < n; i++) {
+        if (uniform01() < 0.01f) {
+            float sign = (uniform01() < 0.5f) ? -1.0f : 1.0f;
+            buf[i] = sign * (5.0f + 5.0f * uniform01());  // 5-10 sigma
+        }
+    }
+    // Renormalize to unit variance
+    double s1 = 0, s2 = 0;
+    for (size_t i = 0; i < n; i++) { s1 += buf[i]; s2 += (double)buf[i]*buf[i]; }
+    double m = s1/n, v = s2/n - m*m;
+    float scale = (v > 1e-12) ? (float)(1.0 / sqrt(v)) : 1.0f;
+    for (size_t i = 0; i < n; i++) buf[i] = ((float)(buf[i] - m)) * scale;
+}
+
 int trellis_load_binary(const char * path, float * buf, size_t n) {
     FILE * f = fopen(path, "rb");
     if (!f) return -1;
