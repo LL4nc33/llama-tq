@@ -2,14 +2,17 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Asymmetric KV-Cache Quantization for llama.cpp: separate K and V compression paths, each with a different dequant path inside the Flash Attention kernel.
+Asymmetric KV-cache quantization for llama.cpp. K-cache and V-cache use different quant types with different dequant paths inside the Flash Attention kernel.
 
 Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp), inspired by [TurboQuant](https://arxiv.org/abs/2504.19874) (Zandieh et al., arXiv preprint April 2025). See [References](#references) for explicit deviations from the paper.
 
-> **Key findings (measured on 2x RTX 2060, CC 7.5):**
-> - `vtq2_1` V-cache (2.5 bpw) sustains higher PP512/TG128 than `q4_0` V-cache across all four tested models (e.g. 781 vs 519 PP512 tok/s on Qwen3.5-35B Q4_K_M, +50%).
-> - `vtq3_1` (4.0 bpw) is near-lossless on Qwen3.6-35B Q4_K_M (+1.0% PPL) and Qwen3.5-27B Q4_K_M (+1.1%); on Qwen3.5-35B Q4_K_M it is +2.5%.
-> - `q8_0` K + `vtq2_1` V costs +5.1% to +10.0% PPL depending on model (see [Perplexity](#perplexity-wikitext-2-512-ctx-3-chunks)), at ~65% KV VRAM savings vs f16.
+> **Measured on 2x RTX 2060 12GB (CC 7.5), 5 model/quant pairs:**
+> - `q8_0` K + `vtq2_1` V (5.5 bpw avg): **+5.1% to +10.0%** PPL Δ depending on model, ~65% KV VRAM vs f16
+> - `q8_0` K + `vtq3_1` V (6.25 bpw avg): **+0.6% to +2.5%** PPL Δ
+> - TG128 overhead: **−1% to −4%** with `vtq*` V-cache (vs −12% to −22% with `q4_0` V-cache)
+> - CUDA only. PPL measurements are at 3 wikitext-2 chunks (noisy), proper 64+ chunk reruns pending.
+
+![PPL vs KV bpw](docs/img/ppl_vs_bpw.png)
 
 ---
 
@@ -43,6 +46,8 @@ PPL impact is model-dependent; ranges below span the four tested Qwen3.5/3.6 con
 All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attention on, all layers offloaded.
 
 ### Throughput (llama-bench, PP512/TG128)
+
+![Decode throughput by config](docs/img/decode_throughput.png)
 
 #### Qwen3.5-35B-A3B (IQ2_XS, 10.16 GiB)
 
@@ -176,6 +181,8 @@ On IQ2_XS/IQ2_XXS weights, `vtq3_1` sits at +1.05–1.8% PPL and `q8_0 + vtq2_1`
 
 The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights show larger deltas than the same architecture on IQ2_XS weights, which I did not anticipate — higher-precision weights amplifying KV-quant PPL is counterintuitive. One hypothesis is that MoE sparse expert routing (8/128 active) interacts with V-quant noise differently per-token, but I have not confirmed this. The measurement is on 3 wikitext-2 chunks at 512 ctx, so the chunk-to-chunk variance is non-trivial; I plan to rerun at 64+ chunks before drawing conclusions. `vtq3_1` stays within +0.6% to +2.5% across all four tests.
 
+![vtq2_1 vs vtq3_1 by model](docs/img/vtq2_variance.png)
+
 ### KV-Cache Memory (4096 ctx)
 
 | Config | KV Size | Savings vs f16 |
@@ -189,6 +196,8 @@ The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights s
 ### Comparison with Other Approaches
 
 PPL delta vs f16 baseline (lower is better). Different hardware, models, and metrics — **relative deltas only are indicative**.
+
+![Cross-project comparison](docs/img/cross_project.png)
 
 | Approach | Type | bpw | PPL Delta | Decode Delta | Hardware | Model | Model Quant |
 |----------|------|:---:|:---:|:---:|---|---|---|
