@@ -10,16 +10,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Format: L, K, QK, beam, norm, group, shared_d, code, label
 static const trellis_config CONFIGS[] = {
-    // Compare TABLE (Gaussian) vs T5 (Student-t(5), heavy tails).
-    {16, 2,  32, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q32_TBL" },
-    {16, 2,  32, 0, 1, 1, TRELLIS_CODE_T5,    "L16_K2_Q32_T5" },
-    {16, 2,  64, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q64_TBL" },
-    {16, 2,  64, 0, 1, 1, TRELLIS_CODE_T5,    "L16_K2_Q64_T5" },
-    {16, 2, 128, 0, 1, 1, TRELLIS_CODE_TABLE, "L16_K2_Q128_TBL" },
-    {16, 2, 128, 0, 1, 1, TRELLIS_CODE_T5,    "L16_K2_Q128_T5" },
-    {16, 3,  32, 0, 1, 4, TRELLIS_CODE_TABLE, "L16_K3_Q32_TBL_G4" },
-    {16, 3,  32, 0, 1, 4, TRELLIS_CODE_T5,    "L16_K3_Q32_T5_G4" },
+    // --- Best known baseline (post-RHT Gaussian, real-data-validated) ---
+    {16, 2, 128, 0, 1, 2, 0, TRELLIS_CODE_TABLE, "baseline_Q128_G2"   },  // 2.1875 bpw
+    // --- QK=256 sweep: amortize d and start_state further ---
+    {16, 2, 256, 0, 1, 1, 0, TRELLIS_CODE_TABLE, "Q256_G1"            },  // 2.125 bpw
+    {16, 2, 256, 0, 1, 2, 0, TRELLIS_CODE_TABLE, "Q256_G2"            },  // 2.09375 bpw
+    {16, 2, 256, 0, 1, 4, 0, TRELLIS_CODE_TABLE, "Q256_G4"            },  // 2.078 bpw
+    // --- shared_d variants (one fp16 d per group) ---
+    {16, 2, 128, 0, 1, 2, 1, TRELLIS_CODE_TABLE, "Q128_G2_sharedD"    },  // 2.125 bpw
+    {16, 2, 128, 0, 1, 4, 1, TRELLIS_CODE_TABLE, "Q128_G4_sharedD"    },  // 2.094 bpw
+    {16, 2, 256, 0, 1, 2, 1, TRELLIS_CODE_TABLE, "Q256_G2_sharedD"    },  // 2.063 bpw
+    {16, 2, 256, 0, 1, 4, 1, TRELLIS_CODE_TABLE, "Q256_G4_sharedD"    },  // 2.047 bpw
+    // --- aggressive G on QK=128 ---
+    {16, 2, 128, 0, 1, 4, 0, TRELLIS_CODE_TABLE, "Q128_G4"            },  // 2.156 bpw
+    {16, 2, 128, 0, 1, 8, 0, TRELLIS_CODE_TABLE, "Q128_G8"            },  // 2.141 bpw
+    // --- 3-bit with aggressive amortization ---
+    {16, 3, 128, 0, 1, 4, 0, TRELLIS_CODE_TABLE, "K3_Q128_G4"         },  // 3.156 bpw
+    {16, 3, 128, 0, 1, 4, 1, TRELLIS_CODE_TABLE, "K3_Q128_G4_sharedD" },  // 3.125 bpw
 };
 
 static const size_t N_CONFIGS = sizeof(CONFIGS) / sizeof(CONFIGS[0]);
@@ -39,8 +48,14 @@ static void run_sweep(const float * data, size_t n, const char * out_path, const
         if (nb == 0) continue;
         int G = (cfg->group_size > 0) ? cfg->group_size : 1;
 
-        // bpw: 16 (d) + QK·K (qs) per block + L (start_state) per group
-        double bpw = (16.0 + (double)QK * cfg->code_bits + (double)cfg->state_bits / G) / (double)QK;
+        // bpw: per block: QK·K (qs). Per block plus shared fields:
+        //   if shared_d: 16 (d) per group + L (start) per group = 16+L per group
+        //   else       : 16 (d) per block + L (start) per group
+        double per_block_bits = (double)QK * cfg->code_bits;
+        double per_group_bits = cfg->state_bits + (cfg->shared_d ? 16.0 : 0.0);
+        double per_block_shared = cfg->shared_d ? 0.0 : 16.0;
+        double bpw = (per_block_bits + per_block_shared
+                      + per_group_bits / G) / (double)QK;
 
         double t0 = trellis_now_ms();
         double sq_err = 0.0;
@@ -48,25 +63,44 @@ static void run_sweep(const float * data, size_t n, const char * out_path, const
         // Allocate G blocks worth of state so we can chain within groups.
         trellis_block blks[16]; // G ≤ 16
         uint32_t ends[16];
-        float recon[128];
+        float recon[256];      // enough for QK up to 256
 
         size_t ng = nb / (size_t)G;
         for (size_t g = 0; g < ng; g++) {
+            // If shared_d: compute group L2 norm, pass as override to each block.
+            float group_norm = -1.0f;
+            if (cfg->shared_d) {
+                double gn2 = 0.0;
+                for (int bi = 0; bi < G; bi++) {
+                    size_t b = g * (size_t)G + bi;
+                    const float * xb = data + b * QK;
+                    for (size_t j = 0; j < QK; j++) gn2 += (double)xb[j] * xb[j];
+                }
+                // per-block effective norm: the encoder scales by `norm`, and
+                // the codebook has E[sum(code²)] ≈ QK; so each block needs
+                // norm = sqrt(sum_per_block). We use sqrt(total / G) as a
+                // uniform per-block scale so the decoder's per-block apply
+                // of this same value reproduces the right magnitude.
+                group_norm = (float)sqrt(gn2 / (double)G);
+            }
+
             // Encode G chained blocks.
-            uint32_t prev_end = 0xFFFFFFFFu; // first block: open start
+            uint32_t prev_end = 0xFFFFFFFFu;
             for (int bi = 0; bi < G; bi++) {
                 size_t b = g * (size_t)G + bi;
                 const float * xb = data + b * QK;
-                ends[bi] = trellis_encode_block(cfg, xb, prev_end, &blks[bi]);
+                ends[bi] = trellis_encode_block(cfg, xb, prev_end,
+                                                group_norm, &blks[bi]);
                 prev_end = ends[bi];
             }
-            // Decode G chained blocks (re-derive start from blks[0].start_state).
-            uint32_t dec_start = 0xFFFFFFFFu; // blk0: read from field
+            // Decode G chained blocks.
+            uint32_t dec_start = 0xFFFFFFFFu;
             for (int bi = 0; bi < G; bi++) {
                 size_t b = g * (size_t)G + bi;
                 const float * xb = data + b * QK;
-                trellis_decode_block(cfg, &blks[bi], dec_start, recon);
-                dec_start = ends[bi]; // chain end_state into next block's forced start
+                trellis_decode_block(cfg, &blks[bi], dec_start,
+                                     group_norm, recon);
+                dec_start = ends[bi];
                 for (size_t j = 0; j < QK; j++) {
                     float e = xb[j] - recon[j];
                     sq_err += (double)e * e;
@@ -74,7 +108,6 @@ static void run_sweep(const float * data, size_t n, const char * out_path, const
             }
         }
         size_t total_samples = ng * (size_t)G * QK;
-        // reuse nb for reporting (blocks we actually processed)
         nb = ng * (size_t)G;
         double t1 = trellis_now_ms();
         double mse = sq_err / (double)total_samples;
