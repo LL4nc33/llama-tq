@@ -33,7 +33,7 @@ static float nrand(void) {
 static const double LLOYD_MAX_MSE_2BIT = 0.1175;
 
 static void run_one(int K, const char * label, double expected_mse_min, double expected_mse_max) {
-    const int N = 512;
+    const int N = 256;
     const int nb = 8;  // 8 groups = 4096 samples
     float * x = malloc(sizeof(float) * N * nb);
     float * y = malloc(sizeof(float) * N * nb);

@@ -382,28 +382,28 @@ static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
 // Decoder is a shift register fed by packed K-bit emit stream.
 // bpw = (16 + 16 + QK_VTQ_TRELLIS·K) / QK_VTQ_TRELLIS
 
-#define QK_VTQ_TRELLIS 512
+#define QK_VTQ_TRELLIS 256
 
 typedef struct {
     ggml_half d;                // group scale (encoder norm-correction output)
     uint16_t  start_state;      // L=16 bit open-start state
-    uint8_t   qs[QK_VTQ_TRELLIS * 2 / 8];  // 128 B
+    uint8_t   qs[QK_VTQ_TRELLIS * 2 / 8];  // 64 B
 } block_vtq2_2;
-static_assert(sizeof(block_vtq2_2) == 132, "wrong vtq2_2 block size");  // 2.0625 bpw
+static_assert(sizeof(block_vtq2_2) == 68, "wrong vtq2_2 block size");  // 2.125 bpw
 
 typedef struct {
     ggml_half d;
     uint16_t  start_state;
-    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];  // 192 B
+    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];  // 96 B
 } block_vtq3_2;
-static_assert(sizeof(block_vtq3_2) == 196, "wrong vtq3_2 block size");  // 3.0625 bpw
+static_assert(sizeof(block_vtq3_2) == 100, "wrong vtq3_2 block size");  // 3.125 bpw
 
 typedef struct {
     ggml_half d;
     uint16_t  start_state;
-    uint8_t   qs[QK_VTQ_TRELLIS * 4 / 8];  // 256 B
+    uint8_t   qs[QK_VTQ_TRELLIS * 4 / 8];  // 128 B
 } block_vtq4_2;
-static_assert(sizeof(block_vtq4_2) == 260, "wrong vtq4_2 block size");  // 4.0625 bpw
+static_assert(sizeof(block_vtq4_2) == 132, "wrong vtq4_2 block size");  // 4.125 bpw
 
 //
 // Super-block quantization structures
