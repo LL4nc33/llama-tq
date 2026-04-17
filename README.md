@@ -68,6 +68,41 @@ All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attentio
 
 **VTQ is faster than q4_0 for V-cache.** The `__forceinline__` codebook dequant (~8 registers) outperforms q4_0's shift+scale dequant in the FA inner loop. At the same time, VTQ uses less memory (2.5 bpw vs 4.5 bpw).
 
+#### Qwen3.5-35B-A3B (Q4_K_M, 19.92 GiB)
+
+| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
+|---------|---------|:---:|:---:|:---:|:---:|
+| f16 | f16 | **842** | **61.9** | baseline | baseline |
+| q8_0 | vtq2_1 | 781 | 60.4 | -7% | **-2%** |
+| q4_0 | vtq2_1 | 783 | 60.4 | -7% | **-2%** |
+| q8_0 | vtq3_1 | 757 | 59.7 | -10% | -4% |
+| f16 | q4_0 | 519 | 48.9 | -38% | -21% |
+| q8_0 | q4_0 | 527 | 48.6 | -37% | -22% |
+
+#### Qwen3.6-35B-A3B (Q4_K_M, 19.91 GiB)
+
+| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
+|---------|---------|:---:|:---:|:---:|:---:|
+| f16 | f16 | **847** | **62.4** | baseline | baseline |
+| q8_0 | vtq2_1 | 781 | 60.7 | -8% | **-3%** |
+| q4_0 | vtq2_1 | 783 | 60.7 | -8% | **-3%** |
+| q8_0 | vtq3_1 | 756 | 59.9 | -11% | -4% |
+| f16 | q4_0 | 524 | 52.4 | -38% | -16% |
+| q8_0 | q4_0 | 521 | 53.5 | -38% | -14% |
+
+#### Qwen3.5-27B Dense (Q4_K_M, 15.94 GiB)
+
+| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
+|---------|---------|:---:|:---:|:---:|:---:|
+| f16 | f16 | **318** | **14.6** | baseline | baseline |
+| q8_0 | vtq2_1 | 297 | 14.5 | -7% | **-1%** |
+| q4_0 | vtq2_1 | 297 | 14.5 | -7% | **-1%** |
+| q8_0 | vtq3_1 | 288 | 14.4 | -9% | -1% |
+| f16 | q4_0 | 205 | 12.8 | -36% | -12% |
+| q8_0 | q4_0 | 214 | 12.8 | -33% | -12% |
+
+The 27B Dense is much slower in absolute tok/s (no MoE sparsity) but VTQ still delivers the same -1 to -2% decode overhead pattern.
+
 ### Perplexity (wikitext-2, 512 ctx, 3 chunks)
 
 #### Qwen3.5-35B-A3B (IQ2_XS)
@@ -93,7 +128,51 @@ All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attentio
 | q8_0 | vtq2_1 | 5.5 | **6.361** | **+6.6%** |
 | f16 | vtq2_1 | 9.3 | 6.378 | +6.9% |
 
-VTQ3_1 is **perplexity-neutral** on both models. VTQ2_1 with q8_0 K costs only +6-7% PPL.
+VTQ3_1 is **perplexity-neutral** on both models. VTQ2_1 with q8_0 K costs only +6-7% PPL on IQ2_XS.
+
+#### Qwen3.5-35B-A3B (Q4_K_M)
+
+| K-Cache | V-Cache | PPL | vs baseline |
+|---------|---------|:---:|:---:|
+| f16 | f16 | **5.205** | -- |
+| f16 | q4_0 | 5.247 | +0.8% |
+| q4_0 | q4_0 | 5.271 | +1.3% |
+| q8_0 | vtq3_1 | 5.312 | **+2.1%** |
+| f16 | vtq3_1 | 5.334 | +2.5% |
+| q8_0 | vtq2_1 | 5.727 | **+10.0%** |
+| q4_0 | vtq2_1 | 5.744 | +10.4% |
+
+#### Qwen3.6-35B-A3B (Q4_K_M)
+
+| K-Cache | V-Cache | PPL | vs baseline |
+|---------|---------|:---:|:---:|
+| f16 | f16 | **5.127** | -- |
+| f16 | q4_0 | 5.129 | +0.04% |
+| q4_0 | q4_0 | 5.169 | +0.8% |
+| f16 | vtq3_1 | 5.177 | **+1.0%** |
+| q8_0 | vtq3_1 | 5.232 | +2.1% |
+| q4_0 | vtq2_1 | 5.498 | +7.2% |
+| q8_0 | vtq2_1 | 5.563 | +8.5% |
+
+#### Qwen3.5-27B Dense (Q4_K_M)
+
+| K-Cache | V-Cache | PPL | vs baseline |
+|---------|---------|:---:|:---:|
+| f16 | f16 | **6.343** | -- |
+| q4_0 | q4_0 | 6.381 | +0.6% |
+| q8_0 | vtq3_1 | 6.383 | **+0.6%** |
+| f16 | q4_0 | 6.386 | +0.7% |
+| f16 | vtq3_1 | 6.414 | +1.1% |
+| q4_0 | vtq2_1 | 6.638 | +4.7% |
+| q8_0 | vtq2_1 | 6.665 | +5.1% |
+
+**Observation:** VTQ2_1 PPL delta varies significantly by model (not by model quant):
+- Qwen3.5-27B Dense (Q4_K_M): +5.1% — cleanest result
+- Qwen3.5-35B-A3B MoE (IQ2_XS): +7.2%
+- Qwen3.6-35B-A3B MoE (Q4_K_M): +8.5%
+- Qwen3.5-35B-A3B MoE (Q4_K_M): +10.0%
+
+The Q4_K_M MoE tests show a larger PPL delta than IQ2_XS — the opposite of what we initially hypothesized. Our best guess: MoE models with sparse expert activation (8/128 active) amplify per-layer quantization errors differently than Dense models. VTQ3_1 remains near-lossless across all tests (+0.6 to +2.5%).
 
 ### KV-Cache Memory (4096 ctx)
 
@@ -107,35 +186,38 @@ VTQ3_1 is **perplexity-neutral** on both models. VTQ2_1 with q8_0 K costs only +
 
 ### Comparison with Other Approaches
 
-PPL delta vs f16 baseline (lower is better). Different hardware, so absolute tok/s are not comparable — **relative deltas are**.
+PPL delta vs f16 baseline (lower is better). Different hardware, models, and metrics — **relative deltas only are indicative**.
 
-| Approach | Type | bpw | PPL Delta (Qwen ~27-35B) | Decode Delta | Hardware | Model Quant |
-|----------|------|:---:|:---:|:---:|---|---|
-| Approach | Type | bpw | PPL Delta | Decode Delta | Hardware | Model Quant |
-|----------|------|:---:|:---:|:---:|---|---|
-| buun turbo3_tcq | K+V trellis | 3.25 | **-0.05%**\*\* | **-3%** | RTX 3090 | Q6_K |
-| **llama-tq vtq3_1** | V-only | 4.0 | +1.0% | **-2%** | 2x RTX 2060 | IQ2_XS |
-| TheTom turbo4 | K+V sym | 4.25 | **+0.23%** | -7% | M5 Max | Q4_K_M |
-| **llama-tq vtq2_1** | V-only | 2.5 | +6.6% | **-2%** | 2x RTX 2060 | IQ2_XS |
-| TheTom turbo3 | K+V sym | 3.5 | +1.06% | -10% | M5 Max | Q4_K_M |
-| buun turbo2_tcq | K+V trellis | 2.25 | KLD 0.101\*\*\* | **-3%** | RTX 3090 | Q6_K |
-| TheTom turbo2 | K+V sym | 2.5 | +6.48% | -22%\* | M5 Max | Q4_K_M |
-| q4_0 | K+V sym | 4.5 | +0.3-0.6% | -16% | 2x RTX 2060 | IQ2_XS |
-| **llama-tq q8_0+vtq2_1** | asymmetric | 5.5 | +6.6% | **-2%** | 2x RTX 2060 | IQ2_XS |
-| TheTom q8_0+turbo3 | asymmetric | ~5.5 | +2.0% | ~-10% | M5 Max | Q4_K_M |
+| Approach | Type | bpw | PPL Delta | Decode Delta | Hardware | Model | Model Quant |
+|----------|------|:---:|:---:|:---:|---|---|---|
+| buun turbo3_tcq | K+V trellis | 3.25 | **-0.05%**\*\* | **-3%** | RTX 3090 | Qwen3.5-27B | Q6_K |
+| TheTom turbo4 | K+V sym | 4.25 | **+0.23%** | -7% | M5 Max | Qwen3.5 MoE | Q4_K_M |
+| **llama-tq vtq3_1** (Qwen3.6) | V-only | 4.0 | **+1.0%** | **-3%** | 2x RTX 2060 | Qwen3.6-35B MoE | Q4_K_M |
+| TheTom turbo3 | K+V sym | 3.5 | +1.06% | -10% | M5 Max | Qwen3.5 MoE | Q4_K_M |
+| **llama-tq vtq3_1** (27B) | V-only | 4.0 | +1.1% | **-1%** | 2x RTX 2060 | Qwen3.5-27B | Q4_K_M |
+| **llama-tq vtq3_1** (IQ2_XS) | V-only | 4.0 | +1.8% | **-2%** | 2x RTX 2060 | Qwen3.5-35B MoE | IQ2_XS |
+| **llama-tq vtq3_1** (Qwen3.5) | V-only | 4.0 | +2.5% | -4% | 2x RTX 2060 | Qwen3.5-35B MoE | Q4_K_M |
+| **llama-tq q8_0+vtq2_1** (27B) | asymmetric | 5.5 | **+5.1%** | **-1%** | 2x RTX 2060 | Qwen3.5-27B | Q4_K_M |
+| TheTom turbo2 | K+V sym | 2.5 | +6.48% | -22%\* | M5 Max | Qwen3.5 MoE | Q4_K_M |
+| **llama-tq q8_0+vtq2_1** (IQ2_XS) | asymmetric | 5.5 | +7.2% | **-2%** | 2x RTX 2060 | Qwen3.5-35B MoE | IQ2_XS |
+| **llama-tq q8_0+vtq2_1** (Qwen3.6) | asymmetric | 5.5 | +8.5% | **-3%** | 2x RTX 2060 | Qwen3.6-35B MoE | Q4_K_M |
+| **llama-tq q8_0+vtq2_1** (Qwen3.5) | asymmetric | 5.5 | +10.0% | **-2%** | 2x RTX 2060 | Qwen3.5-35B MoE | Q4_K_M |
+| buun turbo2_tcq | K+V trellis | 2.25 | KLD 0.101\*\*\* | **-3%** | RTX 3090 | Qwen3.5-27B | Q6_K |
+| q4_0 (K+V) | symmetric | 4.5 | +0.3-1.3% | -12 to -16% | 2x RTX 2060 | all tested | all tested |
 
 \*TheTom turbo2 decode varies: -22% on MoE short context, but +33.9% on M1 Max with turbo4.
 \*\*buun turbo3_tcq: PPL 5.802 vs f16 5.805 (Qwen3.5-27B Q6_K, 2K ctx). Uses KL-divergence metric, not directly comparable to wikitext-2 PPL.
-\*\*\*buun turbo2_tcq: KLD 0.101 at 2K context — different metric, not directly comparable to PPL delta.
+\*\*\*buun turbo2_tcq: KLD 0.101 at 2K context — different metric.
 
 **Note:** These results use different models, hardware, quantizations, and metrics. Direct comparison is approximate at best.
 
-**Key differences:**
-- **llama-tq VTQ** separates K and V quantization paths — V dequant is `__forceinline__` (~8 registers). CUDA only
-- **buun TCQ** uses Trellis-Coded Quantization (512-state Viterbi encoding, O(1) decode). Best quality at 3-bit. CUDA only
-- **TheTom** has the widest platform support (Metal + CUDA) and most extensive benchmarks (NIAH, long context). Symmetric K+V means higher decode cost (-7 to -10%)
-- **VTQ decode overhead is minimal** (-2% TG) because V-dequant is a trivial codebook lookup vs full TQ dequant path
-- **PPL at 2-bit**: llama-tq and TheTom both achieve ~+6.5% at 2.5 bpw V-cache
+**Key observations:**
+- **TheTom has better PPL at 3-4 bit on MoE** (turbo3 +1.06%, turbo4 +0.23%) — our vtq3_1 on the same Q4_K_M MoE comes in at +1.0-2.5%
+- **buun TCQ (Viterbi encoding) has the best 3-bit PPL** (near-lossless) but tested on higher-quality Q6_K weights
+- **llama-tq's strength is Dense models and decode speed**: Qwen3.5-27B Q4_K_M achieves +1.1% PPL (vtq3_1) at -1% TG overhead
+- **At 2.5 bpw V-cache**, llama-tq and TheTom are comparable (+5-10% vs +6.48%), model-dependent
+- **VTQ decode overhead (-1 to -3%)** is consistently lower than TheTom's symmetric TQ (-7 to -22%) because V-dequant is a trivial codebook lookup vs full TQ dequant path
+- **Platform support**: TheTom (Metal + CUDA) > llama-tq (CUDA only) > buun (CUDA only)
 
 ---
 
