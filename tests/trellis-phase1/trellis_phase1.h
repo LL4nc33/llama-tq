@@ -23,6 +23,9 @@ typedef struct {
     int  block_size;           // QK: 32, 64, 128
     int  beam_width;           // 0 = full Viterbi, >0 = pruned
     int  norm_correction;      // 0 = off, 1 = on
+    int  group_size;           // G ≥ 1. Blocks per shared-start-state group.
+                               // First block in group stores start_state;
+                               // subsequent blocks chain from previous end_state.
     trellis_code_fn code;
     const char * label;        // for CSV output
 } trellis_config;
@@ -40,14 +43,20 @@ typedef struct {
 float trellis_code(trellis_code_fn fn, uint32_t state, int state_bits);
 
 // Encoder: full Viterbi over 2^L states. Writes one block.
-// Returns reconstruction MSE for this block (for diagnostics).
-float trellis_encode_block(const trellis_config * cfg,
-                           const float * x,         // QK input samples
-                           trellis_block * out);
+// start_state_in == 0xFFFFFFFFu means "open start" (encoder chooses freely
+// and writes states[0] to out->start_state). Otherwise the encoder forces
+// state_0 = start_state_in and out->start_state is left zero (caller knows).
+// Returns end_state (states[N]), for chaining in groups.
+uint32_t trellis_encode_block(const trellis_config * cfg,
+                              const float * x,         // QK input samples
+                              uint32_t start_state_in,  // 0xFFFFFFFFu = open
+                              trellis_block * out);
 
-// Decoder: parallel bitshift read.
+// Decoder: rebuild from given start_state (or from out->start_state if
+// start_state_in == 0xFFFFFFFFu).
 void  trellis_decode_block(const trellis_config * cfg,
                            const trellis_block * in,
+                           uint32_t start_state_in,
                            float * y);              // QK output samples
 
 // RNG + test data.
