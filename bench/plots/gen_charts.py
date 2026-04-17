@@ -157,7 +157,108 @@ def chart_decode_throughput():
 # Chart 3: Cross-project Pareto frontier
 # ----------------------------------------------------------------------------
 
-def chart_cross_project():
+def chart_cross_project_2d():
+    # Scatter: PPL delta (x) vs decode overhead (y). Each project gets
+    # its own marker. Bottom-left = "best" (low PPL, low decode hit).
+    # Only uses configs where both metrics are reported.
+    fig, ax = plt.subplots(figsize=(12, 7.5))
+
+    # llama-tq: compute TG overhead vs f16 baseline per model.
+    # Use Q4_K_M MoE (Qwen3.5) as the reference for a fair cross-project
+    # pairing with TheTom (who also uses Q4_K_M MoE).
+    have = df.dropna(subset=["ppl_delta_pct", "tg128"]).copy()
+    have["model_label"] = have["model_label"].str.replace(
+        "Qwen3.5-27B-Dense", "Qwen3.5-27B Dense"
+    )
+    baselines = have[have["config"] == "f16/f16"].set_index("model_label")["tg128"]
+
+    def tg_delta(row):
+        b = baselines.get(row["model_label"])
+        if b is None or pd.isna(b):
+            return None
+        return (row["tg128"] - b) / b * 100.0
+
+    have["tg_delta_pct"] = have.apply(tg_delta, axis=1)
+    ours = have[
+        have["config"].isin(["q8_0/vtq3_1", "q8_0/vtq2_1", "q4_0/vtq2_1", "q4_0/q4_0"])
+        & have["tg_delta_pct"].notna()
+    ]
+
+    # Plot llama-tq points grouped by config type
+    cfg_style = {
+        "q8_0/vtq3_1": ("o", "q8_0 + vtq3_1"),
+        "q8_0/vtq2_1": ("s", "q8_0 + vtq2_1"),
+        "q4_0/vtq2_1": ("^", "q4_0 + vtq2_1"),
+        "q4_0/q4_0":   ("v", "q4_0 / q4_0 (baseline quant)"),
+    }
+    for cfg, (marker, label) in cfg_style.items():
+        sub = ours[ours["config"] == cfg]
+        ax.scatter(sub["ppl_delta_pct"], sub["tg_delta_pct"],
+                   marker=marker, color="#1f77b4", s=120, alpha=0.85,
+                   edgecolors="black", linewidth=0.7, zorder=4,
+                   label=f"llama-tq {label}")
+
+    # TheTom (PPL and decode delta already given)
+    tt = other[other["project"] == "TheTom"]
+    ax.scatter(tt["ppl_delta_pct"], tt["tg_delta_pct"],
+               marker="*", color="#ff7f0e", s=300, alpha=0.9,
+               edgecolors="black", linewidth=0.9, zorder=5,
+               label="TheTom (turbo2/3/4)")
+    for _, r in tt.iterrows():
+        ax.annotate(r["config"],
+                    xy=(r["ppl_delta_pct"], r["tg_delta_pct"]),
+                    xytext=(10, 4), textcoords="offset points",
+                    fontsize=9, color="#cc5500", fontweight="bold")
+
+    # buun
+    bb = other[other["project"] == "buun"]
+    ax.scatter(bb["ppl_delta_pct"], bb["tg_delta_pct"],
+               marker="D", color="#2ca02c", s=180, alpha=0.9,
+               edgecolors="black", linewidth=0.9, zorder=5,
+               label="buun TCQ")
+    for _, r in bb.iterrows():
+        ax.annotate(r["config"],
+                    xy=(r["ppl_delta_pct"], r["tg_delta_pct"]),
+                    xytext=(10, -10), textcoords="offset points",
+                    fontsize=9, color="#206020", fontweight="bold")
+
+    # "Better" direction indicator: bottom-left = low PPL loss + low decode cost
+    ax.axhline(0, color="#888", lw=0.6, ls="--", zorder=1)
+    ax.axvline(0, color="#888", lw=0.6, ls="--", zorder=1)
+
+    # Shade the "best" quadrant (PPL <2%, decode >-5%)
+    ax.add_patch(plt.Rectangle((-1, -5), 3, 5.5, alpha=0.15, color="green",
+                                zorder=0, label="_nolegend_"))
+    ax.text(1.9, -0.3, "best quadrant\n(low PPL hit,\nfast decode)",
+            fontsize=9, color="#2ca02c", ha="right", va="top",
+            style="italic")
+
+    ax.set_xlabel("PPL delta vs f16 (lower is better →)")
+    ax.set_ylabel("Decode throughput delta vs f16 (higher is better ↑)")
+    ax.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
+    ax.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
+    ax.set_title("Cross-project: quality vs decode speed tradeoff\n"
+                 "(each project on different hardware, see caveat)",
+                 fontsize=12)
+    ax.grid(True, ls=":", alpha=0.4, zorder=0)
+    ax.legend(loc="lower right", fontsize=8, framealpha=0.95)
+    ax.set_xlim(-1.5, 11.5)
+    ax.set_ylim(-25, 3)
+
+    # Caveat
+    fig.text(
+        0.5, 0.005,
+        "Each project tested on different hardware (llama-tq: 2x RTX 2060, "
+        "TheTom: M5 Max, buun: RTX 3090) and different model/metric combinations. "
+        "Relative positions are indicative, not a strict ranking.",
+        ha="center", fontsize=8.5, color="#555", style="italic",
+    )
+    fig.tight_layout(rect=[0, 0.03, 1, 1])
+
+    _savefig("cross_project.png", fig)
+
+
+def _chart_cross_project_unused():
     # Two-panel small-multiples approach: one panel per bit-width tier,
     # comparing the three projects at approximately the same compression
     # level. This answers "at ~3.5 bpw, how do they compare?" without
@@ -322,7 +423,7 @@ def main():
     print(f"Output dir: {OUT}")
     chart_ppl_vs_bpw()
     chart_decode_throughput()
-    chart_cross_project()
+    chart_cross_project_2d()
     chart_vtq2_variance()
     print("done.")
 

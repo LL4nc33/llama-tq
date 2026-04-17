@@ -197,7 +197,7 @@ The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights s
 
 PPL delta vs f16 baseline (lower is better). Different hardware, models, and metrics. Relative deltas only are indicative.
 
-![Cross-project comparison](docs/img/cross_project.png)
+![Cross-project: quality vs decode speed tradeoff](docs/img/cross_project.png)
 
 | Approach | Type | bpw | PPL Delta | Decode Delta | Hardware | Model | Model Quant |
 |----------|------|:---:|:---:|:---:|---|---|---|
