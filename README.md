@@ -313,6 +313,8 @@ CUDA CC 6.1+. CPU fallback available.
 |-----|---------|
 | [docs/turboquant.md](docs/turboquant.md) | Architecture, CUDA kernels, codebooks |
 | [docs/plans/2026-04-16-vtq-design.md](docs/plans/2026-04-16-vtq-design.md) | VTQ design spec, math proofs |
+| [docs/plans/2026-04-17-trellis-v2-design.md](docs/plans/2026-04-17-trellis-v2-design.md) | Trellis v2 design — trellis-coded quantization for KTQ/VTQ |
+| [docs/plans/2026-04-17-trellis-v2-phase1-report.md](docs/plans/2026-04-17-trellis-v2-phase1-report.md) | Trellis v2 Phase-1 report — experiments, bugs, results, Phase-2 candidates |
 
 ## Related Projects
 
