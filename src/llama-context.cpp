@@ -3043,8 +3043,15 @@ llama_context * llama_init_from_model(
     }
 
     if (ggml_is_quantized(params.type_v) && params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED) {
-        LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn\n", __func__);
-        return nullptr;
+        // Exception: VTQ_2 (Trellis v2) has working CPU dequant via
+        // type_traits.to_float, so it can run without FA (at reduced speed).
+        const bool is_vtq_2 = (params.type_v == GGML_TYPE_VTQ2_2 ||
+                               params.type_v == GGML_TYPE_VTQ3_2 ||
+                               params.type_v == GGML_TYPE_VTQ4_2);
+        if (!is_vtq_2) {
+            LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn\n", __func__);
+            return nullptr;
+        }
     }
 
     if (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED &&
