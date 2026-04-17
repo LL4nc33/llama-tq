@@ -168,7 +168,7 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     // Backtrack still needs [N][S] to recover the path.
     float * dp_cur  = (float *)malloc((size_t)S * sizeof(float));
     float * dp_next = (float *)malloc((size_t)S * sizeof(float));
-    uint16_t * bt = (uint16_t *)malloc((size_t)N * S * sizeof(uint16_t));
+    uint32_t * bt = (uint32_t *)malloc((size_t)N * S * sizeof(uint32_t));
     if (!dp_cur || !dp_next || !bt) {
         free(dp_cur); free(dp_next); free(bt); free(xn); return 0;
     }
@@ -190,7 +190,7 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     // Precompute per-step: cached codes array would save trellis_code() calls,
     // but trellis_code for TABLE is a single LUT load — negligible.
     for (int i = 0; i < N; i++) {
-        uint16_t * bt_i = bt + (size_t)i * S;
+        uint32_t * bt_i = bt + (size_t)i * S;
         for (uint32_t s = 0; s < S; s++) dp_next[s] = FLT_MAX;
 
         const int kshift = L - K;
@@ -205,7 +205,7 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
                 float cost = pc + d * d;
                 if (cost < dp_next[next]) {
                     dp_next[next] = cost;
-                    bt_i[next] = (uint16_t)prev;
+                    bt_i[next] = (uint32_t)prev;
                 }
             }
         }
@@ -239,7 +239,7 @@ uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
     for (int i = N - 1; i >= 0; i--) {
         states[i] = bt[(size_t)i * S + states[i + 1]];
     }
-    out->start_state = (uint16_t)states[0];
+    out->start_state = states[0];
 
     int qs_len = qs_bytes_exact(N, K);
     if (qs_len > (int)sizeof(out->qs)) { free(states); free(dp_cur); free(dp_next); free(bt); free(xn); return 0; }
@@ -318,7 +318,7 @@ int trellis_encode_group(const trellis_config * cfg, const float * x,
     // Rolling DP + full backtrack over total_samples × S
     float * dp_cur  = (float *)malloc((size_t)S * sizeof(float));
     float * dp_next = (float *)malloc((size_t)S * sizeof(float));
-    uint16_t * bt = (uint16_t *)malloc((size_t)total_samples * S * sizeof(uint16_t));
+    uint32_t * bt = (uint32_t *)malloc((size_t)total_samples * S * sizeof(uint32_t));
     if (!dp_cur || !dp_next || !bt) {
         free(dp_cur); free(dp_next); free(bt); free(xn);
         return -4;
@@ -328,7 +328,7 @@ int trellis_encode_group(const trellis_config * cfg, const float * x,
     const int kshift = L - K;
 
     for (int i = 0; i < total_samples; i++) {
-        uint16_t * bt_i = bt + (size_t)i * S;
+        uint32_t * bt_i = bt + (size_t)i * S;
         for (uint32_t s = 0; s < S; s++) dp_next[s] = FLT_MAX;
         const float xi = xn[i];
         for (uint32_t prev = 0; prev < S; prev++) {
@@ -341,7 +341,7 @@ int trellis_encode_group(const trellis_config * cfg, const float * x,
                 float cost = pc + d * d;
                 if (cost < dp_next[next]) {
                     dp_next[next] = cost;
-                    bt_i[next] = (uint16_t)prev;
+                    bt_i[next] = (uint32_t)prev;
                 }
             }
         }
@@ -397,7 +397,7 @@ int trellis_encode_group(const trellis_config * cfg, const float * x,
         int off = (i % QK) * K;
         write_bits(blks[bi].qs, off, bits, K);
     }
-    blks[0].start_state = (uint16_t)states[0];
+    blks[0].start_state = states[0];
     if (cfg->shared_d) {
         blks[0].d = fp32_to_fp16(d_scale);
         for (int bi = 1; bi < G; bi++) blks[bi].d = 0;
