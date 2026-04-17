@@ -124,3 +124,26 @@ Phase-2b (FA dispatch + production path) based on real numbers.
 
 Skip VTQ4_2 for Phase-2a — overkill if VTQ3_2 comes close to f16
 already.
+
+## Phase-2a Implementation Status (2026-04-18)
+
+Commits 28e4e19f1..2760d99c9 on `trellis-v2-phase1` branch add:
+
+1. `ggml/src/ggml-cuda/trellis.cuh` — header-only CUDA decoder + LUT.
+   One thread per block, sequential shift-register, 256 KiB LUT per TU.
+2. `ggml/src/ggml-cuda/trellis.cu` — placeholder TU for GLOB pickup.
+3. `convert.cu` dispatcher entries for VTQ{2,3,4}_2 → fp16 path.
+4. `ggml-cuda.cu` SET_ROWS supports_op: VTQ_2 returns false (CPU fallback).
+5. `fattn.cu` `ggml_cuda_get_best_fattn_kernel` rejects VTQ_2 V-types.
+6. `llama-kv-cache.cpp` forces CPU buffer for VTQ_2 V-cache.
+7. `llama-context.cpp` allows quantized V-cache without FA when type=VTQ_2.
+
+**Status:** CPU-only path (`-ngl 0`) works end-to-end. `-ngl 99` still
+segfaults during compute (FA-CPU kernel path issue — needs investigation).
+
+Gap to production: Phase-2b (CUDA Viterbi encoder in set_rows.cu) and
+Phase-2c (FA dispatch entries in fattn.cu template instances) remain.
+Together they'd let the scheduler route V-cache entirely through CUDA.
+
+Current measurement option: run `-ngl 0 -fa off` with CUDA binary,
+still ~90s/chunk. For 27B × 200 chunks that's ~5h — feasible but slow.
