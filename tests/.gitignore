@@ -6,6 +6,6 @@ ggml-common.h
 **/*.swp
 !peg-parser
 !trellis-phase1/
+!trellis-phase1/results/
 trellis-phase1/build/
-trellis-phase1/results/
 trellis-phase1/trellis_phase1
