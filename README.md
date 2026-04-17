@@ -135,7 +135,7 @@ The 27B Dense model is slower in absolute tok/s (no MoE sparsity: all 27B parame
 | q8_0 | vtq2_1 | 5.5 | **6.361** | **+6.6%** |
 | f16 | vtq2_1 | 9.3 | 6.378 | +6.9% |
 
-On IQ2_XS/IQ2_XXS weights, `vtq3_1` sits at +1.05–1.8% PPL and `q8_0 + vtq2_1` at +6.6–7.2%. The Q4_K_M results below show larger deltas — see the [Observation](#perplexity-wikitext-2-512-ctx-3-chunks) block after the Q4_K_M tables.
+On IQ2_XS/IQ2_XXS weights, `vtq3_1` sits at +1.05–1.8% PPL and `q8_0 + vtq2_1` at +6.6–7.2%. The Q4_K_M results below show larger deltas. See the [Observation](#perplexity-wikitext-2-512-ctx-3-chunks) block after the Q4_K_M tables.
 
 #### Qwen3.5-35B-A3B (Q4_K_M)
 
@@ -179,7 +179,7 @@ On IQ2_XS/IQ2_XXS weights, `vtq3_1` sits at +1.05–1.8% PPL and `q8_0 + vtq2_1`
 - Qwen3.6-35B-A3B MoE (Q4_K_M): +8.5%
 - Qwen3.5-35B-A3B MoE (Q4_K_M): +10.0%
 
-The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights show larger deltas than the same architecture on IQ2_XS weights, which I did not anticipate — higher-precision weights amplifying KV-quant PPL is counterintuitive. One hypothesis is that MoE sparse expert routing (8/128 active) interacts with V-quant noise differently per-token, but I have not confirmed this. The measurement is on 3 wikitext-2 chunks at 512 ctx, so the chunk-to-chunk variance is non-trivial; I plan to rerun at 64+ chunks before drawing conclusions. `vtq3_1` stays within +0.6% to +2.5% across all four tests.
+The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights show larger deltas than the same architecture on IQ2_XS weights, which I did not anticipate. Higher-precision weights amplifying KV-quant PPL is counterintuitive. One hypothesis is that MoE sparse expert routing (8/128 active) interacts with V-quant noise differently per-token, but I have not confirmed this. The measurement is on 3 wikitext-2 chunks at 512 ctx, so the chunk-to-chunk variance is non-trivial; I plan to rerun at 64+ chunks before drawing conclusions. `vtq3_1` stays within +0.6% to +2.5% across all four tests.
 
 ![vtq2_1 vs vtq3_1 by model](docs/img/vtq2_variance.png)
 
@@ -195,7 +195,7 @@ The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights s
 
 ### Comparison with Other Approaches
 
-PPL delta vs f16 baseline (lower is better). Different hardware, models, and metrics — **relative deltas only are indicative**.
+PPL delta vs f16 baseline (lower is better). Different hardware, models, and metrics. Relative deltas only are indicative.
 
 ![Cross-project comparison](docs/img/cross_project.png)
 
@@ -218,11 +218,11 @@ PPL delta vs f16 baseline (lower is better). Different hardware, models, and met
 
 \*TheTom turbo2 decode varies: -22% on MoE short context, but +33.9% on M1 Max with turbo4.
 \*\*buun turbo3_tcq: PPL 5.802 vs f16 5.805 (Qwen3.5-27B Q6_K, 2K ctx). Uses KL-divergence metric, not directly comparable to wikitext-2 PPL.
-\*\*\*buun turbo2_tcq: KLD 0.101 at 2K context — different metric.
+\*\*\*buun turbo2_tcq: KLD 0.101 at 2K context, different metric.
 
 **Note:** These results use different models, hardware, quantizations, and metrics. Direct comparison is approximate at best.
 
-**Observations (caveats above apply — different hardware/weights/metrics):**
+**Observations (caveats above apply, different hardware/weights/metrics):**
 - TheTom turbo3/turbo4 report lower PPL delta at 3-4 bit on MoE (+1.06% / +0.23%) than this fork's `vtq3_1` on the same Q4_K_M MoE (+1.0–2.5%).
 - buun's TCQ (Viterbi-encoded trellis) reports the lowest 3-bit PPL delta in the table, measured on Q6_K weights at 2K context with KLD rather than wikitext-2 PPL.
 - llama-tq's `vtq3_1` on the Dense Qwen3.5-27B Q4_K_M shows +1.1% PPL at −1% TG128.
@@ -253,7 +253,7 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 <details>
 <summary><strong>VTQ (V-Cache TurboQuant)</strong></summary>
 
-A fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) is applied once at the graph level, before values enter the cache. The FA V-dequant reduces to `codebook[idx] * scale` and is `__forceinline__`. Codebooks at 1–2 index bits are fit with Lloyd-Max to a Laplace(0, 1) prior — which matches the empirical marginal distribution of rotated V entries in my measurements.
+A fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) is applied once at the graph level, before values enter the cache. The FA V-dequant reduces to `codebook[idx] * scale` and is `__forceinline__`. Codebooks at 1–2 index bits are fit with Lloyd-Max to a Laplace(0, 1) prior, which matches the empirical marginal distribution of rotated V entries in my measurements.
 
 | Type | Index bits | bpw | Block | Notes |
 |------|:---:|:---:|:---:|---|
@@ -270,7 +270,7 @@ A fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) is applied onc
 
 ### The Problem
 
-A TurboQuant-style per-block V-dequant requires a 32-element FWHT butterfly inside the FA kernel's inner loop. In this CUDA implementation on CC 7.5, this pushed the kernel over the 255-register/thread limit on `vec_dot_KQV`, producing register spills to local memory and — in one observed case — corruption of the FA accumulator for some head/tile combinations. I did not fully characterize the corruption; the split-path design was chosen to sidestep it rather than fix it in place.
+A TurboQuant-style per-block V-dequant requires a 32-element FWHT butterfly inside the FA kernel's inner loop. In this CUDA implementation on CC 7.5, this pushed the kernel over the 255-register/thread limit on `vec_dot_KQV`, producing register spills to local memory, and in one observed case, corruption of the FA accumulator for some head/tile combinations. I did not fully characterize the corruption; the split-path design was chosen to sidestep it rather than fix it in place.
 
 ### The Solution: Split K and V
 
@@ -284,7 +284,7 @@ KTQ K-path (FA inner loop):        VTQ V-path (FA inner loop):
 - **KTQ** keeps per-block RHT on K. The FA kernel applies FWHT to Q once per tile and computes the Q·K dot product entirely in the Hadamard domain, so K is never explicitly dequantized.
 - **VTQ** moves the randomization out of the FA inner loop: a fixed D·H·D (sign-diagonal · FWHT · sign-diagonal) rotation is applied once at the graph level, before the cache write. Per-entry dequant is then just `codebook[idx] * scale`.
 
-The D·H·D rotation is *not* a fully random orthogonal rotation — it uses deterministic sign diagonals — but the Hadamard mixing decorrelates the D-dimensional value vector enough that its coordinate marginals match a Laplace(0, 1) prior closely in my measurements. That property, not strict i.i.d.-ness, is what the 2-bit Lloyd-Max codebook relies on.
+The D·H·D rotation is *not* a fully random orthogonal rotation (it uses deterministic sign diagonals), but the Hadamard mixing decorrelates the D-dimensional value vector enough that its coordinate marginals match a Laplace(0, 1) prior closely in my measurements. That property, not strict i.i.d.-ness, is what the 2-bit Lloyd-Max codebook relies on.
 
 ---
 
