@@ -351,7 +351,10 @@ llama_context::llama_context(
         sched_reserve();
 
         if (!cparams.flash_attn) {
-            if (ggml_is_quantized(params.type_v)) {
+            const bool is_vtq_2 = (params.type_v == GGML_TYPE_VTQ2_2 ||
+                                   params.type_v == GGML_TYPE_VTQ3_2 ||
+                                   params.type_v == GGML_TYPE_VTQ4_2);
+            if (ggml_is_quantized(params.type_v) && !is_vtq_2) {
                 throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
             }
         }
