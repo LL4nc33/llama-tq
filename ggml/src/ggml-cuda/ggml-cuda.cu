@@ -4841,6 +4841,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                        op->type == GGML_TYPE_Q5_1 || op->type == GGML_TYPE_Q8_0 || op->type == GGML_TYPE_IQ4_NL ||
                        op->type == GGML_TYPE_KTQ1_1 || op->type == GGML_TYPE_KTQ2_1 || op->type == GGML_TYPE_KTQ3_1 || op->type == GGML_TYPE_KTQ4_1 ||
                        op->type == GGML_TYPE_VTQ1_1 || op->type == GGML_TYPE_VTQ2_1 || op->type == GGML_TYPE_VTQ3_1 || op->type == GGML_TYPE_VTQ4_1) &&
+                       // VTQ{2,3,4}_2: not supported by CUDA SET_ROWS yet (Phase-2b adds GPU Viterbi encoder).
+                       // Return false → scheduler falls back to CPU from_float path.
                        op->src[0]->type == GGML_TYPE_F32 &&
                        (op->src[1]->type == GGML_TYPE_I64 || op->src[1]->type == GGML_TYPE_I32);
             } break;
