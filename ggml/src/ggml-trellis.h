@@ -21,7 +21,13 @@ extern "C" {
 #endif
 
 #define GGML_TRELLIS_L        16
-#define GGML_TRELLIS_QK_GROUP 512  // samples per ggml-block
+#define GGML_TRELLIS_QK_GROUP 256  // samples per ggml-block
+// 256 divides typical V-cache row sizes (head_dim * n_head_kv / tp):
+//   Qwen3.5-27B:  128*2 = 256     (exactly)
+//   Qwen3.5-0.8B: 256*1 = 256     (exactly)
+//   Gemma4-27B:   128*16 = 2048   (divisible)
+//   Mistral-7B:   128*8 = 1024    (divisible)
+// A value of 512 would fail for head_dim=256 models (common).
 
 // Returns pointer to lazy-initialized 2^L inverse-Gaussian-CDF LUT.
 // Thread-safe first init via atomic flag; subsequent calls are free.
