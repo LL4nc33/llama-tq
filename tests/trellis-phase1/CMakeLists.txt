@@ -7,7 +7,8 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_executable(trellis_phase1
     trellis_main.c
     trellis_common.c
-    trellis_stubs.c
+    trellis_code.c
+    trellis_encdec.c
 )
 
 if(NOT WIN32)
