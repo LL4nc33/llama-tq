@@ -157,7 +157,7 @@ def chart_decode_throughput():
 # Chart 3: Cross-project Pareto frontier
 # ----------------------------------------------------------------------------
 
-def chart_cross_project_2d():
+def _unused_chart_cross_project_2d():
     # Scatter: PPL delta (x) vs decode overhead (y). Each project gets
     # its own marker. Bottom-left = "best" (low PPL, low decode hit).
     # Only uses configs where both metrics are reported.
@@ -419,11 +419,152 @@ def chart_vtq2_variance():
 
 # ----------------------------------------------------------------------------
 
+def chart_cross_project_dual():
+    # Two side-by-side horizontal bar charts that share the y-axis:
+    # left panel = PPL delta, right panel = decode throughput delta.
+    # Each row = one (project, config) pair. This makes both dimensions
+    # visible at once without a 2D scatter.
+    have = df.dropna(subset=["ppl_delta_pct", "tg128"]).copy()
+    have["model_label"] = have["model_label"].str.replace(
+        "Qwen3.5-27B-Dense", "Qwen3.5-27B Dense"
+    )
+    baselines = have[have["config"] == "f16/f16"].set_index("model_label")["tg128"]
+
+    def tg_delta(row):
+        b = baselines.get(row["model_label"])
+        if b is None or pd.isna(b):
+            return None
+        return (row["tg128"] - b) / b * 100.0
+
+    have["tg_delta_pct"] = have.apply(tg_delta, axis=1)
+
+    # Pick representative configs to keep the chart readable.
+    # llama-tq: one vtq3_1 (best quality) + one vtq2_1 per weight quant class,
+    # choose the Qwen3.5-35B Q4_K_M result as our reference (matches TheTom).
+    ref_model = "Qwen3.5-35B-A3B (Q4_K_M)"
+    ours = have[have["model_label"] == ref_model].copy()
+    picks = []
+    for cfg, short in [
+        ("q8_0/vtq3_1", "q8_0 + vtq3_1 (6.25 bpw)"),
+        ("q8_0/vtq2_1", "q8_0 + vtq2_1 (5.5 bpw)"),
+        ("q4_0/vtq2_1", "q4_0 + vtq2_1 (3.5 bpw)"),
+        ("q4_0/q4_0",   "q4_0 + q4_0   (4.5 bpw)"),
+    ]:
+        sub = ours[ours["config"] == cfg]
+        if sub.empty:
+            continue
+        r = sub.iloc[0]
+        picks.append({
+            "label": f"llama-tq  {short}",
+            "ppl": r["ppl_delta_pct"],
+            "tg": r["tg_delta_pct"],
+            "project": "llama-tq",
+        })
+
+    for _, r in other[other["project"] == "TheTom"].iterrows():
+        picks.append({
+            "label": f"TheTom    {r['config']} ({r['avg_bpw']:.2f} bpw)",
+            "ppl": r["ppl_delta_pct"],
+            "tg": r["tg_delta_pct"],
+            "project": "TheTom",
+        })
+
+    for _, r in other[other["project"] == "buun"].iterrows():
+        picks.append({
+            "label": f"buun      {r['config']} ({r['avg_bpw']:.2f} bpw)",
+            "ppl": r["ppl_delta_pct"],
+            "tg": r["tg_delta_pct"],
+            "project": "buun",
+        })
+
+    # Sort by the sum of "badness" (PPL up + TG down): best first at top
+    picks.sort(key=lambda p: p["ppl"] - p["tg"])
+
+    project_colors = {
+        "llama-tq": "#1f77b4",
+        "TheTom":   "#ff7f0e",
+        "buun":     "#2ca02c",
+    }
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(14, 7), sharey=True,
+                                   gridspec_kw={"wspace": 0.08})
+
+    y_pos = list(range(len(picks)))
+    labels = [p["label"] for p in picks]
+    ppl_vals = [p["ppl"] for p in picks]
+    tg_vals = [p["tg"] for p in picks]
+    colors = [project_colors[p["project"]] for p in picks]
+
+    # LEFT: PPL delta
+    axL.barh(y_pos, ppl_vals, color=colors, edgecolor="black",
+             linewidth=0.4, height=0.65)
+    for i, v in enumerate(ppl_vals):
+        axL.text(v + 0.15, i,
+                 f"{v:+.2f}%" if abs(v) < 1 else f"{v:+.1f}%",
+                 va="center", ha="left", fontsize=9, color="#222",
+                 fontweight="bold")
+    axL.axvspan(-0.5, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
+    axL.axvline(0, color="#666", lw=0.7)
+    axL.set_xlabel("PPL delta vs f16 (lower is better ←)")
+    axL.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
+    axL.set_title("Quality hit", fontsize=11, pad=10)
+    axL.grid(True, axis="x", ls=":", alpha=0.4, zorder=0)
+    axL.invert_xaxis()  # lower PPL to the right (closer to shared center)
+    axL.set_yticks(y_pos)
+    axL.set_yticklabels(labels, fontsize=9, family="monospace")
+    axL.set_axisbelow(True)
+
+    # RIGHT: TG delta (negative values, so mirror visually on the right side)
+    axR.barh(y_pos, tg_vals, color=colors, edgecolor="black",
+             linewidth=0.4, height=0.65)
+    for i, v in enumerate(tg_vals):
+        offset = 0.4 if v >= 0 else -0.4
+        ha = "left" if v >= 0 else "right"
+        axR.text(v + offset, i, f"{v:+.1f}%",
+                 va="center", ha=ha, fontsize=9, color="#222",
+                 fontweight="bold")
+    axR.axvspan(-5, 5, color="#e6f4ea", alpha=0.5, zorder=0)
+    axR.axvline(0, color="#666", lw=0.7)
+    axR.set_xlabel("Decode throughput delta vs f16 (higher is better →)")
+    axR.xaxis.set_major_formatter(mtick.PercentFormatter(decimals=0))
+    axR.set_title("Decode speed hit", fontsize=11, pad=10)
+    axR.grid(True, axis="x", ls=":", alpha=0.4, zorder=0)
+    axR.set_axisbelow(True)
+
+    axL.invert_yaxis()  # best at top
+
+    # Shared legend at top
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor=c, edgecolor="black", label=p)
+        for p, c in project_colors.items()
+    ]
+    fig.legend(handles=legend_handles, loc="upper center",
+               ncol=3, fontsize=11, bbox_to_anchor=(0.5, 0.97),
+               frameon=False)
+
+    fig.suptitle("Cross-project comparison: quality vs decode speed "
+                 "(sorted best to worst combined impact)",
+                 fontsize=13, y=1.0)
+
+    fig.text(
+        0.5, 0.005,
+        "llama-tq: 2x RTX 2060 (Qwen3.5-35B-A3B Q4_K_M).  "
+        "TheTom: M5 Max (Qwen3.5-35B-A3B Q4_K_M).  "
+        "buun: RTX 3090 (Qwen3.5-27B Q6_K, KL divergence).  "
+        "Absolute numbers across projects are approximate.",
+        ha="center", fontsize=8.5, color="#555", style="italic",
+    )
+    fig.tight_layout(rect=[0, 0.03, 1, 0.93])
+
+    _savefig("cross_project.png", fig)
+
+
 def main():
     print(f"Output dir: {OUT}")
     chart_ppl_vs_bpw()
     chart_decode_throughput()
-    chart_cross_project_2d()
+    chart_cross_project_dual()
     chart_vtq2_variance()
     print("done.")
 
