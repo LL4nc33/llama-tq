@@ -294,7 +294,7 @@ static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 
 //
 // Layout per 32-element block:
 //   d   ggml_half — the post-correction L2 norm of the block. After codebook
-//       quantization we recompute ||reconstructed|| and store norm / ||recon||
+//       quantization, recompute ||reconstructed|| and store norm / ||recon||
 //       here so that E[||dequantized|| ] = ||original||  (v5 norm correction).
 //   qs  codebook indices of each element (b bits × 32 elements, packed).
 //   sb  1 bit per element — the RHT diagonal sign used at quantize time.

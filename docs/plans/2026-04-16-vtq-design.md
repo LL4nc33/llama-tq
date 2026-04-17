@@ -8,15 +8,15 @@
 > **Naming note:** This document uses "PolarQuant" in some mathematical discussions to refer to the
 > quantization step (Hadamard rotation + Lloyd-Max codebook). This is a misnomer from early development.
 > The actual paper is **TurboQuant** (arXiv:2504.19874, Zandieh et al.). PolarQuant (arXiv:2502.02617)
-> is a completely different method using polar coordinate transformation, not used in our implementation.
-> Our implementation deviates from TurboQuant by using FWHT + random signs (instead of QR rotation) for
-> K-cache, and a fixed D\*H\*D rotation (our own design) for V-cache.
+> is a completely different method using polar coordinate transformation, not used here.
+> This implementation deviates from TurboQuant by using FWHT + random signs (instead of QR rotation) for
+> K-cache, and a fixed D\*H\*D rotation (a design specific to this fork) for V-cache.
 
 ---
 
 ## Executive Summary
 
-Current KTQ (K-Cache TurboQuant, formerly TQ) types use Hadamard rotation (RHT) with per-block data-dependent sign bits. The dequantization path requires a serial 32-element FWHT butterfly transform, which is acceptable for the K-cache (where we can move the FWHT to Q via the Hadamard-domain dot product trick) but causes register spilling and corruption in the V-cache Flash Attention inner loop.
+Current KTQ (K-Cache TurboQuant, formerly TQ) types use Hadamard rotation (RHT) with per-block data-dependent sign bits. The dequantization path requires a serial 32-element FWHT butterfly transform, which is acceptable for the K-cache (where the FWHT can be moved to Q via the Hadamard-domain dot product trick) but causes register spilling and corruption in the V-cache Flash Attention inner loop.
 
 VTQ solves this by separating the quantization scheme for V-cache:
 - **Store** V values in Hadamard-rotated space using a **fixed, position-independent** rotation matrix R per attention head
@@ -72,7 +72,7 @@ The fixed rotation is `R = D1 * H * D2` where:
 - The existing `ggml_gen_hadamard()` + `self_v_rot` infrastructure already constructs and applies H
 - H is already orthogonal (`H^T * H = I`) and position-independent
 - The D1/D2 diagonal signs are what make `D*H*D` deliver approximately i.i.d. coordinates from the Beta((d-1)/2, (d-1)/2) marginal. Bare `H` maps the standard basis to *one specific* fixed orthonormal basis (the Hadamard basis) rather than randomizing across orthonormal bases, so its output is not rotationally symmetric; the flanking sign diagonals break that symmetry. The cost of using `D*H*D` is per-element sign bits in the block struct
-- For V-cache, we can absorb the "randomization" benefit by using a slightly larger codebook or accepting the marginal quality loss
+- For V-cache, one can absorb the "randomization" benefit by using a slightly larger codebook or accepting the marginal quality loss
 - If quality measurements show degradation, D1/D2 can be added later as `VTQ_v2` with the sign bits stored as a per-head constant rather than per-block
 
 ### Quantization (cache write path)
@@ -553,7 +553,7 @@ This is the most impactful difference. The TQ V-dequant's register spilling is w
 
 1. **Codebook quality with fixed rotation:** Does the bare Hadamard (without per-block random signs) degrade the TurboQuant-style codebook optimality enough to warrant VTQ-specific codebooks? Requires PPL benchmarks comparing `ktq2_1/ktq2_1` vs `ktq2_1/vtq2_1`.
 
-2. **Rotation matrix size:** Upstream uses 64x64 for V (applied per 64-element stripe). Our d_head=128 models could use either 64x64 (cheaper matmul) or 128x128 (better decorrelation). Need benchmarks.
+2. **Rotation matrix size:** Upstream uses 64x64 for V (applied per 64-element stripe). This fork's d_head=128 models could use either 64x64 (cheaper matmul) or 128x128 (better decorrelation). Need benchmarks.
 
 3. **MMA/WMMA support:** VTQ's simple dequant should work with tiled FA kernels (unlike TQ which is VEC-only). This could unlock significant PP throughput gains. Priority depends on batch size usage patterns.
 
@@ -582,7 +582,7 @@ Key files modified:
 
 ## References
 
-- [TurboQuant (arXiv:2504.19874)](https://arxiv.org/abs/2504.19874) -- Zandieh, Daliri, Hadian, Mirrokni (arXiv preprint, April 2025). Primary inspiration for our implementation
+- [TurboQuant (arXiv:2504.19874)](https://arxiv.org/abs/2504.19874) -- Zandieh, Daliri, Hadian, Mirrokni (arXiv preprint, April 2025). Primary inspiration for this implementation
 - [llama.cpp PR #21038](https://github.com/ggml-org/llama.cpp/pull/21038) -- TheTom's `self_v_rot` implementation
 - `ggml/src/ggml-common.h` lines 295-360 -- KTQ + VTQ block structs
 - `ggml/src/ggml-cuda/turboquant.cuh` -- KTQ + VTQ CUDA implementation (shared PQ codebooks)
