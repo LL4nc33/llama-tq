@@ -311,7 +311,7 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq1_1(
         const block_ktq1_1 * __restrict__ x, const int64_t ib, const int lane) {
     const float norm = (float)x[ib].d;
     // No early return for norm==0: the FWHT uses __shfl_xor_sync, which
-    // requires every lane in the mask to be active. We let norm==0 fall
+    // requires every lane in the mask to be active. norm==0 is allowed to fall
     // through and zero the result via the final multiply.
 
     // 1-bit index → Hadamard-space codebook value.
@@ -468,11 +468,11 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq4_1(const bloc
 
 // K·Q vec-dot for KTQ types — v7 Hadamard-domain formulation.
 //
-// For an RHT-quantized K-block we have K = D_s · H_n · c (D_s diagonal signs
+// For an RHT-quantized K-block, K = D_s · H_n · c (D_s diagonal signs
 // from sb[], H_n normalized 32-point Hadamard, c codebook reconstruction).
 // Then  K · Q = c · (H_n^T · D_s^T · Q) = c · (H_n · (D_s · Q))  because
 // H_n is orthogonal (self-transpose, self-inverse) and D_s is its own inverse.
-// We therefore transform *Q* into Hadamard space once per K-block (5 shuffles)
+// Therefore transform *Q* into Hadamard space once per K-block (5 shuffles)
 // and dot against the codebook value directly, skipping the per-element
 // inverse FWHT and the gather shuffles the v6 path needed.
 //
@@ -746,7 +746,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq4_1(
 // buffer and runs a serial FWHT over it. Inlining into the FA kernel would
 // add ~32 live floats + FWHT temporaries to an already register-tight loop
 // and force spills to local memory (measured: ~15-20% FA decode slowdown
-// on sm_75/sm_89 in our runs). Keeping them as a separate call lets nvcc
+// on sm_75/sm_89 in local benchmarks). Keeping them as a separate call lets nvcc
 // allocate the transient state in the callee frame.
 template <typename T, int ne>
 static __device__ __noinline__ void dequantize_V_ktq1_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {

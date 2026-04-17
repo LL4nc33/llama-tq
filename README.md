@@ -68,7 +68,7 @@ All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attentio
 | f16 | q4_0 | 508 | 49.3 | -38% | -18% |
 | q4_0 | f16 | 571 | 48.9 | -30% | -19% |
 
-Across the tables above, `vtq2_1` V-cache yields higher PP512 and TG128 than `q4_0` V-cache (e.g. 757 vs 508 PP512 on Qwen3.6-35B IQ2_XXS). Likely cause: VTQ V-dequant in the FA inner loop is a single codebook load (`__forceinline__`), whereas q4_0 V-dequant does per-lane shift+scale arithmetic. We have not isolated the effect with nsight-compute; this is an empirical observation on CC 7.5, not a proven register-pressure argument.
+Across the tables above, `vtq2_1` V-cache yields higher PP512 and TG128 than `q4_0` V-cache (e.g. 757 vs 508 PP512 on Qwen3.6-35B IQ2_XXS). Likely cause: VTQ V-dequant in the FA inner loop is a single codebook load (`__forceinline__`), whereas q4_0 V-dequant does per-lane shift+scale arithmetic. I have not isolated the effect with nsight-compute; this is an empirical observation on CC 7.5, not a proven register-pressure argument.
 
 #### Qwen3.5-35B-A3B (Q4_K_M, 19.92 GiB)
 
@@ -174,7 +174,7 @@ On IQ2_XS/IQ2_XXS weights, `vtq3_1` sits at +1.05–1.8% PPL and `q8_0 + vtq2_1`
 - Qwen3.6-35B-A3B MoE (Q4_K_M): +8.5%
 - Qwen3.5-35B-A3B MoE (Q4_K_M): +10.0%
 
-The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights show larger deltas than the same architecture on IQ2_XS weights, which we did not anticipate — higher-precision weights amplifying KV-quant PPL is counterintuitive. One hypothesis is that MoE sparse expert routing (8/128 active) interacts with V-quant noise differently per-token, but we have not confirmed this. The measurement is on 3 wikitext-2 chunks at 512 ctx, so the chunk-to-chunk variance is non-trivial; we plan to rerun at 64+ chunks before drawing conclusions. `vtq3_1` stays within +0.6% to +2.5% across all four tests.
+The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights show larger deltas than the same architecture on IQ2_XS weights, which I did not anticipate — higher-precision weights amplifying KV-quant PPL is counterintuitive. One hypothesis is that MoE sparse expert routing (8/128 active) interacts with V-quant noise differently per-token, but I have not confirmed this. The measurement is on 3 wikitext-2 chunks at 512 ctx, so the chunk-to-chunk variance is non-trivial; I plan to rerun at 64+ chunks before drawing conclusions. `vtq3_1` stays within +0.6% to +2.5% across all four tests.
 
 ### KV-Cache Memory (4096 ctx)
 
@@ -214,11 +214,11 @@ PPL delta vs f16 baseline (lower is better). Different hardware, models, and met
 **Note:** These results use different models, hardware, quantizations, and metrics. Direct comparison is approximate at best.
 
 **Observations (caveats above apply — different hardware/weights/metrics):**
-- TheTom turbo3/turbo4 report lower PPL delta at 3-4 bit on MoE (+1.06% / +0.23%) than our `vtq3_1` on the same Q4_K_M MoE (+1.0–2.5%).
+- TheTom turbo3/turbo4 report lower PPL delta at 3-4 bit on MoE (+1.06% / +0.23%) than this fork's `vtq3_1` on the same Q4_K_M MoE (+1.0–2.5%).
 - buun's TCQ (Viterbi-encoded trellis) reports the lowest 3-bit PPL delta in the table, measured on Q6_K weights at 2K context with KLD rather than wikitext-2 PPL.
 - llama-tq's `vtq3_1` on the Dense Qwen3.5-27B Q4_K_M shows +1.1% PPL at −1% TG128.
 - At 2.5 bpw V-cache, llama-tq `q8_0 + vtq2_1` (+5.1% to +10.0%) and TheTom turbo2 (+6.48%) are in the same range, model-dependent.
-- TG128 overhead: VTQ −1% to −3% vs TheTom's symmetric TQ −7% to −22%. Plausible cause is the simpler V-dequant path (codebook lookup + scale) vs a full symmetric TQ dequant for both K and V; we have not profiled TheTom's kernel directly.
+- TG128 overhead: VTQ −1% to −3% vs TheTom's symmetric TQ −7% to −22%. Plausible cause is the simpler V-dequant path (codebook lookup + scale) vs a full symmetric TQ dequant for both K and V; I have not profiled TheTom's kernel directly.
 - Platform support: TheTom supports Metal and CUDA; llama-tq and buun are CUDA-only.
 
 ---
@@ -237,14 +237,14 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 | `ktq3_1` | 3 | 4.5 | 18 B | near-lossless |
 | `ktq4_1` | 4 | 5.5 | 22 B | lowest-PPL KTQ |
 
-**Note:** Combining KTQ K with VTQ V at low bit-widths showed super-additive PPL degradation in our tests (not isolated to a single cause; likely softmax-sensitivity to correlated K and V noise). We recommend `q8_0` or `q4_0` for K when pairing with VTQ V.
+**Note:** Combining KTQ K with VTQ V at low bit-widths showed super-additive PPL degradation in my tests (not isolated to a single cause; likely softmax-sensitivity to correlated K and V noise). I recommend `q8_0` or `q4_0` for K when pairing with VTQ V.
 
 </details>
 
 <details>
 <summary><strong>VTQ (V-Cache TurboQuant)</strong></summary>
 
-A fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) is applied once at the graph level, before values enter the cache. The FA V-dequant reduces to `codebook[idx] * scale` and is `__forceinline__`. Codebooks at 1–2 index bits are fit with Lloyd-Max to a Laplace(0, 1) prior — which matches the empirical marginal distribution of rotated V entries in our measurements.
+A fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) is applied once at the graph level, before values enter the cache. The FA V-dequant reduces to `codebook[idx] * scale` and is `__forceinline__`. Codebooks at 1–2 index bits are fit with Lloyd-Max to a Laplace(0, 1) prior — which matches the empirical marginal distribution of rotated V entries in my measurements.
 
 | Type | Index bits | bpw | Block | Notes |
 |------|:---:|:---:|:---:|---|
@@ -261,7 +261,7 @@ A fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) is applied onc
 
 ### The Problem
 
-A TurboQuant-style per-block V-dequant requires a 32-element FWHT butterfly inside the FA kernel's inner loop. In our CUDA implementation on CC 7.5, this pushed the kernel over the 255-register/thread limit on `vec_dot_KQV`, producing register spills to local memory and — in one observed case — corruption of the FA accumulator for some head/tile combinations. We did not fully characterize the corruption; the split-path design was chosen to sidestep it rather than fix it in place.
+A TurboQuant-style per-block V-dequant requires a 32-element FWHT butterfly inside the FA kernel's inner loop. In this CUDA implementation on CC 7.5, this pushed the kernel over the 255-register/thread limit on `vec_dot_KQV`, producing register spills to local memory and — in one observed case — corruption of the FA accumulator for some head/tile combinations. I did not fully characterize the corruption; the split-path design was chosen to sidestep it rather than fix it in place.
 
 ### The Solution: Split K and V
 
@@ -275,7 +275,7 @@ KTQ K-path (FA inner loop):        VTQ V-path (FA inner loop):
 - **KTQ** keeps per-block RHT on K. The FA kernel applies FWHT to Q once per tile and computes the Q·K dot product entirely in the Hadamard domain, so K is never explicitly dequantized.
 - **VTQ** moves the randomization out of the FA inner loop: a fixed D·H·D (sign-diagonal · FWHT · sign-diagonal) rotation is applied once at the graph level, before the cache write. Per-entry dequant is then just `codebook[idx] * scale`.
 
-The D·H·D rotation is *not* a fully random orthogonal rotation — it uses deterministic sign diagonals — but the Hadamard mixing decorrelates the D-dimensional value vector enough that its coordinate marginals match a Laplace(0, 1) prior closely in our measurements. That property, not strict i.i.d.-ness, is what the 2-bit Lloyd-Max codebook relies on.
+The D·H·D rotation is *not* a fully random orthogonal rotation — it uses deterministic sign diagonals — but the Hadamard mixing decorrelates the D-dimensional value vector enough that its coordinate marginals match a Laplace(0, 1) prior closely in my measurements. That property, not strict i.i.d.-ness, is what the 2-bit Lloyd-Max codebook relies on.
 
 ---
 
@@ -293,7 +293,7 @@ CUDA CC 6.1+. CPU fallback available.
 
 ## Known Limitations
 
-- **KTQ + VTQ at low bits:** combined 2-bit K + 2-bit V shows super-additive PPL degradation in our tests. Pair `vtq*_1` with `q8_0` or `q4_0` for K.
+- **KTQ + VTQ at low bits:** combined 2-bit K + 2-bit V shows super-additive PPL degradation in my tests. Pair `vtq*_1` with `q8_0` or `q4_0` for K.
 - **Platform:** CUDA only. CC 6.1+ required. A CPU reference path exists for correctness tests but is not performance-tuned. No Metal or ROCm port.
 - **PPL measurement scale:** tables above use 3 wikitext-2 chunks at 512 ctx. Chunk-to-chunk variance matters at this scale; treat sub-1% deltas as noise.
 - **Model coverage:** all benchmarks are on Qwen3.5 / Qwen3.6 (MoE and Dense). Behavior on Llama, Mistral, or Phi architectures has not been measured.
@@ -318,14 +318,14 @@ CUDA CC 6.1+. CPU fallback available.
 This implementation is inspired by but deviates from the TurboQuant paper. Concrete deviations:
 
 - **Rotation (K):** paper uses a Haar-random orthogonal rotation (sampled via QR of a Gaussian matrix). KTQ uses a Randomized Hadamard Transform (FWHT with a per-block sign diagonal). RHT is cheaper to apply (O(D log D), in-place, no stored matrix) and empirically preserves the i.i.d.-like coordinate distribution needed for Lloyd-Max codebooks, but is not strictly Haar.
-- **Rotation (V):** VTQ does not use a per-block random rotation. Instead, a single fixed D·H·D rotation is applied at graph-construction time, outside the FA kernel. This is our own design choice, not from the paper, and trades some randomization quality for a substantially simpler FA V-dequant path.
+- **Rotation (V):** VTQ does not use a per-block random rotation. Instead, a single fixed D·H·D rotation is applied at graph-construction time, outside the FA kernel. This is a design specific to this fork choice, not from the paper, and trades some randomization quality for a substantially simpler FA V-dequant path.
 - **QJL:** earlier llama-tq versions (v1–v4) used QJL (1-bit Quantized Johnson-Lindenstrauss) for the sign stream. v5 removed QJL; sign information is now carried by the rotation itself.
 - **Codebook:** Lloyd-Max fit to a Laplace(0, 1) target (matching the measured marginal distribution after rotation), rather than the paper's Gaussian-fit codebook.
 
 | Paper | Authors | arXiv | Relevance |
 |-------|---------|-------|-----------|
 | **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate** | Zandieh, Daliri, Hadian, Mirrokni | [2504.19874](https://arxiv.org/abs/2504.19874) (April 2025) | Primary inspiration: random rotation + Lloyd-Max codebooks |
-| **PolarQuant: Quantizing KV Cache via Polar Coordinate Transformation** | Han, Kacham, Karbasi, Mirrokni, Zandieh | [2502.02617](https://arxiv.org/abs/2502.02617) (Feb 2025) | Different method (polar coordinates), not used in our implementation |
+| **PolarQuant: Quantizing KV Cache via Polar Coordinate Transformation** | Han, Kacham, Karbasi, Mirrokni, Zandieh | [2502.02617](https://arxiv.org/abs/2502.02617) (Feb 2025) | Different method (polar coordinates), not used here |
 | **QJL: 1-Bit Quantized JL Transform for KV Cache Quantization** | Zandieh, Daliri, Han | [2406.03482](https://arxiv.org/abs/2406.03482) (June 2024) | Used in v1-v4, removed in v5 |
 
 ## License

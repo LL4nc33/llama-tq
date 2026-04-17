@@ -12,7 +12,7 @@
 // CUDA warp per block). They differ in what is stored per block:
 //
 //   KTQ:  RHT(x) quantized with a 1-D Lloyd-Max codebook.
-//         Per block we store { half norm, codebook indices, RHT sign bits }.
+//         Per block stored: { half norm, codebook indices, RHT sign bits }.
 //         The RHT (sign flip + normalized 32-point FWHT) is needed to make the
 //         per-coordinate marginal approximately isotropic so a 1-D codebook is
 //         near-optimal. Sign bits are precomputed at quantize time and kept in
@@ -59,14 +59,14 @@
 // --------------------------
 // Writing K = D_s · H · c (sign diag, Hadamard, codebook-reconstructed c),
 // normalized H is its own inverse up to the 1/sqrt(n) factor folded into both
-// sides, so K·Q = (D_s · H · c) · Q = c · (H · (D_s · Q)). We therefore push
+// sides, so K·Q = (D_s · H · c) · Q = c · (H · (D_s · Q)). Therefore push
 // the FWHT onto Q (once per K-block) and keep the codebook value in Hadamard
 // space, saving one FWHT per element and eliminating the gather shuffles that
 // the inverse-transform-on-K variant required.
 //
 // v5 notes retained
 // -----------------
-// • Norm correction: after quantize we recompute ||reconstructed|| and divide
+// • Norm correction: after quantize, recompute ||reconstructed|| and divide
 //   y->d by it, so E[||K_q||] = ||K||. This removes a small bias (~1.2% PPL
 //   on 2-bit) at zero runtime cost at dequant.
 // • Precomputed sign bits (sb[4]): spending N·32 bits once at quantize saves
@@ -103,9 +103,9 @@
 // quantization intervals for that density).
 //
 // Note for 1-bit: ±sqrt(2/π) ≈ ±0.797885 is the optimal 1-bit quantizer of
-// a standard Gaussian (Max 1960). For our post-RHT marginal at d=32 the
+// a standard Gaussian (Max 1960). For the post-RHT marginal at d=32 the
 // Beta tails are close enough to Gaussian that this value is also optimal
-// within Lloyd's fixed-point tolerance, so we reuse it.
+// within Lloyd's fixed-point tolerance, so it is reused.
 // ============================================================
 __device__ __constant__ static float PQ_CUDA_CB_1BIT[2] = {
     -0.797885f, 0.797885f   // ±sqrt(2/π)
@@ -137,7 +137,7 @@ __device__ __constant__ static float PQ_CUDA_CB_4BIT[16] = {
 // after per-block RHT. That means heavier tails and a sharper mode:
 // the optimal 2-bit inner centroids move toward zero and the outer ones
 // move further out. 3/4-bit codebooks are already dense enough that
-// re-optimizing gives sub-noise PPL deltas, so we reuse the KTQ ones.
+// re-optimizing gives sub-noise PPL deltas, so the KTQ ones are reused.
 __device__ __constant__ static float VTQ_CUDA_CB_1BIT[2] = {
     -0.797885f, 0.797885f  // 1-bit: same as PQ (only 2 centroids, sign-based)
 };
@@ -170,10 +170,10 @@ static __device__ __forceinline__ uint32_t ktq_cuda_philox(uint32_t counter, uin
 
 // Philox 2x32 with 6 rounds — used only in the quantize path.
 // Philox is a counter-based PRNG (Salmon et al., SC'11): round reduction
-// trades statistical margin for speed. We need uniform bits for sign/coin
+// trades statistical margin for speed. Need uniform bits for sign/coin
 // flips, not crypto-grade output, and 6 rounds is comfortably above the
 // BigCrush-passing threshold reported in the original paper (which passes
-// at 7 rounds for Philox 2x32; 6 rounds passes all Crush tests we verified
+// at 7 rounds for Philox 2x32; 6 rounds passes all Crush tests verified locally
 // internally on the RHT-sign stream). Dequant reads sb[] directly so these
 // rounds are paid once per block at write time, never at read time.
 static __device__ __forceinline__ uint32_t ktq_cuda_philox_6r(uint32_t counter, uint32_t key) {
@@ -343,7 +343,7 @@ static __global__ void dequantize_block_ktq1_1_v2(
 // 32 elements packed 4-per-byte into qs[8]).
 //
 // Historical note: earlier TurboQuant variants used a QJL (Johnson-
-// Lindenstrauss) projection inside the block. We removed it: in the
+// Lindenstrauss) projection inside the block. Removed in v5: in the
 // KV-cache attention setting QJL is unbiased but high-variance, and
 // softmax's exponential amplifies that variance into visible PPL loss.
 // Several independent reimplementations (turboquant_plus/turbo4-resurrection,
