@@ -100,11 +100,39 @@ static uint32_t read_bits(const uint8_t * qs, int qs_bytes, int bit_offset, int 
 // Number of bytes needed to store QK · K bits (no pad).
 static int qs_bytes_exact(int QK, int K) { return (QK * K + 7) / 8; }
 
+// Quickselect: return the k-th smallest (0-indexed) element in arr[0..n-1].
+// Destructive (partially partitions arr). O(n) expected.
+static float nth_element_f(float * arr, int n, int k) {
+    int lo = 0, hi = n - 1;
+    while (lo < hi) {
+        // median-of-three pivot
+        int mid = lo + ((hi - lo) >> 1);
+        if (arr[mid] < arr[lo]) { float t = arr[mid]; arr[mid] = arr[lo]; arr[lo] = t; }
+        if (arr[hi]  < arr[lo]) { float t = arr[hi];  arr[hi]  = arr[lo]; arr[lo] = t; }
+        if (arr[mid] < arr[hi]) { float t = arr[mid]; arr[mid] = arr[hi]; arr[hi] = t; }
+        float pivot = arr[hi];
+        int i = lo - 1;
+        for (int j = lo; j < hi; j++) {
+            if (arr[j] <= pivot) {
+                i++;
+                float t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+            }
+        }
+        i++;
+        float t = arr[i]; arr[i] = arr[hi]; arr[hi] = t;
+        if (i == k) return arr[i];
+        if (i < k)  lo = i + 1;
+        else        hi = i - 1;
+    }
+    return arr[lo];
+}
+
 // --- Full Viterbi encoder ---
 // dp[i][s] = min cost to reach state s after emitting i samples.
 // prev[i][s] = predecessor state (top L-K bits of s, plus the K emit bits
 //   are implicit in s itself).
-float trellis_encode_block(const trellis_config * cfg, const float * x, trellis_block * out) {
+uint32_t trellis_encode_block(const trellis_config * cfg, const float * x,
+                              uint32_t start_state_in, trellis_block * out) {
     const int L = cfg->state_bits;
     const int K = cfg->code_bits;
     const int N = cfg->block_size;
@@ -133,10 +161,23 @@ float trellis_encode_block(const trellis_config * cfg, const float * x, trellis_
     // DP tables
     float * dp  = (float *)malloc((size_t)(N + 1) * S * sizeof(float));
     uint16_t * bt = (uint16_t *)malloc((size_t)N * S * sizeof(uint16_t));
-    if (!dp || !bt) { free(dp); free(bt); free(xn); return -1.0f; }
+    if (!dp || !bt) { free(dp); free(bt); free(xn); return 0; }
 
-    // Open start state: every state reachable at cost 0.
-    for (uint32_t s = 0; s < S; s++) dp[s] = 0.0f;
+    const int open_start = (start_state_in == 0xFFFFFFFFu);
+    if (open_start) {
+        // Open start: every state reachable at cost 0.
+        for (uint32_t s = 0; s < S; s++) dp[s] = 0.0f;
+    } else {
+        // Forced start: only start_state_in reachable.
+        uint32_t ss = start_state_in & Lmask;
+        for (uint32_t s = 0; s < S; s++) dp[s] = FLT_MAX;
+        dp[ss] = 0.0f;
+    }
+
+    // Beam pruning: if beam_width > 0 and < S, only keep top-B states per step.
+    const int beam = cfg->beam_width;
+    const int use_beam = (beam > 0 && (uint32_t)beam < S);
+    float * beam_costs = use_beam ? (float *)malloc((size_t)S * sizeof(float)) : NULL;
 
     for (int i = 0; i < N; i++) {
         float * dp_cur  = dp + (size_t)i * S;
@@ -160,7 +201,17 @@ float trellis_encode_block(const trellis_config * cfg, const float * x, trellis_
                 }
             }
         }
+
+        if (use_beam) {
+            // Find B-th smallest cost via quickselect, prune above threshold.
+            memcpy(beam_costs, dp_next, (size_t)S * sizeof(float));
+            float thresh = nth_element_f(beam_costs, (int)S, beam - 1);
+            for (uint32_t s = 0; s < S; s++) {
+                if (dp_next[s] > thresh) dp_next[s] = FLT_MAX;
+            }
+        }
     }
+    free(beam_costs);
 
     // find best end state
     uint32_t best_s = 0;
@@ -180,7 +231,7 @@ float trellis_encode_block(const trellis_config * cfg, const float * x, trellis_
     out->start_state = (uint16_t)states[0];
 
     int qs_len = qs_bytes_exact(N, K);
-    if (qs_len > (int)sizeof(out->qs)) { free(states); free(dp); free(bt); free(xn); return -2.0f; }
+    if (qs_len > (int)sizeof(out->qs)) { free(states); free(dp); free(bt); free(xn); return 0; }
     // bits_i is the high-K chunk of state_{i+1} (matches encoder update)
     const int kshift_emit = L - K;
     for (int i = 0; i < N; i++) {
@@ -200,21 +251,14 @@ float trellis_encode_block(const trellis_config * cfg, const float * x, trellis_
                     ? (norm / recon_norm) : norm;
     out->d = fp32_to_fp16(d_scale);
 
-    // return MSE in original units
-    double err = 0.0;
-    for (int i = 0; i < N; i++) {
-        float code = trellis_code(cfg->code, states[i + 1], L) * cb_scale;
-        float yv = code * d_scale;
-        double e = (double)x[i] - yv;
-        err += e * e;
-    }
-
+    uint32_t end_state = states[N];
     free(states); free(dp); free(bt); free(xn);
-    return (float)(err / (double)N);
+    return end_state;
 }
 
 // --- Bitshift decoder (parallel read) ---
-void trellis_decode_block(const trellis_config * cfg, const trellis_block * in, float * y) {
+void trellis_decode_block(const trellis_config * cfg, const trellis_block * in,
+                          uint32_t start_state_in, float * y) {
     const int L = cfg->state_bits;
     const int K = cfg->code_bits;
     const int N = cfg->block_size;
@@ -231,7 +275,7 @@ void trellis_decode_block(const trellis_config * cfg, const trellis_block * in, 
     // state_{i+1} = (state_i >> K) | (bits_i << (L-K))
     const uint32_t Lmask = (L >= 32) ? 0xFFFFFFFFu : ((1u << L) - 1u);
     const uint32_t Kmask = (1u << K) - 1u;
-    uint32_t state = in->start_state & Lmask;
+    uint32_t state = ((start_state_in == 0xFFFFFFFFu) ? in->start_state : start_state_in) & Lmask;
     for (int i = 0; i < N; i++) {
         uint32_t bits = read_bits(in->qs, qs_len, i * K, K) & Kmask;
         state = ((state >> K) | (bits << (L - K))) & Lmask;
