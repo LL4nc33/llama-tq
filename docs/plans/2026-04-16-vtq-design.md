@@ -23,16 +23,22 @@ VTQ solves this by separating the quantization scheme for V-cache:
 - **Dequant in FA** reduces to codebook lookup + scale (no FWHT, no sign bits)
 - **Inverse rotation** R^T is applied as a single `ggml_mul_mat` AFTER the flash attention kernel completes
 
-This is mathematically exact (R is orthogonal, so `R^T * softmax(QK^T) * R * v == softmax(QK^T) * v`) and leverages the existing `self_v_rot` infrastructure already present in upstream llama.cpp.
+This is exact (no quantization in this step; the equality is between the mathematical operations, modulo the scalar codebook quantization applied separately). The orthogonality argument is specifically:
+
+```
+R^T * ( softmax(QK^T) * (R * v) ) = R^T * R * ( softmax(QK^T) * v ) = softmax(QK^T) * v
+```
+
+The order matters: `R` is applied to `v` before the softmax-weighted sum (stored in the cache that way), and `R^T` is applied after. We can pull `R` through the softmax-weighted sum only because the same `R` multiplies every token's `v` -- the softmax weights `alpha_i` are scalars commuting with `R`, and because `R` does not depend on position `i`, it factors out of `sum_i alpha_i * R * v_i = R * sum_i alpha_i * v_i`. This position-independence of `R` is the crucial property that makes VTQ work; it is exactly what KTQ's per-block data-dependent RHT lacks. The inverse rotation is then a single post-FA matmul, leveraging the existing `self_v_rot` infrastructure already present in upstream llama.cpp.
 
 ### Key Insight
 
 The fundamental problem with TQ-in-V is that the RHT rotation is **per-block and data-dependent** (Philox-seeded). This means you cannot defer the inverse transform -- each KV position has a different rotation. VTQ uses a **fixed rotation for all positions in a head**, making the rotation commute through the softmax-weighted sum:
 
 ```
-Standard TQ:    output = sum_i( alpha_i * D_i * H * CB[q_i] * scale_i )   -- D_i varies per i, cannot factor out
-VTQ:            output = sum_i( alpha_i * R   * CB[q_i] * scale_i )        -- R is constant, factor it out
-             = R * sum_i( alpha_i * CB[q_i] * scale_i )                    -- R moves outside the sum
+Standard TQ:    output = sum_i( alpha_i * D_i * H * CB[q_i] * scale_i )   -- D_i (Philox-derived sign diagonal) varies per position i, cannot factor out
+VTQ:            output = sum_i( alpha_i * R   * CB[q_i] * scale_i )        -- R is identical for every position in the head, factor it out
+             = R * sum_i( alpha_i * CB[q_i] * scale_i )                    -- R moves outside the sum by linearity
 ```
 
 The FA kernel only computes the inner sum. The outer `R *` is a post-FA matmul.
@@ -65,7 +71,7 @@ The fixed rotation is `R = D1 * H * D2` where:
 **Decision: Use the bare Hadamard matrix H (without D1, D2) for the initial implementation.** Rationale:
 - The existing `ggml_gen_hadamard()` + `self_v_rot` infrastructure already constructs and applies H
 - H is already orthogonal (`H^T * H = I`) and position-independent
-- The D1/D2 diagonal signs improve the RHT's statistical properties for the TurboQuant-style quantization (making coordinates more i.i.d. Gaussian), but at the cost of needing per-element sign bits in the block struct
+- The D1/D2 diagonal signs are what make `D*H*D` deliver approximately i.i.d. coordinates from the Beta((d-1)/2, (d-1)/2) marginal. Bare `H` maps the standard basis to *one specific* fixed orthonormal basis (the Hadamard basis) rather than randomizing across orthonormal bases, so its output is not rotationally symmetric; the flanking sign diagonals break that symmetry. The cost of using `D*H*D` is per-element sign bits in the block struct
 - For V-cache, we can absorb the "randomization" benefit by using a slightly larger codebook or accepting the marginal quality loss
 - If quality measurements show degradation, D1/D2 can be added later as `VTQ_v2` with the sign bits stored as a per-head constant rather than per-block
 
@@ -228,7 +234,7 @@ Compared to `ktq_cuda_quantize_ktq2_1_block`:
 
 ### Codebook Constants
 
-VTQ reuses the same Lloyd-Max codebooks as KTQ (shared PQ_CODEBOOK_* / PQ_CUDA_CB_* constants, optimal for Beta(15.5, 15.5) distribution with d=32):
+VTQ reuses the same Lloyd-Max codebooks as KTQ. These are optimized for the `Beta((d-1)/2, (d-1)/2) = Beta(15.5, 15.5)` marginal at d=32: a unit vector in R^d after random rotation has coordinates distributed such that `(x_i + 1)/2 ~ Beta((d-1)/2, (d-1)/2)`. Shared `PQ_CODEBOOK_*` / `PQ_CUDA_CB_*` constants:
 
 ```cuda
 // Same codebooks -- the Hadamard rotation preserves the statistical distribution
@@ -251,7 +257,7 @@ __device__ __constant__ static float VTQ_CUDA_CB_4BIT[16] = {
 };
 ```
 
-**Note on codebook optimality:** The fixed Hadamard rotation (without per-block random signs) produces coordinates that are less perfectly i.i.d. Gaussian than the full RHT. The Lloyd-Max codebook was optimized for i.i.d. Beta(15.5, 15.5) which is the RHT-induced marginal. With a fixed rotation, the marginal distribution may differ slightly. If benchmarks show quality degradation, a re-optimized codebook specific to fixed-Hadamard marginals could be computed. This is a v2 optimization -- start with the existing codebooks.
+**Note on codebook optimality:** The fixed Hadamard rotation (without per-block random signs) produces coordinates whose empirical marginal differs from the full-RHT Beta(15.5, 15.5) case: bare `H` always sends a given input direction to the same output direction, so the "averaging" that drives the marginal toward Beta(15.5, 15.5) is weaker than under full D\*H\*D. In practice V-cache inputs are not axis-aligned so the empirical marginal is still approximately Beta-shaped, but the Lloyd-Max optimum may have shifted slightly. If benchmarks show quality degradation, a re-optimized codebook specific to fixed-Hadamard marginals could be computed. This is a v2 optimization -- start with the existing codebooks.
 
 ---
 
@@ -293,14 +299,14 @@ static __device__ __forceinline__ void dequantize_V_vtq2_1(
 |-----------|-------------|---------------|
 | Load block data | qs[8] + sb[4] + d | qs[8] + d |
 | Codebook lookup | 32 lookups | ne lookups (4 typical) |
-| Serial FWHT | **32-element butterfly (160 FMA)** | **NONE** |
+| Serial FWHT | **32-element butterfly: 5 stages (= log2(32)) x 16 add/sub pairs = ~160 FLOPs** | **NONE** |
 | Sign flip | 32 branchless mul | **NONE** |
 | Scale multiply | 32 mul | ne mul |
 | Registers | **~40 floats (buf[32] + intermediates)** | **~8 floats** |
 | Can be `__forceinline__` | No (`__noinline__` required) | **Yes** |
 | Register spilling | **Severe (the V-corruption root cause)** | **None** |
 
-The VTQ dequant eliminates the two most expensive operations (FWHT and sign flip) and reduces register pressure from ~40 to ~8 floats. This is the difference between `__noinline__` (forced by register pressure) and `__forceinline__` (enabling full optimization).
+The VTQ dequant eliminates the two most expensive operations (FWHT butterfly and sign flip) and reduces thread-local register footprint from ~40 floats (dominated by the `buf[32]` FWHT staging array that NVCC cannot keep fully in registers inside a register-hot FA inner loop) to ~8 floats (a handful of scalars: index, scale, decoded centroid, loop counter). This is the difference between `__noinline__` (forced because NVCC's heuristics detect the register pressure and spill `buf[32]` to per-thread local memory / LMEM, whose writes interleave with and clobber FA accumulator state across warp iterations) and `__forceinline__` (the whole dequant fuses into the FA loop and optimizes normally).
 
 ---
 
