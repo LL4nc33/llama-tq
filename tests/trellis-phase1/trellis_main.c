@@ -12,14 +12,16 @@
 
 // Format: L, K, QK, beam, norm, group, shared_d, group_viterbi, code, label
 static const trellis_config CONFIGS[] = {
-    // --- Run 9 best: group-Viterbi baseline ---
-    {16, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_Q256_G4_group"  },  // 2.031 bpw
-    {16, 3, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_K3_Q128_G4_grp" },  // 3.063 bpw
-    // --- L=18 (more states) — bpw+0.015-0.031, expected MSE improvement ---
-    {18, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L18_Q256_G4_group"  },  // 2.047 bpw
-    {18, 3, 128, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L18_K3_Q128_G4_grp" },  // 3.094 bpw
-    // --- L=20 on larger QK to keep bpw down ---
-    {20, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L20_Q256_G4_group"  },  // 2.062 bpw
+    // --- baseline: current best ---
+    {16, 2, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_Q256_G4"  },  // 2.031 bpw
+    // --- QK=512 variants ---
+    {16, 2, 512, 0, 1, 1, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G1"  },  // 2.062 bpw
+    {16, 2, 512, 0, 1, 2, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G2"  },  // 2.047 bpw
+    {16, 2, 512, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G4"  },  // 2.039 bpw
+    {16, 2, 512, 0, 1, 8, 1, 1, TRELLIS_CODE_TABLE, "L16_Q512_G8"  },  // 2.035 bpw
+    // --- 3-bit Q=256 vs Q=512 ---
+    {16, 3, 256, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_K3_Q256_G4"},  // 3.031 bpw
+    {16, 3, 512, 0, 1, 4, 1, 1, TRELLIS_CODE_TABLE, "L16_K3_Q512_G4"},  // 3.016 bpw
 };
 
 static const size_t N_CONFIGS = sizeof(CONFIGS) / sizeof(CONFIGS[0]);
@@ -54,10 +56,11 @@ static void run_sweep(const float * data, size_t n, const char * out_path, const
         // Allocate G blocks worth of state so we can chain within groups.
         trellis_block blks[16]; // G ≤ 16
         uint32_t ends[16];
-        float recon[256];      // enough for QK up to 256
+        float recon[512];      // enough for QK up to 512
 
         size_t ng = nb / (size_t)G;
         float group_recon[16 * 512]; // enough for G=16, QK=512
+        (void)recon;  // unused in group_viterbi path
 
         for (size_t g = 0; g < ng; g++) {
             size_t base = g * (size_t)G * QK;
