@@ -1,0 +1,6 @@
+project,config,avg_bpw,ppl_delta_pct,tg_delta_pct,hardware,model,model_quant,notes
+TheTom,turbo4,4.25,0.23,-7,M5 Max,Qwen3.5-35B-A3B,Q4_K_M,symmetric
+TheTom,turbo3,3.5,1.06,-10,M5 Max,Qwen3.5-35B-A3B,Q4_K_M,symmetric
+TheTom,turbo2,2.5,6.48,-22,M5 Max,Qwen3.5-35B-A3B,Q4_K_M,symmetric
+TheTom,q8_0+turbo3,5.5,2.0,-10,M5 Max,Qwen3.5-35B-A3B,Q4_K_M,asymmetric
+buun,turbo3_tcq,3.25,-0.05,-3,RTX 3090,Qwen3.5-27B,Q6_K,KL divergence
