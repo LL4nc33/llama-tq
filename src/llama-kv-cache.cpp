@@ -209,13 +209,11 @@ llama_kv_cache::llama_kv_cache(
 
         ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
 
-        // Force CPU buffer for VTQ_2 V-cache: CUDA path not yet implemented
-        // (no set_rows/FA kernel for these types in Phase-2a).
-        const bool force_cpu_for_vtq2 = (type_v == GGML_TYPE_VTQ2_2 ||
-                                         type_v == GGML_TYPE_VTQ3_2 ||
-                                         type_v == GGML_TYPE_VTQ4_2);
-
-        if (offload && !force_cpu_for_vtq2) {
+        // Phase-2b: VTQ_2 V-cache now has GPU Viterbi encoder (trellis-encode.cuh)
+        // + GPU dequant (Phase-2a), so V-cache can reside on GPU. FA dispatch for
+        // VTQ_2 still pending (Phase-2c) — scheduler falls back to non-FA path
+        // which uses MUL_MAT with on-GPU VTQ_2 dequant.
+        if (offload) {
             auto * dev = model.dev_layer(il);
             buft = ggml_backend_dev_buffer_type(dev);
 
