@@ -191,54 +191,98 @@ void ggml_trellis_encode_group(
 
     const float * table = ggml_trellis_table();
 
-    // Open start: dp[0][s] = 0 for all s
-    for (uint32_t s = 0; s < S; s++) dp_cur[s] = 0.0f;
-
     // Beam pruning setup
     const int beam = get_beam_width();
     const int use_beam = (beam > 0 && (uint32_t)beam < S);
-    float * beam_costs = use_beam ? (float *)malloc((size_t)S * sizeof(float)) : NULL;
-    if (use_beam && !beam_costs) {
-        // Fallback to full Viterbi on alloc failure
+
+    // Active-state lists — track which states are "live" in dp_cur / dp_next.
+    // Dramatically reduces scan cost from O(S) to O(beam).
+    uint32_t * active_cur  = (uint32_t *)malloc((size_t)S * sizeof(uint32_t));
+    uint32_t * active_next = (uint32_t *)malloc((size_t)S * sizeof(uint32_t));
+    uint8_t  * touched     = (uint8_t  *)calloc((size_t)S, 1);  // bitmap: which dp_next slots written
+    float    * beam_costs  = use_beam ? (float *)malloc((size_t)beam * sizeof(float)) : NULL;
+    if (!active_cur || !active_next || !touched) {
+        free(active_cur); free(active_next); free(touched); free(beam_costs);
+        free(xn); free(dp_cur); free(dp_next); free(bt);
+        *out_start_state = 0; *out_d = 0.0f; return;
     }
+
+    // Open start: dp[0][s] = 0 for all s  →  all S states are active
+    for (uint32_t s = 0; s < S; s++) dp_cur[s] = 0.0f;
+    uint32_t n_active_cur = S;
+    for (uint32_t s = 0; s < S; s++) active_cur[s] = s;
 
     const int kshift = L - K;
     for (int i = 0; i < N; i++) {
         uint16_t * bt_i = bt + (size_t)i * S;
-        for (uint32_t s = 0; s < S; s++) dp_next[s] = FLT_MAX;
         const float xi = xn[i];
-        for (uint32_t prev = 0; prev < S; prev++) {
+        uint32_t n_active_next = 0;
+
+        // Expand active_cur → active_next via K-bit transitions
+        for (uint32_t ia = 0; ia < n_active_cur; ia++) {
+            uint32_t prev = active_cur[ia];
             float pc = dp_cur[prev];
-            if (pc == FLT_MAX) continue;
             for (uint32_t kk = 0; kk <= Kmask; kk++) {
                 uint32_t next = ((prev >> K) | (kk << kshift)) & Lmask;
                 float code = table[next] * cb_scale;
                 float diff = xi - code;
                 float cost = pc + diff * diff;
-                if (cost < dp_next[next]) {
+                if (!touched[next]) {
+                    touched[next] = 1;
+                    active_next[n_active_next++] = next;
+                    dp_next[next] = cost;
+                    bt_i[next] = (uint16_t)prev;
+                } else if (cost < dp_next[next]) {
                     dp_next[next] = cost;
                     bt_i[next] = (uint16_t)prev;
                 }
             }
         }
-        // Prune dp_next: keep only top-B states (set others to FLT_MAX)
-        if (use_beam && beam_costs) {
-            memcpy(beam_costs, dp_next, (size_t)S * sizeof(float));
-            float thresh = nth_element_f(beam_costs, (int)S, beam - 1);
-            for (uint32_t s = 0; s < S; s++) {
-                if (dp_next[s] > thresh) dp_next[s] = FLT_MAX;
+
+        // Optionally prune active_next to top-`beam` by cost
+        if (use_beam && beam_costs && n_active_next > (uint32_t)beam) {
+            // Collect costs of active states
+            for (uint32_t j = 0; j < (uint32_t)beam && j < n_active_next; j++) {
+                beam_costs[j] = dp_next[active_next[j]];
+            }
+            // nth_element over active_next indirection: build temp array
+            float * tmp_costs = (float *)malloc(n_active_next * sizeof(float));
+            if (tmp_costs) {
+                for (uint32_t j = 0; j < n_active_next; j++) tmp_costs[j] = dp_next[active_next[j]];
+                float thresh = nth_element_f(tmp_costs, (int)n_active_next, beam - 1);
+                free(tmp_costs);
+                uint32_t kept = 0;
+                for (uint32_t j = 0; j < n_active_next; j++) {
+                    uint32_t s = active_next[j];
+                    if (dp_next[s] <= thresh && kept < (uint32_t)beam) {
+                        active_next[kept++] = s;
+                    } else {
+                        // Clear touched flag so it's reusable in next iteration
+                        touched[s] = 0;
+                    }
+                }
+                n_active_next = kept;
             }
         }
-        float * tmp = dp_cur; dp_cur = dp_next; dp_next = tmp;
-    }
-    free(beam_costs);
 
-    // Best end state
+        // Clear touched for next iteration: only active_next entries are marked
+        for (uint32_t j = 0; j < n_active_next; j++) touched[active_next[j]] = 0;
+
+        // Swap dp_cur/dp_next and active lists
+        float * tmp_dp = dp_cur; dp_cur = dp_next; dp_next = tmp_dp;
+        uint32_t * tmp_a = active_cur; active_cur = active_next; active_next = tmp_a;
+        n_active_cur = n_active_next;
+    }
+
+    // Best end state — scan only active states in final dp_cur
     uint32_t best_s = 0;
     float best_c = FLT_MAX;
-    for (uint32_t s = 0; s < S; s++) {
+    for (uint32_t ia = 0; ia < n_active_cur; ia++) {
+        uint32_t s = active_cur[ia];
         if (dp_cur[s] < best_c) { best_c = dp_cur[s]; best_s = s; }
     }
+
+    free(active_cur); free(active_next); free(touched); free(beam_costs);
 
     // Backtrack: states[0..N]
     uint32_t * states = (uint32_t *)malloc((size_t)(N + 1) * sizeof(uint32_t));
