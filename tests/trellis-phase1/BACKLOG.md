@@ -1,17 +1,13 @@
 # TurboQuant Nano — Research Backlog
 
-Five Naughty-Dog-style tricks to squeeze more out of the current
-quantization stack. Ordered by ROI / risk. All experimental, all
-measure-before-ship.
-
-> _"We didn't make the model smaller; we made the hardware work harder
-> in smarter moments."_
+Five experimental tricks to push quality beyond pure trellis
+quantization. Ordered by ROI / risk. All measure-before-ship.
 
 ## Already in tree
 
 **Layer-boundary protection** (`tq_protect_layers` in `llama_kv_cache`).
 First N + last N layers keep `q8_0` instead of TQ. CLI exposes it,
-default off. Naughty-Dog's "keep critical geometry in foreground RAM."
+default off. Spatial protection for critical layers.
 
 ## Trick 1 — Attention-sink token protection (highest ROI, trivial)
 
@@ -56,7 +52,7 @@ lookup), else falls back to trellis decode.
 **Cost:** ~512 B per layer × 48 layers ≈ 24 KB total.
 **Expected gain:** if the error distribution is heavy-tailed (it is),
 a handful of corrections can close the gap to near-lossless even at
-`vtq2_2`. Naughty-Dog's sprite-overlay-on-low-res-background analogue.
+`vtq2_2`. Lossless overlay on top of lossy base.
 
 ## Trick 5 — Learned λ sharpening (paper-worthy if it works)
 
