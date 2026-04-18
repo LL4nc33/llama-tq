@@ -33,7 +33,7 @@
 // LUT. For the FA-vec native V-dequant path (Phase-2c), ~120 TUs would
 // each get their own uninitialized 256-KiB copy → garbage output.
 // Single extern definition is the only scalable answer.
-extern __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
+extern __device__ float vtq_trellis_table_storage[];
 
 // Host-side init: called once per CUDA context before any dequant.
 // Uses cudaMemcpyToSymbol on the caller's TU symbol.
