@@ -1480,6 +1480,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
     cparams.tq_protect_layers = params.tq_protect_layers;
+    cparams.tq_protect_sinks  = params.tq_protect_sinks;
     cparams.tq_deferred_k     = params.tq_deferred_k;
 
     return cparams;

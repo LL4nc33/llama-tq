@@ -113,6 +113,7 @@ public:
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
                      uint32_t   tq_protect_layers,
+                     uint32_t   tq_protect_sinks,
                          bool   tq_deferred_k,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse);
@@ -253,6 +254,9 @@ private:
 
     // TurboQuant boundary layer protection
     const uint32_t tq_protect_layers = 0;
+
+    // TurboQuant attention-sink protection (StreamingLLM)
+    const uint32_t tq_protect_sinks = 0;
 
     // TurboQuant deferred K quantization
     tq_deferred_state deferred_state = TQ_DEFERRED_OFF;
