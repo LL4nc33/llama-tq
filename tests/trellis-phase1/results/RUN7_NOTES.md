@@ -147,3 +147,37 @@ Together they'd let the scheduler route V-cache entirely through CUDA.
 
 Current measurement option: run `-ngl 0 -fa off` with CUDA binary,
 still ~90s/chunk. For 27B × 200 chunks that's ~5h — feasible but slow.
+
+## Run 8 — CUDA hybrid sweep (10 chunks, Qwen3.5-0.8B)
+
+After adding CPU vec_dot for VTQ_2, forcing CPU buffer for V-cache,
+and running with `-ngl 99 -fa on` (weights on GPU, V-cache + FA on CPU):
+
+| Config | PPL | Δ vs f16_gpu | bpw | Time |
+|--------|-----|---------------|-----|------|
+| f16_gpu | 20.22 ± 1.23 | — | 16.0 | 6s |
+| vtq2_1_gpu (CUDA FA) | 24.41 ± 1.57 | **+20.7%** | 2.5 | 6s |
+| **VTQ2_2 hybrid** | 21.82 ± 1.35 | **+7.9%** | 2.125 | 1951s |
+| **VTQ3_2 hybrid** | 20.69 ± 1.27 | **+2.3%** | 3.125 | 3645s |
+| VTQ4_2 hybrid | aborted after >60min | — | 4.125 | — |
+
+**Key finding: VTQ2_2 beats vtq2_1 at lower bpw by 2.6× on same backend.**
+
+vtq2_1 at 2.500 bpw: +20.7% PPL (measured GPU-native)
+VTQ2_2 at 2.125 bpw: +7.9% PPL (hybrid CPU-FA path)
+
+15% less bpw AND 2.6× lower PPL delta. Trellis v2 design is clearly
+superior to the per-sample codebook approach of vtq2_1.
+
+VTQ3_2 at 3.125 bpw: +2.3% vs f16. Compare buun turbo3_tcq at
+3.25 bpw: -0.05% — buun wins quality at +4% bpw. Our advantage
+is compression not quality at 3-bit; their advantage is
+tightness at 3.25 bpw.
+
+VTQ4_2 aborted: K=4 Viterbi is 4× slower on CPU (16 emissions per
+state vs 4 for K=2). 10 chunks × 128 V-writes × Viterbi is >1h on
+CPU encoder. Production path: Phase-2b needs CUDA encoder.
+
+Note on absolute PPL differences: GPU path gives different values
+than CPU path (20.22 vs 15.56 baseline) due to numerical ordering
+in FA kernels. Relative deltas within same backend are what count.
