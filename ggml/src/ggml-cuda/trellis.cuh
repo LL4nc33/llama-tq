@@ -37,12 +37,14 @@ static __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
 // Uses cudaMemcpyToSymbol on the caller's TU symbol.
 #define GGML_CUDA_INIT_TRELLIS_TABLE_IMPL()                              \
     do {                                                                 \
-        static bool _init_done = false;                                  \
-        if (!_init_done) {                                               \
+        int _cur_dev = 0;                                                \
+        cudaGetDevice(&_cur_dev);                                        \
+        static bool _init_done[16] = {false};                            \
+        if (_cur_dev >= 0 && _cur_dev < 16 && !_init_done[_cur_dev]) {   \
             const float * host_tbl = ggml_trellis_table();               \
             cudaMemcpyToSymbol(vtq_trellis_table_storage, host_tbl,      \
                                sizeof(float) * (1 << VTQ_TRELLIS_L));    \
-            _init_done = true;                                           \
+            _init_done[_cur_dev] = true;                                 \
         }                                                                \
     } while (0)
 
