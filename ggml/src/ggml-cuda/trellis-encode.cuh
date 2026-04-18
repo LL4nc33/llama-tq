@@ -216,10 +216,11 @@ __global__ void k_vtq_encode_trellis_set_rows(
             #pragma unroll
             for (uint32_t bits = 0; bits <= Kmask; bits++) {
                 uint32_t next = ((prev >> K) | (bits << kshift)) & 0xFFFFu;
-                // __ldg: trellis LUT is initialized once per device and
-                // never mutated; read-only cache gives ~3x hit latency win
-                // over L2 for this 256 KiB random-access table.
-                float code   = __ldg(vtq_trellis_table_storage + next) * cb_scale;
+                // Plain global load: the 256 KiB LUT fits in L2 (~100% hit
+                // after warmup) but is 5x larger than Turing's 48 KiB RO
+                // cache per SM — __ldg here causes a ~20% hit rate plus
+                // L2 refill stalls, degrading the atomicMin critical path.
+                float code   = vtq_trellis_table_storage[next] * cb_scale;
                 float diff   = xi - code;
                 float cost   = pc + diff * diff;
                 uint64_t packed = ((uint64_t)__float_as_uint(cost) << 32) | (uint64_t)prev;
@@ -299,7 +300,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
                     qs[byte + 2] |= (uint8_t)((bits >> (16 - shift)) & 0xFFu);
                 }
             }
-            float code = __ldg(vtq_trellis_table_storage + st) * cb_scale;
+            float code = vtq_trellis_table_storage[st] * cb_scale;
             recon_sq += code * code;
         }
         float recon_norm = sqrtf(recon_sq);
