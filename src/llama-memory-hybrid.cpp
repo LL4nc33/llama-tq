@@ -20,6 +20,7 @@ llama_memory_hybrid::llama_memory_hybrid(
            llama_swa_type   swa_type,
                             /* TurboQuant */
                  uint32_t   tq_protect_layers,
+                 uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
                             /* recurrent */
                 ggml_type   type_r,
@@ -46,6 +47,7 @@ llama_memory_hybrid::llama_memory_hybrid(
         n_swa,
         swa_type,
         tq_protect_layers,
+        tq_protect_sinks,
         tq_deferred_k,
         filter_attn == nullptr ?
             [&](int32_t il) { return !hparams.is_recurrent(il); }

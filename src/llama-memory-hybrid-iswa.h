@@ -30,6 +30,7 @@ public:
                  uint32_t   n_pad,
                             /* TurboQuant */
                  uint32_t   tq_protect_layers,
+                 uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
                             /* recurrent */
                 ggml_type   type_r,

@@ -2054,6 +2054,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
     add_opt(common_arg(
+        {"--tq-protect-sinks"}, "N",
+        string_format(
+            "TurboQuant attention-sink protection (StreamingLLM): when N>0, force layer-0 V-cache to f16\n"
+            "to preserve sink tokens that carry outsized attention weight on long contexts\n"
+            "(default: %u, recommended: 4)",
+            params.tq_protect_sinks
+        ),
+        [](common_params & params, int value) {
+            params.tq_protect_sinks = value >= 0 ? (uint32_t)value : 0;
+        }
+    ).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
+    add_opt(common_arg(
         {"--tq-deferred-k"},
         "defer K quantization until prefill->decode transition for better quality\n"
         "(only effective with TQ K cache types)",
