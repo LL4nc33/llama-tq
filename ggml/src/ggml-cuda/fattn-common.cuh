@@ -4,6 +4,7 @@
 #include "convert.cuh"
 #include "vecdotq.cuh"
 #include "turboquant.cuh"
+#include "trellis.cuh"   // Phase-2c: VTQ{2,3,4}_2 trellis decoder for FA-vec V-dequant
 
 #include <cstdint>
 
@@ -866,6 +867,53 @@ static __device__ __forceinline__ void dequantize_V_vtq4_1(const void * __restri
     dequantize_V_vtq<block_vtq4_1, T, ne, vtq_decode_4bit>(vx, dst, i0);
 }
 
+// ============================================================
+// Phase-2c (WIP): VTQ{2,3,4}_2 (Trellis v2) V-dequant in FA-vec.
+//
+// The decoder is a shift register; random access to element `i0`
+// requires replaying from start_state. We use the per-element
+// variant `trellis_decode_element<K>` from trellis.cuh. This is
+// O(i0) per element — fine for D<=256 heads, inefficient for larger.
+//
+// See trellis.cuh for the optimal Strategy A (warp-shmem block cache).
+// That requires invasive fattn-vec.cuh changes (deferred to Phase-2d).
+// ============================================================
+
+template <typename block_t, int K, typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_t * x = (const block_t *) vx;
+    const int64_t ib = i0 / QK_VTQ_TRELLIS;
+    const int     il = (int)(i0 % QK_VTQ_TRELLIS);
+    const float   d  = (float) x[ib].d;
+    const uint16_t s0 = x[ib].start_state;
+    const uint8_t * qs = x[ib].qs;
+
+    #pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const float val = trellis_decode_element<K>(s0, d, qs, il + l);
+        if constexpr (std::is_same_v<T, half>) {
+            ((half *) dst)[l] = __float2half(val);
+        } else {
+            ((float *) dst)[l] = val;
+        }
+    }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq2_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_2<block_vtq2_2, 2, T, ne>(vx, dst, i0);
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq3_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_2<block_vtq3_2, 3, T, ne>(vx, dst, i0);
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq4_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_2<block_vtq4_2, 4, T, ne>(vx, dst, i0);
+}
+
 template <typename Tds, int ni>
 static __device__ __forceinline__ void quantize_q8_1_to_shared(
     const float * __restrict__ x, const float scale, int * __restrict__ yq32, void * __restrict__ yds) {
@@ -1217,6 +1265,12 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_vtq3_1<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ4_1) {
         return dequantize_V_vtq4_1<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ2_2) {
+        return dequantize_V_vtq2_2<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ3_2) {
+        return dequantize_V_vtq3_2<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ4_2) {
+        return dequantize_V_vtq4_2<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;

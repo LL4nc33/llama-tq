@@ -128,4 +128,51 @@ static void dequantize_row_vtq4_2_cuda(const void * vx, dst_t * y, const int64_t
     trellis_dequantize_row_cuda<block_vtq4_2, 4>(vx, y, ne, stream);
 }
 
+// ============================================================
+// Per-element decoder variant for FA-vec V-dequant path (Phase-2c WIP).
+//
+// The FA-vec kernel calls `dequantize_V_t(vx, dst, i0)` per-row with
+// `ne` consecutive elements. VTQ_2 is a shift-register; random access
+// to element `i0` requires replaying the shift register from
+// `start_state` up to index `i0+ne-1`. Cost per call: O(i0+ne).
+//
+// For typical D=128 attention heads, `ne` is 2-4 and `i0` is thread-
+// indexed across [0, D). Average replay depth is D/2 ≈ 64 iterations
+// per thread per call. Compared to the CPU-FA fallback this is still
+// a massive win, but see trellis.cuh Strategy A note: the optimal
+// path is a warp-collaborative shmem block cache, which requires
+// invasive changes to fattn-vec.cuh (out of scope for Phase-2c).
+//
+// NOTE: this decoder replays from start_state on every call and is
+// O(N^2) when called N/ne times for a full block. Acceptable for
+// D <= 256 (Turing) but inefficient for larger heads. Ship after
+// correctness validation; optimize to shmem cache in Phase-2d.
+template <int K>
+__device__ __forceinline__
+float trellis_decode_element(uint16_t start_state, float d, const uint8_t * qs, int j) {
+    constexpr int N = QK_VTQ_TRELLIS;
+    constexpr int L = VTQ_TRELLIS_L;
+    constexpr uint32_t Lmask = 0xFFFFu;
+    constexpr uint32_t Kmask = (1u << K) - 1u;
+    const float cb_scale = rsqrtf((float)N);
+
+    if (d == 0.0f) return 0.0f;
+
+    uint32_t state = (uint32_t)start_state & Lmask;
+    // Replay shift register for indices 0..j (state after j-th bit extract).
+    #pragma unroll 1
+    for (int i = 0; i <= j; i++) {
+        const int bit_off = i * K;
+        const int byte   = bit_off >> 3;
+        const int shift  = bit_off & 7;
+        uint32_t b0 = qs[byte];
+        uint32_t b1 = qs[byte + 1];
+        uint32_t b2 = (shift + K > 16) ? qs[byte + 2] : 0u;
+        uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
+        uint32_t bits = (w >> shift) & Kmask;
+        state = ((state >> K) | (bits << (L - K))) & Lmask;
+    }
+    return vtq_trellis_table_storage[state] * (cb_scale * d);
+}
+
 // No forward decl — init is done inside convert.cu via the macro.
