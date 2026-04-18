@@ -31,20 +31,25 @@ static int get_pool_slots_env(void) {
 const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t /*stream*/) {
     if (!g_vtq_ws_inited) {
         const int    slots    = get_pool_slots_env();
-        const size_t bytes_dp = (size_t)slots * (size_t)VTQ_ENC_S * sizeof(float);
-        const size_t bytes_bt = (size_t)slots * (size_t)VTQ_ENC_N * (size_t)VTQ_ENC_S * sizeof(uint16_t);
+        // dp_cur: float per state (pure float cost row, carried across steps).
+        const size_t bytes_dp_cur  = (size_t)slots * (size_t)VTQ_ENC_S * sizeof(float);
+        // dp_next: during DP we reinterpret this buffer as uint64 (packed (cost<<32)|prev)
+        // for atomicMin. So allocate sizeof(uint64_t) per state.
+        const size_t bytes_dp_next = (size_t)slots * (size_t)VTQ_ENC_S * sizeof(uint64_t);
+        const size_t bytes_bt      = (size_t)slots * (size_t)VTQ_ENC_N * (size_t)VTQ_ENC_S * sizeof(uint16_t);
+        const size_t bytes_dp      = bytes_dp_cur;  // legacy alias for log msg
 
         cudaError_t err;
-        err = cudaMalloc((void **)&g_vtq_ws.dp_cur,  bytes_dp);
+        err = cudaMalloc((void **)&g_vtq_ws.dp_cur,  bytes_dp_cur);
         if (err != cudaSuccess) {
             fprintf(stderr, "[vtq-enc] cudaMalloc(dp_cur, %zu B) failed: %s\n",
                     bytes_dp, cudaGetErrorString(err));
             abort();
         }
-        err = cudaMalloc((void **)&g_vtq_ws.dp_next, bytes_dp);
+        err = cudaMalloc((void **)&g_vtq_ws.dp_next, bytes_dp_next);
         if (err != cudaSuccess) {
             fprintf(stderr, "[vtq-enc] cudaMalloc(dp_next, %zu B) failed: %s\n",
-                    bytes_dp, cudaGetErrorString(err));
+                    bytes_dp_next, cudaGetErrorString(err));
             abort();
         }
         err = cudaMalloc((void **)&g_vtq_ws.bt, bytes_bt);
@@ -57,7 +62,7 @@ const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t /*stream*/) {
         g_vtq_ws_inited     = true;
         fprintf(stderr, "[vtq-enc] workspace pool allocated: %d slots, %.1f MiB total\n",
                 slots,
-                (bytes_dp * 2 + bytes_bt) / (1024.0 * 1024.0));
+                (bytes_dp_cur + bytes_dp_next + bytes_bt) / (1024.0 * 1024.0));
     }
     return &g_vtq_ws;
 }
