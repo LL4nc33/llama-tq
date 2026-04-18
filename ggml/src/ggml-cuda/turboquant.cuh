@@ -418,8 +418,10 @@ static __global__ void dequantize_block_ktq3_1_v2(
     val = ktq_cuda_fwht_warp(val);
 
     // Inverse RHT part 2 + scale.
+    // Note: sb[] stores philox bit directly (bit=1 means forward RHT applied +1).
+    // Correct inverse matches CPU kktq_rht_inverse_sb: sb=1 -> +1, sb=0 -> -1.
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (base + tid < ne) yy[base + tid] = ggml_cuda_cast<dst_t>(val);
 }
