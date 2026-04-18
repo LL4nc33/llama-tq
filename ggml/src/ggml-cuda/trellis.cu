@@ -10,15 +10,15 @@
 //     Default pool_slots = 8 → 262 MiB reserved per-device on first use.
 //     Override via env: GGML_CUDA_VTQ_POOL_SLOTS=<1..64>.
 
+// Define the LUT in THIS TU only. Header uses the VTQ_TRELLIS_TABLE_DEFINE
+// macro to emit the definition (with __device__) here, and `extern __device__`
+// declarations in every other TU that includes trellis.cuh.
+#define VTQ_TRELLIS_TABLE_DEFINE
 #include "trellis.cuh"
 #include "trellis-encode.cuh"
 
 #include <cstdio>
 #include <cstdlib>
-
-// Single device-global definition of the trellis LUT. Declared extern
-// in trellis.cuh so all TUs that include the header reference THIS copy.
-__device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
 
 // One pool per CUDA device. Pools are lazily allocated when the first encode
 // is requested from that device so that multi-GPU runs don't over-subscribe
