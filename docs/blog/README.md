@@ -8,6 +8,7 @@ Wenn keine Messwerte → kein Post.
 
 ## Posts
 
+- [2026-04-19 — Night Session Summary: Timeline + cherry-pick candidates](2026-04-19-night-session-summary.md)
 - [2026-04-19 — V-Cache Pipeline Validated: 4× Encoder-Speedup, PPL measured](2026-04-19-v-cache-validation.md) ← **with real numbers**
 - [2026-04-18 — TurboQuant V-Cache: Von CPU-Fallback zu nativem GPU-Dequant](2026-04-18-native-v-dequant.md)
 
