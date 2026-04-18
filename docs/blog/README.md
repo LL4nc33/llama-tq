@@ -8,9 +8,8 @@ Wenn keine Messwerte → kein Post.
 
 ## Posts
 
+- [2026-04-19 — V-Cache Pipeline Validated: 4× Encoder-Speedup, PPL measured](2026-04-19-v-cache-validation.md) ← **with real numbers**
 - [2026-04-18 — TurboQuant V-Cache: Von CPU-Fallback zu nativem GPU-Dequant](2026-04-18-native-v-dequant.md)
-- [2026-04-17 — Trellis v2: Wieso wir Viterbi statt Lloyd-Max brauchen](2026-04-17-trellis-v2-why.md)
-- [2026-04-16 — TQW Weight Quantization: Der eigentliche Endgame](2026-04-16-tqw-endgame.md)
 
 ## Branches
 
