@@ -99,12 +99,14 @@ llama_kv_cache::llama_kv_cache(
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
                  uint32_t   tq_protect_layers,
+                 uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse) :
     model(model), hparams(model.hparams), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa),
-    tq_protect_layers(tq_protect_layers), user_type_k(type_k), user_type_v(type_v), swa_type(swa_type) {
+    tq_protect_layers(tq_protect_layers), tq_protect_sinks(tq_protect_sinks),
+    user_type_k(type_k), user_type_v(type_v), swa_type(swa_type) {
 
     GGML_ASSERT(kv_size % n_pad == 0);
 
