@@ -1,9 +1,15 @@
 # TurboQuant Nano
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Status: experimental](https://img.shields.io/badge/status-experimental-orange.svg)]()
 
-**Ultra-low-bit KV-cache quantization for llama.cpp.**
-**2.125 → 4.125 bpw. Lossless at 4-bit (+0.44 % PPL). Multi-GPU ready.**
+**Experimental ultra-low-bit KV-cache quantization for llama.cpp.**
+**2.125 → 4.125 bpw.** Measured +0.44 % PPL at 4-bit on Qwen3.5-0.8B,
++0.70 % on Qwen3.5-35B-A3B MoE (3-bit).
+
+> ⚠️ **Research-grade, not production.** APIs may change, quality claims
+> are from small sweep sizes on limited hardware (2× RTX 2060). Validate
+> on your own model + workload before relying on it for anything.
 
 Built on [TurboQuant](https://arxiv.org/abs/2504.19874) (Zandieh et al., 2025)
 and [QTIP](https://arxiv.org/abs/2406.11235), with a custom group-Viterbi
@@ -162,15 +168,22 @@ Deep dive: [`docs/turboquant.md`](docs/turboquant.md),
 
 ## Status
 
-**Production:**
-- v1 family — FA CUDA kernels shipped for all (K, V) pairs.
-- v2 family — CUDA encoder + decode, CPU fallback, multi-GPU validated
-  (correctness on 2× RTX 2060, PPL matches reference).
+This is an ongoing experiment. Pieces work, pieces don't, all of it is
+in active development.
 
-**In flight:**
-- v2 FA-vec template instances (unlocks native FA for v2 V-type).
-- 35B MoE wikitext-2 PPL table (sweep running — [`tests/trellis-phase1/results/`](tests/trellis-phase1/results/)).
-- Nsight-compute profiling to reduce encoder atomicMin contention.
+**Works today:**
+- v1 family — FA CUDA kernels for all (K, V) pairs.
+- v2 family — CUDA encoder + decode, CPU fallback, multi-GPU validated
+  on 2× RTX 2060 (correctness + PPL sanity).
+
+**Open / in flight:**
+- v2 FA-vec template instances (would unlock native FA for v2 V-type).
+- Broader PPL sweep table — more models, longer chunk counts, fresh seeds.
+  Current numbers are from limited runs.
+- Encoder perf — atomicMin contention on the 65 536-state DP row.
+  Nsight-compute profiling + warp-cooperative variant in backlog.
+- Independent third-party reproductions would be great. If you try it,
+  please file what you see.
 
 ---
 
