@@ -1,18 +1,32 @@
 // Trellis v2 CUDA encoder (full Viterbi, no pruning).
 //
 // 1 CUDA block == 1 trellis block (N=256 samples, S=2^16=65536 states).
-// VTQ_ENC_THREADS=256 threads per CUDA block. Each thread owns 256 "prev"
-// states (stride-256 sharding). At every DP step, for every (prev, bits)
-// transition the candidate (cost, prev) is committed into dp_next[next] via
-// 64-bit atomicMin where the HIGH 32 bits hold __float_as_uint(cost) (costs
-// are non-negative so uint ordering matches float ordering) and the LOW 32
-// bits hold the prev index. This is the DP winner on ties (lowest prev)
-// which is numerically equivalent to the CPU reference within fp32 precision.
+// VTQ_ENC_THREADS=256 threads per CUDA block.
+//
+// RECEIVER-SIDE DP (Trick 6): each thread owns 256 "next" states
+// (stride-256 sharding). At every DP step, per-next we gather the 2^K
+// candidate prev states via the deterministic inverse of the bit-shift
+// trellis: prev = ((next << K) | e) & 0xFFFF for e in [0, 2^K). The min
+// is computed in private registers and committed to dp_next[next] with a
+// single coalesced store — no atomics. The backtrack winner (prev index
+// giving the min) is written to bt[step*S + next].
+//
+// Why this is faster than sender-side atomicMin:
+//   * No serialization: 2^K edges into the same `next` collapse to a
+//     register-level loop rather than 2^K contending atomicMin ops.
+//   * Coalesced writes to dp_next (adjacent tids write adjacent next).
+//   * Coalesced LUT reads: vtq_trellis_table_storage[next] reads 256
+//     consecutive floats per warp.
+//   * Tie-break matches sender-side packed atomicMin: we iterate e
+//     ascending with strict `<`, and prev = (next<<K)|e → e=0 gives the
+//     lowest prev, which is kept on ties (lowest prev wins).
 //
 // Workspace (dp_cur, dp_next, backtrack) lives in a global-memory pool owned
 // by trellis.cu. Pool has `pool_slots` slots; host launches the kernel in
 // waves of `pool_slots` CUDA blocks with cudaStreamSynchronize between waves
-// so slots can be re-used.
+// so slots can be re-used. dp_next is allocated with uint64 stride (2*S
+// floats per slot) — receiver-side only uses the first S floats of each slot;
+// the tail remains reserved to preserve ABI with the host-side pool.
 //
 // This kernel folds the `k_set_rows_pq` per-block indexing into thread 0
 // (computing src_block + dst_block pointers once per CUDA block), so that
@@ -184,68 +198,66 @@ __global__ void k_vtq_encode_trellis_set_rows(
 
     const float cb_scale = rsqrtf((float)N);
 
-    // 2) dp_cur = 0
+    // 2) dp_cur = 0 (all states reachable at step 0 with cost 0)
     for (uint32_t s = tid; s < S; s += VTQ_ENC_THREADS) dp_cur[s] = 0.0f;
     __syncthreads();
 
-    // 3) Viterbi DP
+    // 3) Viterbi DP — receiver-side (atomic-free).
     //
-    // Perf: dp_next re-init is fused with the previous step's copy-back
-    // (single pass that reads dpn[s] into dp_cur/bt_i AND resets dpn[s] to
-    // init sentinel for the next step). This removes one loop + __syncthreads
-    // per step — saves ~192 MB of bookkeeping global R/W per 256-step block.
-    // Step 0 still needs an explicit init since there's no prior step.
-    const uint64_t init_v = ((uint64_t)__float_as_uint(FLT_MAX) << 32) | 0xFFFFFFFFull;
-    {
-        uint64_t * dpn = reinterpret_cast<uint64_t *>(dp_next);
-        for (uint32_t s = tid; s < S; s += VTQ_ENC_THREADS) dpn[s] = init_v;
-    }
-    __syncthreads();
-
+    // For each `next`, gather the 2^K incoming edges:
+    //   prev = ((next << K) | e) & 0xFFFF  for e in [0, 2^K)
+    // The code/cost-delta depends only on `next` (not prev), so we compute
+    // it once per next and reuse across the 2^K candidates.
+    //
+    // Tie-break: sender-side packed atomicMin keeps the lowest prev on ties.
+    // Here prev values for fixed next are consecutive: prev = base + e where
+    // base = (next << K) & 0xFFFF, so iterating e=0..2^K-1 with strict `<`
+    // keeps e=0 (lowest prev) on ties — matches sender-side.
+    //
+    // Unreachable prev states carry cost = FLT_MAX from the previous step;
+    // FLT_MAX + d2 saturates to +inf in IEEE fp32 and naturally loses the
+    // comparison against any finite cost — no explicit skip needed.
     for (int step = 0; step < N; step++) {
         uint16_t * bt_i = bt_base + (int64_t)step * (int64_t)S;
 
         const float xi = s_xn[step];
 
-        for (uint32_t prev = tid; prev < S; prev += VTQ_ENC_THREADS) {
-            // NB: dp_cur is written later in this kernel (fused writeback),
-            // so __ldg would be unsafe here — read-only cache is not
-            // invalidated by __syncthreads. Keep a normal load.
-            const float pc = dp_cur[prev];
-            if (pc >= FLT_MAX) continue;  // skip unreachable states (cost would saturate/overwrite init)
+        for (uint32_t next = tid; next < S; next += VTQ_ENC_THREADS) {
+            // LUT read is coalesced across a warp (adjacent tids → adjacent next).
+            // Do NOT use __ldg: LUT is 256 KiB, 5x larger than Turing's 48 KiB RO
+            // cache per SM — goes through L2 instead (~100% hit after warmup).
+            const float code = vtq_trellis_table_storage[next] * cb_scale;
+            const float diff = xi - code;
+            const float d2   = diff * diff;
+
+            const uint32_t base = (next << K) & 0xFFFFu;
+
+            float    best_cost = FLT_MAX;
+            uint32_t best_prev = 0;
             #pragma unroll
-            for (uint32_t bits = 0; bits <= Kmask; bits++) {
-                uint32_t next = ((prev >> K) | (bits << kshift)) & 0xFFFFu;
-                // Plain global load: the 256 KiB LUT fits in L2 (~100% hit
-                // after warmup) but is 5x larger than Turing's 48 KiB RO
-                // cache per SM — __ldg here causes a ~20% hit rate plus
-                // L2 refill stalls, degrading the atomicMin critical path.
-                float code   = vtq_trellis_table_storage[next] * cb_scale;
-                float diff   = xi - code;
-                float cost   = pc + diff * diff;
-                uint64_t packed = ((uint64_t)__float_as_uint(cost) << 32) | (uint64_t)prev;
-                unsigned long long * dst_u =
-                    reinterpret_cast<unsigned long long *>(
-                        reinterpret_cast<uint64_t *>(dp_next) + next);
-                atomicMin(dst_u, (unsigned long long)packed);
+            for (uint32_t e = 0; e <= Kmask; e++) {
+                const uint32_t prev = base | e;
+                const float    pc   = dp_cur[prev];
+                const float    cost = pc + d2;
+                if (cost < best_cost) {
+                    best_cost = cost;
+                    best_prev = prev;
+                }
             }
+
+            // Coalesced writes: adjacent tids → adjacent next.
+            dp_next[next] = best_cost;
+            bt_i[next]    = (uint16_t)(best_prev & 0xFFFFu);
         }
         __syncthreads();
 
-        // Fused copy-back + re-init: read winner into dp_cur/bt_i, reset
-        // dpn[s] to init_v so next step's atomicMin sees a fresh sentinel.
-        {
-            uint64_t * dpn = reinterpret_cast<uint64_t *>(dp_next);
-            for (uint32_t s = tid; s < S; s += VTQ_ENC_THREADS) {
-                uint64_t v = dpn[s];
-                uint32_t cost_u = (uint32_t)(v >> 32);
-                uint32_t prev_u = (uint32_t)(v & 0xFFFFFFFFu);
-                dp_cur[s] = __uint_as_float(cost_u);
-                bt_i[s]   = (uint16_t)(prev_u & 0xFFFFu);
-                dpn[s]    = init_v;
-            }
-        }
-        __syncthreads();
+        // Ping-pong swap: next step reads from what we just wrote.
+        // Per-slot strides differ (dp_cur: S floats, dp_next: 2*S floats)
+        // but both point into slots that are individually large enough for
+        // S floats — swapping the pointers is safe for the DP payload.
+        float * tmp = dp_cur;
+        dp_cur  = dp_next;
+        dp_next = tmp;
     }
 
     // 4) argmin
