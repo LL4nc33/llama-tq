@@ -2349,6 +2349,20 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
     return nrow * row_size;
 }
 
+// TurboQuant weight-quant wrappers: reuse the existing per-row _ref kernels.
+// quant_weights (imatrix) is currently unused — the RHT + Lloyd-Max codebook
+// is data-independent at the block level.
+size_t quantize_ktq3_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    const size_t row_size = ggml_row_size(GGML_TYPE_KTQ3_1, n_per_row);
+    for (int64_t r = 0; r < nrow; ++r) {
+        quantize_row_ktq3_1_ref(src + r*n_per_row,
+                                (block_ktq3_1 *)((char *)dst + r*row_size),
+                                n_per_row);
+    }
+    return nrow * row_size;
+}
+
 void dequantize_row_tq1_0(const block_tq1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     const int64_t nb = k / QK_K;
