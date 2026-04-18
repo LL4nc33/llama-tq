@@ -52,9 +52,14 @@ def fwht(x: np.ndarray) -> np.ndarray:
 
 
 def philox_6r(counter: np.ndarray, key: np.ndarray) -> np.ndarray:
-    """Philox 2x32 6-round, matches ggml-quants.c ktq_philox_6r."""
+    """Philox 2x32 6-round, matches ggml-quants.c ktq_philox_6r.
+
+    counter: shape [..., n], uint32
+    key:     shape [..., 1] or broadcastable to counter, uint32
+    returns: shape [..., n], uint32
+    """
     lo = counter.astype(np.uint32)
-    hi = np.full_like(lo, key, dtype=np.uint32)
+    hi = np.broadcast_to(key.astype(np.uint32), lo.shape).copy()
     M = np.uint32(0xD2511F53)
     W = np.uint32(0x9E3779B9)
     for i in range(6):
@@ -81,9 +86,10 @@ def rht_forward(blocks: np.ndarray, seeds: np.ndarray) -> np.ndarray:
     """Forward RHT: y = H · (sign(seed) ⊙ x). blocks [N, QK_VTQ2]."""
     n = blocks.shape[-1]
     j = np.arange(n, dtype=np.uint32)
-    # signs per block: shape [N, n]
-    rng = philox_6r(j[None, :].repeat(seeds.size, axis=0),
-                    seeds.astype(np.uint32))
+    # signs per block: shape [N, n] — counter [N,n], key [N,1]
+    counter = np.broadcast_to(j[None, :], (seeds.size, n)).astype(np.uint32)
+    key = seeds.astype(np.uint32)[:, None]  # shape [N, 1]
+    rng = philox_6r(counter, key)
     signs = np.where((rng & 1) == 1, 1.0, -1.0).astype(np.float32)
     y = blocks * signs
     return fwht(y)
