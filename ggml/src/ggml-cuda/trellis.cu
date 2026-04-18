@@ -4,10 +4,10 @@
 //     directly in set-rows.cu for each (idx_t, block_t, K) triple.
 //   - This TU owns the global-memory WORKSPACE POOL for the encoder:
 //       * dp_cur  : pool_slots * S   floats
-//       * dp_next : pool_slots * S   floats (used as uint64 during DP)
+//       * dp_next : pool_slots * S   uint64 (packed cost<<32|prev during DP)
 //       * bt      : pool_slots * N * S  uint16_t
-//     Per slot: 256 KiB + 256 KiB + 32 MiB  ≈  32.5 MiB.
-//     Default pool_slots = 8 → 260 MiB reserved on first encode call.
+//     Per slot: 256 KiB + 512 KiB + 32 MiB  ≈  32.75 MiB.
+//     Default pool_slots = 8 → 262 MiB reserved per-device on first use.
 //     Override via env: GGML_CUDA_VTQ_POOL_SLOTS=<1..64>.
 
 #include "trellis.cuh"
@@ -16,8 +16,11 @@
 #include <cstdio>
 #include <cstdlib>
 
-static vtq_encode_workspace g_vtq_ws        = { nullptr, nullptr, nullptr, 0 };
-static bool                 g_vtq_ws_inited = false;
+// One pool per CUDA device. Pools are lazily allocated when the first encode
+// is requested from that device so that multi-GPU runs don't over-subscribe
+// when only one device owns VTQ_2 cache.
+static vtq_encode_workspace g_vtq_ws[GGML_CUDA_MAX_DEVICES]        = {};
+static bool                 g_vtq_ws_inited[GGML_CUDA_MAX_DEVICES] = {};
 
 static int get_pool_slots_env(void) {
     const char * env = getenv("GGML_CUDA_VTQ_POOL_SLOTS");
@@ -29,50 +32,57 @@ static int get_pool_slots_env(void) {
 }
 
 const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t /*stream*/) {
-    if (!g_vtq_ws_inited) {
-        const int    slots    = get_pool_slots_env();
-        // dp_cur: float per state (pure float cost row, carried across steps).
+    int device = 0;
+    cudaGetDevice(&device);
+    if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) device = 0;
+
+    vtq_encode_workspace * ws     = &g_vtq_ws[device];
+    bool *                 inited = &g_vtq_ws_inited[device];
+
+    if (!*inited) {
+        const int    slots         = get_pool_slots_env();
         const size_t bytes_dp_cur  = (size_t)slots * (size_t)VTQ_ENC_S * sizeof(float);
-        // dp_next: during DP we reinterpret this buffer as uint64 (packed (cost<<32)|prev)
-        // for atomicMin. So allocate sizeof(uint64_t) per state.
+        // dp_next is reinterpreted as uint64_t during DP (packed cost + prev).
         const size_t bytes_dp_next = (size_t)slots * (size_t)VTQ_ENC_S * sizeof(uint64_t);
         const size_t bytes_bt      = (size_t)slots * (size_t)VTQ_ENC_N * (size_t)VTQ_ENC_S * sizeof(uint16_t);
-        const size_t bytes_dp      = bytes_dp_cur;  // legacy alias for log msg
 
         cudaError_t err;
-        err = cudaMalloc((void **)&g_vtq_ws.dp_cur,  bytes_dp_cur);
+        err = cudaMalloc((void **)&ws->dp_cur, bytes_dp_cur);
         if (err != cudaSuccess) {
-            fprintf(stderr, "[vtq-enc] cudaMalloc(dp_cur, %zu B) failed: %s\n",
-                    bytes_dp, cudaGetErrorString(err));
+            fprintf(stderr, "[vtq-enc] dev %d cudaMalloc(dp_cur, %zu B) failed: %s\n",
+                    device, bytes_dp_cur, cudaGetErrorString(err));
             abort();
         }
-        err = cudaMalloc((void **)&g_vtq_ws.dp_next, bytes_dp_next);
+        err = cudaMalloc((void **)&ws->dp_next, bytes_dp_next);
         if (err != cudaSuccess) {
-            fprintf(stderr, "[vtq-enc] cudaMalloc(dp_next, %zu B) failed: %s\n",
-                    bytes_dp_next, cudaGetErrorString(err));
+            fprintf(stderr, "[vtq-enc] dev %d cudaMalloc(dp_next, %zu B) failed: %s\n",
+                    device, bytes_dp_next, cudaGetErrorString(err));
             abort();
         }
-        err = cudaMalloc((void **)&g_vtq_ws.bt, bytes_bt);
+        err = cudaMalloc((void **)&ws->bt, bytes_bt);
         if (err != cudaSuccess) {
-            fprintf(stderr, "[vtq-enc] cudaMalloc(bt, %zu B) failed: %s\n",
-                    bytes_bt, cudaGetErrorString(err));
+            fprintf(stderr, "[vtq-enc] dev %d cudaMalloc(bt, %zu B) failed: %s\n",
+                    device, bytes_bt, cudaGetErrorString(err));
             abort();
         }
-        g_vtq_ws.pool_slots = slots;
-        g_vtq_ws_inited     = true;
-        fprintf(stderr, "[vtq-enc] workspace pool allocated: %d slots, %.1f MiB total\n",
-                slots,
+        ws->pool_slots = slots;
+        *inited        = true;
+        fprintf(stderr, "[vtq-enc] dev %d workspace pool allocated: %d slots, %.1f MiB total\n",
+                device, slots,
                 (bytes_dp_cur + bytes_dp_next + bytes_bt) / (1024.0 * 1024.0));
     }
-    return &g_vtq_ws;
+    return ws;
 }
 
 void vtq_free_encode_workspace(void) {
-    if (g_vtq_ws_inited) {
-        if (g_vtq_ws.dp_cur)  cudaFree(g_vtq_ws.dp_cur);
-        if (g_vtq_ws.dp_next) cudaFree(g_vtq_ws.dp_next);
-        if (g_vtq_ws.bt)      cudaFree(g_vtq_ws.bt);
-        g_vtq_ws = { nullptr, nullptr, nullptr, 0 };
-        g_vtq_ws_inited = false;
+    for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
+        if (!g_vtq_ws_inited[d]) continue;
+        vtq_encode_workspace * ws = &g_vtq_ws[d];
+        // Best-effort: device may already be unusable at teardown.
+        if (ws->dp_cur)  cudaFree(ws->dp_cur);
+        if (ws->dp_next) cudaFree(ws->dp_next);
+        if (ws->bt)      cudaFree(ws->bt);
+        *ws = { nullptr, nullptr, nullptr, 0 };
+        g_vtq_ws_inited[d] = false;
     }
 }
