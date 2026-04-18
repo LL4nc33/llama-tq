@@ -99,6 +99,16 @@ __global__ void k_vtq_encode_trellis_set_rows(
 
     if (tid == 0) {
         const int64_t i_base = i * QK_VTQ_T;
+        if (blockIdx.x == 0) {
+            printf("[vtq-enc K=%d] i=%lld i_base=%lld ne_total=%lld pool=%d\n",
+                   (int)K, (long long)i, (long long)i_base, (long long)ne_total, pool_slots);
+            printf("  ne00.z=%u ne01.z=%u ne02.z=%u ne11_fd.z=%u ne12_fd.z=%u\n",
+                   ne00.z, ne01.z, ne02.z, ne11_fd.z, ne12_fd.z);
+            printf("  s01=%lld s02=%lld s03=%lld s10=%lld s11=%lld s12=%lld s1=%lld s2=%lld s3=%lld\n",
+                   (long long)s01, (long long)s02, (long long)s03,
+                   (long long)s10, (long long)s11, (long long)s12,
+                   (long long)s1, (long long)s2, (long long)s3);
+        }
         uint32_t tmp = (uint32_t) i_base;
         uint2    dm;
 
@@ -125,6 +135,12 @@ __global__ void k_vtq_encode_trellis_set_rows(
 
         s_src_block = src0_row + i00;
         s_dst_block = dst_row_p + i00 / QK_VTQ_T;
+
+        if (blockIdx.x == 0) {
+            printf("  i00=%lld i01=%lld i02=%lld i03=%lld dst_row=%lld\n",
+                   (long long)i00, (long long)i01, (long long)i02, (long long)i03, (long long)dst_row);
+            printf("  src_block=%p dst_block=%p\n", (void*)s_src_block, (void*)s_dst_block);
+        }
 
         (void) ne10; (void) ne11; (void) ne12; (void) ne13;
     }
