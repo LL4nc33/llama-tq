@@ -1,6 +1,7 @@
 #include "set-rows.cuh"
 #include "cpy-utils.cuh"
 #include "turboquant.cuh"
+#include "trellis-encode.cuh"
 
 typedef void (*set_rows_kernel_t)(const char * src, char * dst);
 
@@ -494,6 +495,36 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
     } else if (dst->type == GGML_TYPE_VTQ4_1) {
         set_rows_cuda_pq<idx_t, block_vtq4_1, QK_VTQ, vtq_cuda_quantize_vtq4_1_block>(
             src0_d, src1_d, (block_vtq4_1*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_VTQ2_2) {
+        vtq_cuda_encode_set_rows<idx_t, block_vtq2_2, 2>(
+            src0_d, src1_d, (block_vtq2_2*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_VTQ3_2) {
+        vtq_cuda_encode_set_rows<idx_t, block_vtq3_2, 3>(
+            src0_d, src1_d, (block_vtq3_2*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_VTQ4_2) {
+        vtq_cuda_encode_set_rows<idx_t, block_vtq4_2, 4>(
+            src0_d, src1_d, (block_vtq4_2*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
             nb01, nb02, nb03,
