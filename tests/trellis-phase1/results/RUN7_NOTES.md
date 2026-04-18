@@ -321,3 +321,35 @@ The CUDA encoder is now the **default path** when V-cache is on
 GPU (SET_ROWS supports_op=true for VTQ_2). CPU encoder remains
 available via `-ngl 0` or explicit CPU buffer, with
 `GGML_TRELLIS_BEAM=512` for beam-pruned fallback.
+
+## Run 17 — RHT seed kurtosis sweep (Trick 3)
+
+**Date:** 2026-04-18
+**Model:** Qwen3.5-35B-A3B IQ2_XS (V weight tensors)
+**Method:** 64 global seed-salts XORed against per-block FNV-1a hash,
+measure excess kurtosis of post-RHT marginals across 2048 blocks ×
+512 samples = 1.05M samples per salt.
+**Data:** `results/run17_seed_kurtosis_35b.csv`
+
+| Metric | Value |
+|---|---|
+| mean excess kurtosis | +0.034 |
+| std across salts | 0.0044 |
+| min\|kurt\| | 0.0217 (salt=31) |
+| max\|kurt\| | 0.0443 (salt=59) |
+| noise floor (sqrt(24/N)) | 0.0048 |
+
+### Verdict: Trick 3 abandoned
+
+The std (0.0044) is barely at the noise floor (0.0048). The spread
+min→max is real (~5× noise) but the post-RHT distribution is already
+extremely close to Gaussian (excess kurtosis < 0.05 everywhere),
+which is the regime where Lloyd-Max codebooks are near-optimal
+*regardless* of which salt is picked. Expected PPL improvement from
+the argmin salt is below typical wikitext-2 measurement resolution
+(±0.1%) on 35B. Not worth a GGUF ABI bump.
+
+**Keep the tool** (`tests/trellis-phase1/seed_kurtosis_sweep.py`) —
+it's cheap to re-run on future models where the RHT basis changes
+(e.g., if we revisit the rotation structure). If a future model
+shows kurtosis variation >0.1, reconsider.
