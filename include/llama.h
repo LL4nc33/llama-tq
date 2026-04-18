@@ -359,6 +359,7 @@ extern "C" {
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
 
         uint32_t tq_protect_layers; // boundary layer protection: first/last N layers use q8_0 instead of TQ
+        uint32_t tq_protect_sinks;  // attention-sink protection (StreamingLLM): force layer-0 V-cache to f16 when > 0
         bool tq_deferred_k;        // defer K quantization until prefill->decode transition
 
         // Abort callback
