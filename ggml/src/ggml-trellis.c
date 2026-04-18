@@ -313,19 +313,5 @@ void ggml_trellis_encode_group(
     float recon_norm = (float)sqrt(recon_sq);
     *out_d = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
 
-#ifdef VTQ_ENC_DEBUG
-    {
-        static int s_cpu_dbg_blocks = 0;
-        if (s_cpu_dbg_blocks < 3) {
-            fprintf(stderr, "[CPU_ENC] blk=%d start=%u d=%.6f qs[0..3]=%02x %02x %02x %02x norm=%.6f recon=%.6f\n",
-                s_cpu_dbg_blocks, (unsigned)*out_start_state, *out_d,
-                qs[0], qs[1], qs[2], qs[3], norm, recon_norm);
-            fprintf(stderr, "[CPU_ENC] x[0..5]=%.4f %.4f %.4f %.4f %.4f %.4f\n",
-                x[0], x[1], x[2], x[3], x[4], x[5]);
-            s_cpu_dbg_blocks++;
-        }
-    }
-#endif
-
     free(states); free(xn); free(dp_cur); free(dp_next); free(bt);
 }
