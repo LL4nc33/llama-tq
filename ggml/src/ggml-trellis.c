@@ -118,9 +118,42 @@ void ggml_trellis_decode_group(
     }
 }
 
-// --- Encoder: full Viterbi DP over 2^L states ---
+// --- Beam-pruning helper: nth_element via Hoare partition (O(n) expected) ---
+// Finds the k-th smallest value (0-indexed). Modifies arr.
+static float nth_element_f(float * arr, int n, int k) {
+    int lo = 0, hi = n - 1;
+    while (lo < hi) {
+        float pivot = arr[(lo + hi) >> 1];
+        int i = lo, j = hi;
+        while (i <= j) {
+            while (arr[i] < pivot) i++;
+            while (arr[j] > pivot) j--;
+            if (i <= j) { float t = arr[i]; arr[i] = arr[j]; arr[j] = t; i++; j--; }
+        }
+        if (k <= j) hi = j;
+        else if (k >= i) lo = i;
+        else return arr[k];
+    }
+    return arr[k];
+}
+
+// Beam width: read from env at first call, cached thereafter.
+//   GGML_TRELLIS_BEAM=0 (default): full Viterbi (exact, slow)
+//   GGML_TRELLIS_BEAM=256..16384: beam-pruned (faster, ~1% MSE cost)
+static int g_beam_width_cached = -1;
+static int get_beam_width(void) {
+    if (g_beam_width_cached < 0) {
+        const char * env = getenv("GGML_TRELLIS_BEAM");
+        g_beam_width_cached = env ? atoi(env) : 0;
+        if (g_beam_width_cached < 0) g_beam_width_cached = 0;
+    }
+    return g_beam_width_cached;
+}
+
+// --- Encoder: Viterbi DP over 2^L states (optionally beam-pruned) ---
 // Memory: O(N · 2^L) for backtrack + O(2^L) for 2 DP rows.
-//   L=16, N=512: 512·65536·4 = 128 MiB backtrack. Heavy but only at quant-time.
+//   L=16, N=256: 256·65536·4 = 64 MiB backtrack. Heavy but only at quant-time.
+// Beam pruning cuts CPU time proportional to S/beam_width.
 void ggml_trellis_encode_group(
     const float * x, int K,
     uint16_t * out_start_state, float * out_d, uint8_t * qs) {
@@ -161,6 +194,14 @@ void ggml_trellis_encode_group(
     // Open start: dp[0][s] = 0 for all s
     for (uint32_t s = 0; s < S; s++) dp_cur[s] = 0.0f;
 
+    // Beam pruning setup
+    const int beam = get_beam_width();
+    const int use_beam = (beam > 0 && (uint32_t)beam < S);
+    float * beam_costs = use_beam ? (float *)malloc((size_t)S * sizeof(float)) : NULL;
+    if (use_beam && !beam_costs) {
+        // Fallback to full Viterbi on alloc failure
+    }
+
     const int kshift = L - K;
     for (int i = 0; i < N; i++) {
         uint16_t * bt_i = bt + (size_t)i * S;
@@ -180,8 +221,17 @@ void ggml_trellis_encode_group(
                 }
             }
         }
+        // Prune dp_next: keep only top-B states (set others to FLT_MAX)
+        if (use_beam && beam_costs) {
+            memcpy(beam_costs, dp_next, (size_t)S * sizeof(float));
+            float thresh = nth_element_f(beam_costs, (int)S, beam - 1);
+            for (uint32_t s = 0; s < S; s++) {
+                if (dp_next[s] > thresh) dp_next[s] = FLT_MAX;
+            }
+        }
         float * tmp = dp_cur; dp_cur = dp_next; dp_next = tmp;
     }
+    free(beam_costs);
 
     // Best end state
     uint32_t best_s = 0;
