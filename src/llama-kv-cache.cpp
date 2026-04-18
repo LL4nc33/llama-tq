@@ -249,6 +249,24 @@ llama_kv_cache::llama_kv_cache(
             }
             // VTQ types work natively in FA — no workaround needed
         }
+        // Attention-sink protection (StreamingLLM, arXiv:2309.17453):
+        // first tokens carry outsized attention weight. When tq_protect_sinks > 0,
+        // protect layer 0's V-cache at f16 (coarse but cheap: ~2 KB/layer scaled to
+        // 1 layer). This is a sentinel flag — sink rows aren't separately isolated,
+        // the whole layer-0 V tensor stays f16, which covers the sink tokens.
+        if (tq_protect_sinks > 0 && il == 0) {
+            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 ||
+                                   type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 ||
+                                   type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
+                                   type_v == GGML_TYPE_VTQ4_2);
+            const bool is_ktq_v = (type_v == GGML_TYPE_KTQ1_1 || type_v == GGML_TYPE_KTQ2_1 ||
+                                   type_v == GGML_TYPE_KTQ3_1 || type_v == GGML_TYPE_KTQ4_1);
+            if (is_vtq_v || is_ktq_v) {
+                eff_type_v = GGML_TYPE_F16;
+                LLAMA_LOG_INFO("%s: layer %3d: attention-sink protection (v=f16, protect_sinks=%u)\n",
+                    __func__, il, tq_protect_sinks);
+            }
+        }
         if (tq_protect_layers > 0) {
             const bool is_tq_k = (type_k == GGML_TYPE_KTQ1_1 || type_k == GGML_TYPE_KTQ2_1 || type_k == GGML_TYPE_KTQ3_1 || type_k == GGML_TYPE_KTQ4_1);
             const bool is_tq_v = (type_v == GGML_TYPE_KTQ1_1 || type_v == GGML_TYPE_KTQ2_1 || type_v == GGML_TYPE_KTQ3_1 || type_v == GGML_TYPE_KTQ4_1);
