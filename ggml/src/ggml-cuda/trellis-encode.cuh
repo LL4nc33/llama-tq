@@ -135,7 +135,8 @@ __global__ void k_vtq_encode_trellis_set_rows(
 
     const int slot = (int)(blockIdx.x % (uint32_t)pool_slots);
     float    * dp_cur  = ws_dp_cur  + (int64_t)slot * (int64_t)S;
-    float    * dp_next = ws_dp_next + (int64_t)slot * (int64_t)S;
+    // dp_next is sized for uint64_t per state; advance by 2*S floats per slot.
+    float    * dp_next = ws_dp_next + (int64_t)slot * (int64_t)(2u * S);
     uint16_t * bt_base = ws_bt      + (int64_t)slot * (int64_t)N * (int64_t)S;
 
     __shared__ float    s_xn[VTQ_ENC_N];
