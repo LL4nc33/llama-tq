@@ -23,15 +23,17 @@
 #define QK_VTQ_TRELLIS 256
 #define VTQ_TRELLIS_L  16
 
-// Trellis LUT: one per CUDA translation unit that includes this header
-// (template instantiations in convert.cu + kernel launch in trellis.cu).
-// Each is 256 KiB in global memory; both get initialized by the single
-// host-side cudaMemcpyToSymbol call — nvcc mangles the symbol per-TU,
-// so trellis.cu publishes a setter that copies to its own copy AND to
-// convert.cu's copy via cudaMemcpyToSymbol with the right TU-local
-// symbol name. For simplicity, we include the table DEFINITION here
-// as `static` (TU-local) and initialize each copy via its own init.
-static __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
+// Trellis LUT: SINGLE device-global definition in trellis.cu, referenced
+// via extern from every TU that includes this header (convert.cu,
+// trellis.cu, and the ~120 fattn-vec-instance TUs that call
+// trellis_decode_element for VTQ_2 V-dequant).
+//
+// Rationale: an older design used `static __device__` (TU-local) + per-TU
+// cudaMemcpyToSymbol init, which worked when only 3 TUs consumed the
+// LUT. For the FA-vec native V-dequant path (Phase-2c), ~120 TUs would
+// each get their own uninitialized 256-KiB copy → garbage output.
+// Single extern definition is the only scalable answer.
+extern __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
 
 // Host-side init: called once per CUDA context before any dequant.
 // Uses cudaMemcpyToSymbol on the caller's TU symbol.
