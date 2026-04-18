@@ -547,16 +547,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const ggml_tensor * V     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
 
-    // Phase-2c (WIP): VTQ{2,3,4}_2 FA-vec scaffolding is in place, but the
-    // per-TU `static __device__` LUT in trellis.cuh means each
-    // fattn-vec-instance TU gets an uninitialized copy — decoder returns
-    // zeros. Until the LUT is refactored to a single `extern __device__`
-    // symbol (touches trellis.cu, out of Phase-2c scope), keep bypassing
-    // to CPU FA. See commit message for the full blocker analysis.
-    if (V && (V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2)) {
-        return BEST_FATTN_KERNEL_NONE;
-    }
-
+    // Phase-2c: VTQ{2,3,4}_2 FA-vec native path. LUT is extern __device__
+    // in trellis.cuh with single definition in trellis.cu, so all
+    // fattn-vec-instance TUs share one initialized copy. Native dispatch
+    // enabled below via the standard FATTN_VEC_CASES matrix.
     const int gqa_ratio = Q->ne[2] / K->ne[2];
     GGML_ASSERT(Q->ne[2] % K->ne[2] == 0);
 

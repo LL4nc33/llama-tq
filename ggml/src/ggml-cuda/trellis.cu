@@ -16,6 +16,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+// Single device-global definition of the trellis LUT. Declared extern
+// in trellis.cuh so all TUs that include the header reference THIS copy.
+__device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
+
 // One pool per CUDA device. Pools are lazily allocated when the first encode
 // is requested from that device so that multi-GPU runs don't over-subscribe
 // when only one device owns VTQ_2 cache.
