@@ -389,6 +389,29 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ4_1)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
 
+    // Phase-2c: VTQ{2,3,4}_2 (Trellis v2) V-type combinations.
+    // Per-element decode via shift-register replay (O(i0) per element).
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,    GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ2_2)
+
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,    GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ3_2)
+
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,    GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_2)
+
     // TurboQuant K-type with standard V-types (K=TQ, V=standard)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_F16)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_Q4_0)
@@ -476,6 +499,27 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ3_1)
     FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
 
+    // Phase-2c: VTQ{2,3,4}_2 (Trellis v2). Only the most useful K-type combos
+    // to keep compile time bounded (see fattn-common.cuh for the decoder).
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,    GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,    GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,    GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ4_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ2_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ3_2)
+    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_2)
+
     // Note: K=TQ + V=standard (e.g., tq2_1/q4_0) requires GGML_CUDA_FA_ALL_QUANTS=ON
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
@@ -503,9 +547,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const ggml_tensor * V     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
 
-    // VTQ{2,3,4}_2 don't have FA dispatch entries yet (Phase-2c).
-    // Reject so scheduler knows there's no GPU path — currently this
-    // forces CPU FA, which handles the V-dequant via type_traits.to_float.
+    // Phase-2c (WIP): VTQ{2,3,4}_2 FA-vec scaffolding is in place, but the
+    // per-TU `static __device__` LUT in trellis.cuh means each
+    // fattn-vec-instance TU gets an uninitialized copy — decoder returns
+    // zeros. Until the LUT is refactored to a single `extern __device__`
+    // symbol (touches trellis.cu, out of Phase-2c scope), keep bypassing
+    // to CPU FA. See commit message for the full blocker analysis.
     if (V && (V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2)) {
         return BEST_FATTN_KERNEL_NONE;
     }
@@ -567,7 +614,8 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     // VTQ types are V-cache only — always asymmetric K!=V
-    const bool is_vtq_v = V->type == GGML_TYPE_VTQ1_1 || V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1;
+    const bool is_vtq_v = V->type == GGML_TYPE_VTQ1_1 || V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1 ||
+                          V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2;
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
     if (K->type != V->type && !is_vtq_v) {
