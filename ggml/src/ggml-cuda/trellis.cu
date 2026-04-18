@@ -26,9 +26,11 @@ static int get_pool_slots_env(void) {
     const char * env = getenv("GGML_CUDA_VTQ_POOL_SLOTS");
     if (env) {
         int v = atoi(env);
-        if (v >= 1 && v <= 64) return v;
+        if (v >= 1 && v <= 128) return v;
     }
-    return 8;
+    // Default 32: ~1 GB per device, ~4× faster than 8 on 0.8B (57s vs 177s/pass).
+    // Bigger (64) gives further 1.3× speedup at 2 GB — override via env if VRAM allows.
+    return 32;
 }
 
 const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t /*stream*/) {
