@@ -80,10 +80,10 @@ void trellis_decode_block(uint16_t start_state, float d, const uint8_t * qs, flo
         uint32_t bits = (w >> shift) & Kmask;
 
         state = ((state >> K) | (bits << (L - K))) & Lmask;
-        // __ldg: LUT is initialized once per device and never mutated;
-        // read-only cache is cheaper than L2 on Turing/Ampere for this
-        // 256 KiB random-access table.
-        y[i] = __ldg(vtq_trellis_table_storage + state) * ds;
+        // Plain load: 256 KiB LUT fits in L2 (~100% hit) but exceeds
+        // Turing's 48 KiB/SM RO cache — __ldg here causes a ~20% hit
+        // rate + L2 refill stalls. L2 is the right cache for this.
+        y[i] = vtq_trellis_table_storage[state] * ds;
     }
 }
 
