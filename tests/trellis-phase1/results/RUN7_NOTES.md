@@ -181,3 +181,71 @@ CPU encoder. Production path: Phase-2b needs CUDA encoder.
 Note on absolute PPL differences: GPU path gives different values
 than CPU path (20.22 vs 15.56 baseline) due to numerical ordering
 in FA kernels. Relative deltas within same backend are what count.
+
+## Run 13 — Beam-pruned CPU encoder sweep (10 chunks, Qwen3.5-0.8B, CUDA hybrid)
+
+After adding `GGML_TRELLIS_BEAM` env var + active-state list optimization
+to the CPU Viterbi encoder (commits d8e88d4b4 + 2d5fedac0), full 10-chunk
+sweeps are now feasible on all three types including K=4.
+
+Command:
+
+    GGML_TRELLIS_BEAM=512 ./build-cuda/bin/llama-perplexity \
+        -m qwen3.5-0.8b-q8_0.gguf -f wiki.test.raw -c 512 -b 512 \
+        -ngl 99 -fa on --cache-type-k f16 --cache-type-v vtqK_2 \
+        --no-warmup --chunks 10
+
+| Config | PPL | Δ vs f16 | bpw | Time |
+|--------|-----|----------|-----|------|
+| f16_gpu         | 20.22 ± 1.23 | — | 16.0 | 5s |
+| VTQ2_2 beam=512 | 22.54 ± 1.39 | **+11.5%** | 2.125 | 395s |
+| VTQ3_2 beam=512 | 20.68 ± 1.26 | **+2.2%** | 3.125 | 480s |
+| VTQ4_2 beam=512 | 20.36 ± 1.24 | **+0.7%** | 4.125 | 872s |
+
+**Key finding #1 — beam tradeoff is K-dependent:**
+- K=2 (2.125 bpw): beam=512 costs quality (+11.5% vs +7.9% at beam=2048).
+  Low-bit codebooks are dense in state space; pruning sacrifices
+  rare-but-critical winning paths.
+- K=3 (3.125 bpw): beam=512 is almost identical to beam=2048
+  (+2.2% vs +2.3%). Enough state-space headroom that pruning
+  is effectively exact.
+- K=4 (4.125 bpw): beam=512 is near-lossless (+0.7%), matches 5-chunk
+  Run 7 (+0.69% at beam=0). K=4's 16-emission expansion keeps the
+  winner set very localized — pruning barely touches the real DP.
+
+**Key finding #2 — practical encoder speeds:**
+
+| K | beam=0 (full) | beam=2048 | beam=512 |
+|---|---------------|-----------|----------|
+| 2 | ~500s est.   | 483s meas. | 395s |
+| 3 | 3645s meas.  | ~1000s est. | 480s |
+| 4 | >3600s abort | ~1800s est. | 872s |
+
+The active-state list optimization (commit 2d5fedac0) is the
+dominant win — O(n_active) per step vs O(S=65536). Beam=512 is the
+sweet spot: near-lossless quality for K≥3, 7-10× speedup over full
+Viterbi. K=2 should keep beam=2048 for quality.
+
+**Status of Phase-2b (CUDA Viterbi encoder):**
+
+An experimental CUDA encoder was implemented (commits bf9860e54..f42ac9814)
+but was reverted from production routing (commits 6fd17cdb8 + c93581e51)
+due to two issues:
+
+1. **Correctness**: measured PPL on VTQ3_2 with GPU encoder was 74 (vs
+   expected 21), suggesting a race or cost-packing bug in the 64-bit
+   atomicMin(cost<<32|prev) path.
+2. **Performance**: observed 160s/pass for VTQ3_2 on GPU vs 48s/pass
+   on CPU beam=512 — encoder-per-block is not saturating SMs.
+
+Code remains in the tree (trellis-encode.cuh, trellis.cu pool allocator)
+for future debugging. The CPU beam encoder is production-active;
+supports_op for SET_ROWS on VTQ_2 is false (CPU fallback).
+
+**Next steps (in order):**
+
+1. Full wikitext-2 PPL on Qwen3.5-27B with CPU beam=512 encoder
+   (feasible now: ~5-10h per K, runnable overnight).
+2. Comparison table vs buun/turboquant v5 at matched bpw.
+3. CUDA encoder debug: build isolated single-block test comparing
+   GPU vs CPU reference element-by-element.
