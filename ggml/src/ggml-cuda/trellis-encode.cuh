@@ -203,6 +203,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
 
         for (uint32_t prev = tid; prev < S; prev += VTQ_ENC_THREADS) {
             const float pc = dp_cur[prev];
+            if (pc >= FLT_MAX) continue;  // skip unreachable states (cost would saturate/overwrite init)
             #pragma unroll
             for (uint32_t bits = 0; bits <= Kmask; bits++) {
                 uint32_t next = ((prev >> K) | (bits << kshift)) & 0xFFFFu;
