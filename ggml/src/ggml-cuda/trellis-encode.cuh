@@ -289,6 +289,18 @@ __global__ void k_vtq_encode_trellis_set_rows(
         float recon_norm = sqrtf(recon_sq);
         float d_out = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
         dst_block->d = __float2half(d_out);
+
+#ifdef VTQ_ENC_DEBUG
+        if (blockIdx.x == 0) {
+            printf("[GPU_ENC] blk=%lld start=%u d=%.6f qs[0..3]=%02x %02x %02x %02x norm=%.6f recon=%.6f\n",
+                (long long)i, (unsigned)s_states[0], d_out,
+                dst_block->qs[0], dst_block->qs[1], dst_block->qs[2], dst_block->qs[3],
+                norm, recon_norm);
+            printf("[GPU_ENC] x[0..5]=%.4f %.4f %.4f %.4f %.4f %.4f\n",
+                s_xn[0] * norm, s_xn[1] * norm, s_xn[2] * norm,
+                s_xn[3] * norm, s_xn[4] * norm, s_xn[5] * norm);
+        }
+#endif
     }
 }
 
