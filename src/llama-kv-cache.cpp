@@ -259,10 +259,14 @@ llama_kv_cache::llama_kv_cache(
         }
         // Attention-sink protection (StreamingLLM, arXiv:2309.17453):
         // first tokens carry outsized attention weight. When tq_protect_sinks > 0,
-        // protect layer 0's V-cache at f16 (coarse but cheap: ~2 KB/layer scaled to
-        // 1 layer). This is a sentinel flag — sink rows aren't separately isolated,
-        // the whole layer-0 V tensor stays f16, which covers the sink tokens.
-        if (tq_protect_sinks > 0 && il == 0) {
+        // protect the first KV layer's V-cache at f16. On hybrid models (Mamba/SSM
+        // layers mixed with attention) il==0 may not carry KV — compute the actual
+        // first-KV-layer index.
+        uint32_t kv_layer_idx_sink = 0;
+        for (uint32_t j = 0; j < il; j++) {
+            if (hparams.has_kv(j)) { kv_layer_idx_sink++; }
+        }
+        if (tq_protect_sinks > 0 && kv_layer_idx_sink == 0 && hparams.has_kv(il)) {
             const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 ||
                                    type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 ||
                                    type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
