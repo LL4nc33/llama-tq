@@ -544,20 +544,22 @@ static void vtq_cuda_encode_set_rows(
     const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
     const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
-    // Fast path: for single-token writes (tg decode), use greedy encoder.
-    // Viterbi's O(N×2^L) state space is severe overkill for 1 token per
-    // layer and dominates wall clock in autoregressive decode.
-    // Override via GGML_VTQ_FORCE_VITERBI=1 for quality A/B testing.
-    static int force_viterbi = -1;
-    if (force_viterbi == -1) {
-        const char * env = getenv("GGML_VTQ_FORCE_VITERBI");
-        force_viterbi = (env && atoi(env) > 0) ? 1 : 0;
+    // Fast path for ne11=1 (tg decode) — opt-in via GGML_VTQ_FAST_ENC=1.
+    // Status 2026-04-19: beam-search B=16 implementation below is
+    // ~2× faster than Viterbi (9.88 vs 7.4 tok/s on 0.8B) but quality
+    // hit is large (PPL +60% on wikitext-2). Default: Viterbi until a
+    // deferred-V-quant path is wired (planned: reuse deferred_state
+    // machinery from deferred K quantization in llama-kv-cache.cpp).
+    static int enable_fast = -1;
+    if (enable_fast == -1) {
+        const char * env = getenv("GGML_VTQ_FAST_ENC");
+        enable_fast = (env && atoi(env) > 0) ? 1 : 0;
     }
-    const bool use_greedy = (ne11 == 1) && !force_viterbi;
+    const bool use_beam = (ne11 == 1) && enable_fast;
 
-    if (use_greedy) {
+    if (use_beam) {
         dim3 grid((int)ne_total, 1, 1);
-        dim3 block(32, 1, 1);  // 1 warp; only thread 0 works, but warp launches fastest
+        dim3 block(32, 1, 1);
         k_vtq_greedy_encode_set_rows<block_t, idx_t, K><<<grid, block, 0, stream>>>(
             src0_d, src1_d, dst_d, ne_total,
             s01, s02, s03, s10, s11, s12, s1, s2, s3,
