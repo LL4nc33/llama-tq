@@ -513,13 +513,6 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ3_2) {
-        // DEBUG: time the encoder launch to prove or disprove
-        // encoder-is-bottleneck hypothesis.
-        static int call_count = 0;
-        static float total_ms = 0.0f;
-        cudaEvent_t ev_start, ev_end;
-        cudaEventCreate(&ev_start); cudaEventCreate(&ev_end);
-        cudaEventRecord(ev_start, stream);
         vtq_cuda_encode_set_rows<idx_t, block_vtq3_2, 3>(
             src0_d, src1_d, (block_vtq3_2*)dst->data,
             ne00, ne01, ne02, ne03,
@@ -529,17 +522,6 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
-        cudaEventRecord(ev_end, stream);
-        cudaEventSynchronize(ev_end);
-        float ms = 0.0f;
-        cudaEventElapsedTime(&ms, ev_start, ev_end);
-        total_ms += ms;
-        call_count++;
-        if (call_count % 16 == 0) {
-            fprintf(stderr, "[vtq3_2 enc] calls=%d total=%.2fms avg=%.3fms ne11=%ld\n",
-                    call_count, total_ms, total_ms/call_count, (long)ne11);
-        }
-        cudaEventDestroy(ev_start); cudaEventDestroy(ev_end);
     } else if (dst->type == GGML_TYPE_VTQ4_2) {
         vtq_cuda_encode_set_rows<idx_t, block_vtq4_2, 4>(
             src0_d, src1_d, (block_vtq4_2*)dst->data,
