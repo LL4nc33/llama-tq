@@ -879,6 +879,57 @@ static __device__ __forceinline__ void dequantize_V_vtq4_1(const void * __restri
 // That requires invasive fattn-vec.cuh changes (deferred to Phase-2d).
 // ============================================================
 
+// Compute state(i) directly from the bitstream — O(1) per sample.
+//
+// Insight (from QTIP decoder, arXiv:2406.11235): the shift register state
+// after i updates is just an L-bit sliding window over the concatenated
+// stream `[start_state low L bits || qs bits]`. Read 16 bits from
+// position i*K — that IS state(i+1) after the post-update LUT lookup.
+//
+// Equivalence proof sketch:
+//   state(1) = (s0 >> K) | (bits(0) << (L-K))
+//            = bits of s0[K..L-1] in the low positions, bits(0) in the top K
+//   Reading L bits from stream position 1*K = K:
+//            = stream[K..K+L-1] = s0[K..L-1] || qs[0..K-1] = same thing ✓
+//
+// This makes each sample O(1) instead of O(i), eliminating the main
+// bottleneck that made VTQ_2 FA-vec TG 26x slower than f16.
+template <int K>
+static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8_t * qs, int i) {
+    // Bit position in the combined [s0 || qs] stream where the state window
+    // for sample i starts. After i shift-updates, the window is bits [i*K..i*K+L-1].
+    const int stream_bit = i * K;
+    constexpr int L = VTQ_TRELLIS_L;
+
+    if (stream_bit + L <= L) {
+        // Trivial case, should not happen for i>=1
+        return (uint32_t)s0 & 0xFFFFu;
+    }
+
+    if (stream_bit < L) {
+        // Window straddles s0/qs boundary.
+        // High (stream_bit) bits come from qs low bits;
+        // Low (L - stream_bit) bits come from s0 shifted right by stream_bit.
+        const int from_ss = L - stream_bit;
+        uint32_t lo = ((uint32_t)s0 >> stream_bit) & ((1u << from_ss) - 1u);
+        // Read stream_bit bits from the start of qs (low side).
+        uint32_t qs_word = (uint32_t)qs[0] | ((uint32_t)qs[1] << 8) | ((uint32_t)qs[2] << 16);
+        uint32_t hi = qs_word & ((1u << stream_bit) - 1u);
+        return lo | (hi << from_ss);
+    }
+
+    // Window fully in qs. Read 16 consecutive bits from qs starting at
+    // bit position (stream_bit - L).
+    const int qs_bit = stream_bit - L;
+    const int byte   = qs_bit >> 3;
+    const int shift  = qs_bit & 7;
+    uint32_t b0 = qs[byte];
+    uint32_t b1 = qs[byte + 1];
+    uint32_t b2 = qs[byte + 2];
+    uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
+    return (w >> shift) & 0xFFFFu;
+}
+
 template <typename block_t, int K, typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_t * x = (const block_t *) vx;
@@ -888,10 +939,7 @@ static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restric
     const uint16_t s0 = x[ib].start_state;
     const uint8_t * qs = x[ib].qs;
 
-    constexpr int N = QK_VTQ_TRELLIS;     // 256 samples per block
-    constexpr int L = VTQ_TRELLIS_L;       // 16-bit state
-    constexpr uint32_t Lmask = 0xFFFFu;
-    constexpr uint32_t Kmask = (1u << K) - 1u;
+    constexpr int N = QK_VTQ_TRELLIS;
     const float cb_scale = rsqrtf((float)N);
     const float ds = cb_scale * d;
 
@@ -907,54 +955,12 @@ static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restric
         return;
     }
 
-    // Warp-parallel decode: every lane walks the same shift register
-    // in lock-step, but only MATERIALIZES LUT lookups for its own
-    // output window [il .. il+ne-1]. The state-machine work is
-    // O(last) = O(il+ne), but since nvcc hoists the scalar state
-    // computation into a single chain the hardware executes it once
-    // per cycle per lane (no real reduction), SO the real win comes
-    // from dropping the expensive `vtq_trellis_table_storage[state]`
-    // global load for indices outside the window.
-    //
-    // For lane 0 (il=0, ne=8): 8 LUT loads, 8 state updates
-    // For lane 31 (il=248, ne=8): 256 state updates, 8 LUT loads
-    // Average LUT loads per lane: 8 (constant, not O(il)).
-    //
-    // Previous version did O(ne * (il+ne)) LUT loads via per-element
-    // replay. New version does O(ne) LUT loads. For ne=8/D=256 this
-    // is a ~16× reduction in LUT traffic.
-
-    uint32_t state = (uint32_t)s0 & Lmask;
-    const int last = il + ne;
-
-    // Walk state machine up to il (no LUT loads needed here).
-    #pragma unroll 1
-    for (int i = 0; i < il; ++i) {
-        const int bit_off = i * K;
-        const int byte    = bit_off >> 3;
-        const int shift   = bit_off & 7;
-        uint32_t b0 = qs[byte];
-        uint32_t b1 = qs[byte + 1];
-        uint32_t b2 = (shift + K > 16) ? qs[byte + 2] : 0u;
-        uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
-        uint32_t bits = (w >> shift) & Kmask;
-        state = ((state >> K) | (bits << (L - K))) & Lmask;
-    }
-
-    // Now emit our window with LUT loads.
+    // Direct O(1) per-sample decode — no shift-register replay.
     #pragma unroll
     for (int l = 0; l < ne; ++l) {
-        const int i = il + l;
-        const int bit_off = i * K;
-        const int byte    = bit_off >> 3;
-        const int shift   = bit_off & 7;
-        uint32_t b0 = qs[byte];
-        uint32_t b1 = qs[byte + 1];
-        uint32_t b2 = (shift + K > 16) ? qs[byte + 2] : 0u;
-        uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
-        uint32_t bits = (w >> shift) & Kmask;
-        state = ((state >> K) | (bits << (L - K))) & Lmask;
-
+        // Original loop advances state BEFORE the LUT lookup, so y[i]
+        // uses state(i+1). Here we compute state(i+1) directly.
+        const uint32_t state = vtq_state_at<K>(s0, qs, il + l + 1);
         const float val = vtq_trellis_table_storage[state] * ds;
         if constexpr (std::is_same_v<T, half>) {
             ((half *) dst)[l] = __float2half(val);
