@@ -128,6 +128,85 @@ static void dequantize_row_vtq4_2_cuda(const void * vx, dst_t * y, const int64_t
 }
 
 // ============================================================
+// Non-contiguous (NC) dequant kernel for VTQ_2 — required so that
+// convert.cu's ggml_get_to_{fp16,bf16,fp32}_nc_cuda dispatch tables
+// return a valid kernel for VTQ_2 types. Without this, FA falls
+// back to cuBLAS + CPU dequant path (observed 24x slowdown).
+//
+// One CUDA block per trellis block (512 samples). Thread 0 decodes
+// the entire block into shared memory, then all 128 threads write
+// strided output. Shift-register decode is inherently sequential so
+// no thread parallelism within a block. That's OK for V-cache
+// dequant: thousands of blocks per layer × multiple layers gives
+// plenty of grid-level parallelism to saturate the GPU.
+template <typename block_t, int K, typename dst_t>
+static __global__ void k_dequantize_trellis_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
+        const int64_t ne00, const int64_t ne01,
+        const int64_t ne0203, const uint3 ne02_fdv,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    const int64_t ib_in_row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int64_t nb_per_row = ne00 / QK_VTQ_TRELLIS;
+    if (ib_in_row >= nb_per_row) return;
+
+    __shared__ float decoded[QK_VTQ_TRELLIS];
+
+    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
+        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
+            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
+            const int64_t ibx0 = dm.x*s03 + dm.y*s02 + i01*s01;
+            const block_t * x = (const block_t *) vx;
+            const int64_t ib = ibx0 + ib_in_row;
+
+            if (tid == 0) {
+                trellis_decode_block<K>(x[ib].start_state, (float)x[ib].d, x[ib].qs, decoded);
+            }
+            __syncthreads();
+
+            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ_TRELLIS;
+            for (int i = tid; i < QK_VTQ_TRELLIS; i += blockDim.x) {
+                if (ib_in_row * QK_VTQ_TRELLIS + i < ne00) {
+                    y[out_base + i] = ggml_cuda_cast<dst_t>(decoded[i]);
+                }
+            }
+            __syncthreads();
+        }
+    }
+}
+
+template <typename block_t, int K, typename dst_t>
+static void trellis_dequantize_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_VTQ_TRELLIS == 0);
+    const int64_t nb_per_row = ne00 / QK_VTQ_TRELLIS;
+    const int64_t ne0203 = ne02*ne03;
+    const uint3 ne02_fdv = init_fastdiv_values(ne02);
+    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    k_dequantize_trellis_nc<block_t, K, dst_t><<<num_blocks, 128, 0, stream>>>(
+        vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+}
+
+template <typename dst_t>
+static void dequantize_block_vtq2_2_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    trellis_dequantize_nc_cuda<block_vtq2_2, 2>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+}
+template <typename dst_t>
+static void dequantize_block_vtq3_2_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    trellis_dequantize_nc_cuda<block_vtq3_2, 3>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+}
+template <typename dst_t>
+static void dequantize_block_vtq4_2_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    trellis_dequantize_nc_cuda<block_vtq4_2, 4>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+}
+
+// ============================================================
 // Per-element decoder variant for FA-vec V-dequant path (Phase-2c WIP).
 //
 // The FA-vec kernel calls `dequantize_V_t(vx, dst, i0)` per-row with
