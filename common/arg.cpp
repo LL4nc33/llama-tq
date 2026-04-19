@@ -2074,6 +2074,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD}).set_env("LLAMA_ARG_TQ_DEFERRED_K"));
     add_opt(common_arg(
+        {"--tq-deferred-v"},
+        "defer V quantization: stage V-writes as f16 during prefill, bulk-convert at\n"
+        "prefill->decode transition. Avoids 21.7ms/call Viterbi on per-token decode writes.\n"
+        "(only effective with VTQ2_2/VTQ3_2/VTQ4_2 V cache types)",
+        [](common_params & params) {
+            params.tq_deferred_v = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_DEFERRED_V"));
+    add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
         [](common_params & params) {

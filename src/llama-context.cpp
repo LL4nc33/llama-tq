@@ -281,6 +281,7 @@ llama_context::llama_context(
             /*.tq_protect_layers   =*/ params.tq_protect_layers,
             /*.tq_protect_sinks    =*/ params.tq_protect_sinks,
             /*.tq_deferred_k       =*/ params.tq_deferred_k,
+            /*.tq_deferred_v       =*/ params.tq_deferred_v,
         };
 
         memory.reset(model.create_memory(params_mem, cparams));
@@ -2914,6 +2915,7 @@ llama_context_params llama_context_default_params() {
         /*.tq_protect_layers           =*/ 0,
         /*.tq_protect_sinks            =*/ 0,
         /*.tq_deferred_k               =*/ false,
+        /*.tq_deferred_v               =*/ false,
         /*.abort_callback              =*/ nullptr,
         /*.abort_callback_data         =*/ nullptr,
         /*.embeddings                  =*/ false,

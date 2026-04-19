@@ -32,6 +32,7 @@ public:
                  uint32_t   tq_protect_layers,
                  uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
+                     bool   tq_deferred_v,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,
