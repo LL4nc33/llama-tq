@@ -2052,7 +2052,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, int value) {
             params.tq_protect_layers = value >= 0 ? (uint32_t)value : 0;
         }
-    ).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
     add_opt(common_arg(
         {"--tq-protect-sinks"}, "N",
         string_format(
@@ -2064,7 +2064,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, int value) {
             params.tq_protect_sinks = value >= 0 ? (uint32_t)value : 0;
         }
-    ).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
     add_opt(common_arg(
         {"--tq-deferred-k"},
         "defer K quantization until prefill->decode transition for better quality\n"
