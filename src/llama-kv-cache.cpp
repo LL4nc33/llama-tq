@@ -269,6 +269,8 @@ llama_kv_cache::llama_kv_cache(
         for (uint32_t j = 0; j < il; j++) {
             if (hparams.has_kv(j)) { kv_layer_idx_sink++; }
         }
+        LLAMA_LOG_WARN("%s: sink-check il=%u kv_layer_idx_sink=%u has_kv=%d tq_protect_sinks=%u type_v=%s\n",
+            __func__, il, kv_layer_idx_sink, (int)hparams.has_kv(il), tq_protect_sinks, ggml_type_name(type_v));
         if (tq_protect_sinks > 0 && kv_layer_idx_sink == 0 && hparams.has_kv(il)) {
             const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 ||
                                    type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 ||
