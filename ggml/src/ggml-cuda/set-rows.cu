@@ -513,15 +513,6 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ3_2) {
-        // DEBUG: count ne11 distribution
-        static int64_t count_ne11_1 = 0, count_ne11_other = 0;
-        static int64_t total = 0;
-        if (ne11 == 1) count_ne11_1++; else count_ne11_other++;
-        total++;
-        if (total % 128 == 0) {
-            fprintf(stderr, "[vtq3_2 ne11] total=%ld ne11==1: %ld (%.1f%%) other: %ld\n",
-                    total, count_ne11_1, 100.0 * count_ne11_1 / total, count_ne11_other);
-        }
         vtq_cuda_encode_set_rows<idx_t, block_vtq3_2, 3>(
             src0_d, src1_d, (block_vtq3_2*)dst->data,
             ne00, ne01, ne02, ne03,
