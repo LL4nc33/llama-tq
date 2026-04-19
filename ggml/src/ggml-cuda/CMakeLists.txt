@@ -140,7 +140,8 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-q8_0-ktq1_1.cu
             template-instances/fattn-vec-instance-q8_0-ktq2_1.cu
             template-instances/fattn-vec-instance-q8_0-ktq3_1.cu
-            template-instances/fattn-vec-instance-q8_0-ktq4_1.cu)
+            template-instances/fattn-vec-instance-q8_0-ktq4_1.cu
+            template-instances/fattn-vec-instance-f16-vtq3_2.cu)
     endif()
 
     ggml_add_backend_library(ggml-cuda
@@ -154,6 +155,13 @@ if (CUDAToolkit_FOUND)
     # (warning 20044-D) and each TU gets an uninitialized copy.
     set_target_properties(ggml-cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     set_target_properties(ggml-cuda PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+
+    # Monster TUs (fattn.cu, fattn-vec header expansion) peak at 6-10 GB RAM
+    # during cicc template instantiation. Serialize them via a JOB_POOL so
+    # normal -jN builds stay safe on 32 GB VMs. Other small TUs compile in
+    # parallel unbothered.
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_compile=1)
+    set_source_files_properties(fattn.cu PROPERTIES JOB_POOL_COMPILE heavy_compile)
 
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 
