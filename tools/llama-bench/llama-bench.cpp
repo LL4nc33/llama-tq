@@ -1258,6 +1258,13 @@ struct cmd_params_instance {
         cparams.op_offload      = !no_op_offload;
         cparams.swa_full        = false;
 
+        if (const char * e = getenv("LLAMA_ARG_TQ_DEFERRED_V")) {
+            cparams.tq_deferred_v = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+        }
+        if (const char * e = getenv("LLAMA_ARG_TQ_DEFERRED_K")) {
+            cparams.tq_deferred_k = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+        }
+
         return cparams;
     }
 };
