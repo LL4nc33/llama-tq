@@ -109,9 +109,6 @@ llama_kv_cache::llama_kv_cache(
     tq_protect_layers(tq_protect_layers), tq_protect_sinks(tq_protect_sinks),
     user_type_k(type_k), user_type_v(type_v), swa_type(swa_type) {
 
-    LLAMA_LOG_WARN("%s: ctor tq_protect_sinks=%u tq_protect_layers=%u tq_deferred_k=%d tq_deferred_v=%d\n",
-        __func__, tq_protect_sinks, tq_protect_layers, (int)tq_deferred_k, (int)tq_deferred_v);
-
     GGML_ASSERT(kv_size % n_pad == 0);
 
     const uint32_t n_layer_kv = hparams.n_layer_kv();
