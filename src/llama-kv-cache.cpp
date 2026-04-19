@@ -275,7 +275,7 @@ llama_kv_cache::llama_kv_cache(
                                    type_v == GGML_TYPE_KTQ3_1 || type_v == GGML_TYPE_KTQ4_1);
             if (is_vtq_v || is_ktq_v) {
                 eff_type_v = GGML_TYPE_F16;
-                LLAMA_LOG_INFO("%s: layer %3d: attention-sink protection (v=f16, protect_sinks=%u)\n",
+                LLAMA_LOG_WARN("%s: layer %3d: attention-sink protection (v=f16, protect_sinks=%u)\n",
                     __func__, il, tq_protect_sinks);
             }
         }
