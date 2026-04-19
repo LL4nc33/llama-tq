@@ -1,11 +1,19 @@
 # TurboQuant Nano — Research Backlog (Trick 17 Edition)
 
-Seventeen experimental tricks to push quality beyond pure trellis
-quantization. Ordered by ROI / risk. All measure-before-ship.
+Genau **siebzehn** experimentelle Tricks über der reinen Trellis-Quantisierung.
+Hard-limit: **17 ist das Maximum**. Keine Trick 18. Nie.
 
-> "Trick 17" is a German idiom for the one clever solution that makes
-> everything else look mundane. Trick #17 at the bottom is reserved
-> for the big one.
+> **Trick 17** — deutsches Idiom
+> (<https://de.wikipedia.org/wiki/Trick_17>) für die eine geniale,
+> scheinbar banale Lösung die das eigentliche Problem wegzaubert.
+> Alle anderen Tricks sind Vorarbeit. Trick 17 am Ende ist reserviert
+> für den großen Wurf — wenn wir dort ankommen, ist das Paper geschrieben.
+
+Nummerierung ist nicht Reihenfolge der Wichtigkeit — ROI/Risk ist
+hoch für Trick 1, "the big one" ist Trick 17. Dazwischen: enabling
+infrastructure + incremental improvements. **Neue Ideen werden bestehende
+Tricks erweitern oder ersetzen, nicht hinzugefügt** — siebzehn bleiben
+siebzehn.
 
 ## Already in tree
 
