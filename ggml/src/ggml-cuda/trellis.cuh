@@ -183,6 +183,12 @@ static void trellis_dequantize_nc_cuda(const void * vx, dst_t * y,
     const int64_t ne0203 = ne02*ne03;
     const uint3 ne02_fdv = init_fastdiv_values(ne02);
     const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    // DEBUG: count calls to verify this is the hot path
+    static int call_count = 0;
+    if (++call_count <= 5 || call_count % 1000 == 0) {
+        fprintf(stderr, "[trellis_nc K=%d] call#%d ne00=%ld ne01=%ld ne02=%ld ne03=%ld\n",
+                K, call_count, (long)ne00, (long)ne01, (long)ne02, (long)ne03);
+    }
     k_dequantize_trellis_nc<block_t, K, dst_t><<<num_blocks, 128, 0, stream>>>(
         vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
 }
