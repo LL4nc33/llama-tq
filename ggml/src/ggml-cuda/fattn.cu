@@ -526,15 +526,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const ggml_tensor * V     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
 
-    // Phase-2c PERF-BYPASS: native path correctness-verified but 25× slower
-    // than f16 on TG (6.8 vs 172 tok/s on 0.8B). Per-element decoder does
-    // O(N²) shift-register replay — needs shmem block cache (Phase-2d,
-    // ~200 LOC) to be competitive. Bypass to CPU FA for now; flip back
-    // to LUT-extern path when shmem cache is wired.
-    if (V && (V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2)) {
-        return BEST_FATTN_KERNEL_NONE;
-    }
-
+    // Phase-2c: VTQ_2 FA-vec native path with single-pass decoder.
+    // Single walk of the shift register per call — O(il+ne) instead of
+    // O(ne × il) via per-element replay. See dequantize_V_vtq_2 in
+    // fattn-common.cuh. Full shmem block cache is Phase-2e.
     const int gqa_ratio = Q->ne[2] / K->ne[2];
     GGML_ASSERT(Q->ne[2] % K->ne[2] == 0);
 
