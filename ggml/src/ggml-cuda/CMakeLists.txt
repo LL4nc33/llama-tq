@@ -148,6 +148,13 @@ if (CUDAToolkit_FOUND)
                              ${GGML_SOURCES_CUDA}
                             )
 
+    # Relocatable device code — required for cross-TU `extern __device__`
+    # variables (Trellis LUT shared across fattn-vec-instance TUs for
+    # Phase-2c). Without this, nvcc silently demotes extern to static
+    # (warning 20044-D) and each TU gets an uninitialized copy.
+    set_target_properties(ggml-cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    set_target_properties(ggml-cuda PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 
     if (GGML_CUDA_GRAPHS)
