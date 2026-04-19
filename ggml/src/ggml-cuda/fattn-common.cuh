@@ -955,19 +955,18 @@ static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restric
         return;
     }
 
-    // Direct O(1) per-sample decode — no shift-register replay.
+    // DEBUG: test if dequant is bottleneck by returning constant 0.
+    // If bench stays at 7 tok/s, dequant is NOT the cause.
+    // If bench jumps to ~f16 speed, dequant IS the cause.
     #pragma unroll
     for (int l = 0; l < ne; ++l) {
-        // Original loop advances state BEFORE the LUT lookup, so y[i]
-        // uses state(i+1). Here we compute state(i+1) directly.
-        const uint32_t state = vtq_state_at<K>(s0, qs, il + l + 1);
-        const float val = vtq_trellis_table_storage[state] * ds;
         if constexpr (std::is_same_v<T, half>) {
-            ((half *) dst)[l] = __float2half(val);
+            ((half *) dst)[l] = __float2half(0.0f);
         } else {
-            ((float *) dst)[l] = val;
+            ((float *) dst)[l] = 0.0f;
         }
     }
+    (void)s0; (void)qs; (void)ds;
 }
 
 template <typename T, int ne>
