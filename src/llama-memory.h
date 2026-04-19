@@ -29,6 +29,9 @@ struct llama_memory_params {
 
     // TurboQuant deferred K quantization
     bool tq_deferred_k;
+
+    // TurboQuant deferred V quantization
+    bool tq_deferred_v;
 };
 
 enum llama_memory_status {
