@@ -361,6 +361,7 @@ extern "C" {
         uint32_t tq_protect_layers; // boundary layer protection: first/last N layers use q8_0 instead of TQ
         uint32_t tq_protect_sinks;  // attention-sink protection (StreamingLLM): force layer-0 V-cache to f16 when > 0
         bool tq_deferred_k;        // defer K quantization until prefill->decode transition
+        bool tq_deferred_v;        // defer V quantization until prefill->decode transition
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted
