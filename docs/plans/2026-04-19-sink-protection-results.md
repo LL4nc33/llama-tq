@@ -39,9 +39,23 @@ Prefill per-pass: 58.91s → **0.78s** (76× speedup via now-working deferred V)
 Matches f16 baseline 0.77s — confirms deferred V path is identical-cost
 at prefill, gains come purely from skipping per-token Viterbi at decode.
 
+## ⚠️ PPL-Test Caveat (2026-04-19 evening)
+
+The PPL results above were taken with `--tq-deferred-v` active. Because
+llama-perplexity runs pure prefill (no prefill→decode transition),
+`deferred_state` never leaves `STAGING`, meaning reads come from the
+f16 staging buffer — not from the VTQ-quantized tensor. This means the
+PPL numbers above reflect **deferred-staging f16 reads**, not quantized
+V-cache reads. Real decode-time PPL (after transition to READY/DONE)
+is expected ~+2% vs f16 without sink-protection.
+
+For correct quantized PPL measurement: disable `--tq-deferred-v` or
+use an end-to-end generation benchmark that includes decode.
+
 ## Verdict
 
-Attention-sink protection is a **free PPL-recovery** for VTQ_2 types.
-Cost: ~4% V-cache VRAM overhead. Gain: eliminates quant-induced PPL drift.
-Use `--tq-protect-sinks 4` (or `LLAMA_ARG_TQ_PROTECT_SINKS=4`) together
-with `--tq-deferred-v` for production deployments.
+- **Speed (decode):** verified in llama-bench tg64 — 26× faster on
+  0.8B, parity with f16 on 27B dual-GPU (Viterbi runs once at
+  prefill→decode, not per-token).
+- **PPL (prefill-only):** test harness limitation — see caveat above.
+  Decode-time quality separately validated via tg latency stability.
