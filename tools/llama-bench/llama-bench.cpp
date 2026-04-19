@@ -1264,6 +1264,12 @@ struct cmd_params_instance {
         if (const char * e = getenv("LLAMA_ARG_TQ_DEFERRED_K")) {
             cparams.tq_deferred_k = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
         }
+        if (const char * e = getenv("LLAMA_ARG_TQ_PROTECT_SINKS")) {
+            cparams.tq_protect_sinks = (uint32_t) std::max(0, atoi(e));
+        }
+        if (const char * e = getenv("LLAMA_ARG_TQ_PROTECT_LAYERS")) {
+            cparams.tq_protect_layers = (uint32_t) std::max(0, atoi(e));
+        }
 
         return cparams;
     }
