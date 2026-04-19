@@ -262,15 +262,14 @@ llama_kv_cache::llama_kv_cache(
         }
         // Attention-sink protection (StreamingLLM, arXiv:2309.17453):
         // first tokens carry outsized attention weight. When tq_protect_sinks > 0,
-        // protect the first KV layer's V-cache at f16. On hybrid models (Mamba/SSM
-        // layers mixed with attention) il==0 may not carry KV — compute the actual
-        // first-KV-layer index.
+        // protect the first **attention** KV layer's V-cache at f16. On hybrid
+        // models (Mamba/SSM mixed with attention), walk layers honouring both
+        // has_kv() and the caller's filter() — recurrent layers report has_kv()=true
+        // but are excluded by filter().
         uint32_t kv_layer_idx_sink = 0;
         for (uint32_t j = 0; j < il; j++) {
-            if (hparams.has_kv(j)) { kv_layer_idx_sink++; }
+            if (hparams.has_kv(j) && (!filter || filter(j))) { kv_layer_idx_sink++; }
         }
-        LLAMA_LOG_WARN("%s: sink-check il=%u kv_layer_idx_sink=%u has_kv=%d tq_protect_sinks=%u type_v=%s\n",
-            __func__, il, kv_layer_idx_sink, (int)hparams.has_kv(il), tq_protect_sinks, ggml_type_name(type_v));
         if (tq_protect_sinks > 0 && kv_layer_idx_sink == 0 && hparams.has_kv(il)) {
             const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 ||
                                    type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 ||
@@ -292,7 +291,7 @@ llama_kv_cache::llama_kv_cache(
             if (is_tq_k || is_tq_v || is_vtq_v) {
                 uint32_t kv_layer_idx = 0;
                 for (uint32_t j = 0; j < il; j++) {
-                    if (hparams.has_kv(j)) {
+                    if (hparams.has_kv(j) && (!filter || filter(j))) {
                         kv_layer_idx++;
                     }
                 }
