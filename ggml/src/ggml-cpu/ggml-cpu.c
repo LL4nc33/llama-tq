@@ -418,19 +418,18 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .nrows                    = 1,
     },
     [GGML_TYPE_VTQ2_2] = {
-        .from_float               = (ggml_from_float_t) quantize_row_vtq2_2_ref,
+        // .from_float omitted: forces backend scheduler to use CUDA encoder
+        // (set-rows.cu) instead of CPU roundtrip. Same pattern as KTQ4_1.
         .vec_dot                  = ggml_vec_dot_vtq2_2_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_VTQ3_2] = {
-        .from_float               = (ggml_from_float_t) quantize_row_vtq3_2_ref,
         .vec_dot                  = ggml_vec_dot_vtq3_2_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_VTQ4_2] = {
-        .from_float               = (ggml_from_float_t) quantize_row_vtq4_2_ref,
         .vec_dot                  = ggml_vec_dot_vtq4_2_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
