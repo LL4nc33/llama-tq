@@ -10,6 +10,8 @@
 //     Default pool_slots = 8 → 262 MiB reserved per-device on first use.
 //     Override via env: GGML_CUDA_VTQ_POOL_SLOTS=<1..64>.
 
+// Emit the single definition of the LUT in THIS TU.
+#define VTQ_TRELLIS_TABLE_DEFINE
 #include "trellis.cuh"
 #include "trellis-encode.cuh"
 
