@@ -2066,6 +2066,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
     add_opt(common_arg(
+        {"--tq-profile-heads"}, "N",
+        string_format(
+            "TurboQuant Trick 2 PR1: profile the first N decode calls and dump per-head V-cache\n"
+            "variance/kurtosis as JSON to tq-profile-heads-<PID>.json (0 = disabled, no runtime cost)\n"
+            "(default: %u)",
+            params.tq_profile_heads
+        ),
+        [](common_params & params, int value) {
+            params.tq_profile_heads = value >= 0 ? (uint32_t)value : 0;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROFILE_HEADS"));
+    add_opt(common_arg(
         {"--tq-deferred-k"},
         "defer K quantization until prefill->decode transition for better quality\n"
         "(only effective with TQ K cache types)",

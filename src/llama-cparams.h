@@ -40,6 +40,10 @@ struct llama_cparams {
     bool kv_unified;
     bool pipeline_parallel;
 
+    // Trick 2 PR1: per-head V variance/kurtosis profiling
+    // If > 0, profile first N decode calls and dump JSON to stderr / tq-profile-heads-$PID.json
+    uint32_t tq_profile_heads;
+
     enum llama_pooling_type pooling_type;
 
     ggml_backend_sched_eval_callback cb_eval;
