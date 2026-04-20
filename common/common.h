@@ -566,6 +566,8 @@ struct common_params {
     ggml_type   tq_v_low  = GGML_TYPE_VTQ2_2;    // --tq-v-low
     float       tq_v_budget_bpw = 0.0f;          // --tq-v-budget-bpw (0 = disabled)
 
+    uint32_t tq_overlay_topn = 0;   // Trick 4: per-block correction overlay entries (0 = disabled)
+
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 
     // multimodal models (see tools/mtmd)
