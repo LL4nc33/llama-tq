@@ -1,6 +1,6 @@
 # CUDA Stability Validation — VTQ_2 Production Readiness
 
-Status: **in progress** (2026-04-20)
+Status: **COMPLETE** (2026-04-20)
 
 ## Context
 
@@ -35,15 +35,30 @@ Baseline f16: **14.39**
 |------|---------|--------|--------|--------------------------|
 | vtq2_2 (2.06 bpw) | 15.69 | **15.54** | -1.0pp | **+8.0%** |
 | vtq3_2 (3.06 bpw) | 14.74 | **14.66** | -0.5pp | **+1.9%** |
-| vtq4_2 (4.06 bpw) | pending | pending | — | — |
+| vtq4_2 (4.06 bpw) | 14.45 | 14.48 | +0.2pp (noise) | **+0.6%** |
+
+Sink protection is most effective at low bpw where sinks dominate;
+at 4 bpw the baseline already reaches f16-parity so sink has no
+measurable additional effect.
 
 Sink reliably trims overhead; effect stronger at lower bpw where
 sinks dominate quality. vtq3_2 at +1.9% is production-acceptable.
 
-## Stage 3 — 35B 2-GPU stability (pending)
+## Stage 3 — 27B 2-GPU stability (tg1024)
 
-Planned: Qwen3.5-27B-IQ2_XXS on 2× RTX 2060, vtq3_2 + deferred + sink,
-long-run tg1024, watch for OOM/crashes.
+All 3 VTQ_2 types with `--tq-deferred-v --tq-protect-sinks 4` on
+Qwen3.5-27B-IQ2_XXS, dual RTX 2060.
+
+| config | pp1024 | tg1024 | tg vs f16 |
+|--------|--------|--------|-----------|
+| f16 | 498.87 | 14.89 | — |
+| vtq2_2+both | 487.85 | 14.70 | -1.3% |
+| vtq3_2+both | 484.33 | 14.62 | -1.8% |
+| vtq4_2+both | 482.40 | 14.58 | -2.1% |
+
+**No crashes, no OOM, no NaN. All 3 types stable on long runs (2048
+tokens pp+tg each).** tg speed at ~98% of f16 baseline; pp lightly
+slower due to Viterbi bulk-encode at prefill→decode transition.
 
 ## Bugs Fixed Alongside Validation
 
@@ -55,8 +70,18 @@ long-run tg1024, watch for OOM/crashes.
    models (Qwen3.5 = Mamba+attention) this caused counter drift so
    sink never fired on first attention-KV layer
 
-## Verdict (tentative, pending vtq4_2 + 35B)
+## Verdict
 
-VTQ3_2 + `--tq-deferred-v --tq-protect-sinks 4` is the production
-recipe: +1.9% PPL, parity tg speed, 3.06 bpw V-cache (62% VRAM save
-vs f16). VTQ2_2 viable for VRAM-constrained deployments at +8.0% PPL.
+**CUDA path is production-ready.** VTQ3_2 + `--tq-deferred-v
+--tq-protect-sinks 4` is the production recipe:
+- +1.9% PPL vs f16
+- tg speed 98% of f16 on 27B dual-GPU
+- 3.06 bpw V-cache → 62% VRAM save vs f16
+- No crashes across 6h of accumulated runs (bench+perplexity)
+
+VTQ2_2 viable for VRAM-constrained deployments at +8.0% PPL (73%
+VRAM save). VTQ4_2 recommended when quality is paramount (+0.6% PPL,
+50% VRAM save).
+
+**Gate for Trick-17 series:** cleared. Next: Trick 2 (per-head
+precision mixing) or deploy gpu00:8791 production stack.

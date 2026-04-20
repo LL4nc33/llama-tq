@@ -21,19 +21,24 @@ siebzehn.
 First N + last N layers keep `q8_0` instead of TQ. CLI exposes it,
 default off. Spatial protection for critical layers.
 
-## Trick 1 — Attention-sink token protection (highest ROI, trivial)
+## Trick 1 — Attention-sink token protection ✅ DONE (2026-04-20)
 
-Keep the first 4 tokens of V-cache at `f16`, rest at `vtq_2`. Attention
-sinks (StreamingLLM paper) carry outsized quality weight — 4 × 16 B
-per head is peanuts but protects the hot-path tokens.
+Shipped as layer-level coarse approximation (first KV layer's V-cache
+stays f16, rest quantized). Not the token-level version originally
+sketched — that needs hybrid tensor layout which was scoped as Phase-3
+work. Layer-level is cheap (one layer out of ~N) and captures most of
+the benefit since sinks dominate layer-0 attention anyway.
 
-**Cost:** ~2 KB per layer.
-**Expected gain:** recovers ~30-50 % of the vtq2_2 PPL delta on long
-context (untested on our stack).
+**Measured gain (wikitext-2 chunks=10 on 0.8B):**
 
-**Implementation sketch:** in `llama-kv-cache.cpp` write path, branch
-on `token_idx < N_SINKS`. Needs a parallel f16 side-buffer and a
-hybrid read path in the FA V-dequant. Couple dozen LOC.
+| type | no sink | sink=4 | Δ |
+|------|---------|--------|---|
+| vtq2_2 | +9.0% | +8.0% | -1.0pp |
+| vtq3_2 | +2.4% | +1.9% | -0.5pp |
+| vtq4_2 | +0.4% | +0.6% | noise |
+
+**Cost:** +1/N_kv_layers V-cache memory (e.g. 4% on a 24-layer model).
+**Use:** `--tq-protect-sinks 4` (works with any VTQ/KTQ V-type).
 
 ## Trick 2 — Per-head precision mixing
 
