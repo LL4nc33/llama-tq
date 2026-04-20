@@ -156,12 +156,19 @@ if (CUDAToolkit_FOUND)
     set_target_properties(ggml-cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     set_target_properties(ggml-cuda PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 
-    # Monster TUs (fattn.cu, fattn-vec header expansion) peak at 6-10 GB RAM
-    # during cicc template instantiation. Serialize them via a JOB_POOL so
-    # normal -jN builds stay safe on 32 GB VMs. Other small TUs compile in
-    # parallel unbothered.
-    set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_compile=1)
-    set_source_files_properties(fattn.cu PROPERTIES JOB_POOL_COMPILE heavy_compile)
+    # Monster TUs (fattn-vec header expansion) peak at 6-10 GB RAM during
+    # cicc template instantiation. The old monolithic fattn.cu was split
+    # into 3 fattn-vec-dispatch-*.cu TUs (f16 / ktq / vtq) + the thin
+    # top-level fattn.cu dispatcher, so cicc can instantiate them in
+    # parallel (~4x wall-clock speedup). To avoid blowing past 32 GB RAM
+    # on -jN builds, at most 2 of the heavy TUs run concurrently; other
+    # small TUs compile unbothered.
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_compile=2)
+    set_source_files_properties(
+        fattn-vec-dispatch-f16.cu
+        fattn-vec-dispatch-ktq.cu
+        fattn-vec-dispatch-vtq.cu
+        PROPERTIES JOB_POOL_COMPILE heavy_compile)
 
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 
