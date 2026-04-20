@@ -382,28 +382,32 @@ static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
 // Decoder is a shift register fed by packed K-bit emit stream.
 // bpw = (16 + 16 + QK_VTQ_TRELLIS·K) / QK_VTQ_TRELLIS
 
-#define QK_VTQ_TRELLIS 256
+// Task #143: halved from 256 to 128. MSE measured *better* than QK=256 on
+// Phase-1 gauss N=16384 sweep (2-bit: 0.0668 vs 0.0680; 3-bit: 0.01704 vs 0.01722).
+// Enables head_dim=128 model support (Qwen3.5-0.6B/0.8B) and gives 2x block-level
+// parallelism on head_dim=256 (Qwen3.5-35B-A3B). bpw overhead: +0.031/K-level.
+#define QK_VTQ_TRELLIS 128
 
 typedef struct {
     ggml_half d;                // group scale (encoder norm-correction output)
     uint16_t  start_state;      // L=16 bit open-start state
-    uint8_t   qs[QK_VTQ_TRELLIS * 2 / 8];  // 64 B
+    uint8_t   qs[QK_VTQ_TRELLIS * 2 / 8];  // 32 B
 } block_vtq2_2;
-static_assert(sizeof(block_vtq2_2) == 68, "wrong vtq2_2 block size");  // 2.125 bpw
+static_assert(sizeof(block_vtq2_2) == 36, "wrong vtq2_2 block size");  // 2.25 bpw
 
 typedef struct {
     ggml_half d;
     uint16_t  start_state;
-    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];  // 96 B
+    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];  // 48 B
 } block_vtq3_2;
-static_assert(sizeof(block_vtq3_2) == 100, "wrong vtq3_2 block size");  // 3.125 bpw
+static_assert(sizeof(block_vtq3_2) == 52, "wrong vtq3_2 block size");  // 3.25 bpw
 
 typedef struct {
     ggml_half d;
     uint16_t  start_state;
-    uint8_t   qs[QK_VTQ_TRELLIS * 4 / 8];  // 128 B
+    uint8_t   qs[QK_VTQ_TRELLIS * 4 / 8];  // 64 B
 } block_vtq4_2;
-static_assert(sizeof(block_vtq4_2) == 132, "wrong vtq4_2 block size");  // 4.125 bpw
+static_assert(sizeof(block_vtq4_2) == 68, "wrong vtq4_2 block size");  // 4.25 bpw
 
 // --- VTQ Correction Overlay (Trick 4) ---
 // Per-trellis-block top-N error sidecar. Stored in a separate tensor,
