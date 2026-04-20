@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define GGML_TRELLIS_L        16
-#define GGML_TRELLIS_QK_GROUP 256  // samples per ggml-block
+#define GGML_TRELLIS_QK_GROUP 128  // samples per ggml-block (task #143: was 256)
 // 256 divides typical V-cache row sizes (head_dim * n_head_kv / tp):
 //   Qwen3.5-27B:  128*2 = 256     (exactly)
 //   Qwen3.5-0.8B: 256*1 = 256     (exactly)
