@@ -549,6 +549,11 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
+    uint32_t tq_protect_layers = 0; // boundary layer protection: first/last N layers use q8_0 instead of TQ
+    uint32_t tq_protect_sinks  = 0; // attention-sink protection: force layer-0 V-cache to f16 when > 0 (StreamingLLM)
+    bool tq_deferred_k = false;     // defer K quantization until prefill->decode transition
+    bool tq_deferred_v = false;     // defer V quantization until prefill->decode transition
+
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 
     // multimodal models (see tools/mtmd)

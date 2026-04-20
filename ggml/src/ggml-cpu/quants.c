@@ -421,7 +421,7 @@ void ggml_vec_dot_q8_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
-void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_ktq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);
@@ -473,7 +473,7 @@ void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, 
     *s = sumf;
 }
 
-void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_ktq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);
@@ -504,6 +504,33 @@ void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, 
 
     *s = sumf;
 }
+
+// TurboQuant KTQ CPU fallback: dequantize to f32, then f32 dot product
+// These are slow but correct — only used for CPU graph splits on GPU-offloaded models
+#define TQ_VEC_DOT_F32_IMPL(type_name, block_type) \
+void ggml_vec_dot_##type_name##_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) { \
+    assert(nrc == 1); \
+    UNUSED(nrc); UNUSED(bx); UNUSED(by); UNUSED(bs); \
+    float tmp[QK_KTQ]; \
+    const block_type * GGML_RESTRICT x = vx; \
+    const float * GGML_RESTRICT y = vy; \
+    const int nb = n / QK_KTQ; \
+    float sumf = 0.0f; \
+    for (int i = 0; i < nb; ++i) { \
+        dequantize_row_##type_name(&x[i], tmp, QK_KTQ); \
+        for (int j = 0; j < QK_KTQ; ++j) { \
+            sumf += tmp[j] * y[i * QK_KTQ + j]; \
+        } \
+    } \
+    *s = sumf; \
+}
+
+TQ_VEC_DOT_F32_IMPL(ktq1_1, block_ktq1_1)
+TQ_VEC_DOT_F32_IMPL(ktq2_1, block_ktq2_1)
+TQ_VEC_DOT_F32_IMPL(ktq3_1, block_ktq3_1)
+TQ_VEC_DOT_F32_IMPL(ktq4_1, block_ktq4_1)
+
+#undef TQ_VEC_DOT_F32_IMPL
 
 void ggml_vec_dot_q2_K_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
@@ -1279,4 +1306,45 @@ void quantize_row_iq4_nl(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
 void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_K == 0);
     quantize_iq4_xs(x, y, 1, k, NULL);
+}
+
+// --- VTQ_2 (Trellis v2) vec_dot: dequantize then fp32 dot product ---
+// Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2.
+
+#include <alloca.h>
+
+void ggml_vec_dot_vtq2_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    float * tmp = (float *)alloca((size_t)n * sizeof(float));
+    dequantize_row_vtq2_2((const block_vtq2_2 *)vx, tmp, n);
+    const float * y = (const float *)vy;
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    *s = (float)sum;
+}
+
+void ggml_vec_dot_vtq3_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    float * tmp = (float *)alloca((size_t)n * sizeof(float));
+    dequantize_row_vtq3_2((const block_vtq3_2 *)vx, tmp, n);
+    const float * y = (const float *)vy;
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    *s = (float)sum;
+}
+
+void ggml_vec_dot_vtq4_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    float * tmp = (float *)alloca((size_t)n * sizeof(float));
+    dequantize_row_vtq4_2((const block_vtq4_2 *)vx, tmp, n);
+    const float * y = (const float *)vy;
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    *s = (float)sum;
 }

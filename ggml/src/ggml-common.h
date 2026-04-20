@@ -166,6 +166,18 @@ typedef sycl::half2 ggml_half2;
 #define QI3_S (QK_K / (4*QR3_S))
 #define QR3_S 4
 
+#define QI_KTQ1_1 (QK_KTQ / (4*QR_KTQ1_1))
+#define QR_KTQ1_1 4
+
+#define QI_KTQ2_1 (QK_KTQ / (4*QR_KTQ2_1))
+#define QR_KTQ2_1 2
+
+#define QI_KTQ3_1 (QK_KTQ / (4*QR_KTQ3_1))
+#define QR_KTQ3_1 2
+
+#define QI_KTQ4_1 (QK_KTQ / (4*QR_KTQ4_1))
+#define QR_KTQ4_1 2
+
 #endif // GGML_COMMON_DECL_CUDA || GGML_COMMON_DECL_HIP
 
 #ifdef _MSC_VER
@@ -276,6 +288,122 @@ typedef struct {
     ggml_half d;
 } block_tq2_0;
 static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 block size/padding");
+
+// KTQ (K-cache TurboQuant) block structures.
+// Reference: Zandieh, Daliri, Hadian, Mirrokni; arXiv:2504.19874.
+//
+// Layout per 32-element block:
+//   d   ggml_half — the post-correction L2 norm of the block. After codebook
+//       quantization, recompute ||reconstructed|| and store norm / ||recon||
+//       here so that E[||dequantized|| ] = ||original||  (v5 norm correction).
+//   qs  codebook indices of each element (b bits × 32 elements, packed).
+//   sb  1 bit per element — the RHT diagonal sign used at quantize time.
+//       Precomputed so that dequant (read-heavy) never invokes Philox;
+//       only the one-shot quantize (write) pays the PRNG cost.
+//
+// bpw = (16 + 32·b + 32·1) / 32 = b + 1.5 for KTQ_b_1.
+
+#define QK_KTQ 32  // KTQ block size (one CUDA warp per block)
+
+// KTQ1_1 — 1-bit codebook, 2.5 bpw. Sign-only K quantization.
+typedef struct {
+    ggml_half d;              // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ / 8]; // 1-bit codebook indices, 8/byte
+    uint8_t   sb[QK_KTQ / 8]; // RHT sign bits, 1 bit/element
+} block_ktq1_1;
+static_assert(sizeof(block_ktq1_1) == sizeof(ggml_half) + QK_KTQ/8 + QK_KTQ/8, "wrong ktq1_1 block size/padding");
+
+// KTQ2_1 — 2-bit codebook, 3.5 bpw.
+typedef struct {
+    ggml_half d;              // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ / 4]; // 2-bit indices, 4/byte
+    uint8_t   sb[QK_KTQ / 8]; // RHT sign bits
+} block_ktq2_1;
+static_assert(sizeof(block_ktq2_1) == sizeof(ggml_half) + QK_KTQ/4 + QK_KTQ/8, "wrong ktq2_1 block size/padding");
+
+// KTQ3_1 — 3-bit codebook, 4.5 bpw. Indices are bit-packed (not byte-aligned).
+typedef struct {
+    ggml_half d;                   // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ * 3 / 8];  // 3-bit indices, packed across bytes
+    uint8_t   sb[QK_KTQ / 8];      // RHT sign bits
+} block_ktq3_1;
+static_assert(sizeof(block_ktq3_1) == sizeof(ggml_half) + QK_KTQ*3/8 + QK_KTQ/8, "wrong ktq3_1 block size/padding");
+
+// KTQ4_1 — 4-bit codebook, 5.5 bpw. Nibble-packed.
+typedef struct {
+    ggml_half d;              // L2 norm (with v5 norm correction)
+    uint8_t   qs[QK_KTQ / 2]; // 4-bit indices, 2/byte
+    uint8_t   sb[QK_KTQ / 8]; // RHT sign bits
+} block_ktq4_1;
+static_assert(sizeof(block_ktq4_1) == sizeof(ggml_half) + QK_KTQ/2 + QK_KTQ/8, "wrong ktq4_1 block size/padding");
+
+// VTQ (V-cache TurboQuant) block structures.
+// V is rotated once at graph level (self_v_rot), so per-block storage drops
+// the RHT sign bits; dequant is a single codebook lookup · scale. This keeps
+// the per-lane live set small enough that the FA P·V inner loop can consume
+// VTQ dequant via __forceinline__.
+//
+// bpw = (16 + 32·b) / 32 = b + 0.5 for VTQ_b_1 (plus padding noted below).
+
+#define QK_VTQ 32
+
+// VTQ1_1 — 1-bit codebook, 1.5 bpw. Smallest V.
+typedef struct {
+    ggml_half d;              // block scale (L2 norm after graph-level rotation)
+    uint8_t   qs[QK_VTQ / 8]; // 1-bit indices, 8/byte
+} block_vtq1_1;
+static_assert(sizeof(block_vtq1_1) == 6, "wrong vtq1_1 block size");
+
+// VTQ2_1 — 2-bit codebook, 2.5 bpw.
+typedef struct {
+    ggml_half d;              // block scale
+    uint8_t   qs[QK_VTQ / 4]; // 2-bit indices, 4/byte
+} block_vtq2_1;
+static_assert(sizeof(block_vtq2_1) == 10, "wrong vtq2_1 block size");
+
+// VTQ3_1 — 3-bit codebook, 3.5 bpw.
+// The +2-byte pad lets the bit-straddling decode read two bytes unconditionally
+// (including for the last element, j=31) without a bounds branch.
+typedef struct {
+    ggml_half d;                       // block scale
+    uint8_t   qs[QK_VTQ * 3 / 8 + 2];  // 12 B indices + 2 B tail pad for safe 2-byte reads
+} block_vtq3_1;
+static_assert(sizeof(block_vtq3_1) == 16, "wrong vtq3_1 block size");
+
+// VTQ4_1 — 4-bit codebook, 4.5 bpw. Nibble-packed.
+typedef struct {
+    ggml_half d;              // block scale
+    uint8_t   qs[QK_VTQ / 2]; // 4-bit indices, 2/byte
+} block_vtq4_1;
+static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
+
+// --- VTQ{K}_2 (Trellis v2): group-level Viterbi, L=16 bitshift trellis ---
+// See ggml-trellis.h. One ggml-block == one Trellis group (512 samples).
+// Decoder is a shift register fed by packed K-bit emit stream.
+// bpw = (16 + 16 + QK_VTQ_TRELLIS·K) / QK_VTQ_TRELLIS
+
+#define QK_VTQ_TRELLIS 256
+
+typedef struct {
+    ggml_half d;                // group scale (encoder norm-correction output)
+    uint16_t  start_state;      // L=16 bit open-start state
+    uint8_t   qs[QK_VTQ_TRELLIS * 2 / 8];  // 64 B
+} block_vtq2_2;
+static_assert(sizeof(block_vtq2_2) == 68, "wrong vtq2_2 block size");  // 2.125 bpw
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];  // 96 B
+} block_vtq3_2;
+static_assert(sizeof(block_vtq3_2) == 100, "wrong vtq3_2 block size");  // 3.125 bpw
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 4 / 8];  // 128 B
+} block_vtq4_2;
+static_assert(sizeof(block_vtq4_2) == 132, "wrong vtq4_2 block size");  // 4.125 bpw
 
 //
 // Super-block quantization structures
