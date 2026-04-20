@@ -90,6 +90,8 @@ add_library(${TARGET} STATIC
     sampling.h
     speculative.cpp
     speculative.h
+    tq-profile.cpp
+    tq-profile.h
     unicode.cpp
     unicode.h
     jinja/lexer.cpp
