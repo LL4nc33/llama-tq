@@ -50,12 +50,6 @@
 			</span>
 		{/if}
 
-		{#if parsed.quantization}
-			<span class={badgeClass}>
-				{parsed.quantization}
-			</span>
-		{/if}
-
 		{#if remainingAliases.length > 0}
 			{#each remainingAliases as alias (alias)}
 				<span class={badgeClass}>{alias}</span>
