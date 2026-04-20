@@ -43,7 +43,8 @@ public:
                      bool   unified,
                             /* layer filters */
     const layer_filter_cb & filter_attn = nullptr,
-    const layer_filter_cb & filter_recr = nullptr);
+    const layer_filter_cb & filter_recr = nullptr,
+    const std::vector<ggml_type> & type_v_layers = {});
 
     ~llama_memory_hybrid() = default;
 
