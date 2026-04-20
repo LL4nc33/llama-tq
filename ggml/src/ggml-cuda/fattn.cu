@@ -222,7 +222,8 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     // returns true (the matching K/V type families are disjoint).
     if (try_dispatch_vec_f16(ctx, dst)) return;
     if (try_dispatch_vec_ktq(ctx, dst)) return;
-    if (try_dispatch_vec_vtq(ctx, dst)) return;
+    if (try_dispatch_vec_vtq1(ctx, dst)) return;
+    if (try_dispatch_vec_vtq2(ctx, dst)) return;
 
     GGML_ABORT("fatal error");
 }
