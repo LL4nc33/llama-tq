@@ -2148,6 +2148,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
     add_opt(common_arg(
+        {"--tq-overlay-topn"}, "N",
+        "Trick 4: enable per-block correction overlay for VTQ_2 V-cache.\n"
+        "N = top-N highest-error entries per 256-sample trellis block (1..4).\n"
+        "0 disables the overlay (default). Storage cost per entry is ~0.6%\n"
+        "of V-cache size (4 B per block, see docs/plans/2026-04-20-trick4-*).\n"
+        "MVP: CPU helpers + extract/apply only; CUDA decode-hook TBD.",
+        [](common_params & params, int value) {
+            if (value < 0 || value > 4) {
+                throw std::invalid_argument("--tq-overlay-topn must be in [0, 4]");
+            }
+            params.tq_overlay_topn = (uint32_t) value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_OVERLAY_TOPN"));
+    add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
         [](common_params & params) {
