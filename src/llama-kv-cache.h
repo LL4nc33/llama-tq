@@ -168,6 +168,14 @@ public:
 
     tq_deferred_state get_deferred_state() const;
 
+    // Trick 2 PR1: per-head V variance/kurtosis profiling accessor
+    // Returns the number of kv layers currently allocated. Fills:
+    //   - v_tensors: V tensor per kv layer (may be nullptr)
+    //   - model_il: corresponding model layer index for each entry
+    // Caller dequants on host and computes moments per head.
+    uint32_t get_v_tensors_for_profile(std::vector<ggml_tensor *> & v_tensors,
+                                       std::vector<int32_t>        & model_il) const;
+
     //
     // graph_build API
     //
