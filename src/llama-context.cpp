@@ -1,10 +1,12 @@
 #include "llama-context.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "llama-arch.h"
 #include "llama-impl.h"
 #include "llama-batch.h"
 #include "llama-io.h"
+#include "llama-kv-cache.h"
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
@@ -13,9 +15,18 @@
 
 #include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+
+#if defined(_WIN32)
+#include <process.h>
+#define TQ_GETPID _getpid
+#else
+#include <unistd.h>
+#define TQ_GETPID getpid
+#endif
 
 //
 // llama_context
@@ -164,6 +175,12 @@ llama_context::llama_context(
 
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
+    cparams.tq_profile_heads = params.tq_profile_heads;
+
+    // Trick 2 PR2: per-layer mixed precision V-cache
+    if (params.type_v_layers && params.type_v_layers_count > 0) {
+        cparams.tq_v_layers.assign(params.type_v_layers, params.type_v_layers + params.type_v_layers_count);
+    }
 
     // initialized later
     cparams.pipeline_parallel = false;
@@ -1882,6 +1899,11 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // wait for the computation to finish (automatically done when obtaining the model output)
     //synchronize();
 
+    // Trick 2 PR1: per-head V variance/kurtosis profiling (only first N calls, zero cost when disabled)
+    if (cparams.tq_profile_heads > 0 && !tq_profile_done) {
+        tq_profile_collect_v();
+    }
+
     return 0;
 }
 
@@ -2171,6 +2193,191 @@ llm_graph_params llama_context::graph_params(
         /*.cb          =*/ graph_get_cb(),
         /*.res         =*/ res,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Trick 2 PR1: per-head V variance/kurtosis profiling
+// ---------------------------------------------------------------------------
+
+void llama_context::tq_profile_collect_v() {
+    if (tq_profile_done || cparams.tq_profile_heads == 0 || !memory) {
+        return;
+    }
+
+    auto * kv = dynamic_cast<llama_kv_cache *>(memory.get());
+    if (!kv) {
+        // unsupported memory type (hybrid/SSM etc.) — disable to avoid repeated dynamic_cast
+        tq_profile_done = true;
+        return;
+    }
+
+    // ensure the compute is finished so the KV tensors contain valid data
+    ggml_backend_sched_synchronize(sched.get());
+
+    std::vector<ggml_tensor *> v_tensors;
+    std::vector<int32_t>        model_il;
+    const uint32_t n_kv_layers = kv->get_v_tensors_for_profile(v_tensors, model_il);
+
+    if (n_kv_layers == 0) {
+        tq_profile_done = true;
+        return;
+    }
+
+    const auto & hparams = model.hparams;
+
+    // lazy init stats vector on the first call
+    if (tq_profile_stats.empty()) {
+        size_t total = 0;
+        for (uint32_t i = 0; i < n_kv_layers; ++i) {
+            if (!v_tensors[i]) continue;
+            total += hparams.n_head_kv(model_il[i]);
+        }
+        tq_profile_stats.reserve(total);
+        for (uint32_t i = 0; i < n_kv_layers; ++i) {
+            if (!v_tensors[i]) continue;
+            const int32_t  il        = model_il[i];
+            const uint32_t n_head_kv = hparams.n_head_kv(il);
+            for (uint32_t h = 0; h < n_head_kv; ++h) {
+                tq_profile_stats.push_back({ il, (int32_t) h, 0, 0.0, 0.0, 0.0 });
+            }
+        }
+    }
+
+    // walk each V tensor, dequant to float on host, accumulate moments per head
+    std::vector<uint8_t> raw;
+    std::vector<float>   dequant;
+
+    size_t stat_off = 0;
+    for (uint32_t i = 0; i < n_kv_layers; ++i) {
+        ggml_tensor * v = v_tensors[i];
+        if (!v) continue;
+
+        const int32_t  il           = model_il[i];
+        const uint32_t n_head_kv    = hparams.n_head_kv(il);
+        const uint32_t n_embd_head  = hparams.n_embd_head_v(il);
+        const uint32_t n_embd_v_gqa = n_head_kv * n_embd_head;
+
+        // read raw bytes back to host
+        const size_t nbytes = ggml_nbytes(v);
+        raw.resize(nbytes);
+        ggml_backend_tensor_get(v, raw.data(), 0, nbytes);
+
+        // dequant to float: total elements = ne[0] * ne[1] * ne[2]
+        const int64_t ne0 = v->ne[0];
+        const int64_t ne1 = v->ne[1];
+        const int64_t ne2 = v->ne[2];
+        const int64_t nelem = ne0 * ne1 * ne2;
+
+        dequant.resize((size_t) nelem);
+        const auto * tt = ggml_get_type_traits(v->type);
+        if (v->type == GGML_TYPE_F32) {
+            std::memcpy(dequant.data(), raw.data(), (size_t) nelem * sizeof(float));
+        } else if (tt && tt->to_float) {
+            // contiguous row-by-row dequant
+            const size_t row_bytes = ggml_row_size(v->type, ne0);
+            for (int64_t r = 0; r < ne1 * ne2; ++r) {
+                tt->to_float(raw.data() + r * row_bytes, dequant.data() + r * ne0, (int64_t) ne0);
+            }
+        } else {
+            // no host dequant available — skip this layer
+            stat_off += n_head_kv;
+            continue;
+        }
+
+        // Accumulate welford moments per head.
+        // Layout: for each position p in [0..ne1*ne2), row p has n_embd_v_gqa values = n_head_kv heads * n_embd_head.
+        // (Note: with v_trans=true, the "row" dimension is actually the embedding dim, stored as ne0.
+        //  Either way, the first ne0 dim packs heads contiguously in groups of n_embd_head.)
+        GGML_ASSERT((uint32_t) ne0 == n_embd_v_gqa && "profile: unexpected V tensor layout");
+
+        const int64_t npos = ne1 * ne2;
+        for (int64_t p = 0; p < npos; ++p) {
+            const float * row = dequant.data() + p * ne0;
+            for (uint32_t h = 0; h < n_head_kv; ++h) {
+                auto & s = tq_profile_stats[stat_off + h];
+                const float * hv = row + (size_t) h * n_embd_head;
+                for (uint32_t d = 0; d < n_embd_head; ++d) {
+                    const double x = (double) hv[d];
+                    // Non-central moment accumulators (simpler, no stability needed for bounded float values):
+                    //   mean(x)   = E[x]
+                    //   variance = E[x^2] - E[x]^2
+                    //   kurtosis = E[(x-mu)^4] / variance^2   (approximated via raw moments)
+                    // We store in (mean, m2, m4):
+                    //   mean <- running E[x]
+                    //   m2   <- running sum of x^2     (later / n - mean^2 = variance)
+                    //   m4   <- running sum of x^4     (later combined with central moments)
+                    s.n++;
+                    s.mean += ((double) x - s.mean) / (double) s.n; // running mean
+                    s.m2   += x * x;
+                    s.m4   += x * x * x * x;
+                }
+            }
+        }
+
+        stat_off += n_head_kv;
+    }
+
+    tq_profile_calls_seen++;
+    if (tq_profile_calls_seen >= cparams.tq_profile_heads) {
+        tq_profile_dump();
+        tq_profile_done = true;
+    }
+}
+
+void llama_context::tq_profile_dump() {
+    // Build JSON: {"n_samples": N, "layers": [{"layer_idx": il, "heads": [{"head_idx": h, "variance": v, "kurtosis": k}, ...]}, ...]}
+    char path[256];
+    std::snprintf(path, sizeof(path), "tq-profile-heads-%d.json", (int) TQ_GETPID());
+
+    FILE * fp = std::fopen(path, "w");
+    if (!fp) {
+        LLAMA_LOG_WARN("%s: failed to open %s for writing, falling back to stderr\n", __func__, path);
+        fp = stderr;
+    }
+
+    std::fprintf(fp, "{\"n_samples\": %u, \"layers\": [", tq_profile_calls_seen);
+
+    int32_t cur_il = -1;
+    bool first_layer = true;
+    bool first_head = true;
+    for (const auto & s : tq_profile_stats) {
+        if (s.il != cur_il) {
+            if (!first_layer) {
+                std::fprintf(fp, "]}");
+            }
+            std::fprintf(fp, "%s{\"layer_idx\": %d, \"heads\": [", first_layer ? "" : ", ", (int) s.il);
+            cur_il = s.il;
+            first_layer = false;
+            first_head = true;
+        }
+        double variance = 0.0;
+        double kurtosis = 0.0;
+        if (s.n > 1) {
+            const double mean   = s.mean;
+            const double e_x2   = s.m2 / (double) s.n;
+            const double e_x4   = s.m4 / (double) s.n;
+            variance = e_x2 - mean * mean;
+            if (variance > 0.0) {
+                // central 4th moment via raw-moment expansion:
+                //   mu4 = E[x^4] - 4*mu*E[x^3] + 6*mu^2*E[x^2] - 3*mu^4
+                // we don't track E[x^3] — for heavy-tail ranking the unnormalized ratio E[x^4]/Var^2 is sufficient
+                kurtosis = e_x4 / (variance * variance);
+            }
+        }
+        std::fprintf(fp, "%s{\"head_idx\": %d, \"variance\": %.6g, \"kurtosis\": %.6g}",
+                     first_head ? "" : ", ", (int) s.head_idx, variance, kurtosis);
+        first_head = false;
+    }
+    if (!first_layer) {
+        std::fprintf(fp, "]}");
+    }
+    std::fprintf(fp, "]}\n");
+
+    if (fp != stderr) {
+        std::fclose(fp);
+        LLAMA_LOG_INFO("%s: dumped per-head V stats after %u decode calls to %s\n",
+                       __func__, tq_profile_calls_seen, path);
+    }
 }
 
 ggml_status llama_context::graph_compute(
@@ -2912,10 +3119,13 @@ llama_context_params llama_context_default_params() {
         /*.cb_eval_user_data           =*/ nullptr,
         /*.type_k                      =*/ GGML_TYPE_F16,
         /*.type_v                      =*/ GGML_TYPE_F16,
+        /*.type_v_layers               =*/ nullptr,
+        /*.type_v_layers_count         =*/ 0,
         /*.tq_protect_layers           =*/ 0,
         /*.tq_protect_sinks            =*/ 0,
         /*.tq_deferred_k               =*/ false,
         /*.tq_deferred_v               =*/ false,
+        /*.tq_profile_heads            =*/ 0,
         /*.abort_callback              =*/ nullptr,
         /*.abort_callback_data         =*/ nullptr,
         /*.embeddings                  =*/ false,

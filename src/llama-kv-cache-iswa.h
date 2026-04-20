@@ -30,7 +30,8 @@ public:
                          bool   tq_deferred_k,
                          bool   tq_deferred_v,
         const layer_filter_cb & filter,
-        const  layer_reuse_cb & reuse);
+        const  layer_reuse_cb & reuse,
+        const std::vector<ggml_type> & type_v_layers = {});
 
     ~llama_kv_cache_iswa() = default;
 
