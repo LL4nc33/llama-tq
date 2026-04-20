@@ -64,10 +64,12 @@ schneller machen, ohne den Scope zu erweitern. Kleine Wins, viel
 Messen.
 
 **Offene Arbeitspunkte aus Phase 1:**
-- 35B Production-Deploy auf `gpu00:8791` abschließen (in Arbeit)
+- ~~35B Production-Deploy auf `gpu00:8791`~~ ✅ DONE 2026-04-20
+  (ctx=200K statt geplanten 400K wegen compute-buffer OOM bei parallel=2)
 - PPL-Prefill im `--tq-deferred-v` Modus echt quantisiert messbar
   machen (aktuell bleibt State in STAGING bei pure prefill)
 - 27B pp1024 um -3% unter f16 — Bulk-Viterbi am Übergang optimieren
+- 400K ctx auf 2x 12GB GPU: entweder parallel=1 oder kleinere ubatch
 - CUDA-Kernel-Review: noch überall `__syncthreads()` optimal?
 - Fehlerzustände: was passiert bei OOM, invalidem `-ngl`, kaputten
   GGUFs — graceful failure messages statt crash
