@@ -20,7 +20,8 @@
 // ~100 cycles uncached, ~30 cached. 256 samples/block × 30 cycles ≈
 // 7700 cycles/block = 3µs on a 2 GHz clock — fast enough.
 
-#define QK_VTQ_TRELLIS 256
+// QK_VTQ_TRELLIS now defined in ggml/src/ggml-common.h (task #143: halved to 128).
+// This file previously redefined it to 256, which was a silent stale value.
 #define VTQ_TRELLIS_L  16
 
 // Trellis LUT: SINGLE device-global definition in trellis.cu, referenced
