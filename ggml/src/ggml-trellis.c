@@ -2,6 +2,7 @@
 // Ported from tests/trellis-phase1/trellis_{code,encdec}.c.
 
 #include "ggml-trellis.h"
+#include "ggml.h"   // ggml_fp32_to_fp16 / ggml_fp16_to_fp32 for overlay entries
 
 #include <float.h>
 #include <math.h>
@@ -314,4 +315,106 @@ void ggml_trellis_encode_group(
     *out_d = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
 
     free(states); free(xn); free(dp_cur); free(dp_next); free(bt);
+}
+
+// --- Correction Overlay (Trick 4) ---
+// Entry layout (matches ggml-common.h `vtq_overlay_entry`, 4 B):
+//   [0] uint8_t pos
+//   [1] uint8_t flags   (bit0 = valid)
+//   [2..3] ggml_half value (little-endian uint16)
+// We operate on raw bytes to avoid struct-layout coupling across TUs.
+
+#define VTQ_OVERLAY_ENTRY_SIZE 4
+#define VTQ_OVERLAY_FLAG_VALID_BIT 0x1
+
+static inline void vtq_overlay_pack(uint8_t * entry, uint8_t pos, int valid, uint16_t fp16_val) {
+    entry[0] = pos;
+    entry[1] = (uint8_t)(valid ? VTQ_OVERLAY_FLAG_VALID_BIT : 0);
+    entry[2] = (uint8_t)(fp16_val & 0xFFu);
+    entry[3] = (uint8_t)((fp16_val >> 8) & 0xFFu);
+}
+
+static inline void vtq_overlay_unpack(const uint8_t * entry,
+                                      uint8_t * out_pos, uint8_t * out_flags,
+                                      uint16_t * out_fp16) {
+    *out_pos   = entry[0];
+    *out_flags = entry[1];
+    *out_fp16  = (uint16_t)entry[2] | ((uint16_t)entry[3] << 8);
+}
+
+int ggml_trellis_overlay_extract(
+    const float * src,
+    const float * decoded,
+    int           n_per_block,
+    float         err_threshold,
+    uint8_t     * out_entries) {
+
+    const int N = GGML_TRELLIS_QK_GROUP;
+    if (n_per_block < 1) n_per_block = 1;
+    if (n_per_block > 4) n_per_block = 4;
+
+    // Maintain sorted top-N by |err| descending (small N => linear is fine).
+    int   top_pos[4];
+    float top_err[4];
+    for (int j = 0; j < n_per_block; j++) {
+        top_pos[j] = -1;
+        top_err[j] = -1.0f;
+    }
+
+    for (int i = 0; i < N; i++) {
+        const float e = fabsf(src[i] - decoded[i]);
+        if (e > top_err[n_per_block - 1]) {
+            int ins = n_per_block - 1;
+            while (ins > 0 && e > top_err[ins - 1]) {
+                top_err[ins] = top_err[ins - 1];
+                top_pos[ins] = top_pos[ins - 1];
+                ins--;
+            }
+            top_err[ins] = e;
+            top_pos[ins] = i;
+        }
+    }
+
+    int n_valid = 0;
+    for (int j = 0; j < n_per_block; j++) {
+        const int p = top_pos[j];
+        int valid = 0;
+        uint16_t fp16_val = 0;
+        uint8_t  pos_byte = 0;
+
+        if (p >= 0) {
+            const float ref  = fabsf(src[p]);
+            const float base = ref > 1e-6f ? ref : 1e-6f;
+            const float rel  = top_err[j] / base;
+            valid = (err_threshold > 0.0f) ? (rel >= err_threshold ? 1 : 0) : 1;
+            pos_byte = (uint8_t)(p & 0xFF);
+            if (valid) {
+                fp16_val = (uint16_t) ggml_fp32_to_fp16(src[p]);
+                n_valid++;
+            }
+        }
+
+        vtq_overlay_pack(out_entries + j * VTQ_OVERLAY_ENTRY_SIZE,
+                         pos_byte, valid, fp16_val);
+    }
+
+    return n_valid;
+}
+
+void ggml_trellis_overlay_apply(
+    const uint8_t * entries,
+    int             n_per_block,
+    float         * y) {
+
+    if (!entries || n_per_block <= 0) return;
+    if (n_per_block > 4) n_per_block = 4;
+
+    for (int j = 0; j < n_per_block; j++) {
+        uint8_t  pos; uint8_t flags; uint16_t fp16_val;
+        vtq_overlay_unpack(entries + j * VTQ_OVERLAY_ENTRY_SIZE,
+                           &pos, &flags, &fp16_val);
+        if (!(flags & VTQ_OVERLAY_FLAG_VALID_BIT)) continue;
+        // pos is 0..255 — always in range for QK_GROUP=256
+        y[pos] = ggml_fp16_to_fp32((ggml_fp16_t)fp16_val);
+    }
 }
