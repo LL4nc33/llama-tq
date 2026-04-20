@@ -9,6 +9,15 @@ Die `trellis-v2-phase1` Arbeit ist auf `master` gemerged und
 production-validiert. Das VTQ_2 Trellis-coded V-cache System ist
 fertig und deployable.
 
+### Production Numbers (gpu00:8791, Qwen3.5-35B-A3B IQ2_XS)
+
+| config | tg tok/s | speedup vs alt |
+|--------|----------|----------------|
+| alt (f16 V-cache) | ~8-10 | baseline |
+| neu (vtq3_2 + ktq2_1 + deferred + sink, parallel=2) | **~66.7** | **7×** |
+
+Messung: 250-token generation, deutsche Prompts, 2026-04-20.
+
 ### Was Phase 1 geliefert hat
 
 **Typen:** VTQ2_2 / VTQ3_2 / VTQ4_2 (2.06 / 3.06 / 4.06 bpw V-cache,
