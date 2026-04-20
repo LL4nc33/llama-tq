@@ -49,7 +49,33 @@ All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attentio
 
 ![Decode throughput by config](docs/img/decode_throughput.png)
 
-#### Qwen3.5-35B-A3B (IQ2_XS, 10.16 GiB)
+#### Qwen3.5-0.8B-Q8_0 — VTQ_2 types (2026-04-20, single RTX 2060)
+
+New VTQ_2 Trellis V-cache family with `--tq-deferred-v` and
+`--tq-protect-sinks 4` active (production recipe). Measured on single
+RTX 2060 with production server running on the other GPU.
+
+| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | Notes |
+|---------|---------|:---:|:---:|:---|
+| f16 | f16 | 6363 | **200** | baseline |
+| f16 | vtq2_2 | 7564 | 198 | +19% PP, -1% TG |
+| f16 | vtq3_2 | 7530 | 198 | +18% PP, -1% TG (*recommended*) |
+| f16 | vtq4_2 | 7532 | 198 | +18% PP, -1% TG |
+| ktq2_1 | vtq2_2 | 7146 | 194 | full-TQ, +12% PP, -3% TG |
+| ktq2_1 | vtq3_2 | 7435 | 193 | full-TQ, +17% PP, -3% TG |
+| q8_0 | vtq2_2 | 2574 | 9 | ⚠ q8_0 K triggers CPU path |
+| q8_0 | vtq3_2 | 2239 | 9 | ⚠ q8_0 K triggers CPU path |
+
+Observations:
+- **VTQ_2 V-cache is faster than f16** on PP512 (+18%). The Trellis
+  dequant shader is compute-bound, not memory-bound, and the shorter
+  row-reads win net over the reconstruction work.
+- **`q8_0` K-cache collapses tg to 9 tok/s** with VTQ_2 V — likely
+  hits a CPU fallback path not yet implemented for this combo.
+  Use `ktq2_1` or `f16` for K instead.
+- TG128 delta is within noise for all GPU-native K/V combos.
+
+#### Qwen3.5-35B-A3B (IQ2_XS, 10.16 GiB) — legacy vtq_1 series
 
 | K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
 |---------|---------|:---:|:---:|:---:|:---:|
