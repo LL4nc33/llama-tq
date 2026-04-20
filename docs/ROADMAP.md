@@ -39,69 +39,94 @@ Flash-Attention-Dispatch, `convert.cu` + `set-rows.cu` Integration
 
 ---
 
-## Phase 2 — Trick-17-Serie (laufend)
+## Phase 2 — Aktuelle Version verbessern (sofort)
 
-Siehe `tests/trellis-phase1/BACKLOG.md` für Details zu allen 17 Tricks.
-Hard-limit: Es werden nie mehr als 17. Neue Ideen ersetzen alte.
+Ziel: die bestehende VTQ_2-Implementierung schrittweise robuster und
+schneller machen, ohne den Scope zu erweitern. Kleine Wins, viel
+Messen.
 
-### Short-term (2-4 Wochen)
+**Offene Arbeitspunkte aus Phase 1:**
+- 35B Production-Deploy auf `gpu00:8791` abschließen (in Arbeit)
+- PPL-Prefill im `--tq-deferred-v` Modus echt quantisiert messbar
+  machen (aktuell bleibt State in STAGING bei pure prefill)
+- 27B pp1024 um -3% unter f16 — Bulk-Viterbi am Übergang optimieren
+- CUDA-Kernel-Review: noch überall `__syncthreads()` optimal?
+- Fehlerzustände: was passiert bei OOM, invalidem `-ngl`, kaputten
+  GGUFs — graceful failure messages statt crash
 
-**Trick 1 — Attention-sink token protection** ✅ DONE
-Layer-level Variante shipped, Token-level bleibt optional falls
-Hybrid-Tensor-Layout später kommt.
+**Quality-of-life:**
+- `--help` Output für VTQ-Flags aufräumen
+- Defaults überprüfen (sollten die TQ-Flags ein default-on-Profil haben?)
+- Fehler-Logging bei failed dequant (aktuell silent fallback auf f16)
 
-**Trick 2 — Per-head precision mixing** → **in progress**
-Ein Profiling-Pass klassifiziert Heads nach V-Varianz. High-variance
-Heads kriegen vtq4_2, low-variance vtq2_2, Durchschnitt bleibt
-bei ~3 bpw. Erwartung: substantielle Qualitätsverbesserung da
-Varianz heavy-tailed ist.
+**Zeithorizont:** 1-3 Wochen. Kein Research, nur polish.
 
-**Trick 3 — Per-model RHT seed calibration** ✅ DONE
+---
 
-**Trick 4 — Correction overlay buffer**
-fp16 `correction_buf[N]` pro Layer, speichert top-N schlimmste
-Quantisierungsfehler. Lossless overlay. ~0.5-2% PPL-recovery
-bei ~1% bpw overhead.
+## Phase 3 — Trick-17-Serie (Research-Parallelspur)
 
-**Trick 5 — Per-head learned lambda sharpening**
-Fine-tune-basierter Quality-Recovery. Braucht Training-Loop,
-ist damit wesentlich größeres Projekt.
+Ziel: Qualität/bpw-Ratio verbessern durch klügere Quantisierungs-
+Algorithmen. Jeder Trick ist unabhängig, hat eigenes Mess-Gate.
 
-### Medium-term (1-3 Monate)
+Siehe `tests/trellis-phase1/BACKLOG.md` für Details. Hard-limit:
+Es werden nie mehr als 17. Neue Ideen ersetzen alte.
 
-**Trick 6-16** — siehe BACKLOG. Highlights:
-- FWHT-Rotation per Token statt per Group
-- Deferred K-cache hybrid precision
-- Learned RHT matrix (nicht nur random)
-- Block-variable bpw
-- Adaptive Lloyd-Max (pro Seq/pro Gen-Step)
+**Done:**
+- Trick 1 — Attention-sink protection (Layer-level)
+- Trick 3 — Per-model RHT seed calibration
 
-**TQW2 — Weight Quantization** (Task #127, in progress)
-VTQ war nur KV-cache. Modell-Weights bleiben IQ2_XXS / Q8_0.
-TQW2 würde die Weights selbst auf 2-3 bpw bringen mit
-Lloyd-Max-Qualität. **Größerer Hebel** als KV-cache, weil
-Weights den Großteil des VRAM stellen. Python-Validierung schon
-abgeschlossen (Task #126), CUDA-Sprint offen.
+**Nächste:**
+- Trick 2 — Per-head precision mixing (hohe Varianz → höhere bpw)
+- Trick 4 — Correction overlay buffer (lossless top-N patch)
+- Trick 5 — Per-head learned lambda sharpening (braucht Training)
 
-**Upstream-PR an ggml.org** (optional)
-Wenn VTQ_2 für die Community relevant scheint: sauber aufteilen
-in digestible PRs (type-enums → CPU-path → CUDA-path), mit
-Papier-ähnlicher Dokumentation.
+**Später (6-16):** siehe BACKLOG — FWHT per token, deferred K hybrid
+precision, learned RHT matrix, block-variable bpw, adaptive Lloyd-Max.
 
-### Long-term (3+ Monate)
+**Trick 17** — "The Big One". Reserviert. Wenn er kommt, ist das
+Paper geschrieben.
 
-**Trick 17 — "The Big One"**
-Reserviert für den finalen Trick — reine Notiz, noch nicht
-definiert. Wenn er kommt, ist das Paper geschrieben.
+**Zeithorizont:** Parallel zu Phase 2, pro Trick 1-2 Wochen.
 
-**Paper**
+---
+
+## Phase 4 — TQW2 Weight Quantization (großer Hebel)
+
+VTQ war nur KV-cache. Modell-Weights sind weiterhin IQ2_XXS / Q8_0.
+**Weights stellen den Großteil des VRAM** — TQW2 würde Weights selbst
+auf 2-3 bpw bringen mit Lloyd-Max-Qualität.
+
+**Status:**
+- Python-Validierung: RHT + Lloyd-Max vs IQ2_XXS MSE — DONE (Task #126)
+- CUDA-Sprint: offen (Task #127, in_progress)
+
+**Offene Fragen:**
+- Separate Type-enums `TQW{1,2,3,4}_1` oder Reuse von KTQ*?
+- Integration in `llama.cpp` Convert-Pipeline (gguf-py)
+- Interaktion mit existierenden Quant-Typen
+
+**Zeithorizont:** 1-3 Monate nach Phase-2-Abschluss. Größeres Projekt
+als die Trick-Serie.
+
+---
+
+## Phase 5 — Community / Paper / Hardware
+
+**Upstream-PR an `ggml-org/llama.cpp`:**
+Sauber aufgeteilt in digestible PRs (type-enums → CPU-path → CUDA-path),
+mit Paper-ähnlicher Dokumentation. Optional — nur falls relevante
+Community-Nachfrage.
+
+**Paper:**
 Sobald Trick 17 benannt und validiert ist: Draft für ICLR 2027
 oder ähnlich. Konkurrenz-Benchmarks: KVQuant, Aquila, QuaRot.
 
-**Hardware-Support**
+**Hardware-Support:**
 - RTX 40-series tuning (Ada architecture)
 - AMD ROCm-Path (falls Community-Interesse)
-- Apple Silicon MPS (Metal shader-Äquivalente zur Viterbi-Encoder)
+- Apple Silicon MPS (Metal-Shader-Äquivalente zum Viterbi-Encoder)
+
+**Zeithorizont:** 3-12 Monate, abhängig von Paper-Timing.
 
 ---
 
