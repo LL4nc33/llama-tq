@@ -340,6 +340,25 @@ private:
 
     bool has_evaluated_once = false;
 
+    // Trick 2 PR1: per-head V variance/kurtosis profiling state
+    // Welford accumulators (flat layout: [layer][head] → central moments m2/m4)
+    struct head_profile_stats {
+        int32_t il;            // model layer index
+        int32_t head_idx;      // kv head index
+        uint64_t n;            // count of samples
+        double mean;
+        double m2;             // sum of (x - mean)^2
+        double m4;             // sum of (x - mean)^4
+    };
+    std::vector<head_profile_stats> tq_profile_stats;
+    uint32_t tq_profile_calls_seen = 0;
+    bool     tq_profile_done = false;
+
+    // collect V stats for this decode call; called after graph_compute
+    void tq_profile_collect_v();
+    // dump accumulated stats as JSON (once)
+    void tq_profile_dump();
+
     // env: LLAMA_GRAPH_REUSE_DISABLE
     bool graph_reuse_disable = false;
 
