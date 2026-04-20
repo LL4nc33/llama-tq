@@ -7,6 +7,7 @@
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
 #include "quants.h"
+#include "../ggml-quants.h"  // VTQ{2,3,4}_2 quantize_row refs
 #include "ggml-threading.h"
 #include "unary-ops.h"
 #include "binary-ops.h"
@@ -394,6 +395,43 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .from_float               = quantize_row_tq2_0,
         .vec_dot                  = ggml_vec_dot_tq2_0_q8_K,
         .vec_dot_type             = GGML_TYPE_Q8_K,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_KTQ1_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq1_1_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_KTQ2_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq2_1_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_KTQ3_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq3_1_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_KTQ4_1] = {
+        .vec_dot                  = ggml_vec_dot_ktq4_1_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_VTQ2_2] = {
+        // .from_float omitted: forces backend scheduler to use CUDA encoder
+        // (set-rows.cu) instead of CPU roundtrip. Same pattern as KTQ4_1.
+        .vec_dot                  = ggml_vec_dot_vtq2_2_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_VTQ3_2] = {
+        .vec_dot                  = ggml_vec_dot_vtq3_2_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_VTQ4_2] = {
+        .vec_dot                  = ggml_vec_dot_vtq4_2_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_I32] = {
