@@ -1,12 +1,12 @@
-// Dispatch helper for the VTQ slice of ggml_cuda_flash_attn_ext_vec.
-// Covers every case where V is a VTQ type (VTQ1_1..VTQ4_1, VTQ2_2..VTQ4_2).
-// K may be any of the supported K types (standard, KTQ, etc.).
+// Dispatch helper for the VTQ_1 family slice of ggml_cuda_flash_attn_ext_vec.
+// Covers V=VTQ1_1..VTQ4_1. K may be any supported K type.
 //
-// Split out of fattn.cu to allow parallel cicc instantiation.
+// Split from fattn-vec-dispatch-vtq.cu so VTQ_1 and VTQ_2 family cases
+// compile in parallel (each ~22min instead of combined ~45min).
 
 #include "fattn-vec-dispatch.cuh"
 
-bool try_dispatch_vec_vtq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+bool try_dispatch_vec_vtq1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
     ggml_tensor * K = dst->src[1];
     ggml_tensor * V = dst->src[2];
@@ -63,20 +63,8 @@ bool try_dispatch_vec_vtq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_1)
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ4_1)
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
-
-    // Phase-2c: VTQ{2,3,4}_2 (Trellis v2). Reduced matrix.
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ2_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ3_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ4_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ3_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ3_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_2)
 #else
-    // VTQ_1 family — any K-type with VTQ V-type (reduced matrix)
+    // Reduced matrix
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,   GGML_TYPE_VTQ1_1)
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,   GGML_TYPE_VTQ2_1)
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,   GGML_TYPE_VTQ3_1)
@@ -100,19 +88,6 @@ bool try_dispatch_vec_vtq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ2_1)
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ3_1)
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
-
-    // Phase-2c: VTQ_2 (Trellis v2). Reduced matrix, matching the
-    // GGML_CUDA_FA_ALL_QUANTS block.
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ2_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ3_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ4_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ3_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ3_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_2)
-    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_2)
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     GGML_UNUSED(ctx); GGML_UNUSED(dst);
