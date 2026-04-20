@@ -1373,6 +1373,19 @@ ggml_type llama_kv_cache::type_v() const {
     return user_type_v;
 }
 
+uint32_t llama_kv_cache::get_v_tensors_for_profile(std::vector<ggml_tensor *> & v_tensors,
+                                                    std::vector<int32_t>        & model_il) const {
+    v_tensors.clear();
+    model_il.clear();
+    v_tensors.reserve(layers.size());
+    model_il.reserve(layers.size());
+    for (const auto & l : layers) {
+        v_tensors.push_back(l.v);
+        model_il.push_back((int32_t) l.il);
+    }
+    return (uint32_t) layers.size();
+}
+
 uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
     uint32_t result = 0;
 

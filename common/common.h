@@ -553,6 +553,7 @@ struct common_params {
     uint32_t tq_protect_sinks  = 0; // attention-sink protection: force layer-0 V-cache to f16 when > 0 (StreamingLLM)
     bool tq_deferred_k = false;     // defer K quantization until prefill->decode transition
     bool tq_deferred_v = false;     // defer V quantization until prefill->decode transition
+    uint32_t tq_profile_heads = 0;  // Trick 2 PR1: profile first N decode calls — dump per-head V variance/kurtosis as JSON
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 

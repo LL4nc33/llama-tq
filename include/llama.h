@@ -362,6 +362,7 @@ extern "C" {
         uint32_t tq_protect_sinks;  // attention-sink protection (StreamingLLM): force layer-0 V-cache to f16 when > 0
         bool tq_deferred_k;        // defer K quantization until prefill->decode transition
         bool tq_deferred_v;        // defer V quantization until prefill->decode transition
+        uint32_t tq_profile_heads; // Trick 2 PR1: if > 0, profile first N decode calls and dump per-head V variance/kurtosis
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted
