@@ -47,4 +47,5 @@
 // Each returns true iff a matching (D, type_K, type_V) was dispatched.
 bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
