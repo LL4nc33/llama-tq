@@ -145,3 +145,9 @@ poetry.toml
 /.windsurf/
 # emscripten
 a.out.*
+LEGION/
+DISCUSSION_POST.md
+
+# Local-only: development plans, devlogs, design docs
+# Private development notes — never push to remote
+docs/plans/

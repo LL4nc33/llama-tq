@@ -429,7 +429,18 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_KTQ2_1  = 42, // K-cache: 2-bit Lloyd-Max codebook + per-block RHT, 3.5 bpw
+        GGML_TYPE_KTQ3_1  = 43, // K-cache: 3-bit Lloyd-Max codebook + per-block RHT, 4.5 bpw
+        GGML_TYPE_KTQ4_1  = 44, // K-cache: 4-bit Lloyd-Max codebook + per-block RHT, 5.5 bpw
+        GGML_TYPE_KTQ1_1  = 45, // K-cache: 1-bit Lloyd-Max codebook + per-block RHT, 2.5 bpw
+        GGML_TYPE_VTQ1_1  = 46, // V-cache: 1-bit codebook only (rotation at graph level), 1.5 bpw
+        GGML_TYPE_VTQ2_1  = 47, // V-cache: 2-bit codebook only (rotation at graph level), 2.5 bpw
+        GGML_TYPE_VTQ3_1  = 48, // V-cache: 3-bit codebook only (rotation at graph level), 3.5 bpw
+        GGML_TYPE_VTQ4_1  = 49, // V-cache: 4-bit codebook only (rotation at graph level), 4.5 bpw
+        GGML_TYPE_VTQ2_2  = 50, // V-cache: Trellis v2, 2-bit group-Viterbi, 2.0625 bpw
+        GGML_TYPE_VTQ3_2  = 51, // V-cache: Trellis v2, 3-bit group-Viterbi, 3.0625 bpw
+        GGML_TYPE_VTQ4_2  = 52, // V-cache: Trellis v2, 4-bit group-Viterbi, 4.0625 bpw
+        GGML_TYPE_COUNT   = 53,
     };
 
     // precision
