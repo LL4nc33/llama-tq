@@ -33,7 +33,8 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
                      bool   unified,
                             /* layer filters */
     const layer_filter_cb & filter_attn,
-    const layer_filter_cb & filter_recr) :
+    const layer_filter_cb & filter_recr,
+    const std::vector<ggml_type> & type_v_layers) :
     hparams(model.hparams),
     mem_attn(new llama_kv_cache_iswa(
         model,
@@ -54,7 +55,8 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
         filter_attn == nullptr ?
             [&](int32_t il) { return !hparams.is_recurrent(il); }
             : filter_attn,
-        nullptr
+        nullptr,
+        type_v_layers
     )),
     mem_recr(new llama_memory_recurrent(
         model,
