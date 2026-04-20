@@ -103,11 +103,12 @@ llama_kv_cache::llama_kv_cache(
                      bool   tq_deferred_k,
                      bool   tq_deferred_v,
     const layer_filter_cb & filter,
-    const  layer_reuse_cb & reuse) :
+    const  layer_reuse_cb & reuse,
+    const std::vector<ggml_type> & type_v_layers) :
     model(model), hparams(model.hparams), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa),
     tq_protect_layers(tq_protect_layers), tq_protect_sinks(tq_protect_sinks),
-    user_type_k(type_k), user_type_v(type_v), swa_type(swa_type) {
+    user_type_k(type_k), user_type_v(type_v), user_type_v_layers(type_v_layers), swa_type(swa_type) {
 
     GGML_ASSERT(kv_size % n_pad == 0);
 
@@ -242,7 +243,11 @@ llama_kv_cache::llama_kv_cache(
 
         // Boundary Layer Protection: first/last N layers use q8_0 instead of TQ
         ggml_type eff_type_k = type_k;
-        ggml_type eff_type_v = type_v;
+        // Trick 2 PR2: per-layer mixed precision V-cache. Falls back to uniform type_v when vector is empty.
+        ggml_type eff_type_v = (!user_type_v_layers.empty() && il < user_type_v_layers.size()
+                                && user_type_v_layers[il] != GGML_TYPE_COUNT)
+                                   ? user_type_v_layers[il]
+                                   : type_v;
 
         // FA + TQ V workaround: TQ V-dequant in FA vec kernel has a known bug (register spilling).
         // Force V to f16 when FA is active. VTQ types are exempt (lightweight dequant, no FWHT).
@@ -1371,6 +1376,19 @@ tq_deferred_state llama_kv_cache::get_deferred_state() const {
 
 ggml_type llama_kv_cache::type_v() const {
     return user_type_v;
+}
+
+uint32_t llama_kv_cache::get_v_tensors_for_profile(std::vector<ggml_tensor *> & v_tensors,
+                                                    std::vector<int32_t>        & model_il) const {
+    v_tensors.clear();
+    model_il.clear();
+    v_tensors.reserve(layers.size());
+    model_il.reserve(layers.size());
+    for (const auto & l : layers) {
+        v_tensors.push_back(l.v);
+        model_il.push_back((int32_t) l.il);
+    }
+    return (uint32_t) layers.size();
 }
 
 uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
