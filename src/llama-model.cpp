@@ -8741,7 +8741,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 params.tq_deferred_k,
                                 params.tq_deferred_v,
                                 nullptr,
-                                reuse);
+                                reuse,
+                                cparams.tq_v_layers);
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
@@ -8762,7 +8763,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 params.tq_deferred_k,
                                 params.tq_deferred_v,
                                 nullptr,
-                                nullptr);
+                                nullptr,
+                                cparams.tq_v_layers);
                     }
                 }
             }
