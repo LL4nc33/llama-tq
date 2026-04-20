@@ -39,6 +39,24 @@ Flash-Attention-Dispatch, `convert.cu` + `set-rows.cu` Integration
 
 ---
 
+## Benchmark-Spur (kontinuierlich, parallel zu allen Phasen)
+
+Solide Baselines sind Voraussetzung für jede Optimierung. Dauerhafte
+Messreihe in `docs/plans/benchmarks/` (pro Messung YYYY-MM-DD-topic.md).
+
+**Regelmäßig:**
+- Production-Vergleich: master-build vs ältere Commits (Regression-Check)
+- Context-Scaling: tg @ 4k / 16k / 64k / 200k Ctx-Länge
+- Model-Scaling: 0.8B / 2B / 27B / 35B mit fixem V-Recipe
+- Competitor-Comparison: Q4_K_M / IQ4_XS / Q8_0 V vs VTQ_2
+
+**Ad-hoc bei jedem Trick:**
+- PPL wikitext-2 10/40 chunks
+- tg/pp bench mit gleicher Hardware-Config
+- Speicherverbrauch
+
+---
+
 ## Phase 2 — Aktuelle Version verbessern (sofort)
 
 Ziel: die bestehende VTQ_2-Implementierung schrittweise robuster und
