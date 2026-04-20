@@ -177,6 +177,11 @@ llama_context::llama_context(
     cparams.kv_unified = params.kv_unified;
     cparams.tq_profile_heads = params.tq_profile_heads;
 
+    // Trick 2 PR2: per-layer mixed precision V-cache
+    if (params.type_v_layers && params.type_v_layers_count > 0) {
+        cparams.tq_v_layers.assign(params.type_v_layers, params.type_v_layers + params.type_v_layers_count);
+    }
+
     // initialized later
     cparams.pipeline_parallel = false;
 
@@ -3114,6 +3119,8 @@ llama_context_params llama_context_default_params() {
         /*.cb_eval_user_data           =*/ nullptr,
         /*.type_k                      =*/ GGML_TYPE_F16,
         /*.type_v                      =*/ GGML_TYPE_F16,
+        /*.type_v_layers               =*/ nullptr,
+        /*.type_v_layers_count         =*/ 0,
         /*.tq_protect_layers           =*/ 0,
         /*.tq_protect_sinks            =*/ 0,
         /*.tq_deferred_k               =*/ false,

@@ -117,7 +117,8 @@ public:
                          bool   tq_deferred_k,
                          bool   tq_deferred_v,
         const layer_filter_cb & filter,
-        const  layer_reuse_cb & reuse);
+        const  layer_reuse_cb & reuse,
+        const std::vector<ggml_type> & type_v_layers = {});
 
     ~llama_kv_cache() = default;
 
@@ -275,6 +276,9 @@ private:
     // user-selected cache types (for type_k()/type_v() accessors when boundary protection is active)
     ggml_type user_type_k = GGML_TYPE_F16;
     ggml_type user_type_v = GGML_TYPE_F16;
+
+    // Trick 2 PR2: per-layer V-cache type override. Empty = use user_type_v uniformly.
+    std::vector<ggml_type> user_type_v_layers;
 
     // env: LLAMA_ATTN_ROT_DISABLE
     bool attn_rot_k = false;
