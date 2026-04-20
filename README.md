@@ -51,6 +51,13 @@ All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attentio
 
 #### Qwen3.5-0.8B-Q8_0 — VTQ_2 types (2026-04-20, single RTX 2060)
 
+> **⚠ KNOWN ISSUE (2026-04-21):** VTQ_2 family has a severe decode regression
+> on **D=256 head-dim models** (e.g. Qwen3.5-35B-A3B): TG drops from 66 tok/s
+> (VTQ_1) to 4.32 tok/s (VTQ_3_2). Root-cause L2-cache-thrashing under
+> investigation (task #141). **Recommendation:** use `vtq2_1` (stable)
+> instead of `vtq3_2` for production until fixed. Numbers below are for
+> D=128 (0.8B model) where VTQ_2 still performs well.
+
 New VTQ_2 Trellis V-cache family with `--tq-deferred-v` and
 `--tq-protect-sinks 4` active (production recipe). Measured on single
 RTX 2060 with production server running on the other GPU.
