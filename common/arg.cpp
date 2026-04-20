@@ -390,6 +390,17 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_IQ4_NL,
     GGML_TYPE_Q5_0,
     GGML_TYPE_Q5_1,
+    GGML_TYPE_KTQ1_1,
+    GGML_TYPE_KTQ2_1,
+    GGML_TYPE_KTQ3_1,
+    GGML_TYPE_KTQ4_1,
+    GGML_TYPE_VTQ1_1,
+    GGML_TYPE_VTQ2_1,
+    GGML_TYPE_VTQ3_1,
+    GGML_TYPE_VTQ4_1,
+    GGML_TYPE_VTQ2_2,
+    GGML_TYPE_VTQ3_2,
+    GGML_TYPE_VTQ4_2,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
@@ -2031,6 +2042,46 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.cache_type_v = kv_cache_type_from_str(value);
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
+    add_opt(common_arg(
+        {"--tq-protect-layers"}, "N",
+        string_format(
+            "TurboQuant boundary layer protection: use q8_0 for first/last N layers\n"
+            "(default: %u, recommended: 2)",
+            params.tq_protect_layers
+        ),
+        [](common_params & params, int value) {
+            params.tq_protect_layers = value >= 0 ? (uint32_t)value : 0;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
+    add_opt(common_arg(
+        {"--tq-protect-sinks"}, "N",
+        string_format(
+            "TurboQuant attention-sink protection (StreamingLLM): when N>0, force layer-0 V-cache to f16\n"
+            "to preserve sink tokens that carry outsized attention weight on long contexts\n"
+            "(default: %u, recommended: 4)",
+            params.tq_protect_sinks
+        ),
+        [](common_params & params, int value) {
+            params.tq_protect_sinks = value >= 0 ? (uint32_t)value : 0;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
+    add_opt(common_arg(
+        {"--tq-deferred-k"},
+        "defer K quantization until prefill->decode transition for better quality\n"
+        "(only effective with TQ K cache types)",
+        [](common_params & params) {
+            params.tq_deferred_k = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD}).set_env("LLAMA_ARG_TQ_DEFERRED_K"));
+    add_opt(common_arg(
+        {"--tq-deferred-v"},
+        "defer V quantization: stage V-writes as f16 during prefill, bulk-convert at\n"
+        "prefill->decode transition. Avoids 21.7ms/call Viterbi on per-token decode writes.\n"
+        "(only effective with VTQ2_2/VTQ3_2/VTQ4_2 V cache types)",
+        [](common_params & params) {
+            params.tq_deferred_v = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_DEFERRED_V"));
     add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",

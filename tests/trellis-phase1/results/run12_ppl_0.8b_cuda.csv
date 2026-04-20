@@ -1,0 +1,5 @@
+config,ppl,ppl_err,time_s,cache_k,cache_v,fa,ngl
+f16_gpu,20.2215,1.22964,6,f16,f16,auto,99
+vtq2_1_gpu,24.4114,1.57047,6,f16,vtq2_1,auto,99
+vtq2_2_hybrid,21.8224,1.34640,1951,f16,vtq2_2,on,99
+vtq3_2_hybrid,20.6909,1.26553,3645,f16,vtq3_2,on,99

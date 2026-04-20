@@ -1,0 +1,5 @@
+config,bpw,ctx,chunks,ppl,delta_f16_pct,notes
+f16,16.0,512,5,15.5972,0.00,matches_run19_baseline
+vtq2_2,2.0625,512,5,16.8046,7.74,matches_run19
+vtq3_2,3.0625,512,5,15.7611,1.05,IMPROVED_from_run19_2.8pct
+vtq4_2,4.0625,512,5,15.6662,0.44,NEW_measured_first_time
