@@ -6201,6 +6201,126 @@ void dequantize_row_vtq4_1(const block_vtq4_1 * GGML_RESTRICT x, float * GGML_RE
     }
 }
 
+// --- VTQ_MIXED: 8 samples @ 3-bit (positions 0,4,8,12,16,20,24,28) + 24 samples @ 2-bit ---
+// Free-lunch bpw savings: 2.75 bpw, ~18% MSE reduction vs VTQ2_1 (see docs/plans/2026-04-23-v6-verdict.md).
+
+// Helper: hi-slot test (sample at stride-4 position)
+#define VTQ_MIXED_IS_HI(j) (((j) & 3) == 0)
+// Helper: hi-slot count (0..8) for sample j (= j/4)
+#define VTQ_MIXED_HI_IDX(j) ((j) >> 2)
+// Helper: lo-slot count for sample j (= j - (j/4))
+#define VTQ_MIXED_LO_IDX(j) ((j) - ((j) >> 2))
+
+void quantize_row_vtq_mixed_ref(const float * GGML_RESTRICT x, block_vtq_mixed * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_VTQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm);
+
+        if (norm < 1e-30f) {
+            memset(y[i].qs_hi, 0, sizeof(y[i].qs_hi));
+            memset(y[i].qs_lo, 0, sizeof(y[i].qs_lo));
+            continue;
+        }
+
+        const float inv_norm = 1.0f / norm;
+        memset(y[i].qs_hi, 0, sizeof(y[i].qs_hi));
+        memset(y[i].qs_lo, 0, sizeof(y[i].qs_lo));
+
+        for (int j = 0; j < QK_VTQ; j++) {
+            float val = xi[j] * inv_norm;
+            if (VTQ_MIXED_IS_HI(j)) {
+                // 3-bit slot
+                float best_dist = FLT_MAX;
+                uint8_t best_idx = 0;
+                for (int c = 0; c < 8; c++) {
+                    float centroid = VTQ_CODEBOOK_3BIT[c] * cb_scale;
+                    float dist = (val - centroid) * (val - centroid);
+                    if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+                }
+                int hi_pos = VTQ_MIXED_HI_IDX(j);          // 0..7
+                int bit_offset = hi_pos * 3;                // 0..21
+                int byte_idx = bit_offset / 8;              // 0..2
+                int bit_pos = bit_offset % 8;
+                y[i].qs_hi[byte_idx] |= (best_idx << bit_pos) & 0xFF;
+                if (bit_pos > 5) {
+                    y[i].qs_hi[byte_idx + 1] |= (best_idx >> (8 - bit_pos));
+                }
+            } else {
+                // 2-bit slot
+                float best_dist = FLT_MAX;
+                uint8_t best_idx = 0;
+                for (int c = 0; c < 4; c++) {
+                    float centroid = VTQ_CODEBOOK_2BIT[c] * cb_scale;
+                    float dist = (val - centroid) * (val - centroid);
+                    if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+                }
+                int lo_pos = VTQ_MIXED_LO_IDX(j);          // 0..23
+                y[i].qs_lo[lo_pos / 4] |= (best_idx << (2 * (lo_pos % 4)));
+            }
+        }
+
+        // Norm correction (same pattern as other VTQ_1 types)
+        float recon_sq = 0.0f;
+        for (int j = 0; j < QK_VTQ; j++) {
+            float r;
+            if (VTQ_MIXED_IS_HI(j)) {
+                int hi_pos = VTQ_MIXED_HI_IDX(j);
+                int bit_offset = hi_pos * 3;
+                int byte_idx = bit_offset / 8;
+                int bit_pos = bit_offset % 8;
+                int idx = ((y[i].qs_hi[byte_idx] >> bit_pos)
+                          | (y[i].qs_hi[byte_idx + 1] << (8 - bit_pos))) & 0x7;
+                r = VTQ_CODEBOOK_3BIT[idx] * cb_scale;
+            } else {
+                int lo_pos = VTQ_MIXED_LO_IDX(j);
+                int idx = (y[i].qs_lo[lo_pos / 4] >> (2 * (lo_pos % 4))) & 0x3;
+                r = VTQ_CODEBOOK_2BIT[idx] * cb_scale;
+            }
+            recon_sq += r * r;
+        }
+        float recon_norm = sqrtf(recon_sq);
+        y[i].d = GGML_FP32_TO_FP16((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+    }
+}
+
+void dequantize_row_vtq_mixed(const block_vtq_mixed * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ == 0);
+    const int nb = k / QK_VTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_VTQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_VTQ;
+        const float norm = GGML_FP16_TO_FP32(x[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_VTQ * sizeof(float)); continue; }
+        for (int j = 0; j < QK_VTQ; j++) {
+            if (VTQ_MIXED_IS_HI(j)) {
+                int hi_pos = VTQ_MIXED_HI_IDX(j);
+                int bit_offset = hi_pos * 3;
+                int byte_idx = bit_offset / 8;
+                int bit_pos = bit_offset % 8;
+                // Same 2-byte straddle trick as vtq3_1, but we only have 3 bytes,
+                // so the last sample (hi_pos=7, bit_offset=21) needs byte_idx+1=3 to be valid.
+                // hi_pos=7 → bit_offset=21 → byte_idx=2, bit_pos=5 → reads qs_hi[2] and qs_hi[3].
+                // qs_hi has only 3 bytes (0..2). Must guard the last read.
+                // qs_hi[3] is a zero-pad byte to allow safe straddle read for last sample (hi_pos=7).
+                int idx = ((x[i].qs_hi[byte_idx] >> bit_pos) | (x[i].qs_hi[byte_idx + 1] << (8 - bit_pos))) & 0x7;
+                yb[j] = VTQ_CODEBOOK_3BIT[idx] * cb_scale * norm;
+            } else {
+                int lo_pos = VTQ_MIXED_LO_IDX(j);
+                int idx = (x[i].qs_lo[lo_pos / 4] >> (2 * (lo_pos % 4))) & 0x3;
+                yb[j] = VTQ_CODEBOOK_2BIT[idx] * cb_scale * norm;
+            }
+        }
+    }
+}
+
 // --- VTQ{K}_2: Trellis v2 group-level Viterbi. See ggml-trellis.h ---
 #include "ggml-trellis.h"
 
