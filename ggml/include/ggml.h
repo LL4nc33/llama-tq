@@ -440,7 +440,8 @@ extern "C" {
         GGML_TYPE_VTQ2_2  = 50, // V-cache: Trellis v2, 2-bit group-Viterbi, 2.0625 bpw
         GGML_TYPE_VTQ3_2  = 51, // V-cache: Trellis v2, 3-bit group-Viterbi, 3.0625 bpw
         GGML_TYPE_VTQ4_2  = 52, // V-cache: Trellis v2, 4-bit group-Viterbi, 4.0625 bpw
-        GGML_TYPE_COUNT   = 53,
+        GGML_TYPE_VTQ_MIXED = 53, // V-cache: 2+3 bit mixed (8 hi @ 3-bit every 4th, 24 lo @ 2-bit), 2.75 bpw
+        GGML_TYPE_COUNT   = 54,
     };
 
     // precision
