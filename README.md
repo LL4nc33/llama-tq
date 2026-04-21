@@ -53,10 +53,18 @@ All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attentio
 
 > **⚠ KNOWN ISSUE (2026-04-21):** VTQ_2 family has a severe decode regression
 > on **D=256 head-dim models** (e.g. Qwen3.5-35B-A3B): TG drops from 66 tok/s
-> (VTQ_1) to 4.32 tok/s (VTQ_3_2). Root-cause L2-cache-thrashing under
-> investigation (task #141). **Recommendation:** use `vtq2_1` (stable)
-> instead of `vtq3_2` for production until fixed. Numbers below are for
-> D=128 (0.8B model) where VTQ_2 still performs well.
+> (VTQ_1) to 4.32 tok/s (VTQ_3_2). Root cause confirmed via `cuobjdump
+> --dump-resource-usage`: FA-vec kernel at D=256 uses **249 regs/thread** →
+> `__launch_bounds__(D, 1)` forces 1 block/SM occupancy (primary, ~4-5×).
+> Secondary: LUT L2-thrashing (~2-3×) and sequential qs loads (~1.5×).
+> Two fixes landed: `QK_VTQ_TRELLIS` 256→128 (`1d92cfe5c`) and a warp-
+> cooperative cached decode kernel (E11, `31c6790c0`) gated on
+> `-DFATTN_VTQ2_CACHED=1` for KTQ2_1 × VTQ3_2 at D=128, ncols=1 (Phase 3A1).
+> **Current recommendation:** use `vtq2_1` (stable) for production
+> until Phase 3A1 TG measurement confirms ≥25 tok/s. See
+> `docs/plans/2026-04-21-vtq2-regression-analysis.md` (root cause) and
+> `docs/plans/2026-04-21-e11-cuda-port-spec.md` (fix). Numbers below are
+> for D=128 (0.8B model) where VTQ_2 still performs well.
 
 New VTQ_2 Trellis V-cache family with `--tq-deferred-v` and
 `--tq-protect-sinks 4` active (production recipe). Measured on single
