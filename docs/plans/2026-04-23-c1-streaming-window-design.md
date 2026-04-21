@@ -128,6 +128,35 @@ Gesamt: **2-3 Tage**.
 - Keine externen
 - Sollte auf Trick-1 Pattern aufbauen (erste-N-tokens-fp16 ist ähnliches Konzept, nur am Anfang statt Ende)
 
+## Code-Reuse aus existing Deferred-V Pattern
+
+**Wichtige Entdeckung (2026-04-23):** Das existierende `tq_deferred_state`-Pattern mit `v_staging` buffer (src/llama-kv-cache.cpp:338) ist **90% der benötigten Infrastruktur**.
+
+Aktueller `TQ_DEFERRED_STAGING` → `TQ_DEFERRED_READY` → `TQ_DEFERRED_DONE` lifecycle:
+- STAGING: Prefill schreibt fp16 in `v_staging` (full-kv-size)
+- READY: Am Prefill→Decode Transition
+- DONE: Bulk-Viterbi-convert, `v_staging` released, writes direkt ins VTQ-Cache
+
+**Streaming-Window lifecycle (neu):**
+- STREAMING (neuer state): Continuous ring-buffer fp16 für last-N tokens
+- Eviction-trigger: when `n_tokens_in_window >= capacity` at KV-write
+- Kein terminierter Transition — läuft permanent
+
+**Kritischer Unterschied:** `v_staging` ist **full-kv-size allocated** (400k tokens × fp16 = 120 GB für Qwen3.5-35B-A3B @ 400k ctx — deshalb ist deferred-V nur bei kleinen Kontexten aktiv). Streaming-Window braucht **fixed-size ring** (256 × fp16 = 60 MB für 60 Layers), unabhängig von total ctx.
+
+**Ergo:** Wir können nicht einfach `v_staging` recyclen, aber das Pattern (`deferred_state` switch in `cpy_v`, build_graph_deferred_convert als Vorbild für eviction-convert) ist direkt nutzbar.
+
+### Revised Effort Estimate
+
+Mit Code-Reuse:
+- Ring-buffer struct allocation: 4h
+- `cpy_v` dispatch logic extend: 2h
+- Eviction-trigger + incremental quantize graph: 1d
+- FA-Split-Dispatch (attention-read liest teils ring, teils quant): 1-1.5d
+- Softmax-merge validation + CUDA FA path: 1d
+
+**Gesamt: 2-2.5 Tage statt 2-3.**
+
 ## Decision-Point
 
 Diesen Design erst starten nach Result von A (VTQ3_1 PPL sweep). Falls A zeigt "VTQ3_1 ist deutlich besser als VTQ2_1" → implementiere VTQ3_1 als new production default. Falls A zeigt marginal gain → C1 ist die richtige Priorität.
