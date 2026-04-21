@@ -124,6 +124,10 @@ Observations:
 
 #### Qwen3.5-35B-A3B (IQ2_XS, 10.16 GiB) — legacy vtq_1 series
 
+> **Context note:** TG128 numbers below measure short-context generation (128 tokens).
+> At **long context (400k)** the VTQ V-cache per-token dequant cost becomes dominant
+> and causes a significant TG regression. See the warning box at the top of this README.
+
 | K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
 |---------|---------|:---:|:---:|:---:|:---:|
 | f16 | f16 | **731** | **58.8** | baseline | baseline |
