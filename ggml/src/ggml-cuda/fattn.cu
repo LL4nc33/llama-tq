@@ -223,6 +223,10 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     if (try_dispatch_vec_f16(ctx, dst)) return;
     if (try_dispatch_vec_ktq(ctx, dst)) return;
     if (try_dispatch_vec_vtq1(ctx, dst)) return;
+    // E14 split-decode: intercepts VTQ_2 family at ncols=1 (decode) and runs
+    // bulk dequant + F16 FA. Only active when FATTN_VTQ2_SPLIT_ENABLE is
+    // defined, otherwise this function is a no-op returning false.
+    if (try_dispatch_vec_vtq2_split(ctx, dst)) return;
     if (try_dispatch_vec_vtq2(ctx, dst)) return;
 
     GGML_ABORT("fatal error");
