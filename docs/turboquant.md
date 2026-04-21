@@ -43,12 +43,17 @@ cmake --build build -j$(nproc) --target llama-server
 
 ### VTQ (V-Cache) -- no FWHT/sign bits, pre-rotated via self_v_rot
 
-| Type | bpw | Block Size | vs f16 | Use Case |
-|------|-----|------------|--------|----------|
-| `vtq1_1` | 1.5 | 6 bytes | **-91%** | Extreme V compression |
-| `vtq2_1` | 2.5 | 10 bytes | -84% | Best V compression with 2-bit quality |
-| `vtq3_1` | 4.0 | 16 bytes | -75% | Balanced V quality |
-| `vtq4_1` | 4.5 | 18 bytes | -72% | Best VTQ quality |
+| Type | bpw | Block Size | vs f16 | rel MSE* | Use Case |
+|------|-----|------------|--------|---------|----------|
+| `vtq1_1` | 1.5 | 6 bytes | **-91%** | n/a | Extreme V compression |
+| `vtq2_1` | 2.5 | 10 bytes | -84% | 13.25% | Memory-extreme (>200k ctx on 12GB) |
+| `vtq_mixed` | 3.0 | 12 bytes | -81% | 10.98% | Niche mid-tier (CPU only, no CUDA) |
+| **`vtq3_1`** | **3.5** | **14 bytes** | **-78%** | **3.07%** | **Recommended default** (quality/memory balance) |
+| `vtq4_1` | 4.5 | 18 bytes | -72% | 0.84% | Near-lossless, max quality |
+
+*Relative MSE measured on 131k post-RHT samples from Qwen3.5-27B V-projection weights
+(2026-04-23). VTQ3_1 is **4.3× more accurate** than VTQ2_1 at +1.0 bpw — the clear
+quality-to-memory sweet spot. See `docs/plans/2026-04-23-final-findings.md`.
 
 ### Combined Reference
 
