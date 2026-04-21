@@ -10,10 +10,10 @@ import numpy as np
 import sys
 
 
-# Codebooks from ggml-common.h (VTQ_CODEBOOK_{2,3,4}BIT)
-# These are Lloyd-Max centroids for N(0, 1/d) distribution,
-# scaled by 1/sqrt(d) in the actual impl via cb_scale.
-VTQ_CODEBOOK_2BIT = np.array([-1.51096, -0.4534,  0.4534,  1.51096])
+# Codebooks from ggml-quants.c. VTQ uses Laplace-optimized 2-bit (sharper peak / heavier
+# tails than Gaussian), matching the post-D*H*D rotation distribution in the fork.
+# 3-bit and 4-bit share the PQ_CODEBOOK (Gaussian-optimal Lloyd-Max).
+VTQ_CODEBOOK_2BIT = np.array([-1.810, -0.395,  0.395,  1.810])  # Laplace-optimal
 VTQ_CODEBOOK_3BIT = np.array([-2.15195, -1.34407, -0.75244, -0.245,
                               0.245, 0.75244, 1.34407, 2.15195])
 VTQ_CODEBOOK_4BIT = np.array([-2.73321, -2.06942, -1.61813, -1.25635,
