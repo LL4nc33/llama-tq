@@ -2,23 +2,42 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Asymmetric KV-cache quantization for llama.cpp. K-cache and V-cache use different quant types with different dequant paths inside the Flash Attention kernel.
+KV-cache quantization research fork of llama.cpp. Asymmetric K/V dispatch — K-cache and V-cache use different quant types with different dequant paths inside the Flash Attention kernel.
 
-Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp), inspired by [TurboQuant](https://arxiv.org/abs/2504.19874) (Zandieh et al., arXiv preprint April 2025). See [References](#references) for explicit deviations from the paper.
+**For whom:** Users running large models with long context on limited VRAM who accept minimal PPL cost for significant KV memory savings. Primary target hardware: NVIDIA Turing (CC 7.5) and later.
+
+**What it uses:**
+- Random Hadamard Transform (RHT) + Lloyd-Max codebooks for KV quantization
+- Flash Attention 2 kernel path (standard llama.cpp, extended for asymmetric K/V dispatch)
+- Laplace-optimized codebooks (post-RHT data is Laplace-distributed, not Gaussian)
+- Deferred-V quantization (f16 staging during prefill, bulk convert at prefill→decode transition)
+- Attention Sinks protection (first 4 tokens in f16)
+- ggml infrastructure (type_traits, CPU fallback, CUDA FA kernels)
+
+**What it is not:**
+- Not a performance fork — TG throughput matches upstream llama.cpp. This fork saves VRAM, not time.
+- Not an alternative to production-scale serving systems — single-node, no paged attention, no batching focus.
+- Not tested on newer architectures (Ampere/Hopper). sm_75 is the primary calibration target.
+
+**Status:** Research-grade. Production-validated on Qwen3.5-35B-A3B with 400k context, but V-cache configuration is workload-dependent (see trade-offs below).
 
 > **Measured on 2x RTX 2060 12GB (CC 7.5), 5 model/quant pairs:**
 > - `q8_0` K + `vtq2_1` V (5.5 bpw avg): **+5.1% to +10.0%** PPL Δ depending on model, ~65% KV VRAM vs f16
-> - `q8_0` K + `vtq3_1` V (6.25 bpw avg): **+0.6% to +2.5%** PPL Δ ← **recommended**
-> - TG128 overhead: **−1% to −4%** with `vtq*` V-cache (vs −12% to −22% with `q4_0` V-cache)
+> - `q8_0` K + `vtq3_1` V (6.25 bpw avg): **+0.6% to +2.5%** PPL Δ ← **recommended for fitting models**
+> - TG128 overhead: **−1% to −4%** with `vtq*` V-cache on short context
 > - CUDA only. PPL measurements are at 3 wikitext-2 chunks (noisy), proper 64+ chunk reruns pending.
 
-> **Quality vs Speed trade-off (v6 research, 2026-04-23):** On 131k post-RHT Qwen3.5-27B
-> V-samples, VTQ3_1 achieves **3.07% rel MSE** vs VTQ2_1's **13.25%** — a **4.3× accuracy
-> improvement for +1.0 bpw**. **BUT:** real production deployment on 35B/400k-ctx showed
-> `tq3_1` V-cache causes **5.5× TG regression** (12.4 vs 67.7 tok/s on long generation)
-> because per-token V-dequant scales with context length in the FA kernel. Use VTQ V-cache
-> when **memory-constrained**; prefer `f16` V when VRAM allows. See
+> **⚠ Long-context TG regression:** On 35B with 400k ctx, `vtq3_1` V-cache caused a
+> **5.5× TG regression** (12.4 vs 67.7 tok/s on long generation) because per-token V-dequant
+> scales with context length in the FA kernel. **Use VTQ V-cache only when memory-constrained;
+> prefer `f16` V when VRAM allows.** See
 > [`docs/plans/2026-04-23-prod-vtq3-deploy-result.md`](docs/plans/2026-04-23-prod-vtq3-deploy-result.md).
+
+> **Honest bottleneck assessment (2026-04-23):** nvprof profiling on our prod config shows
+> FA-vec kernel is only 6.4% of kernel time. The real bottleneck at 67 tok/s baseline is
+> `mmvq` (IQ2_XS expert matmuls at 28%), which is already upstream-optimized. Further TG
+> improvements on this hardware + model combination are likely small. See
+> [`docs/plans/2026-04-23-reality-check-session.md`](docs/plans/2026-04-23-reality-check-session.md).
 
 ![PPL vs KV bpw](docs/img/ppl_vs_bpw.png)
 
@@ -354,6 +373,39 @@ cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_FA_ALL_QUANTS=ON
 
 CUDA CC 6.1+. CPU fallback available.
 
+## When This Fork Is Not the Right Choice
+
+- **When VRAM is not a constraint:** upstream llama.cpp with f16 KV is simpler and equally fast.
+- **When sub-50ms/token latency matters:** VTQ V-cache increases per-token dequant overhead at long context. Use f16 V or other forks.
+- **For multi-node inference:** this fork makes no changes to llama.cpp's split logic. Production-scale serving systems are designed for that use case.
+- **On Ampere+ (CC 8.0+):** untested. The sm_75-specific launch_bounds and FA tuning are calibrated for Turing, not newer tensor-core generations.
+
+## Roadmap Reality
+
+As of 2026-04-23:
+
+**Shipped:**
+- KTQ1_1/2_1/3_1/4_1 — K-cache quant types
+- VTQ1_1/2_1/3_1/4_1 — V-cache quant types (asymmetric K/V via FA dispatch)
+- Deferred-V quantization infrastructure
+- Attention Sinks protection
+- Laplace-optimized 2-bit codebooks
+
+**Active research (no guarantees):**
+- mmvq tuning for IQ2_XS on sm_75
+- Trellis v2 (VTQ_2 family) — currently broken on D=256
+- C1 streaming window — designed, not implemented
+
+**Discarded after measurement:**
+- Speculative decoding — does not work on A3B MoE (expert saturation)
+- VTQ_MIXED — dominated by VTQ3_1, not CUDA-ported
+- Calibrated outlier selection — marginal gain after RHT
+
+**Deliberately not on roadmap:**
+- FA3 port (requires sm_80+ hardware)
+- Paged attention (scope mismatch with fork goal)
+- Multi-node inference
+
 ## Known Limitations
 
 - **KTQ + VTQ at low bits:** combined 2-bit K + 2-bit V shows super-additive PPL degradation in my tests. Pair `vtq*_1` with `q8_0` or `q4_0` for K.
@@ -377,6 +429,48 @@ CUDA CC 6.1+. CPU fallback available.
 | [TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus) | Symmetric TQ, Metal + CUDA, extensive benchmarks (NIAH, long ctx) |
 | [spiritbuun/buun-llama-cpp](https://github.com/spiritbuun/buun-llama-cpp) | TCQ (Trellis-Coded Quantization), Viterbi encoding, best 3-bit PPL |
 | [llama.cpp #20969](https://github.com/ggml-org/llama.cpp/discussions/20969) | TurboQuant community thread |
+
+## Inspirations & Methods Used
+
+This fork is a research collection combining several building blocks. Where each method fits:
+
+### Core Foundation
+
+- **llama.cpp** — Upstream fork. Unchanged runtime, server, GGML infrastructure. Non-KV-cache changes come from upstream and are merged back regularly.
+- **ggml** — Tensor library enabling type_traits: our VTQ dispatch goes through the standard ggml mechanism, so CPU fallback, quantize, dequantize, and set-rows work automatically once types are registered.
+
+### Primary Research Methods
+
+- **TurboQuant** — Random Hadamard Transform (RHT) for outlier diffusion, Lloyd-Max codebook for 1D-optimal quantization. We implement the MSE-optimal Stage 1 (PolarQuant). Stage 2 (QJL residual) was evaluated and found ineffective for attention workloads.
+- **Flash Attention 2** — The FA kernel on which our asymmetric K/V dispatch extension is built. We modify the vec-path for VTQ V-cache support.
+- **Streaming-LLM / Attention Sinks** — The first 4 tokens in a sequence have disproportionate attention weights. Trick 1 keeps these in f16 instead of quantized.
+- **Laplace-optimal codebooks** — Post-RHT data is Laplace-distributed, not Gaussian. We fit centroids directly to Laplace.
+
+### Considered & Documented Inspirations
+
+- **Trellis-Coded Quantization (TCQ)** — classical signal processing method. We built a Phase-1 harness, derived the VTQ_2 family from it. Currently broken on D=256, functional on D=128.
+- **Paged Attention** — KV-cache management via fixed-size pages. Not directly usable because Python/Triton-based while our stack is pure C++. Documented as a possible porting source.
+- **Triton Autoresearch** — autoresearch methodology applied to the 2060 FA kernel. 8 experiments, E11 cached-decode reaches 112 GB/s (14× over naive).
+- **CUDA Graphs** — for launch overhead reduction. llama.cpp has this already upstream, default enabled.
+- **Speculative Decoding** — already implemented upstream in llama.cpp. We verified whether it fits our A3B MoE config — expert-saturation pathology makes it ineffective on this architecture.
+
+### Measurement Infrastructure
+
+- **nvprof / Nsight Systems** for kernel profiling
+- **wikitext-2** dataset for PPL measurement
+- **sentence-transformers** for MSE→PPL pipeline validation
+
+### What This Fork Contributes
+
+The independent contribution is limited to:
+
+1. Asymmetric K/V cache dispatch in the FA kernel (K and V with different quant types)
+2. VTQ V-cache family — VTQ1_1/2_1/3_1/4_1 as registered ggml types
+3. Deferred-V quantization infrastructure — f16 staging at prefill, bulk Viterbi transition
+4. Reproducible MSE→PPL pipeline — Python harness, real-data validation
+5. Measurement-first methodology — every optimization profile-gated before merge
+
+Everything else stands on the shoulders of the works named above.
 
 ## References
 
