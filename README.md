@@ -8,9 +8,14 @@ Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp), inspired by [TurboQu
 
 > **Measured on 2x RTX 2060 12GB (CC 7.5), 5 model/quant pairs:**
 > - `q8_0` K + `vtq2_1` V (5.5 bpw avg): **+5.1% to +10.0%** PPL Δ depending on model, ~65% KV VRAM vs f16
-> - `q8_0` K + `vtq3_1` V (6.25 bpw avg): **+0.6% to +2.5%** PPL Δ
+> - `q8_0` K + `vtq3_1` V (6.25 bpw avg): **+0.6% to +2.5%** PPL Δ ← **recommended**
 > - TG128 overhead: **−1% to −4%** with `vtq*` V-cache (vs −12% to −22% with `q4_0` V-cache)
 > - CUDA only. PPL measurements are at 3 wikitext-2 chunks (noisy), proper 64+ chunk reruns pending.
+
+> **Quality choice (v6 research, 2026-04-23):** On 131k post-RHT Qwen3.5-27B V-samples,
+> VTQ3_1 achieves **3.07% rel MSE** vs VTQ2_1's **13.25%** — a **4.3× accuracy improvement
+> for +1.0 bpw**. Unless memory-constrained (>200k context on 12 GB VRAM), use VTQ3_1.
+> See [`docs/plans/2026-04-23-final-findings.md`](docs/plans/2026-04-23-final-findings.md).
 
 ![PPL vs KV bpw](docs/img/ppl_vs_bpw.png)
 
@@ -22,7 +27,12 @@ Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp), inspired by [TurboQu
 cmake -B build -DGGML_CUDA=ON
 cmake --build build -j$(nproc) --target llama-server
 
-# Recommended: high-quality K + compressed V
+# Recommended: high-quality K + balanced V (3.07% rel MSE)
+./build/bin/llama-server -m model.gguf \
+    --cache-type-k q8_0 --cache-type-v vtq3_1 \
+    -fa on -ngl 99
+
+# Memory-extreme (for context > 200k on 12 GB VRAM): vtq2_1 (13.25% rel MSE)
 ./build/bin/llama-server -m model.gguf \
     --cache-type-k q8_0 --cache-type-v vtq2_1 \
     -fa on -ngl 99
