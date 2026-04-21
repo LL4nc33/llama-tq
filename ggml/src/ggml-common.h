@@ -378,17 +378,16 @@ typedef struct {
 static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
 
 // VTQ_MIXED — 8 samples @ 3-bit (every 4th position: 0,4,8,...,28) + 24 samples @ 2-bit.
-// Free-lunch bpw savings: ~18% MSE reduction vs VTQ2_1 (roundtrip MSE on 131k post-RHT
-// Qwen3.5-27B V-samples: VTQ2_1 11.1%, VTQ_MIXED predicted 9.1%).
-// Layout: 2 B scale + 3 B qs_hi (24 bits 3-bit) + 1 B pad (safe 2-byte straddle read for last
-// hi-sample j=28, which straddles qs_hi[2]/qs_hi[3]) + 6 B qs_lo.
-// bpw = 12*8 / 32 = 3.0 bpw.
+// Layout: 2 B scale + 3 B qs_hi (24 bits 3-bit) + 6 B qs_lo (48 bits 2-bit) = 11 B.
+// Max hi_pos=7 → bit_offset=21, byte_idx=2, bit_pos=5 → reads only byte[2] bits [5..7]
+// since 3-bit value ≤ 7 fits entirely in (byte[2] >> 5). No straddle-pad needed.
+// bpw = 11*8 / 32 = 2.75 bpw.
 typedef struct {
     ggml_half d;              // block scale (L2 norm, same as other VTQ_1)
-    uint8_t   qs_hi[4];       // 8 samples × 3-bit = 24 bits; byte [3] is straddle-pad (always 0)
+    uint8_t   qs_hi[3];       // 8 samples × 3-bit = 24 bits = 3 bytes
     uint8_t   qs_lo[6];       // 24 samples × 2-bit = 48 bits = 6 bytes
 } block_vtq_mixed;
-static_assert(sizeof(block_vtq_mixed) == 12, "wrong vtq_mixed block size");
+static_assert(sizeof(block_vtq_mixed) == 11, "wrong vtq_mixed block size");
 
 // --- VTQ{K}_2 (Trellis v2): group-level Viterbi, L=16 bitshift trellis ---
 // See ggml-trellis.h. One ggml-block == one Trellis group (512 samples).
