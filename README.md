@@ -30,14 +30,12 @@ KV-cache quantization research fork of llama.cpp. Asymmetric K/V dispatch — K-
 > **⚠ Long-context TG regression:** On 35B with 400k ctx, `vtq3_1` V-cache caused a
 > **5.5× TG regression** (12.4 vs 67.7 tok/s on long generation) because per-token V-dequant
 > scales with context length in the FA kernel. **Use VTQ V-cache only when memory-constrained;
-> prefer `f16` V when VRAM allows.** See
-> [`docs/plans/2026-04-23-prod-vtq3-deploy-result.md`](docs/plans/2026-04-23-prod-vtq3-deploy-result.md).
+> prefer `f16` V when VRAM allows.**
 
 > **Honest bottleneck assessment (2026-04-23):** nvprof profiling on our prod config shows
 > FA-vec kernel is only 6.4% of kernel time. The real bottleneck at 67 tok/s baseline is
 > `mmvq` (IQ2_XS expert matmuls at 28%), which is already upstream-optimized. Further TG
-> improvements on this hardware + model combination are likely small. See
-> [`docs/plans/2026-04-23-reality-check-session.md`](docs/plans/2026-04-23-reality-check-session.md).
+> improvements on this hardware + model combination are likely small.
 
 ![PPL vs KV bpw](docs/img/ppl_vs_bpw.png)
 
