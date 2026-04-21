@@ -17,7 +17,12 @@ static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
 #pragma clang diagnostic ignored "-Wpass-failed"
 #endif // __clang__
 template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap> // D == head size
-__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), 1)
+// Turing (sm_75) has 64K regs/SM. With 128 threads/block:
+//   1 block/SM -> up to ~255 regs/thread (but low occupancy)
+//   2 blocks/SM -> up to ~255 regs/thread across 256 threads = 256 regs each? No: total 64K / 256 = 256 regs.
+//   Practically: hint minBlocksPerSM=2 caps regs at ~128/thread, giving 2 blocks/SM => 2x warp-level parallelism.
+// The exp2f softmax refactor below reduces register pressure enough that this cap is achievable on sm_75.
+__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), 2)
 static __global__ void flash_attn_ext_vec(
         const char * __restrict__ Q,
         const char * __restrict__ K,
