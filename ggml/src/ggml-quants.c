@@ -6224,14 +6224,12 @@ void quantize_row_vtq_mixed_ref(const float * GGML_RESTRICT x, block_vtq_mixed *
         y[i].d = GGML_FP32_TO_FP16(norm);
 
         if (norm < 1e-30f) {
-            memset(y[i].qs_hi, 0, sizeof(y[i].qs_hi));
-            memset(y[i].qs_lo, 0, sizeof(y[i].qs_lo));
+            memset(y[i].qs, 0, sizeof(y[i].qs));
             continue;
         }
 
         const float inv_norm = 1.0f / norm;
-        memset(y[i].qs_hi, 0, sizeof(y[i].qs_hi));
-        memset(y[i].qs_lo, 0, sizeof(y[i].qs_lo));
+        memset(y[i].qs, 0, sizeof(y[i].qs));
 
         for (int j = 0; j < QK_VTQ; j++) {
             float val = xi[j] * inv_norm;
@@ -6248,9 +6246,9 @@ void quantize_row_vtq_mixed_ref(const float * GGML_RESTRICT x, block_vtq_mixed *
                 int bit_offset = hi_pos * 3;                // 0..21
                 int byte_idx = bit_offset / 8;              // 0..2
                 int bit_pos = bit_offset % 8;
-                y[i].qs_hi[byte_idx] |= (best_idx << bit_pos) & 0xFF;
+                y[i].qs[byte_idx] |= (best_idx << bit_pos) & 0xFF;
                 if (bit_pos > 5) {
-                    y[i].qs_hi[byte_idx + 1] |= (best_idx >> (8 - bit_pos));
+                    y[i].qs[byte_idx + 1] |= (best_idx >> (8 - bit_pos));
                 }
             } else {
                 // 2-bit slot
@@ -6262,7 +6260,7 @@ void quantize_row_vtq_mixed_ref(const float * GGML_RESTRICT x, block_vtq_mixed *
                     if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
                 }
                 int lo_pos = VTQ_MIXED_LO_IDX(j);          // 0..23
-                y[i].qs_lo[lo_pos / 4] |= (best_idx << (2 * (lo_pos % 4)));
+                y[i].qs[3 + lo_pos / 4] |= (best_idx << (2 * (lo_pos % 4)));
             }
         }
 
@@ -6275,12 +6273,12 @@ void quantize_row_vtq_mixed_ref(const float * GGML_RESTRICT x, block_vtq_mixed *
                 int bit_offset = hi_pos * 3;
                 int byte_idx = bit_offset / 8;
                 int bit_pos = bit_offset % 8;
-                uint8_t next = (byte_idx + 1 < 3) ? y[i].qs_hi[byte_idx + 1] : 0;
-                int idx = ((y[i].qs_hi[byte_idx] >> bit_pos) | (next << (8 - bit_pos))) & 0x7;
+                uint8_t next = (byte_idx + 1 < 3) ? y[i].qs[byte_idx + 1] : 0;
+                int idx = ((y[i].qs[byte_idx] >> bit_pos) | (next << (8 - bit_pos))) & 0x7;
                 r = VTQ_CODEBOOK_3BIT[idx] * cb_scale;
             } else {
                 int lo_pos = VTQ_MIXED_LO_IDX(j);
-                int idx = (y[i].qs_lo[lo_pos / 4] >> (2 * (lo_pos % 4))) & 0x3;
+                int idx = (y[i].qs[3 + lo_pos / 4] >> (2 * (lo_pos % 4))) & 0x3;
                 r = VTQ_CODEBOOK_2BIT[idx] * cb_scale;
             }
             recon_sq += r * r;
@@ -6305,22 +6303,16 @@ void dequantize_row_vtq_mixed(const block_vtq_mixed * GGML_RESTRICT x, float * G
                 int bit_offset = hi_pos * 3;
                 int byte_idx = bit_offset / 8;
                 int bit_pos = bit_offset % 8;
-                // Same 2-byte straddle trick as vtq3_1, but we only have 3 bytes,
-                // so the last sample (hi_pos=7, bit_offset=21) needs byte_idx+1=3 to be valid.
-                // hi_pos=7 → bit_offset=21 → byte_idx=2, bit_pos=5 → reads qs_hi[2] and qs_hi[3].
-                // qs_hi has only 3 bytes (0..2). Must guard the last read.
-                // 3-bit extraction. For bit_pos ≤ 5 the value fits within byte[byte_idx]
-                // (incl. hi_pos=7 where byte_idx=2, bit_pos=5 → 3 bits in [5..7]).
-                // For bit_pos > 5 we need the next byte. Guard via array bounds:
-                // hi_pos ∈ {0,1,2,3,4,5,6,7} → bit_offset ∈ {0,3,6,9,12,15,18,21}
-                // → byte_idx ∈ {0,0,0,1,1,1,2,2}, bit_pos ∈ {0,3,6,1,4,7,2,5}.
-                // bit_pos > 5 only for hi_pos=5 (bit_pos=7), byte_idx=1 → reads byte[1] and byte[2], both in-bounds.
-                uint8_t next = (byte_idx + 1 < 3) ? x[i].qs_hi[byte_idx + 1] : 0;
-                int idx = ((x[i].qs_hi[byte_idx] >> bit_pos) | (next << (8 - bit_pos))) & 0x7;
+                // 3-bit extraction. hi-slot block spans qs[0..2].
+                // hi_pos ∈ {0..7} → byte_idx ∈ {0,0,0,1,1,1,2,2}, bit_pos ∈ {0,3,6,1,4,7,2,5}.
+                // bit_pos > 5 only for hi_pos=5 (bit_pos=7), byte_idx=1 → safe 2-byte read qs[1..2].
+                // hi_pos=7 (bit_pos=5) reads qs[2] bits [5..7] (value ≤ 7 fits), so guard avoids OOB.
+                uint8_t next = (byte_idx + 1 < 3) ? x[i].qs[byte_idx + 1] : 0;
+                int idx = ((x[i].qs[byte_idx] >> bit_pos) | (next << (8 - bit_pos))) & 0x7;
                 yb[j] = VTQ_CODEBOOK_3BIT[idx] * cb_scale * norm;
             } else {
                 int lo_pos = VTQ_MIXED_LO_IDX(j);
-                int idx = (x[i].qs_lo[lo_pos / 4] >> (2 * (lo_pos % 4))) & 0x3;
+                int idx = (x[i].qs[3 + lo_pos / 4] >> (2 * (lo_pos % 4))) & 0x3;
                 yb[j] = VTQ_CODEBOOK_2BIT[idx] * cb_scale * norm;
             }
         }
