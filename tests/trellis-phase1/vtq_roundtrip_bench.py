@@ -51,6 +51,34 @@ def quantize_vtq(x: np.ndarray, codebook: np.ndarray, QK: int = 32) -> np.ndarra
     return recon * corrected_norms
 
 
+def quantize_vtq_mixed(x: np.ndarray, QK: int = 32) -> np.ndarray:
+    """VTQ_MIXED: positions {0,4,8,12,16,20,24,28} use VTQ_CODEBOOK_3BIT, rest use VTQ_CODEBOOK_2BIT.
+    Per-block L2 norm + norm correction same as other VTQ_1 types."""
+    N, Q = x.shape
+    assert Q == QK
+    cb_scale = 1.0 / np.sqrt(QK)
+    cb_hi = VTQ_CODEBOOK_3BIT * cb_scale
+    cb_lo = VTQ_CODEBOOK_2BIT * cb_scale
+
+    norms = np.linalg.norm(x, axis=1, keepdims=True)
+    x_norm = np.where(norms > 1e-30, x / norms, 0)
+
+    edges_hi = (cb_hi[:-1] + cb_hi[1:]) / 2
+    edges_lo = (cb_lo[:-1] + cb_lo[1:]) / 2
+
+    is_hi = (np.arange(QK) % 4 == 0)
+
+    recon = np.empty_like(x_norm)
+    idx_hi = np.searchsorted(edges_hi, x_norm[:, is_hi])
+    recon[:, is_hi] = cb_hi[idx_hi]
+    idx_lo = np.searchsorted(edges_lo, x_norm[:, ~is_hi])
+    recon[:, ~is_hi] = cb_lo[idx_lo]
+
+    recon_sq = np.linalg.norm(recon, axis=1, keepdims=True)
+    corrected = np.where(recon_sq > 1e-30, norms / recon_sq, norms)
+    return recon * corrected
+
+
 def benchmark(samples_path: str, QK: int = 32):
     """Load samples, benchmark each VTQ codebook."""
     raw = np.fromfile(samples_path, dtype=np.float32)
@@ -62,24 +90,29 @@ def benchmark(samples_path: str, QK: int = 32):
     print(f"  per-sample mean: {samples.mean():.4f}, std: {samples.std():.4f}")
     print()
 
-    print(f"{'bits':>4} {'codebook':>10} {'MSE':>12} {'rel MSE':>10} {'bpw':>6}")
+    print(f"{'type':>12} {'MSE':>12} {'rel MSE':>10} {'bpw':>6}")
     print("-" * 52)
 
-    # Baseline: reconstruction with 100% precision (identity) for relative
     var_total = samples.var()
 
-    for bits, cb in [(2, VTQ_CODEBOOK_2BIT),
-                     (3, VTQ_CODEBOOK_3BIT),
-                     (4, VTQ_CODEBOOK_4BIT)]:
+    for name, bits, cb in [("VTQ2_1", 2, VTQ_CODEBOOK_2BIT),
+                           ("VTQ3_1", 3, VTQ_CODEBOOK_3BIT),
+                           ("VTQ4_1", 4, VTQ_CODEBOOK_4BIT)]:
         recon = quantize_vtq(samples, cb, QK=QK)
         mse = ((samples - recon) ** 2).mean()
         rel_mse = mse / var_total
-        bpw = bits + 16.0 / QK  # + fp16 scale per block
-        print(f"{bits:>4} {'VTQ'+str(bits)+'_1':>10} {mse:>12.5e} {rel_mse:>9.3%} {bpw:>6.2f}")
+        bpw = bits + 16.0 / QK
+        print(f"{name:>12} {mse:>12.5e} {rel_mse:>9.3%} {bpw:>6.2f}")
+
+    # VTQ_MIXED: 8 hi + 24 lo slots
+    recon = quantize_vtq_mixed(samples, QK=QK)
+    mse = ((samples - recon) ** 2).mean()
+    rel_mse = mse / var_total
+    # 12 bytes / 32 samples = 3.0 bpw (with 1B straddle pad)
+    print(f"{'VTQ_MIXED':>12} {mse:>12.5e} {rel_mse:>9.3%} {3.00:>6.2f}  ← new")
 
     print()
-    print("Note: Paper Theorem-1 predicts D_mse / d = 0.117/d, 0.03/d, 0.009/d")
-    print(f"  d={QK}: 0.00366, 0.000938, 0.000281 for bits=2,3,4")
+    print("Paper Theorem-1 per-coord: D_mse ≈ 0.117/d, 0.03/d, 0.009/d for b=2,3,4")
 
 
 if __name__ == "__main__":
