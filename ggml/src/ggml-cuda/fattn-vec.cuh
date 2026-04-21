@@ -17,10 +17,7 @@ static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
 #pragma clang diagnostic ignored "-Wpass-failed"
 #endif // __clang__
 template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap> // D == head size
-// minBlocksPerSM=2 (was 1, 2026-04-22): forces nvcc to keep regs ≤ 255
-// Measured 249 regs/thread with =1 → 1 block/SM on Turing sm_75.
-// =2 gives compiler headroom for modest reg reduction for 2 blocks/SM = 2× occupancy.
-__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), 2)
+__launch_bounds__(ggml_cuda_fattn_vec_get_nthreads_device(), 1)
 static __global__ void flash_attn_ext_vec(
         const char * __restrict__ Q,
         const char * __restrict__ K,
