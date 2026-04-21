@@ -7,18 +7,14 @@
 #include "fattn-vec-dispatch.cuh"
 
 // Phase 3A1 (E11 CUDA port, 2026-04-21):
-// When FATTN_VTQ2_CACHED is defined at compile time, route the
-// KTQ2_1 × VTQ3_2 combo at D=128, ncols=1 through the new warp-cooperative
-// cached-decode kernel (flash_attn_ext_vec_vtq2_cached). All other combos
-// still fall through to the legacy path via FATTN_VEC_CASES_ALL_D_WITH_512_RET.
-//
-// Spec: docs/plans/2026-04-21-e11-cuda-port-spec.md
-#ifdef FATTN_VTQ2_CACHED
+// DISPATCH-HOOK DISABLED — measured 60x slowdown vs legacy on D=128 benches
+// (1.6 tok/s on Qwen3-0.6B vs expected ~100). Kernel source kept in
+// fattn-vec-vtq2.cuh for future ncu diagnosis.
+// Re-enable with -DFATTN_VTQ2_CACHED_ENABLE=1 only after kernel rewrite.
+// See docs/plans/2026-04-22-e11-phase3a1-results.md for root-cause candidates.
+#if defined(FATTN_VTQ2_CACHED) && defined(FATTN_VTQ2_CACHED_ENABLE)
 #include "fattn-vec-vtq2.cuh"
 
-// Intentionally constrained: only a single (D, K, V, ncols) combo is routed
-// to the cached kernel in Phase 3A1 so the cicc instance count stays low.
-// ncols=1 guarded via Q->ne[1] == 1.
 #define FATTN_VEC_VTQ2_CACHED_CASE_RET(D_val, type_K, type_V)                                                    \
     {                                                                                                            \
         const bool type_K_okay = K->type == (type_K) || (K->type == GGML_TYPE_F32 && (type_K) == GGML_TYPE_F16); \
@@ -28,16 +24,15 @@
             return true;                                                                                         \
         }                                                                                                        \
     }
-#endif  // FATTN_VTQ2_CACHED
+#endif  // FATTN_VTQ2_CACHED && FATTN_VTQ2_CACHED_ENABLE
 
 bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
     ggml_tensor * K = dst->src[1];
     ggml_tensor * V = dst->src[2];
 
-#ifdef FATTN_VTQ2_CACHED
-    // Phase 3A1 hot path. Only KTQ2_1 × VTQ3_2 at D=128, ncols=1 rerouted.
-    // Everything else falls through to the legacy macro expansion below.
+#if defined(FATTN_VTQ2_CACHED) && defined(FATTN_VTQ2_CACHED_ENABLE)
+    // Phase 3A1 hot path — disabled by default (see header above).
     FATTN_VEC_VTQ2_CACHED_CASE_RET(128, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ3_2)
 #endif
 
