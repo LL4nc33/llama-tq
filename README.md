@@ -12,10 +12,13 @@ Fork of [llama.cpp](https://github.com/ggml-org/llama.cpp), inspired by [TurboQu
 > - TG128 overhead: **−1% to −4%** with `vtq*` V-cache (vs −12% to −22% with `q4_0` V-cache)
 > - CUDA only. PPL measurements are at 3 wikitext-2 chunks (noisy), proper 64+ chunk reruns pending.
 
-> **Quality choice (v6 research, 2026-04-23):** On 131k post-RHT Qwen3.5-27B V-samples,
-> VTQ3_1 achieves **3.07% rel MSE** vs VTQ2_1's **13.25%** — a **4.3× accuracy improvement
-> for +1.0 bpw**. Unless memory-constrained (>200k context on 12 GB VRAM), use VTQ3_1.
-> See [`docs/plans/2026-04-23-final-findings.md`](docs/plans/2026-04-23-final-findings.md).
+> **Quality vs Speed trade-off (v6 research, 2026-04-23):** On 131k post-RHT Qwen3.5-27B
+> V-samples, VTQ3_1 achieves **3.07% rel MSE** vs VTQ2_1's **13.25%** — a **4.3× accuracy
+> improvement for +1.0 bpw**. **BUT:** real production deployment on 35B/400k-ctx showed
+> `tq3_1` V-cache causes **5.5× TG regression** (12.4 vs 67.7 tok/s on long generation)
+> because per-token V-dequant scales with context length in the FA kernel. Use VTQ V-cache
+> when **memory-constrained**; prefer `f16` V when VRAM allows. See
+> [`docs/plans/2026-04-23-prod-vtq3-deploy-result.md`](docs/plans/2026-04-23-prod-vtq3-deploy-result.md).
 
 ![PPL vs KV bpw](docs/img/ppl_vs_bpw.png)
 
