@@ -1,10 +1,6 @@
-// MMA-KTQ entry point. Currently dispatches to:
-//   * inline kernel (DKQ=128, DV=128, ncols1=8, ncols2=1) for KTQ2_1 K + f16 V
-//   * legacy split-dequant (bulk K→f16 + MMA-F16) for everything else
-//
-// The inline path does tile-wise warp-cooperative KTQ dequant in the shmem
-// K-tile load, so no ctx-dependent extra HBM pass. The split path is kept as
-// a fallback for shapes we haven't instantiated yet.
+// MMA-KTQ entry point. Dispatches on (DKQ, DV, ncols1, ncols2) matching what
+// the f16 MMA dispatcher would have chosen, but to KTQ-aware template instances
+// where available. Falls back to split-dequant for non-instantiated shapes.
 
 #include "fattn-mma-ktq.cuh"
 #include "fattn-mma-ktq-inline.cuh"
@@ -62,11 +58,26 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
 
-    // Inline path: only the one instantiated shape.
+    // Inline path: DKQ=DV=128, GQA ratio 8, KTQ2_1 K + f16 V.
     if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
-        Q->ne[0] == 128 && V->ne[0] == 128 && Q->ne[1] == 8) {
-        ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 8, 1>(ctx, dst);
-        return;
+        Q->ne[0] == 128 && V->ne[0] == 128) {
+        const int gqa_ratio = Q->ne[2] / K->ne[2];
+        if (gqa_ratio == 8) {
+            constexpr int ncols2 = 8;
+            if (Q->ne[1] <= 1) {
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 1, ncols2>(ctx, dst);
+                return;
+            } else if (Q->ne[1] <= 2) {
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 2, ncols2>(ctx, dst);
+                return;
+            } else if (Q->ne[1] <= 4) {
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 4, ncols2>(ctx, dst);
+                return;
+            } else {
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 8, ncols2>(ctx, dst);
+                return;
+            }
+        }
     }
 
     // Fallback: split-dequant.
