@@ -155,6 +155,7 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_TQW3          = 41, // TurboQuant weights @ 4.5 bpw (reuses GGML_TYPE_KTQ3_1 format)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -357,8 +358,17 @@ extern "C" {
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
 
+        // Trick 2 PR2: per-layer mixed precision V-cache [EXPERIMENTAL]
+        // If type_v_layers_count > 0, type_v_layers[il] overrides type_v for layer il.
+        // Otherwise type_v is used uniformly (backward compatible).
+        const enum ggml_type * type_v_layers;
+        int32_t                type_v_layers_count;
+
         uint32_t tq_protect_layers; // boundary layer protection: first/last N layers use q8_0 instead of TQ
+        uint32_t tq_protect_sinks;  // attention-sink protection (StreamingLLM): force layer-0 V-cache to f16 when > 0
         bool tq_deferred_k;        // defer K quantization until prefill->decode transition
+        bool tq_deferred_v;        // defer V quantization until prefill->decode transition
+        uint32_t tq_profile_heads; // Trick 2 PR1: if > 0, profile first N decode calls and dump per-head V variance/kurtosis
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted

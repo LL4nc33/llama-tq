@@ -140,13 +140,35 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-q8_0-ktq1_1.cu
             template-instances/fattn-vec-instance-q8_0-ktq2_1.cu
             template-instances/fattn-vec-instance-q8_0-ktq3_1.cu
-            template-instances/fattn-vec-instance-q8_0-ktq4_1.cu)
+            template-instances/fattn-vec-instance-q8_0-ktq4_1.cu
+            template-instances/fattn-vec-instance-f16-vtq3_2.cu)
     endif()
 
     ggml_add_backend_library(ggml-cuda
                              ${GGML_HEADERS_CUDA}
                              ${GGML_SOURCES_CUDA}
                             )
+
+    # Relocatable device code — required for cross-TU `extern __device__`
+    # variables (Trellis LUT shared across fattn-vec-instance TUs for
+    # Phase-2c). Without this, nvcc silently demotes extern to static
+    # (warning 20044-D) and each TU gets an uninitialized copy.
+    set_target_properties(ggml-cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    set_target_properties(ggml-cuda PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+
+    # Monster TUs (fattn-vec header expansion) peak at 6-10 GB RAM during
+    # cicc template instantiation. The old monolithic fattn.cu was split
+    # into 3 fattn-vec-dispatch-*.cu TUs (f16 / ktq / vtq) + the thin
+    # top-level fattn.cu dispatcher, so cicc can instantiate them in
+    # parallel (~4x wall-clock speedup). To avoid blowing past 32 GB RAM
+    # on -jN builds, at most 2 of the heavy TUs run concurrently; other
+    # small TUs compile unbothered.
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_compile=2)
+    set_source_files_properties(
+        fattn-vec-dispatch-f16.cu
+        fattn-vec-dispatch-ktq.cu
+        fattn-vec-dispatch-vtq.cu
+        PROPERTIES JOB_POOL_COMPILE heavy_compile)
 
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 

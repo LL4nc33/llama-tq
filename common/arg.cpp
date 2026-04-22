@@ -2,6 +2,7 @@
 
 #include "chat.h"
 #include "common.h"
+#include "tq-profile.h"
 #include "download.h"
 #include "hf-cache.h"
 #include "json-schema-to-grammar.h"
@@ -398,6 +399,10 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_VTQ2_1,
     GGML_TYPE_VTQ3_1,
     GGML_TYPE_VTQ4_1,
+    GGML_TYPE_VTQ2_2,
+    GGML_TYPE_VTQ3_2,
+    GGML_TYPE_VTQ4_2,
+    GGML_TYPE_VTQ_MIXED,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
@@ -2049,7 +2054,31 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, int value) {
             params.tq_protect_layers = value >= 0 ? (uint32_t)value : 0;
         }
-    ).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_LAYERS"));
+    add_opt(common_arg(
+        {"--tq-protect-sinks"}, "N",
+        string_format(
+            "TurboQuant attention-sink protection (StreamingLLM): when N>0, force layer-0 V-cache to f16\n"
+            "to preserve sink tokens that carry outsized attention weight on long contexts\n"
+            "(default: %u, recommended: 4)",
+            params.tq_protect_sinks
+        ),
+        [](common_params & params, int value) {
+            params.tq_protect_sinks = value >= 0 ? (uint32_t)value : 0;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
+    add_opt(common_arg(
+        {"--tq-profile-heads"}, "N",
+        string_format(
+            "TurboQuant Trick 2 PR1: profile the first N decode calls and dump per-head V-cache\n"
+            "variance/kurtosis as JSON to tq-profile-heads-<PID>.json (0 = disabled, no runtime cost)\n"
+            "(default: %u)",
+            params.tq_profile_heads
+        ),
+        [](common_params & params, int value) {
+            params.tq_profile_heads = value >= 0 ? (uint32_t)value : 0;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROFILE_HEADS"));
     add_opt(common_arg(
         {"--tq-deferred-k"},
         "defer K quantization until prefill->decode transition for better quality\n"
@@ -2059,6 +2088,82 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.tq_deferred_k = true;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD}).set_env("LLAMA_ARG_TQ_DEFERRED_K"));
+    add_opt(common_arg(
+        {"--tq-deferred-v"},
+        "defer V quantization: stage V-writes as f16 during prefill, bulk-convert at\n"
+        "prefill->decode transition. Avoids 21.7ms/call Viterbi on per-token decode writes.\n"
+        "(NOTE: as of phase2, AUTO-ENABLED whenever --cache-type-v is VTQ2_2/3_2/4_2\n"
+        " — flag retained for backwards compat; passing it is a no-op)",
+        [](common_params & params) {
+            params.tq_deferred_v = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_DEFERRED_V"));
+    // Trick 2 PR2: per-layer mixed precision V-cache
+    add_opt(common_arg(
+        {"--tq-v-profile"}, "FNAME",
+        "Trick 2 PR2: load per-head variance profile JSON (from --tq-profile-heads run)\n"
+        "to auto-select per-layer V-cache precision",
+        [](common_params & params, const std::string & value) {
+            params.tq_v_profile_path = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
+    add_opt(common_arg(
+        {"--tq-v-strategy"}, "NAME",
+        "Trick 2 PR2: selection heuristic: top-n:N | ratio:X | kurt:Y | mixed | auto | manual\n"
+        "(default: mixed = ratio>=3.0 OR kurt>=500)",
+        [](common_params & params, const std::string & value) {
+            params.tq_v_strategy = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
+    add_opt(common_arg(
+        {"--tq-v-base"}, "TYPE",
+        "Trick 2 PR2: base V-cache type for normal layers (default: vtq3_2)",
+        [](common_params & params, const std::string & value) {
+            params.tq_v_base = llama_tq::type_from_name(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
+    add_opt(common_arg(
+        {"--tq-v-high"}, "TYPE",
+        "Trick 2 PR2: high-precision V-cache type for heavy-tail layers (default: vtq4_2)",
+        [](common_params & params, const std::string & value) {
+            params.tq_v_high = llama_tq::type_from_name(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
+    add_opt(common_arg(
+        {"--tq-v-low"}, "TYPE",
+        "Trick 2 PR2: low-precision V-cache type for calm layers (default: vtq2_2)",
+        [](common_params & params, const std::string & value) {
+            params.tq_v_low = llama_tq::type_from_name(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
+    add_opt(common_arg(
+        {"--tq-v-override"}, "SPEC",
+        "Trick 2 PR2: manual per-layer override, e.g. '0-1:vtq4_2,13:vtq4_2,*:vtq3_2'",
+        [](common_params & params, const std::string & value) {
+            params.tq_v_override = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
+    add_opt(common_arg(
+        {"--tq-v-budget-bpw"}, "FLOAT",
+        "Trick 2 PR2: memory budget constraint in bits/weight (downgrade worst upgrades until avg <= budget, 0 = disabled)",
+        [](common_params & params, const std::string & value) {
+            params.tq_v_budget_bpw = std::stof(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}));
+    add_opt(common_arg(
+        {"--tq-overlay-topn"}, "N",
+        "Trick 4: enable per-block correction overlay for VTQ_2 V-cache.\n"
+        "N = top-N highest-error entries per 256-sample trellis block (1..4).\n"
+        "0 disables the overlay (default). Storage cost per entry is ~0.6%\n"
+        "of V-cache size (4 B per block, see docs/plans/2026-04-20-trick4-*).\n"
+        "MVP: CPU helpers + extract/apply only; CUDA decode-hook TBD.",
+        [](common_params & params, int value) {
+            if (value < 0 || value > 4) {
+                throw std::invalid_argument("--tq-overlay-topn must be in [0, 4]");
+            }
+            params.tq_overlay_topn = (uint32_t) value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_OVERLAY_TOPN"));
     add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
