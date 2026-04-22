@@ -359,15 +359,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // TurboQuant/VTQ types only have VEC kernel support (no MMA/TILE/WMMA):
     // For TQ/VTQ, allow head sizes up to 512 (needed for Gemma4 global attention layers)
     const bool is_tq_k = K->type == GGML_TYPE_KTQ1_1 || K->type == GGML_TYPE_KTQ2_1 || K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1;
-    {
-        static int all_cnt = 0;
-        if (all_cnt++ < 10) {
-            fprintf(stderr, "[FA#%d] K.type=%d V.type=%d Q.ne0=%d Q.ne1=%lld K.ne1=%lld\n",
-                    all_cnt, (int)K->type, (int)V->type, (int)Q->ne[0],
-                    (long long)Q->ne[1], (long long)K->ne[1]);
-            fflush(stderr);
-        }
-    }
     const bool is_tq_v = V->type == GGML_TYPE_KTQ1_1 || V->type == GGML_TYPE_KTQ2_1 || V->type == GGML_TYPE_KTQ3_1 || V->type == GGML_TYPE_KTQ4_1;
     const bool can_use_vector_kernel_tq = Q->ne[0] <= 512 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
     if (is_tq_k || is_tq_v || is_vtq_v) {
@@ -393,15 +384,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // see a real PP speedup; long-prefill workloads see no regression.
         // Inline warp-cooperative dequant (Phase 2 variant A) will supersede this
         // once it lands.
-        if (is_tq_k) {
-            static int dbg_cnt = 0;
-            if (dbg_cnt++ < 3) {
-                fprintf(stderr, "[dispatch#%d tq] V.type=%d Q.ne1=%lld K.ne1=%lld Q.ne0=%d gqa=%lld turing=%d\n",
-                        dbg_cnt, (int)V->type, (long long)Q->ne[1], (long long)K->ne[1],
-                        (int)Q->ne[0], (long long)(Q->ne[2]/K->ne[2]), (int)turing_mma_available(cc));
-                fflush(stderr);
-            }
-        }
         if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
             turing_mma_available(cc) && Q->ne[1] >= 8) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
@@ -513,15 +495,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
-    {
-        static int ent_cnt = 0;
-        if (ent_cnt++ < 5) {
-            const ggml_tensor * K = dst->src[1];
-            const ggml_tensor * V = dst->src[2];
-            fprintf(stderr, "[ENTRY#%d] K.type=%d V.type=%d\n", ent_cnt, (int)K->type, (int)V->type);
-            fflush(stderr);
-        }
-    }
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
