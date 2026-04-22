@@ -2053,7 +2053,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--tq-deferred-k"},
         "defer K quantization until prefill->decode transition for better quality\n"
-        "(only effective with TQ K cache types)",
+        "(NOTE: as of phase2, this is AUTO-ENABLED whenever --cache-type-k is a\n"
+        " KTQ type — flag retained for backwards compat; passing it is a no-op)",
         [](common_params & params) {
             params.tq_deferred_k = true;
         }

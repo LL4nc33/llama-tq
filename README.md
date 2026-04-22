@@ -26,6 +26,19 @@ cmake --build build -j$(nproc) --target llama-server
 ./build/bin/llama-server -m model.gguf \
     --cache-type-k q8_0 --cache-type-v vtq2_1 \
     -fa on -ngl 99
+
+# Production deploy — KTQ2_1 K + f16 V + 400k ctx on 2x RTX 2060 12GB
+# (this is the live config for Qwen3.6-35B-A3B on gpu00.node:8791)
+./build/bin/llama-server -m /path/to/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
+    --host 0.0.0.0 --port 8791 \
+    -c 400000 -ngl 99 --flash-attn on --no-mmap --parallel 2 \
+    --cache-type-k ktq2_1 --cache-type-v f16 \
+    -ub 512 -ts 12,12 --jinja --reasoning off
+# Notes:
+#  - Deferred K quantization auto-enables for KTQ types (f16 staging during
+#    prefill, bulk-convert at prefill→decode). Avoids repetition-loop pathology.
+#  - --parallel 2 gives two 200k-ctx slots on this config.
+#  - -ts 12,12 splits weights evenly across two 12 GB GPUs.
 ```
 
 ## Recommended Configurations
@@ -247,6 +260,8 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 | `ktq4_1` | 4 | 5.5 | 22 B | lowest-PPL KTQ |
 
 **Note:** Combining KTQ K with VTQ V at low bit-widths showed super-additive PPL degradation in my tests (not isolated to a single cause; likely softmax-sensitivity to correlated K and V noise). I recommend `q8_0` or `q4_0` for K when pairing with VTQ V.
+
+**Deferred K quantization (auto-enabled):** KTQ K-cache types are subject to a repetition-loop pathology when K is quantized per-token during prefill — the same attention step reads back the just-quantized rows, so stochastic-rounding and RHT round-trip noise accumulate on every layer of a long prompt, the softmax collapses onto a few tokens, and the model starts looping (`"Es war einfach. Es war einfach. Es war einfach."`). To avoid this, the K cache is staged as f16 during prefill and bulk-converted to KTQ exactly once at the prefill→decode transition. This runs automatically as soon as `--cache-type-k` is a KTQ type; no flag needed. The legacy `--tq-deferred-k` CLI flag is retained as a no-op for backwards compat. Log line `deferred K quantization enabled (N layers with f16 staging)` confirms the path on startup.
 
 </details>
 
