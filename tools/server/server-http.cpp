@@ -114,6 +114,11 @@ bool server_http_context::init(const common_params & params) {
     // set timeouts and change hostname and port
     srv->set_read_timeout (params.timeout_read);
     srv->set_write_timeout(params.timeout_write);
+    // TCP_NODELAY: disable Nagle's algorithm so SSE token chunks are sent
+    // immediately instead of being buffered for up to ~40ms. Critical for
+    // streaming UX (Claude Code, chat clients) where each token delta is
+    // a tiny chunk and buffering compounds visibly.
+    srv->set_tcp_nodelay(true);
     srv->set_socket_options([reuse_port = params.reuse_port](socket_t sock) {
         httplib::set_socket_opt(sock, SOL_SOCKET, SO_REUSEADDR, 1);
         if (reuse_port) {
