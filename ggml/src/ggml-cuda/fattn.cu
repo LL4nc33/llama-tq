@@ -384,6 +384,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // see a real PP speedup; long-prefill workloads see no regression.
         // Inline warp-cooperative dequant (Phase 2 variant A) will supersede this
         // once it lands.
+        if (getenv("TQ_MMA_KTQ_DEBUG")) {
+            fprintf(stderr, "[dispatch] is_tq_k=%d is_tq_v=%d is_vtq_v=%d V.type=%d Q.ne1=%lld turing=%d\n",
+                    (int)is_tq_k, (int)is_tq_v, (int)is_vtq_v, (int)V->type,
+                    (long long)Q->ne[1], (int)turing_mma_available(cc));
+        }
         if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
             turing_mma_available(cc) && Q->ne[1] >= 8) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
