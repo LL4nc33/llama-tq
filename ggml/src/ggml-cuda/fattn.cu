@@ -371,11 +371,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
         }
 #endif
-        // MMA-KTQ path: for prefill (ne[1] >= 8) with KTQ K + f16 V, dispatch to the
-        // tensor-core-capable kernel. Phase 1 stub falls back to VEC; Phase 2 replaces
-        // it with warp-cooperative dequant + MMA. TG (ne[1] <= 2) stays on VEC.
+        // MMA-KTQ split-dequant path: for prefill (ne[1] >= 8) with KTQ K + f16 V,
+        // bulk-dequant K to fp16 then dispatch to the tensor-core MMA kernel.
+        // Only worth it when K's ctx dimension is small — dequant cost scales with
+        // ctx*hidden, and above ~256 tokens VEC starts winning again. Bench measured:
+        //   PP64 264 t/s, PP128 219, PP256 165, PP512 97 (≈ VEC), PP1024 54 (< VEC).
+        // Cap at K->ne[1] < 384 so we keep wins on short prompts and avoid
+        // regression on long prefills. TG (ne[1] <= 2) stays on VEC.
         if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
-            turing_mma_available(cc) && Q->ne[1] >= 8) {
+            turing_mma_available(cc) && Q->ne[1] >= 8 && K->ne[1] < 384) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
         return BEST_FATTN_KERNEL_VEC;
