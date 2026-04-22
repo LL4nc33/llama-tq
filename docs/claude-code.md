@@ -112,6 +112,56 @@ Read the script: [`scripts/onllama-launch-claude.sh`](../scripts/onllama-launch-
 
 ---
 
+## Server tuning for Claude Code (important)
+
+Claude Code sends a large, stable system prompt (tool specs, agentic
+instructions — typically 15–25 k tokens) plus the full conversation history
+on every turn. Without prompt caching, each turn re-prefills all of it:
+
+- First turn: `hallo` → ~1 min perceived latency (20 k-token prefill on a
+  35 B model at PP512 ≈ 900 tok/s ⇒ ~22 s prefill, then decode).
+- Multi-turn chats degrade further as history grows.
+
+### `--cache-reuse N` — the single biggest win
+
+llama.cpp can reuse KV-cache across turns via KV-shifting when the new prompt
+shares a prefix with a previous one of at least `N` tokens. Add it to your
+server invocation:
+
+```bash
+./build/bin/llama-server -m model.gguf \
+    -c 400000 -ngl 99 -fa on --parallel 2 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+    --cache-reuse 256
+```
+
+**Effect:** on the second turn of a Claude Code session, only the delta
+(new user message + assistant response so far) is prefilled. A 20 k-token
+system prompt is reused from the KV cache for free. Typical second-turn
+latency drops from ~60 s to ~5–10 s on a 35 B model.
+
+Requires prompt caching to be enabled (default in recent llama-tq builds).
+`256` is a reasonable floor — smaller chunks aren't worth the shift cost.
+
+### `--parallel N` and Claude Code
+
+`--parallel 2` splits the context into two slots (each `c / 2` tokens), which
+is right if two clients share the server. If only Claude Code uses it, drop
+to `--parallel 1` to hand it the full context and avoid slot-ping between
+turns. Prompt cache reuse works per-slot, so when `--parallel > 1`, requests
+from the same client should ideally hit the same slot — llama-tq routes by
+matching prefix automatically, no extra config needed.
+
+### Model choice
+
+Claude Code was designed for frontier-tier models. A 35 B runs it, but tool
+chains feel sluggish. If latency matters more than depth, host a smaller
+model (7 B / 14 B) on the same server and pass `--model your-alias`. The
+wrapper sets the same alias for all three Anthropic tier env vars, so
+Claude Code will pick it regardless of which internal tier it requests.
+
+---
+
 ## Troubleshooting
 
 **`claude: command not found`** — install from
