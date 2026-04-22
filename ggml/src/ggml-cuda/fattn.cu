@@ -359,6 +359,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // TurboQuant/VTQ types only have VEC kernel support (no MMA/TILE/WMMA):
     // For TQ/VTQ, allow head sizes up to 512 (needed for Gemma4 global attention layers)
     const bool is_tq_k = K->type == GGML_TYPE_KTQ1_1 || K->type == GGML_TYPE_KTQ2_1 || K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1;
+    {
+        static int all_cnt = 0;
+        if (all_cnt++ < 10) {
+            fprintf(stderr, "[FA#%d] K.type=%d V.type=%d Q.ne0=%d Q.ne1=%lld K.ne1=%lld\n",
+                    all_cnt, (int)K->type, (int)V->type, (int)Q->ne[0],
+                    (long long)Q->ne[1], (long long)K->ne[1]);
+            fflush(stderr);
+        }
+    }
     const bool is_tq_v = V->type == GGML_TYPE_KTQ1_1 || V->type == GGML_TYPE_KTQ2_1 || V->type == GGML_TYPE_KTQ3_1 || V->type == GGML_TYPE_KTQ4_1;
     const bool can_use_vector_kernel_tq = Q->ne[0] <= 512 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
     if (is_tq_k || is_tq_v || is_vtq_v) {
