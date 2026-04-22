@@ -1176,9 +1176,14 @@ json server_task_result_cmpl_final::to_json_anthropic() {
         {"stop_reason", stop_reason},
         {"stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word)},
         {"usage", {
-            {"cache_read_input_tokens", n_prompt_tokens_cache},
-            {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
-            {"output_tokens", n_decoded}
+            {"cache_read_input_tokens",     n_prompt_tokens_cache},
+            {"cache_creation_input_tokens", 0},
+            {"input_tokens",                n_prompt_tokens - n_prompt_tokens_cache},
+            {"output_tokens",               n_decoded},
+            {"cache_creation", {
+                {"ephemeral_5m_input_tokens", 0},
+                {"ephemeral_1h_input_tokens", 0}
+            }}
         }}
     };
 
@@ -1697,9 +1702,14 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
                     {"stop_reason", nullptr},
                     {"stop_sequence", nullptr},
                     {"usage", {
-                        {"cache_read_input_tokens", n_prompt_tokens_cache},
-                        {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
-                        {"output_tokens", 0}
+                        {"cache_read_input_tokens",     n_prompt_tokens_cache},
+                        {"cache_creation_input_tokens", 0},
+                        {"input_tokens",                n_prompt_tokens - n_prompt_tokens_cache},
+                        {"output_tokens",               0},
+                        {"cache_creation", {
+                            {"ephemeral_5m_input_tokens", 0},
+                            {"ephemeral_1h_input_tokens", 0}
+                        }}
                     }}
                 }}
             }}
