@@ -1855,7 +1855,5 @@ void ggml_cuda_flash_attn_ext_mma_ktq_inline_case(ggml_backend_cuda_context & ct
 
 // Minimal instance: only DKQ=128, DV=128, ncols1=8, ncols2=1 for initial bring-up.
 // Matches Qwen3.5 MoE attention head shape. Extend matrix once correctness gate passes.
-extern DECL_FATTN_MMA_KTQ_INLINE_CASE(128, 128, 8, 4);
 extern DECL_FATTN_MMA_KTQ_INLINE_CASE(128, 128, 4, 4);
-extern DECL_FATTN_MMA_KTQ_INLINE_CASE(128, 128, 2, 4);
-extern DECL_FATTN_MMA_KTQ_INLINE_CASE(128, 128, 1, 4);
+extern DECL_FATTN_MMA_KTQ_INLINE_CASE(128, 128, 8, 4);
