@@ -123,9 +123,16 @@ llama_kv_cache::llama_kv_cache(
     std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
 
     // check if deferred K quantization is applicable
+    // Auto-enable for all KTQ K-cache types: per-token KTQ quantization during
+    // prefill accumulates stochastic-rounding noise on every attention read →
+    // softmax collapses on long prompts → repetition loops. Deferred quantization
+    // keeps prefill attention in f16 and bulk-converts once at prefill→decode.
+    // Users can still pass --tq-deferred-k explicitly for clarity; it's a no-op
+    // when already auto-enabled.
     const bool is_tq_type_k = (type_k == GGML_TYPE_KTQ1_1 || type_k == GGML_TYPE_KTQ2_1 ||
                                 type_k == GGML_TYPE_KTQ3_1 || type_k == GGML_TYPE_KTQ4_1);
-    const bool use_deferred_k = tq_deferred_k && is_tq_type_k;
+    const bool use_deferred_k = is_tq_type_k;
+    (void) tq_deferred_k; // flag retained for backwards compat; always on for KTQ
 
     // check if deferred V quantization is applicable (VTQ_2 Trellis-coded types only)
     const bool is_vtq2_type_v = (type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
