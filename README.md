@@ -394,7 +394,10 @@ As of 2026-04-23:
 - Laplace-optimized 2-bit codebooks
 
 **Active research (no guarantees):**
-- **MMA-KTQ asymmetric dispatch (shipped)** — KTQ K + f16 V now takes the tensor-core MMA path via bulk K→f16 split-dequant. A silent early `supports_op` guard had been rejecting `K.type != V.type` for all KTQ+f16V shapes, so previous "KTQ PP regression" numbers were actually a fallback-to-non-FA graph split. After the fix, Ministral-3-14B IQ2_M on 2× RTX 2060: PP128 **674 t/s** (96% of f16=701), PP512 **687 t/s** (93% of f16=735), TG128 24.4 t/s (96% of f16=25.5). The inline warp-cooperative dequant kernel is wired and compiled but not yet the winner on this shape — split-dequant is good enough for now.
+- **MMA-KTQ asymmetric dispatch (shipped)** — KTQ K + f16 V now takes the tensor-core MMA path via bulk K→f16 split-dequant. A silent early `supports_op` guard in `fattn.cu` was rejecting `K.type != V.type` for all KTQ+f16V shapes, so every prior "KTQ PP regression" number was actually the FA op falling out of the CUDA graph and splitting to a non-FA CPU-fallback. After the fix:
+  - **Qwen3.5-35B-A3B IQ2_XS** (prod config): PP128 **727 t/s** (vs f16 431 — KTQ *faster*), PP512 **875** (vs 861), PP2048 **868** (vs 857), TG128 67 (vs 71). That's a **9.5× jump over the pre-fix 92 t/s** PP512 number.
+  - **Ministral-3-14B IQ2_M**: PP128 674 (96% of f16), PP512 687 (93%), TG128 24.4 (96%).
+- **MMA-KTQ inline tile-load (compiled, dormant)** — warp-cooperative KTQ dequant inside the MMA tile-load. Wired and building but the split path wins on current shapes; kept for future use.
 - mmvq tuning for IQ2_XS on sm_75
 - Trellis v2 (VTQ_2 family) — currently broken on D=256
 - C1 streaming window — designed, not implemented
