@@ -58,7 +58,7 @@ cmake --build build -j$(nproc) --target llama-server
     -fa on -ngl 99
 
 # Production deploy — true asymmetric KTQ2_1 K + VTQ2_1 V + 400k ctx on 2x RTX 2060 12GB
-# (this is the live config for Qwen3.6-35B-A3B on gpu00.node:8791)
+# (this is the live config for Qwen3.6-35B-A3B on our production server)
 ./build/bin/llama-server -m /path/to/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
     --host 0.0.0.0 --port 8791 \
     -c 400000 -ngl 99 --flash-attn on --no-mmap --parallel 2 \
