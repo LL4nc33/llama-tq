@@ -70,4 +70,20 @@ target_include_directories(${TARGET} PRIVATE ../mtmd)
 target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(${TARGET} PRIVATE server-context PUBLIC common cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
 
+# Opt-in gzip compression for non-streaming HTTP responses (LLAMA_SERVER_ZLIB=ON).
+# Streaming SSE chunks are not compressed — per-chunk gzip overhead exceeds the
+# savings on tiny token deltas, and some SSE clients choke on gzipped streams.
+# For streaming, prefer ssh -C / transport-level compression.
+option(LLAMA_SERVER_ZLIB "Enable gzip/deflate for non-streaming HTTP responses" ON)
+if (LLAMA_SERVER_ZLIB)
+    find_package(ZLIB QUIET)
+    if (ZLIB_FOUND)
+        target_compile_definitions(${TARGET} PRIVATE CPPHTTPLIB_ZLIB_SUPPORT)
+        target_link_libraries(${TARGET} PRIVATE ZLIB::ZLIB)
+        message(STATUS "llama-server: gzip response compression enabled (zlib ${ZLIB_VERSION_STRING})")
+    else()
+        message(STATUS "llama-server: zlib not found, gzip compression disabled")
+    endif()
+endif()
+
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
