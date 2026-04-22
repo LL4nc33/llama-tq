@@ -371,15 +371,23 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
         }
 #endif
-        // MMA-KTQ path disabled pending inline tile-load dequant (Phase 2 variant B).
-        // The split-dequant prototype (bulk K→fp16 scratch + MMA-F16) wins for very
-        // short ctx (PP64 264 t/s, PP128 219) but regresses at PP>=512 because the
-        // per-call dequant scales with K->ne[1]*head_dim. Inline warp-cooperative
-        // dequant in the MMA tile-load path is the correct fix; until that lands,
-        // keep routing KTQ to VEC.
-        // Enum + ggml_cuda_flash_attn_ext_mma_ktq remain wired so the inline kernel
-        // can slot in without dispatcher changes.
-        (void) 0;
+        // MMA-KTQ split-dequant path: re-enabled with a tight short-prompt gate.
+        // Measured on Qwen3.5-35B-A3B IQ2_XS / 2× RTX 2060 (KTQ2_1 K + f16 V):
+        //   K->ne[1]  |  split  |  VEC   |  verdict
+        //   ~0..128   |  219    |  100   |  +119% win
+        //   128..256  |  165    |  100   |  +65%  win
+        //   256..512  |   97    |   97   |  break-even
+        //   512..1024 |   54    |   99   |  -45%  loss
+        // Gate on the *current* K length so the first FA calls of a new prompt
+        // get the win; once the cache grows beyond ~384 tokens subsequent calls
+        // fall back to VEC. Net effect: server workloads with many short prompts
+        // see a real PP speedup; long-prefill workloads see no regression.
+        // Inline warp-cooperative dequant (Phase 2 variant A) will supersede this
+        // once it lands.
+        if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
+            turing_mma_available(cc) && Q->ne[1] >= 8 && K->ne[1] < 384) {
+            return BEST_FATTN_KERNEL_MMA_KTQ;
+        }
         return BEST_FATTN_KERNEL_VEC;
     }
 
