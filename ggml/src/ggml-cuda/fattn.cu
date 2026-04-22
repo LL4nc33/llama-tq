@@ -321,7 +321,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                           V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2;
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
-    if (K->type != V->type && !is_vtq_v) {
+    // Exception for asymmetric KTQ K + f16 V (MMA-KTQ split/inline paths below)
+    const bool is_tq_k_early = K->type == GGML_TYPE_KTQ1_1 || K->type == GGML_TYPE_KTQ2_1 ||
+                               K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1;
+    if (K->type != V->type && !is_vtq_v && !(is_tq_k_early && V->type == GGML_TYPE_F16)) {
         return BEST_FATTN_KERNEL_NONE;
     }
 #endif // GGML_CUDA_FA_ALL_QUANTS
