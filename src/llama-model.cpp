@@ -18,9 +18,6 @@
 #include "ggml.h"
 #include "ggml-cpp.h"
 
-// TODO: tmp until the ggml meta backend matures and becomes public
-#include "../src/ggml-ext.h"
-
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
@@ -8677,7 +8674,9 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* attn_n_ubatch     */ cparams.n_ubatch,
                             /* attn_n_pad        */ 1,
                             /* tq_protect_layers */ params.tq_protect_layers,
+                            /* tq_protect_sinks  */ params.tq_protect_sinks,
                             /* tq_deferred_k     */ params.tq_deferred_k,
+                            /* tq_deferred_v     */ params.tq_deferred_v,
                             /* recurrent_type_r  */ GGML_TYPE_F32,
                             /* recurrent_type_s  */ GGML_TYPE_F32,
                             /* recurrent_rs_size */ std::max((uint32_t) 1, cparams.n_seq_max),
@@ -8685,7 +8684,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
-                            /* filter_recr       */ std::move(filter_recr));
+                            /* filter_recr       */ std::move(filter_recr),
+                            /* type_v_layers     */ cparams.tq_v_layers);
                     } else {
                         res = new llama_memory_hybrid(
                             /* model             */ *this,
@@ -8697,7 +8697,9 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* attn_n_swa        */ hparams.n_swa,
                             /* attn_swa_type     */ hparams.swa_type,
                             /* tq_protect_layers */ params.tq_protect_layers,
+                            /* tq_protect_sinks  */ params.tq_protect_sinks,
                             /* tq_deferred_k     */ params.tq_deferred_k,
+                            /* tq_deferred_v     */ params.tq_deferred_v,
                             /* recurrent_type_k  */ GGML_TYPE_F32,
                             /* recurrent_type_v  */ GGML_TYPE_F32,
                             /* recurrent_kv_size */ std::max((uint32_t) 1, cparams.n_seq_max),
@@ -8705,7 +8707,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
-                            /* filter_recr       */ std::move(filter_recr));
+                            /* filter_recr       */ std::move(filter_recr),
+                            /* type_v_layers     */ cparams.tq_v_layers);
                     }
                 } else {
                     llama_memory_i::layer_reuse_cb reuse = nullptr;
@@ -8736,9 +8739,12 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 cparams.n_ubatch,
                                 1,
                                 params.tq_protect_layers,
+                                params.tq_protect_sinks,
                                 params.tq_deferred_k,
+                                params.tq_deferred_v,
                                 nullptr,
-                                reuse);
+                                reuse,
+                                cparams.tq_v_layers);
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
@@ -8755,9 +8761,12 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 hparams.n_swa,
                                 hparams.swa_type,
                                 params.tq_protect_layers,
+                                params.tq_protect_sinks,
                                 params.tq_deferred_k,
+                                params.tq_deferred_v,
                                 nullptr,
-                                nullptr);
+                                nullptr,
+                                cparams.tq_v_layers);
                     }
                 }
             }

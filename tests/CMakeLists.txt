@@ -255,6 +255,8 @@ if (NOT GGML_BACKEND_DL)
     llama_build_and_test(test-quantize-fns.cpp)
     llama_build_and_test(test-quantize-perf.cpp)
     llama_build_and_test(test-rope.cpp)
+    llama_build_and_test(test-vtq-overlay.cpp)
+    llama_build_and_test(test-vtq2-cached-roundtrip.cpp)
 endif()
 
 # libmtmd

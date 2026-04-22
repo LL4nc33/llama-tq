@@ -5,6 +5,7 @@
 #include "log.h"
 #include "llama.h"
 #include "sampling.h"
+#include "tq-profile.h"
 #include "unicode.h"
 
 #include <algorithm>
@@ -1230,6 +1231,36 @@ common_init_result::common_init_result(common_params & params) :
         cparams.n_samplers = pimpl->samplers_seq_config.size();
     }
 
+    // Trick 2 PR2: resolve per-layer V-cache types now that model is loaded (n_layer known)
+    {
+        const bool want_mixed =
+            !params.tq_v_profile_path.empty() ||
+            !params.tq_v_strategy.empty()     ||
+            !params.tq_v_override.empty();
+
+        if (want_mixed) {
+            const int n_layer = (int) llama_model_n_layer(model);
+            std::string err;
+            params.tq_v_layers = llama_tq::resolve_v_types(
+                    params.tq_v_profile_path,
+                    params.tq_v_strategy,
+                    params.tq_v_base,
+                    params.tq_v_low,
+                    params.tq_v_high,
+                    params.tq_v_override,
+                    n_layer,
+                    params.tq_v_budget_bpw,
+                    &err);
+            if (params.tq_v_layers.empty()) {
+                LOG_WRN("%s: --tq-v-* resolution failed (%s) — falling back to uniform cache_type_v\n",
+                        __func__, err.c_str());
+            } else {
+                cparams.type_v_layers       = params.tq_v_layers.data();
+                cparams.type_v_layers_count = (int32_t) params.tq_v_layers.size();
+            }
+        }
+    }
+
     llama_context * lctx = llama_init_from_model(model, cparams);
     if (lctx == NULL) {
         LOG_ERR("%s: failed to create context with model '%s'\n", __func__, params.model.path.c_str());
@@ -1480,7 +1511,10 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
     cparams.tq_protect_layers = params.tq_protect_layers;
+    cparams.tq_protect_sinks  = params.tq_protect_sinks;
     cparams.tq_deferred_k     = params.tq_deferred_k;
+    cparams.tq_deferred_v     = params.tq_deferred_v;
+    cparams.tq_profile_heads  = params.tq_profile_heads;
 
     return cparams;
 }

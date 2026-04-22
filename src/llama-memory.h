@@ -24,8 +24,14 @@ struct llama_memory_params {
     // TurboQuant boundary layer protection
     uint32_t tq_protect_layers;
 
+    // TurboQuant attention-sink protection (StreamingLLM): force layer-0 V-cache to f16 when > 0
+    uint32_t tq_protect_sinks;
+
     // TurboQuant deferred K quantization
     bool tq_deferred_k;
+
+    // TurboQuant deferred V quantization
+    bool tq_deferred_v;
 };
 
 enum llama_memory_status {

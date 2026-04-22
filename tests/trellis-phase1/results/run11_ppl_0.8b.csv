@@ -1,0 +1,6 @@
+config,ppl,ppl_err,time_s,cache_k,cache_v
+f16_baseline,15.5588,1.31793,11,f16,f16
+vtq2_1,,,4,f16,vtq2_1
+vtq2_2,16.6926,1.43303,483,f16,vtq2_2
+vtq3_2,16.0916,1.37278,892,f16,vtq3_2
+vtq4_2,15.6668,1.32628,3758,f16,vtq4_2
