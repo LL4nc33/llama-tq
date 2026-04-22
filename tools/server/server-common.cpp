@@ -1673,6 +1673,23 @@ json convert_anthropic_to_oai(const json & body) {
         oai_body["stop"] = body.at("stop_sequences");
     }
 
+    // Tool-call early-stop: when tools are present and parallel is disabled,
+    // inject the Qwen-family tool-call closer so we don't waste 2-10 tokens
+    // dribbling after </tool_call> before the natural <|im_end|> EOS.
+    // Typical Claude Code session: 20 tool calls × ~5 tokens × ~30ms on a
+    // 35B-A3B single-GPU prod = ~3s saved per turn. Non-Qwen models never
+    // emit these strings verbatim, so the stop is a no-op there.
+    if (body.contains("tools") && body.at("tools").is_array() && !body.at("tools").empty()) {
+        bool parallel = json_value(body, "parallel_tool_calls", false);
+        if (!parallel) {
+            json stops = oai_body.contains("stop") ? oai_body["stop"] : json::array();
+            if (!stops.is_array()) stops = json::array({stops});
+            stops.push_back("</tool_call>");
+            stops.push_back("</tool_use>");
+            oai_body["stop"] = stops;
+        }
+    }
+
     // Handle max_tokens (required in Anthropic, but we're permissive)
     if (body.contains("max_tokens")) {
         oai_body["max_tokens"] = body.at("max_tokens");
