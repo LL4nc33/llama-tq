@@ -78,17 +78,13 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
                 fflush(stderr);
             }
             constexpr int ncols2 = 4;
-            if (Q->ne[1] <= 1) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 1, ncols2>(ctx, dst);
-                return;
-            } else if (Q->ne[1] <= 2) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 2, ncols2>(ctx, dst);
-                return;
-            } else if (Q->ne[1] <= 4) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 4, ncols2>(ctx, dst);
-                return;
-            } else {
+            // Only ncols1 ∈ {4, 8} instantiated — smaller configs have degenerate
+            // MMA tile dimensions. For Q->ne[1] < 4 fall back to split-dequant.
+            if (Q->ne[1] >= 8) {
                 ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 8, ncols2>(ctx, dst);
+                return;
+            } else if (Q->ne[1] >= 4) {
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 4, ncols2>(ctx, dst);
                 return;
             }
         }
