@@ -1,6 +1,7 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 #include "fattn-mma-f16.cuh"
+#include "fattn-mma-ktq.cuh"
 #include "fattn-tile.cuh"
 #include "fattn-vec-dispatch.cuh"
 #include "fattn-wmma-f16.cuh"
@@ -240,6 +241,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_WMMA_F16 = 300,
     BEST_FATTN_KERNEL_MMA_F16  = 400,
+    BEST_FATTN_KERNEL_MMA_KTQ  = 500,
 };
 
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
@@ -369,6 +371,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
         }
 #endif
+        // MMA-KTQ path: for prefill (ne[1] >= 8) with KTQ K + f16 V, dispatch to the
+        // tensor-core-capable kernel. Phase 1 stub falls back to VEC; Phase 2 replaces
+        // it with warp-cooperative dequant + MMA. TG (ne[1] <= 2) stays on VEC.
+        if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
+            turing_mma_available(cc) && Q->ne[1] >= 8) {
+            return BEST_FATTN_KERNEL_MMA_KTQ;
+        }
         return BEST_FATTN_KERNEL_VEC;
     }
 
@@ -490,6 +499,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_MMA_KTQ:
+            ggml_cuda_flash_attn_ext_mma_ktq(ctx, dst);
             break;
     }
 }
