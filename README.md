@@ -79,6 +79,17 @@ cmake --build build -j$(nproc) --target llama-server
 #    much signal and produces garbage output. Use ≥7B for asymmetric KTQ+VTQ.
 ```
 
+### Use it from Claude Code
+
+llama-tq's server exposes `/v1/messages` (Anthropic-compatible), so Anthropic's
+official Claude Code CLI can talk to it directly:
+
+```bash
+./scripts/onllama-launch-claude.sh --server http://localhost:8080
+```
+
+Full setup (including SSH tunnel for a remote server): [docs/claude-code.md](docs/claude-code.md).
+
 ## Recommended Configurations
 
 PPL impact is model-dependent; ranges below span the four tested Qwen3.5/3.6 configurations.
@@ -472,6 +483,7 @@ As of 2026-04-23:
 | [docs/plans/2026-04-16-vtq-design.md](docs/plans/2026-04-16-vtq-design.md) | VTQ design spec, math proofs |
 | [docs/plans/2026-04-17-trellis-v2-design.md](docs/plans/2026-04-17-trellis-v2-design.md) | Trellis v2 design — trellis-coded quantization for KTQ/VTQ |
 | [docs/plans/2026-04-17-trellis-v2-phase1-report.md](docs/plans/2026-04-17-trellis-v2-phase1-report.md) | Trellis v2 Phase-1 report — experiments, bugs, results, Phase-2 candidates |
+| [docs/claude-code.md](docs/claude-code.md) | Using Anthropic's Claude Code CLI against a llama-tq server (`/v1/messages`) |
 
 ## Related Projects
 
