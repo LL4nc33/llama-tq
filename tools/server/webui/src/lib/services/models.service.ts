@@ -139,15 +139,19 @@ export class ModelsService {
 			tags: []
 		};
 
+		// 0. Strip file extensions (e.g. `.gguf`, `.safetensors`) so they are
+		//    not mis-detected as quantization suffixes
+		const cleanedId = modelId.replace(/\.(gguf|safetensors|bin|pt|pth)$/i, '');
+
 		// 1. Extract colon-separated quantization (e.g. `model:Q4_K_M`)
-		const colonIdx = modelId.indexOf(MODEL_ID_QUANTIZATION_SEPARATOR);
+		const colonIdx = cleanedId.indexOf(MODEL_ID_QUANTIZATION_SEPARATOR);
 		let modelPath: string;
 
 		if (colonIdx !== MODEL_ID_NOT_FOUND) {
-			result.quantization = modelId.slice(colonIdx + 1) || null;
-			modelPath = modelId.slice(0, colonIdx);
+			result.quantization = cleanedId.slice(colonIdx + 1) || null;
+			modelPath = cleanedId.slice(0, colonIdx);
 		} else {
-			modelPath = modelId;
+			modelPath = cleanedId;
 		}
 
 		// 2. Extract org name (e.g. `org/model` -> org = "org")

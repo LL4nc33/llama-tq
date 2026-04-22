@@ -550,7 +550,23 @@ struct common_params {
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
     uint32_t tq_protect_layers = 0; // boundary layer protection: first/last N layers use q8_0 instead of TQ
+    uint32_t tq_protect_sinks  = 0; // attention-sink protection: force layer-0 V-cache to f16 when > 0 (StreamingLLM)
     bool tq_deferred_k = false;     // defer K quantization until prefill->decode transition
+    bool tq_deferred_v = false;     // defer V quantization until prefill->decode transition
+    uint32_t tq_profile_heads = 0;  // Trick 2 PR1: profile first N decode calls — dump per-head V variance/kurtosis as JSON
+
+    // Trick 2 PR2: per-layer mixed precision V-cache
+    // When tq_v_layers is empty, cache_type_v is used uniformly (backward compatible).
+    std::vector<ggml_type> tq_v_layers;          // resolved per-layer V-cache types (populated in arg.cpp)
+    std::string tq_v_profile_path;               // --tq-v-profile <path>
+    std::string tq_v_strategy;                   // --tq-v-strategy top-n:N | ratio:X | kurt:Y | mixed | auto | manual
+    std::string tq_v_override;                   // --tq-v-override "0-1:vtq4_2,13:vtq4_2,*:vtq3_2"
+    ggml_type   tq_v_base = GGML_TYPE_VTQ3_2;    // --tq-v-base
+    ggml_type   tq_v_high = GGML_TYPE_VTQ4_2;    // --tq-v-high
+    ggml_type   tq_v_low  = GGML_TYPE_VTQ2_2;    // --tq-v-low
+    float       tq_v_budget_bpw = 0.0f;          // --tq-v-budget-bpw (0 = disabled)
+
+    uint32_t tq_overlay_topn = 0;   // Trick 4: per-block correction overlay entries (0 = disabled)
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 

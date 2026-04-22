@@ -1,0 +1,420 @@
+// Trellis v2 shared code. See ggml-trellis.h for API.
+// Ported from tests/trellis-phase1/trellis_{code,encdec}.c.
+
+#include "ggml-trellis.h"
+#include "ggml.h"   // ggml_fp32_to_fp16 / ggml_fp16_to_fp32 for overlay entries
+
+#include <float.h>
+#include <math.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// --- Inverse Normal CDF (Acklam 2003) ---
+static double inv_norm_cdf(double p) {
+    static const double a[6] = {-3.969683028665376e+01, 2.209460984245205e+02,
+                                -2.759285104469687e+02, 1.383577518672690e+02,
+                                -3.066479806614716e+01, 2.506628277459239e+00};
+    static const double b[5] = {-5.447609879822406e+01, 1.615858368580409e+02,
+                                -1.556989798598866e+02, 6.680131188771972e+01,
+                                -1.328068155288572e+01};
+    static const double c[6] = {-7.784894002430293e-03, -3.223964580411365e-01,
+                                -2.400758277161838e+00, -2.549732539343734e+00,
+                                 4.374664141464968e+00, 2.938163982698783e+00};
+    static const double d[4] = { 7.784695709041462e-03, 3.224671290700398e-01,
+                                 2.445134137142996e+00, 3.754408661907416e+00};
+    const double plow = 0.02425;
+    const double phigh = 1.0 - plow;
+    double q, r;
+    if (p < plow) {
+        q = sqrt(-2.0 * log(p));
+        return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) /
+               ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1.0);
+    }
+    if (p <= phigh) {
+        q = p - 0.5; r = q * q;
+        return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q /
+               (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1.0);
+    }
+    q = sqrt(-2.0 * log(1.0 - p));
+    return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) /
+            ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1.0);
+}
+
+// --- LUT: 2^16 = 65536 entries × 4 bytes = 256 KiB ---
+// Thread-safe lazy init: the first thread sees g_table_ready=0, fills the
+// table, then publishes the ready flag. Subsequent threads spin until ready.
+static float g_table[1u << GGML_TRELLIS_L];
+static atomic_int g_table_state = 0;  // 0=uninit, 1=filling, 2=ready
+
+static void fill_table(void) {
+    const size_t n = (size_t)1 << GGML_TRELLIS_L;
+    for (size_t s = 0; s < n; s++) {
+        uint32_t h = (uint32_t)s * 0x9E3779B1u + 0x7F4A7C15u;
+        double p = ((double)(h >> 1) + 0.5) / (double)(1u << 31);
+        if (p <= 0.0) p = 1e-12;
+        if (p >= 1.0) p = 1.0 - 1e-12;
+        g_table[s] = (float)inv_norm_cdf(p);
+    }
+}
+
+const float * ggml_trellis_table(void) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_table_state, &expected, 1)) {
+        fill_table();
+        atomic_store(&g_table_state, 2);
+    } else {
+        while (atomic_load(&g_table_state) != 2) {
+            // Spin — init is ~200µs, contention only at first call.
+        }
+    }
+    return g_table;
+}
+
+// --- bit-packing helpers (little-endian K-bit emit) ---
+static inline void write_bits_le(uint8_t * qs, int bit_offset, uint32_t value, int K) {
+    value &= (1u << K) - 1u;
+    int byte = bit_offset >> 3;
+    int shift = bit_offset & 7;
+    qs[byte] |= (uint8_t)((value << shift) & 0xFFu);
+    if (shift + K > 8) {
+        qs[byte + 1] |= (uint8_t)((value >> (8 - shift)) & 0xFFu);
+        if (shift + K > 16) {
+            qs[byte + 2] |= (uint8_t)((value >> (16 - shift)) & 0xFFu);
+        }
+    }
+}
+
+static inline uint32_t read_bits_le(const uint8_t * qs, int qs_bytes, int bit_offset, int K) {
+    int byte = bit_offset >> 3;
+    int shift = bit_offset & 7;
+    uint32_t b0 = (byte     < qs_bytes) ? qs[byte]     : 0u;
+    uint32_t b1 = (byte + 1 < qs_bytes) ? qs[byte + 1] : 0u;
+    uint32_t b2 = (byte + 2 < qs_bytes) ? qs[byte + 2] : 0u;
+    uint32_t w = b0 | (b1 << 8) | (b2 << 16);
+    return (w >> shift) & ((1u << K) - 1u);
+}
+
+// --- Decoder: iterative shift register ---
+void ggml_trellis_decode_group(
+    uint16_t start_state, int K, float d, const uint8_t * qs, float * y) {
+    const int L = GGML_TRELLIS_L;
+    const int N = GGML_TRELLIS_QK_GROUP;
+    const int qs_bytes = (N * K + 7) / 8;
+    const float cb_scale = 1.0f / sqrtf((float)N);
+    const float * table = ggml_trellis_table();
+    const uint32_t Kmask = (1u << K) - 1u;
+    const uint32_t Lmask = 0xFFFFu;  // L=16
+
+    if (d == 0.0f) {
+        memset(y, 0, (size_t)N * sizeof(float));
+        return;
+    }
+
+    uint32_t state = (uint32_t)start_state & Lmask;
+    for (int i = 0; i < N; i++) {
+        uint32_t bits = read_bits_le(qs, qs_bytes, i * K, K) & Kmask;
+        state = ((state >> K) | (bits << (L - K))) & Lmask;
+        y[i] = table[state] * cb_scale * d;
+    }
+}
+
+// --- Beam-pruning helper: nth_element via Hoare partition (O(n) expected) ---
+// Finds the k-th smallest value (0-indexed). Modifies arr.
+static float nth_element_f(float * arr, int n, int k) {
+    int lo = 0, hi = n - 1;
+    while (lo < hi) {
+        float pivot = arr[(lo + hi) >> 1];
+        int i = lo, j = hi;
+        while (i <= j) {
+            while (arr[i] < pivot) i++;
+            while (arr[j] > pivot) j--;
+            if (i <= j) { float t = arr[i]; arr[i] = arr[j]; arr[j] = t; i++; j--; }
+        }
+        if (k <= j) hi = j;
+        else if (k >= i) lo = i;
+        else return arr[k];
+    }
+    return arr[k];
+}
+
+// Beam width: read from env at first call, cached thereafter.
+//   GGML_TRELLIS_BEAM=0 (default): full Viterbi (exact, slow)
+//   GGML_TRELLIS_BEAM=256..16384: beam-pruned (faster, ~1% MSE cost)
+static int g_beam_width_cached = -1;
+static int get_beam_width(void) {
+    if (g_beam_width_cached < 0) {
+        const char * env = getenv("GGML_TRELLIS_BEAM");
+        g_beam_width_cached = env ? atoi(env) : 0;
+        if (g_beam_width_cached < 0) g_beam_width_cached = 0;
+    }
+    return g_beam_width_cached;
+}
+
+// --- Encoder: Viterbi DP over 2^L states (optionally beam-pruned) ---
+// Memory: O(N · 2^L) for backtrack + O(2^L) for 2 DP rows.
+//   L=16, N=256: 256·65536·4 = 64 MiB backtrack. Heavy but only at quant-time.
+// Beam pruning cuts CPU time proportional to S/beam_width.
+void ggml_trellis_encode_group(
+    const float * x, int K,
+    uint16_t * out_start_state, float * out_d, uint8_t * qs) {
+    const int L = GGML_TRELLIS_L;
+    const int N = GGML_TRELLIS_QK_GROUP;
+    const uint32_t S = 1u << L;
+    const uint32_t Kmask = (1u << K) - 1u;
+    const uint32_t Lmask = S - 1u;
+    const int qs_bytes = (N * K + 7) / 8;
+    const float cb_scale = 1.0f / sqrtf((float)N);
+
+    memset(qs, 0, (size_t)qs_bytes);
+
+    // Group L2 norm
+    double n2 = 0.0;
+    for (int j = 0; j < N; j++) n2 += (double)x[j] * x[j];
+    float norm = (float)sqrt(n2);
+    if (norm < 1e-30f) {
+        *out_start_state = 0;
+        *out_d = 0.0f;
+        return;
+    }
+    const float inv = 1.0f / norm;
+
+    // normalize samples
+    float * xn = (float *)malloc((size_t)N * sizeof(float));
+    float * dp_cur  = (float *)malloc((size_t)S * sizeof(float));
+    float * dp_next = (float *)malloc((size_t)S * sizeof(float));
+    uint16_t * bt = (uint16_t *)malloc((size_t)N * S * sizeof(uint16_t));
+    if (!xn || !dp_cur || !dp_next || !bt) {
+        free(xn); free(dp_cur); free(dp_next); free(bt);
+        *out_start_state = 0; *out_d = 0.0f; return;
+    }
+    for (int j = 0; j < N; j++) xn[j] = x[j] * inv;
+
+    const float * table = ggml_trellis_table();
+
+    // Beam pruning setup
+    const int beam = get_beam_width();
+    const int use_beam = (beam > 0 && (uint32_t)beam < S);
+
+    // Active-state lists — track which states are "live" in dp_cur / dp_next.
+    // Dramatically reduces scan cost from O(S) to O(beam).
+    uint32_t * active_cur  = (uint32_t *)malloc((size_t)S * sizeof(uint32_t));
+    uint32_t * active_next = (uint32_t *)malloc((size_t)S * sizeof(uint32_t));
+    uint8_t  * touched     = (uint8_t  *)calloc((size_t)S, 1);  // bitmap: which dp_next slots written
+    float    * beam_costs  = use_beam ? (float *)malloc((size_t)beam * sizeof(float)) : NULL;
+    if (!active_cur || !active_next || !touched) {
+        free(active_cur); free(active_next); free(touched); free(beam_costs);
+        free(xn); free(dp_cur); free(dp_next); free(bt);
+        *out_start_state = 0; *out_d = 0.0f; return;
+    }
+
+    // Open start: dp[0][s] = 0 for all s  →  all S states are active
+    for (uint32_t s = 0; s < S; s++) dp_cur[s] = 0.0f;
+    uint32_t n_active_cur = S;
+    for (uint32_t s = 0; s < S; s++) active_cur[s] = s;
+
+    const int kshift = L - K;
+    for (int i = 0; i < N; i++) {
+        uint16_t * bt_i = bt + (size_t)i * S;
+        const float xi = xn[i];
+        uint32_t n_active_next = 0;
+
+        // Expand active_cur → active_next via K-bit transitions
+        for (uint32_t ia = 0; ia < n_active_cur; ia++) {
+            uint32_t prev = active_cur[ia];
+            float pc = dp_cur[prev];
+            for (uint32_t kk = 0; kk <= Kmask; kk++) {
+                uint32_t next = ((prev >> K) | (kk << kshift)) & Lmask;
+                float code = table[next] * cb_scale;
+                float diff = xi - code;
+                float cost = pc + diff * diff;
+                if (!touched[next]) {
+                    touched[next] = 1;
+                    active_next[n_active_next++] = next;
+                    dp_next[next] = cost;
+                    bt_i[next] = (uint16_t)prev;
+                } else if (cost < dp_next[next]) {
+                    dp_next[next] = cost;
+                    bt_i[next] = (uint16_t)prev;
+                }
+            }
+        }
+
+        // Optionally prune active_next to top-`beam` by cost
+        if (use_beam && beam_costs && n_active_next > (uint32_t)beam) {
+            // Collect costs of active states
+            for (uint32_t j = 0; j < (uint32_t)beam && j < n_active_next; j++) {
+                beam_costs[j] = dp_next[active_next[j]];
+            }
+            // nth_element over active_next indirection: build temp array
+            float * tmp_costs = (float *)malloc(n_active_next * sizeof(float));
+            if (tmp_costs) {
+                for (uint32_t j = 0; j < n_active_next; j++) tmp_costs[j] = dp_next[active_next[j]];
+                float thresh = nth_element_f(tmp_costs, (int)n_active_next, beam - 1);
+                free(tmp_costs);
+                uint32_t kept = 0;
+                for (uint32_t j = 0; j < n_active_next; j++) {
+                    uint32_t s = active_next[j];
+                    if (dp_next[s] <= thresh && kept < (uint32_t)beam) {
+                        active_next[kept++] = s;
+                    } else {
+                        // Clear touched flag so it's reusable in next iteration
+                        touched[s] = 0;
+                    }
+                }
+                n_active_next = kept;
+            }
+        }
+
+        // Clear touched for next iteration: only active_next entries are marked
+        for (uint32_t j = 0; j < n_active_next; j++) touched[active_next[j]] = 0;
+
+        // Swap dp_cur/dp_next and active lists
+        float * tmp_dp = dp_cur; dp_cur = dp_next; dp_next = tmp_dp;
+        uint32_t * tmp_a = active_cur; active_cur = active_next; active_next = tmp_a;
+        n_active_cur = n_active_next;
+    }
+
+    // Best end state — scan only active states in final dp_cur
+    uint32_t best_s = 0;
+    float best_c = FLT_MAX;
+    for (uint32_t ia = 0; ia < n_active_cur; ia++) {
+        uint32_t s = active_cur[ia];
+        if (dp_cur[s] < best_c) { best_c = dp_cur[s]; best_s = s; }
+    }
+
+    free(active_cur); free(active_next); free(touched); free(beam_costs);
+
+    // Backtrack: states[0..N]
+    uint32_t * states = (uint32_t *)malloc((size_t)(N + 1) * sizeof(uint32_t));
+    if (!states) {
+        free(xn); free(dp_cur); free(dp_next); free(bt);
+        *out_start_state = 0; *out_d = 0.0f; return;
+    }
+    states[N] = best_s;
+    for (int i = N - 1; i >= 0; i--) {
+        states[i] = (uint32_t)bt[(size_t)i * S + states[i + 1]];
+    }
+
+    *out_start_state = (uint16_t)(states[0] & Lmask);
+
+    const int kshift_emit = L - K;
+    for (int i = 0; i < N; i++) {
+        uint32_t bits = (states[i + 1] >> kshift_emit) & Kmask;
+        write_bits_le(qs, i * K, bits, K);
+    }
+
+    // Norm-correction: scale so decoded group matches x's L2 norm.
+    double recon_sq = 0.0;
+    for (int i = 0; i < N; i++) {
+        float code = table[states[i + 1]] * cb_scale;
+        recon_sq += (double)code * code;
+    }
+    float recon_norm = (float)sqrt(recon_sq);
+    *out_d = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
+
+    free(states); free(xn); free(dp_cur); free(dp_next); free(bt);
+}
+
+// --- Correction Overlay (Trick 4) ---
+// Entry layout (matches ggml-common.h `vtq_overlay_entry`, 4 B):
+//   [0] uint8_t pos
+//   [1] uint8_t flags   (bit0 = valid)
+//   [2..3] ggml_half value (little-endian uint16)
+// We operate on raw bytes to avoid struct-layout coupling across TUs.
+
+#define VTQ_OVERLAY_ENTRY_SIZE 4
+#define VTQ_OVERLAY_FLAG_VALID_BIT 0x1
+
+static inline void vtq_overlay_pack(uint8_t * entry, uint8_t pos, int valid, uint16_t fp16_val) {
+    entry[0] = pos;
+    entry[1] = (uint8_t)(valid ? VTQ_OVERLAY_FLAG_VALID_BIT : 0);
+    entry[2] = (uint8_t)(fp16_val & 0xFFu);
+    entry[3] = (uint8_t)((fp16_val >> 8) & 0xFFu);
+}
+
+static inline void vtq_overlay_unpack(const uint8_t * entry,
+                                      uint8_t * out_pos, uint8_t * out_flags,
+                                      uint16_t * out_fp16) {
+    *out_pos   = entry[0];
+    *out_flags = entry[1];
+    *out_fp16  = (uint16_t)entry[2] | ((uint16_t)entry[3] << 8);
+}
+
+int ggml_trellis_overlay_extract(
+    const float * src,
+    const float * decoded,
+    int           n_per_block,
+    float         err_threshold,
+    uint8_t     * out_entries) {
+
+    const int N = GGML_TRELLIS_QK_GROUP;
+    if (n_per_block < 1) n_per_block = 1;
+    if (n_per_block > 4) n_per_block = 4;
+
+    // Maintain sorted top-N by |err| descending (small N => linear is fine).
+    int   top_pos[4];
+    float top_err[4];
+    for (int j = 0; j < n_per_block; j++) {
+        top_pos[j] = -1;
+        top_err[j] = -1.0f;
+    }
+
+    for (int i = 0; i < N; i++) {
+        const float e = fabsf(src[i] - decoded[i]);
+        if (e > top_err[n_per_block - 1]) {
+            int ins = n_per_block - 1;
+            while (ins > 0 && e > top_err[ins - 1]) {
+                top_err[ins] = top_err[ins - 1];
+                top_pos[ins] = top_pos[ins - 1];
+                ins--;
+            }
+            top_err[ins] = e;
+            top_pos[ins] = i;
+        }
+    }
+
+    int n_valid = 0;
+    for (int j = 0; j < n_per_block; j++) {
+        const int p = top_pos[j];
+        int valid = 0;
+        uint16_t fp16_val = 0;
+        uint8_t  pos_byte = 0;
+
+        if (p >= 0) {
+            const float ref  = fabsf(src[p]);
+            const float base = ref > 1e-6f ? ref : 1e-6f;
+            const float rel  = top_err[j] / base;
+            valid = (err_threshold > 0.0f) ? (rel >= err_threshold ? 1 : 0) : 1;
+            pos_byte = (uint8_t)(p & 0xFF);
+            if (valid) {
+                fp16_val = (uint16_t) ggml_fp32_to_fp16(src[p]);
+                n_valid++;
+            }
+        }
+
+        vtq_overlay_pack(out_entries + j * VTQ_OVERLAY_ENTRY_SIZE,
+                         pos_byte, valid, fp16_val);
+    }
+
+    return n_valid;
+}
+
+void ggml_trellis_overlay_apply(
+    const uint8_t * entries,
+    int             n_per_block,
+    float         * y) {
+
+    if (!entries || n_per_block <= 0) return;
+    if (n_per_block > 4) n_per_block = 4;
+
+    for (int j = 0; j < n_per_block; j++) {
+        uint8_t  pos; uint8_t flags; uint16_t fp16_val;
+        vtq_overlay_unpack(entries + j * VTQ_OVERLAY_ENTRY_SIZE,
+                           &pos, &flags, &fp16_val);
+        if (!(flags & VTQ_OVERLAY_FLAG_VALID_BIT)) continue;
+        // pos is 0..255 — always in range for QK_GROUP=256
+        y[pos] = ggml_fp16_to_fp32((ggml_fp16_t)fp16_val);
+    }
+}

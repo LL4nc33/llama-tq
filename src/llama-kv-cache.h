@@ -113,9 +113,12 @@ public:
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
                      uint32_t   tq_protect_layers,
+                     uint32_t   tq_protect_sinks,
                          bool   tq_deferred_k,
+                         bool   tq_deferred_v,
         const layer_filter_cb & filter,
-        const  layer_reuse_cb & reuse);
+        const  layer_reuse_cb & reuse,
+        const std::vector<ggml_type> & type_v_layers = {});
 
     ~llama_kv_cache() = default;
 
@@ -165,6 +168,14 @@ public:
     ggml_type type_v() const;
 
     tq_deferred_state get_deferred_state() const;
+
+    // Trick 2 PR1: per-head V variance/kurtosis profiling accessor
+    // Returns the number of kv layers currently allocated. Fills:
+    //   - v_tensors: V tensor per kv layer (may be nullptr)
+    //   - model_il: corresponding model layer index for each entry
+    // Caller dequants on host and computes moments per head.
+    uint32_t get_v_tensors_for_profile(std::vector<ggml_tensor *> & v_tensors,
+                                       std::vector<int32_t>        & model_il) const;
 
     //
     // graph_build API
@@ -232,12 +243,14 @@ private:
         ggml_tensor * k;
         ggml_tensor * v;
 
-        // deferred K quantization: f16 staging buffer (nullptr when not deferred or boundary-protected)
+        // deferred K/V quantization: f16 staging buffers (nullptr when not deferred or boundary-protected)
         ggml_tensor * k_staging = nullptr;
+        ggml_tensor * v_staging = nullptr;
 
         std::vector<ggml_tensor *> k_stream;
         std::vector<ggml_tensor *> v_stream;
         std::vector<ggml_tensor *> k_staging_stream;
+        std::vector<ggml_tensor *> v_staging_stream;
     };
 
     bool v_trans = true;  // the value tensor is transposed
@@ -254,12 +267,18 @@ private:
     // TurboQuant boundary layer protection
     const uint32_t tq_protect_layers = 0;
 
+    // TurboQuant attention-sink protection (StreamingLLM)
+    const uint32_t tq_protect_sinks = 0;
+
     // TurboQuant deferred K quantization
     tq_deferred_state deferred_state = TQ_DEFERRED_OFF;
 
     // user-selected cache types (for type_k()/type_v() accessors when boundary protection is active)
     ggml_type user_type_k = GGML_TYPE_F16;
     ggml_type user_type_v = GGML_TYPE_F16;
+
+    // Trick 2 PR2: per-layer V-cache type override. Empty = use user_type_v uniformly.
+    std::vector<ggml_type> user_type_v_layers;
 
     // env: LLAMA_ATTN_ROT_DISABLE
     bool attn_rot_k = false;
