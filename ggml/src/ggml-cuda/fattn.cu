@@ -384,12 +384,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // see a real PP speedup; long-prefill workloads see no regression.
         // Inline warp-cooperative dequant (Phase 2 variant A) will supersede this
         // once it lands.
-        static int dbg_cnt = 0;
-        if (dbg_cnt++ < 3) {
-            fprintf(stderr, "[dispatch#%d] is_tq_k=%d is_tq_v=%d is_vtq_v=%d V.type=%d Q.ne1=%lld turing=%d\n",
-                    dbg_cnt, (int)is_tq_k, (int)is_tq_v, (int)is_vtq_v, (int)V->type,
-                    (long long)Q->ne[1], (int)turing_mma_available(cc));
-            fflush(stderr);
+        if (is_tq_k) {
+            static int dbg_cnt = 0;
+            if (dbg_cnt++ < 3) {
+                fprintf(stderr, "[dispatch#%d tq] V.type=%d Q.ne1=%lld K.ne1=%lld Q.ne0=%d gqa=%lld turing=%d\n",
+                        dbg_cnt, (int)V->type, (long long)Q->ne[1], (long long)K->ne[1],
+                        (int)Q->ne[0], (long long)(Q->ne[2]/K->ne[2]), (int)turing_mma_available(cc));
+                fflush(stderr);
+            }
         }
         if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
             turing_mma_available(cc) && Q->ne[1] >= 8) {
