@@ -63,6 +63,7 @@ cmake --build build -j$(nproc) --target llama-server
     --host 0.0.0.0 --port 8791 \
     -c 400000 -ngl 99 --flash-attn on --no-mmap --parallel 2 \
     --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+    --cache-reuse 256 \
     -ub 512 -ts 12,12 --jinja --reasoning off
 # Notes:
 #  - Both K *and* V now quantized with TurboQuant family — maximum VRAM savings.
@@ -74,6 +75,9 @@ cmake --build build -j$(nproc) --target llama-server
 #  - Deferred K quantization auto-enables for KTQ types (f16 staging during
 #    prefill, bulk-convert at prefill→decode). Avoids repetition-loop pathology.
 #  - --parallel 2 gives two 200k-ctx slots on this config.
+#  - --cache-reuse 256 reuses KV cache across turns for agent clients with
+#    stable system prompts (Claude Code, Open WebUI). Cuts multi-turn
+#    prefill latency dramatically — see docs/claude-code.md.
 #  - -ts 12,12 splits weights evenly across two 12 GB GPUs.
 #  - WARNING: On very small models (<1B params) the 2+2-bit combo loses too
 #    much signal and produces garbage output. Use ≥7B for asymmetric KTQ+VTQ.
