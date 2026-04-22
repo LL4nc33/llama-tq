@@ -57,18 +57,26 @@ cmake --build build -j$(nproc) --target llama-server
     --cache-type-k q8_0 --cache-type-v vtq2_1 \
     -fa on -ngl 99
 
-# Production deploy — KTQ2_1 K + f16 V + 400k ctx on 2x RTX 2060 12GB
+# Production deploy — true asymmetric KTQ2_1 K + VTQ2_1 V + 400k ctx on 2x RTX 2060 12GB
 # (this is the live config for Qwen3.6-35B-A3B on gpu00.node:8791)
 ./build/bin/llama-server -m /path/to/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
     --host 0.0.0.0 --port 8791 \
     -c 400000 -ngl 99 --flash-attn on --no-mmap --parallel 2 \
-    --cache-type-k ktq2_1 --cache-type-v f16 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
     -ub 512 -ts 12,12 --jinja --reasoning off
 # Notes:
+#  - Both K *and* V now quantized with TurboQuant family — maximum VRAM savings.
+#    Qwen3.6-35B-A3B UD-IQ2_XXS at 400k ctx parallel 2:
+#      KTQ2_1 K + f16 V   → 22.6 GB total VRAM, 68 tok/s TG
+#      KTQ2_1 K + VTQ2_1 V → 19.3 GB total VRAM, 66 tok/s TG  ← this config
+#    Saves ~3.3 GB (-15%) at 400k parallel 2; ~6 GB (-27%) at 200k parallel 1.
+#    Only 2–3% TG regression, no measurable quality loss on Qwen3.6-35B.
 #  - Deferred K quantization auto-enables for KTQ types (f16 staging during
 #    prefill, bulk-convert at prefill→decode). Avoids repetition-loop pathology.
 #  - --parallel 2 gives two 200k-ctx slots on this config.
 #  - -ts 12,12 splits weights evenly across two 12 GB GPUs.
+#  - WARNING: On very small models (<1B params) the 2+2-bit combo loses too
+#    much signal and produces garbage output. Use ≥7B for asymmetric KTQ+VTQ.
 ```
 
 ## Recommended Configurations
@@ -351,6 +359,8 @@ A fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) is applied onc
 | `vtq2_1` | 2 | 2.5 | 10 B | recommended, Laplace codebook |
 | `vtq3_1` | 3 | 4.0 | 16 B | near-lossless (see PPL tables) |
 | `vtq4_1` | 4 | 4.5 | 18 B | smallest codebook-fit error |
+
+**Deferred V quantization (auto-enabled for VTQ_2 types):** `vtq2_2`/`vtq3_2`/`vtq4_2` use a Trellis encoder whose per-token Viterbi is ~21.7ms/call and would stall the decode loop. To avoid that, V-writes are staged as f16 during prefill and bulk-converted once at the prefill→decode transition. This auto-enables whenever `--cache-type-v` is a VTQ_2 type; the legacy `--tq-deferred-v` CLI flag is retained as a no-op. VTQ_1 types (`vtq1_1`/`vtq2_1`/`vtq3_1`/`vtq4_1`) don't need this — their codebook lookup is cheap enough for per-token writes.
 
 </details>
 
