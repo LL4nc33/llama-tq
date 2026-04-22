@@ -530,5 +530,16 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
 }
 
 bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
-    return ggml_cuda_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;
+    best_fattn_kernel k = ggml_cuda_get_best_fattn_kernel(device, dst);
+    {
+        static FILE * df = nullptr;
+        if (!df) df = fopen("/tmp/ktq_supported.log", "w");
+        static int c = 0;
+        if (df && c++ < 20) {
+            const ggml_tensor * K = dst->src[1];
+            fprintf(df, "[SUPP#%d] K.type=%d -> %d\n", c, (int)K->type, (int)k);
+            fflush(df);
+        }
+    }
+    return k != BEST_FATTN_KERNEL_NONE;
 }
