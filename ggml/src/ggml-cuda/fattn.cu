@@ -387,7 +387,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // see a real PP speedup; long-prefill workloads see no regression.
         // Inline warp-cooperative dequant (Phase 2 variant A) will supersede this
         // once it lands.
-        if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
+        // Only KTQ2_1 is validated for the MMA-KTQ split-dequant path today.
+        // KTQ3_1 / KTQ4_1 crash in ggml_get_to_fp16_nc_cuda (missing bulk dequant
+        // for those non-contiguous shapes on CUDA). Keep them on the VEC path
+        // until the bulk dequant kernels are registered.
+        if (K->type == GGML_TYPE_KTQ2_1 && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
             turing_mma_available(cc) && Q->ne[1] >= 8) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
