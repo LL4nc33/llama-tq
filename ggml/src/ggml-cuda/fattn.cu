@@ -513,6 +513,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
+    {
+        static int ent_cnt = 0;
+        if (ent_cnt++ < 5) {
+            const ggml_tensor * K = dst->src[1];
+            const ggml_tensor * V = dst->src[2];
+            fprintf(stderr, "[ENTRY#%d] K.type=%d V.type=%d\n", ent_cnt, (int)K->type, (int)V->type);
+            fflush(stderr);
+        }
+    }
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
