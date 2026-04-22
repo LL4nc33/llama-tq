@@ -160,6 +160,23 @@ model (7 B / 14 B) on the same server and pass `--model your-alias`. The
 wrapper sets the same alias for all three Anthropic tier env vars, so
 Claude Code will pick it regardless of which internal tier it requests.
 
+### `--keep N` for long sessions
+
+Set `--keep 8192` (or higher) to pin the first N tokens of the prompt across
+context shifts. Claude Code's system prompt is typically 15-25k tokens and
+gets silently discarded when the ctx-window fills. `--keep 8192` protects
+at least the first 8k of it, keeping tool specs and safety instructions alive.
+
+### Prompt-caching (Anthropic `cache_control`)
+
+The `/v1/messages` endpoint returns the full Anthropic-spec `usage` object,
+including `cache_read_input_tokens`, `cache_creation_input_tokens`, and the
+`cache_creation.ephemeral_5m/1h_input_tokens` breakdown. Today only the
+read-path is populated (from llama.cpp's existing `--cache-reuse` KV-shift
+mechanism); the creation-path counters are present but zeroed pending the
+full `cache_control` implementation. Anthropic-strict clients won't error on
+missing fields.
+
 ---
 
 ## Troubleshooting
