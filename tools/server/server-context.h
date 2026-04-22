@@ -3,6 +3,7 @@
 #include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
+#include "server-anthropic-cache.h"
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -140,6 +141,21 @@ private:
 
     const common_params & params;
     const server_context_impl & ctx_server;
+
+    // Anthropic prompt-cache manager (Phase 2). Disabled unless
+    // params.slot_save_path is set and params.anthropic_cache_enabled is true.
+    anthropic_cache_manager anthropic_cache;
+
+    // Model fingerprint used as a salt in cache keys. Computed once in
+    // init_routes() from model name + path + size.
+    std::string anthropic_cache_model_fp;
+
+    // Programmatic wrappers around SERVER_TASK_TYPE_SLOT_SAVE / RESTORE that
+    // can be invoked from cache-handling code outside of the HTTP entry
+    // points. Both return the number of tokens actually saved / restored, or
+    // -1 on error.
+    int32_t save_slot_to_file(int id_slot, const std::string & filepath);
+    int32_t restore_slot_from_file(int id_slot, const std::string & filepath);
 
     server_queue & queue_tasks;
     server_response & queue_results;
