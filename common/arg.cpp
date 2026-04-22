@@ -2092,7 +2092,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--tq-deferred-v"},
         "defer V quantization: stage V-writes as f16 during prefill, bulk-convert at\n"
         "prefill->decode transition. Avoids 21.7ms/call Viterbi on per-token decode writes.\n"
-        "(only effective with VTQ2_2/VTQ3_2/VTQ4_2 V cache types)",
+        "(NOTE: as of phase2, AUTO-ENABLED whenever --cache-type-v is VTQ2_2/3_2/4_2\n"
+        " — flag retained for backwards compat; passing it is a no-op)",
         [](common_params & params) {
             params.tq_deferred_v = true;
         }
