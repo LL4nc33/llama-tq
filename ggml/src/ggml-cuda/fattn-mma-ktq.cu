@@ -59,10 +59,24 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
     const ggml_tensor * V = dst->src[2];
 
     // Inline path: DKQ=DV=128, GQA ratio 4, KTQ2_1 K + f16 V (Ministral-3 family).
+    {
+        static int e = 0;
+        if (e++ < 5) {
+            fprintf(stderr, "[KTQ-ENTRY#%d] K=%d V=%d D=%d gqa=%d Qne1=%lld\n",
+                    e, (int)K->type, (int)V->type, (int)Q->ne[0],
+                    (int)(Q->ne[2]/K->ne[2]), (long long)Q->ne[1]);
+            fflush(stderr);
+        }
+    }
     if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
         Q->ne[0] == 128 && V->ne[0] == 128) {
         const int gqa_ratio = Q->ne[2] / K->ne[2];
         if (gqa_ratio == 4) {
+            static int i = 0;
+            if (i++ < 3) {
+                fprintf(stderr, "[KTQ-INLINE] Qne1=%lld\n", (long long)Q->ne[1]);
+                fflush(stderr);
+            }
             constexpr int ncols2 = 4;
             if (Q->ne[1] <= 1) {
                 ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 1, ncols2>(ctx, dst);
