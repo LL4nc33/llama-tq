@@ -27,10 +27,10 @@ KV-cache quantization research fork of llama.cpp. Asymmetric K/V dispatch — K-
 > - TG128 overhead: **−1% to −4%** with `vtq*` V-cache on short context
 > - CUDA only. PPL measurements are at 3 wikitext-2 chunks (noisy), proper 64+ chunk reruns pending.
 
-> **⚠ Long-context TG regression:** On 35B with 400k ctx, `vtq3_1` V-cache caused a
-> **5.5× TG regression** (12.4 vs 67.7 tok/s on long generation) because per-token V-dequant
-> scales with context length in the FA kernel. **Use VTQ V-cache only when memory-constrained;
-> prefer `f16` V when VRAM allows.**
+> **⚠ Long-context TG (historical):** an earlier 2026-04 build measured a 5.5× TG regression
+> (12.4 vs 67.7 tok/s) for `vtq3_1` V-cache at 400k ctx on 35B. Not re-measured against the
+> phase3 FA-path fixes. **`vtq2_1` at 400k is validated in production at −3% TG** (see
+> [Quick Start](#quick-start)); short-context `vtq3_1` on the current build is stable at −3% to −4% TG.
 
 > **Honest bottleneck assessment (2026-04-23):** nvprof profiling on our prod config shows
 > FA-vec kernel is only 6.4% of kernel time. The real bottleneck at 67 tok/s baseline is
@@ -157,17 +157,36 @@ Observations:
 | q8_0 | q4_0 | 485 | 50.6 | -34% | -14% |
 | f16 | q4_0 | 483 | 49.3 | -34% | -16% |
 
-#### Qwen3.6-35B-A3B (UD-IQ2_XXS, 10.01 GiB)
+#### Qwen3.6-35B-A3B (UD-IQ2_XXS, 10.01 GiB) — **full KTQ×VTQ matrix (2026-04-22)**
+
+Re-measured after KTQ3/4 MMA dispatch fix and VTQ_2 split-stride fix.
+Full diagonal + cross + baseline combinations.
 
 | K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
 |---------|---------|:---:|:---:|:---:|:---:|
-| f16 | f16 | **820** | **60.1** | baseline | baseline |
-| q8_0 | vtq2_1 | 757 | 58.7 | -8% | **-2%** |
-| q4_0 | vtq2_1 | 756 | 58.8 | -8% | **-2%** |
-| q8_0 | vtq3_1 | 735 | 58.1 | -10% | -3% |
-| f16 | vtq2_1 | 760 | 59.5 | -7% | **-1%** |
-| f16 | q4_0 | 508 | 49.3 | -38% | -18% |
-| q4_0 | f16 | 571 | 48.9 | -30% | -19% |
+| **f16** | **f16** | **980** | **72.4** | baseline | baseline |
+| f16 | vtq2_1 | 916 | 71.2 | -6% | **-2%** |
+| f16 | vtq3_1 | 881 | 70.0 | -10% | -3% |
+| f16 | vtq4_1 | 845 | 70.3 | -14% | -3% |
+| ktq2_1 | f16 | 953 | 70.8 | **-3%** | **-2%** |
+| ktq3_1 | f16 | 950 | 70.7 | **-3%** | **-2%** |
+| ktq4_1 | f16 | 948 | 70.6 | **-3%** | **-2%** |
+| ktq1_1 | vtq1_1 | 894 | 69.6 | -9% | -4% |
+| ktq2_1 | vtq2_1 | 900 | 70.2 | -8% | -3% |
+| ktq3_1 | vtq3_1 | 869 | 69.2 | -11% | -4% |
+| ktq4_1 | vtq4_1 | 835 | 69.7 | -15% | -4% |
+| ktq2_1 | vtq3_1 | 869 | 69.1 | -11% | -4% |
+| ktq3_1 | vtq2_1 | 896 | 70.2 | -9% | -3% |
+| ktq4_1 | vtq2_1 | 896 | 70.0 | -9% | -3% |
+| q8_0 | vtq2_1 | 879 | 69.1 | -10% | -5% |
+| q8_0 | vtq3_1 | 849 | 68.2 | -13% | -6% |
+| q8_0 | f16 | 724 | 65.9 | -26% | -9% |
+
+Observations:
+- **All 16 non-f16 configs stay within −6% TG** — no TG cliff on any KTQ×VTQ combo.
+- **KTQ K + f16 V (all three KTQ types) is the highest-throughput compressed config** at only −3% PP and −2% TG. Enabled by the MMA-KTQ dispatcher fix (phase3 commit `077956d77`).
+- **Symmetric KTQn_1 + VTQn_1 diagonals** cluster at −8% to −15% PP, −3% to −4% TG — consistent behavior across bit-widths.
+- **`q8_0` K collapses PP to 724** (−26%), confirming the `q8_0 + vtq*` combo still hits a non-MMA dispatch path. `ktq*_1` K is the correct choice for compressed K on this hardware.
 
 Across the tables above, `vtq2_1` V-cache yields higher PP512 and TG128 than `q4_0` V-cache (e.g. 757 vs 508 PP512 on Qwen3.6-35B IQ2_XXS). Likely cause: VTQ V-dequant in the FA inner loop is a single codebook load (`__forceinline__`), whereas q4_0 V-dequant does per-lane shift+scale arithmetic. I have not isolated the effect with nsight-compute; this is an empirical observation on CC 7.5, not a proven register-pressure argument.
 
