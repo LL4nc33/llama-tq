@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <cstdint>
+#include <vector>
 
 #define LLAMA_MAX_SEQ 256
 
@@ -39,6 +40,14 @@ struct llama_cparams {
     bool op_offload;
     bool kv_unified;
     bool pipeline_parallel;
+
+    // Trick 2 PR1: per-head V variance/kurtosis profiling
+    // If > 0, profile first N decode calls and dump JSON to stderr / tq-profile-heads-$PID.json
+    uint32_t tq_profile_heads;
+
+    // Trick 2 PR2: per-layer mixed precision V-cache
+    // Empty = uniform type_v (backward compatible). Otherwise size == n_layer.
+    std::vector<ggml_type> tq_v_layers;
 
     enum llama_pooling_type pooling_type;
 
