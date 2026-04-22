@@ -9,7 +9,7 @@ Die `trellis-v2-phase1` Arbeit ist auf `master` gemerged und
 production-validiert. Das VTQ_2 Trellis-coded V-cache System ist
 fertig und deployable.
 
-### Production Numbers (gpu00:8791, Qwen3.5-35B-A3B IQ2_XS)
+### Production Numbers (Qwen3.5-35B-A3B IQ2_XS on 2× RTX 2060 12 GB)
 
 | config | tg tok/s | speedup vs alt |
 |--------|----------|----------------|
@@ -73,7 +73,7 @@ schneller machen, ohne den Scope zu erweitern. Kleine Wins, viel
 Messen.
 
 **Offene Arbeitspunkte aus Phase 1:**
-- ~~35B Production-Deploy auf `gpu00:8791`~~ ✅ DONE 2026-04-20
+- ~~35B Production-Deploy~~ ✅ DONE 2026-04-20
   (ctx=200K statt geplanten 400K wegen compute-buffer OOM bei parallel=2)
 - PPL-Prefill im `--tq-deferred-v` Modus echt quantisiert messbar
   machen (aktuell bleibt State in STAGING bei pure prefill)
@@ -167,12 +167,12 @@ oder ähnlich. Konkurrenz-Benchmarks: KVQuant, Aquila, QuaRot.
 - `LL4nc33/oidanice-llama` — whitelabel AI platform (nutzt llama-tq als backend)
 
 ### Production-Server
-- `gpu00:8791` — Qwen3.5-35B-A3B, VTQ_2 (ab 2026-04-20)
-- `gpu00:8792` — FunctionGemma 270M (tool router)
+- primary — Qwen3.5-35B-A3B, VTQ_2 (ab 2026-04-20)
+- secondary — FunctionGemma 270M (tool router)
 
 ### Testing
 - Lokaler CPU-Roundtrip in `tests/trellis-phase1/`
-- PPL sweep auf gpu00 (wikitext-2)
+- PPL sweep on production hardware (wikitext-2)
 - Stability-Runs: bench tg1024, long generation
 
 ### LEGION
