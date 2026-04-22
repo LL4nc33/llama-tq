@@ -976,6 +976,38 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_vtq4_1,
         .from_float_ref           = (ggml_from_float_t) quantize_row_vtq4_1_ref,
     },
+    [GGML_TYPE_VTQ2_2] = {
+        .type_name                = "vtq2_2",
+        .blck_size                = QK_VTQ_TRELLIS,
+        .type_size                = sizeof(block_vtq2_2),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_vtq2_2,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq2_2_ref,
+    },
+    [GGML_TYPE_VTQ3_2] = {
+        .type_name                = "vtq3_2",
+        .blck_size                = QK_VTQ_TRELLIS,
+        .type_size                = sizeof(block_vtq3_2),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_vtq3_2,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq3_2_ref,
+    },
+    [GGML_TYPE_VTQ4_2] = {
+        .type_name                = "vtq4_2",
+        .blck_size                = QK_VTQ_TRELLIS,
+        .type_size                = sizeof(block_vtq4_2),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_vtq4_2,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq4_2_ref,
+    },
+    [GGML_TYPE_VTQ_MIXED] = {
+        .type_name                = "vtq_mixed",
+        .blck_size                = QK_VTQ,
+        .type_size                = sizeof(block_vtq_mixed),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_vtq_mixed,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq_mixed_ref,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
@@ -7740,6 +7772,7 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_Q6_K:    result = quantize_q6_K(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TQ1_0:   result = quantize_tq1_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TQ2_0:   result = quantize_tq2_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_KTQ3_1:  result = quantize_ktq3_1(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XXS: result = quantize_iq2_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XS:  result = quantize_iq2_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

@@ -30,7 +30,9 @@ public:
                  uint32_t   n_pad,
                             /* TurboQuant */
                  uint32_t   tq_protect_layers,
+                 uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
+                     bool   tq_deferred_v,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,
@@ -41,7 +43,8 @@ public:
                      bool   unified,
                             /* layer filters */
     const layer_filter_cb & filter_attn = nullptr,
-    const layer_filter_cb & filter_recr = nullptr);
+    const layer_filter_cb & filter_recr = nullptr,
+    const std::vector<ggml_type> & type_v_layers = {});
 
     ~llama_memory_hybrid_iswa() = default;
 

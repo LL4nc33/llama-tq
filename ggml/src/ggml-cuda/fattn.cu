@@ -1,8 +1,9 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 #include "fattn-mma-f16.cuh"
+#include "fattn-mma-ktq.cuh"
 #include "fattn-tile.cuh"
-#include "fattn-vec.cuh"
+#include "fattn-vec-dispatch.cuh"
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
@@ -110,7 +111,7 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
     }
 }
 
-static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     const ggml_tensor * KQV  = dst;
     const ggml_tensor * Q    = dst->src[0];
@@ -209,278 +210,29 @@ static void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, gg
     }
 }
 
-#define FATTN_VEC_CASE(D, type_K, type_V)                                                                        \
-    {                                                                                                            \
-        const bool type_K_okay = K->type == (type_K) || (K->type == GGML_TYPE_F32 && (type_K) == GGML_TYPE_F16); \
-        const bool type_V_okay = V->type == (type_V) || (V->type == GGML_TYPE_F32 && (type_V) == GGML_TYPE_F16); \
-        if (Q->ne[0] == (D) && type_K_okay && type_V_okay) {                                                     \
-            ggml_cuda_flash_attn_ext_vec_case<D, type_K, type_V>(ctx, dst);                                      \
-            return;                                                                                              \
-        }                                                                                                        \
-    }                                                                                                            \
-
-#define FATTN_VEC_CASES_ALL_D(type_K, type_V) \
-    FATTN_VEC_CASE( 64, type_K, type_V)       \
-    FATTN_VEC_CASE(128, type_K, type_V)       \
-    FATTN_VEC_CASE(256, type_K, type_V)       \
-
-// D=512 only for TQ types (Gemma4 global attention) — avoids massive compile time for non-TQ
-#define FATTN_VEC_CASES_ALL_D_WITH_512(type_K, type_V) \
-    FATTN_VEC_CASES_ALL_D(type_K, type_V)              \
-    FATTN_VEC_CASE(512, type_K, type_V)                \
-
+// The actual FATTN_VEC_CASE / FATTN_VEC_CASES_ALL_D[_WITH_512] macros
+// plus their expansions have been split across fattn-vec-dispatch-*.cu
+// TUs so nvcc's cicc can instantiate them in parallel. See
+// fattn-vec-dispatch.cuh for the shared macros and the
+// try_dispatch_vec_{f16,ktq,vtq} helpers invoked below.
 static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    ggml_tensor * Q = dst->src[0];
-    ggml_tensor * K = dst->src[1];
-    ggml_tensor * V = dst->src[2];
-
-#ifdef GGML_CUDA_FA_ALL_QUANTS
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_0, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_F16)
-
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_1, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_0, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_Q4_0)
-
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_1, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_0, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_Q4_1)
-
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_1, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_0, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_Q5_0)
-
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_1, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_0, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_Q5_1)
-
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_1, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_0, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_Q8_0)
-
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,  GGML_TYPE_BF16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0, GGML_TYPE_BF16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_1, GGML_TYPE_BF16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_0, GGML_TYPE_BF16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q5_1, GGML_TYPE_BF16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0, GGML_TYPE_BF16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16, GGML_TYPE_BF16)
-
-    // TurboQuant V-type combinations (any K-type with TQ V-type)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_KTQ1_1)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_KTQ2_1)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_KTQ3_1)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_KTQ4_1)
-
-    // VTQ V-type combinations (any K-type with VTQ V-type)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ1_1)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ2_1)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ3_1)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_1,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_0,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q5_1,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_BF16,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
-
-    // TurboQuant K-type with standard V-types (K=TQ, V=standard)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_BF16)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_BF16)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_BF16)
-
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_Q4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_Q5_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_Q5_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_BF16)
-#else
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16,   GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q4_0,  GGML_TYPE_Q4_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_Q8_0,  GGML_TYPE_Q8_0)
-    FATTN_VEC_CASES_ALL_D(GGML_TYPE_BF16,  GGML_TYPE_BF16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_KTQ4_1)
-
-    // TQ asymmetric: K=TQ + V=f16
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
-
-    // TQ asymmetric: K=standard + V=TQ (recommended asymmetric configs)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_KTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_KTQ4_1)
-
-    // VTQ (V-cache optimized) — any K-type with VTQ V-type
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_F16,   GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q4_0,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_Q8_0,  GGML_TYPE_VTQ4_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ1_1, GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ1_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ2_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ3_1)
-    FATTN_VEC_CASES_ALL_D_WITH_512(GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
-
-    // Note: K=TQ + V=standard (e.g., tq2_1/q4_0) requires GGML_CUDA_FA_ALL_QUANTS=ON
-#endif // GGML_CUDA_FA_ALL_QUANTS
+    // Dispatch is fanned out to three TUs (f16/ktq/vtq slices) so nvcc
+    // can compile the template instantiation graph in parallel.
+    // The per-TU try_dispatch_vec_* helpers walk the same (D, K, V)
+    // match list as the original monolithic switch; at most one helper
+    // returns true (the matching K/V type families are disjoint).
+    if (try_dispatch_vec_f16(ctx, dst)) return;
+    if (try_dispatch_vec_ktq(ctx, dst)) return;
+    if (try_dispatch_vec_vtq1(ctx, dst)) return;
+    // E14 split-decode: intercepts VTQ_2 family at ncols=1 (decode) and runs
+    // bulk dequant + F16 FA. Only active when FATTN_VTQ2_SPLIT_ENABLE is
+    // defined, otherwise this function is a no-op returning false.
+    if (try_dispatch_vec_vtq2_split(ctx, dst)) return;
+    if (try_dispatch_vec_vtq2(ctx, dst)) return;
 
     GGML_ABORT("fatal error");
 }
+
 
 // Best FlashAttention kernel for a specific GPU:
 enum best_fattn_kernel {
@@ -489,6 +241,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_VEC      = 100,
     BEST_FATTN_KERNEL_WMMA_F16 = 300,
     BEST_FATTN_KERNEL_MMA_F16  = 400,
+    BEST_FATTN_KERNEL_MMA_KTQ  = 500,
 };
 
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
@@ -503,6 +256,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const ggml_tensor * V     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
 
+    // Phase-2c: VTQ_2 FA-vec native path with single-pass decoder.
+    // Single walk of the shift register per call — O(il+ne) instead of
+    // O(ne × il) via per-element replay. See dequantize_V_vtq_2 in
+    // fattn-common.cuh. Full shmem block cache is Phase-2e.
     const int gqa_ratio = Q->ne[2] / K->ne[2];
     GGML_ASSERT(Q->ne[2] % K->ne[2] == 0);
 
@@ -560,10 +317,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     // VTQ types are V-cache only — always asymmetric K!=V
-    const bool is_vtq_v = V->type == GGML_TYPE_VTQ1_1 || V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1;
+    const bool is_vtq_v = V->type == GGML_TYPE_VTQ1_1 || V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1 ||
+                          V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2;
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
-    if (K->type != V->type && !is_vtq_v) {
+    // Exception for asymmetric KTQ K + f16 V (MMA-KTQ split/inline paths below)
+    const bool is_tq_k_early = K->type == GGML_TYPE_KTQ1_1 || K->type == GGML_TYPE_KTQ2_1 ||
+                               K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1;
+    if (K->type != V->type && !is_vtq_v && !(is_tq_k_early && V->type == GGML_TYPE_F16)) {
         return BEST_FATTN_KERNEL_NONE;
     }
 #endif // GGML_CUDA_FA_ALL_QUANTS
@@ -613,6 +374,19 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
         }
 #endif
+        // MMA-KTQ split-dequant: bulk-dequant KTQ K → fp16 scratch, dispatch
+        // to the tensor-core MMA-F16 kernel. Measured on Qwen3.5-35B-A3B
+        // IQ2_XS (2× RTX 2060, KTQ2_1 K + f16 V, prefill):
+        //   PP128  727 t/s (vs 431 f16 — KTQ wins)
+        //   PP512  875 t/s (vs 861 f16 — parity)
+        //   PP2048 868 t/s (vs 857 f16 — parity)
+        //   TG128   67 t/s (vs  71 f16 — ~6% regression, VEC path)
+        // KTQ3_1 / KTQ4_1 crash in the non-contiguous bulk dequant, so they
+        // stay on VEC for now.
+        if (K->type == GGML_TYPE_KTQ2_1 && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
+            turing_mma_available(cc) && Q->ne[1] >= 8) {
+            return BEST_FATTN_KERNEL_MMA_KTQ;
+        }
         return BEST_FATTN_KERNEL_VEC;
     }
 
@@ -734,6 +508,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_MMA_KTQ:
+            ggml_cuda_flash_attn_ext_mma_ktq(ctx, dst);
             break;
     }
 }
