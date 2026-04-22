@@ -377,6 +377,70 @@ typedef struct {
 } block_vtq4_1;
 static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
 
+// VTQ_MIXED — 8 samples @ 3-bit (every 4th position: 0,4,8,...,28) + 24 samples @ 2-bit.
+// Layout: 2 B scale + 9 B qs (3+6 merged, padded to 12 by ggml_half alignment).
+// qs[0..2] = 8 samples × 3-bit (24 bits); qs[3..8] = 24 samples × 2-bit (48 bits); qs[9..11] pad.
+// bpw = 12*8 / 32 = 3.0 bpw (due to alignment — 2 bytes of effective padding).
+// Measured rel MSE on 131k post-RHT Qwen3.5-27B V-samples: 9.38% (vs VTQ2_1 11.1%, VTQ3_1 3.07%).
+typedef struct {
+    ggml_half d;                        // block scale (L2 norm, same as other VTQ_1)
+    uint8_t   qs[9];                    // qs[0..2]=3-bit hi, qs[3..8]=2-bit lo
+} block_vtq_mixed;
+static_assert(sizeof(block_vtq_mixed) == 12, "wrong vtq_mixed block size");
+
+// --- VTQ{K}_2 (Trellis v2): group-level Viterbi, L=16 bitshift trellis ---
+// See ggml-trellis.h. One ggml-block == one Trellis group (512 samples).
+// Decoder is a shift register fed by packed K-bit emit stream.
+// bpw = (16 + 16 + QK_VTQ_TRELLIS·K) / QK_VTQ_TRELLIS
+
+// Task #143: halved from 256 to 128. MSE measured *better* than QK=256 on
+// Phase-1 gauss N=16384 sweep (2-bit: 0.0668 vs 0.0680; 3-bit: 0.01704 vs 0.01722).
+// Enables head_dim=128 model support (Qwen3.5-0.6B/0.8B) and gives 2x block-level
+// parallelism on head_dim=256 (Qwen3.5-35B-A3B). bpw overhead: +0.031/K-level.
+#define QK_VTQ_TRELLIS 128
+
+typedef struct {
+    ggml_half d;                // group scale (encoder norm-correction output)
+    uint16_t  start_state;      // L=16 bit open-start state
+    uint8_t   qs[QK_VTQ_TRELLIS * 2 / 8];  // 32 B
+} block_vtq2_2;
+static_assert(sizeof(block_vtq2_2) == 36, "wrong vtq2_2 block size");  // 2.25 bpw
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];  // 48 B
+} block_vtq3_2;
+static_assert(sizeof(block_vtq3_2) == 52, "wrong vtq3_2 block size");  // 3.25 bpw
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 4 / 8];  // 64 B
+} block_vtq4_2;
+static_assert(sizeof(block_vtq4_2) == 68, "wrong vtq4_2 block size");  // 4.25 bpw
+
+// --- VTQ Correction Overlay (Trick 4) ---
+// Per-trellis-block top-N error sidecar. Stored in a separate tensor,
+// parallel to block_vtq{2,3,4}_2 (whose struct layout is frozen by GGUF
+// static_asserts). See docs/plans/2026-04-20-trick4-correction-overlay-design.md.
+//
+// Layout is 4 bytes/entry. We expose the struct so encoder/decoder hooks
+// can share a definition; the CPU helpers in ggml-trellis.c pack/unpack
+// via raw bytes to keep the C header dependency loose.
+//
+//   pos     : 0..QK_VTQ_TRELLIS-1, sample position within the block
+//   flags   : bit0 = valid; bits1-7 reserved (future: sign hint / N-index)
+//   value   : fp16 of the pre-quant sample at `pos` (ground truth)
+typedef struct {
+    uint8_t   pos;
+    uint8_t   flags;
+    ggml_half value;
+} vtq_overlay_entry;
+static_assert(sizeof(vtq_overlay_entry) == 4, "wrong vtq_overlay_entry size");
+
+#define VTQ_OVERLAY_FLAG_VALID 0x1u
+
 //
 // Super-block quantization structures
 //

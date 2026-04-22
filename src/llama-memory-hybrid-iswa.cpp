@@ -20,7 +20,9 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
                  uint32_t   n_pad,
                             /* TurboQuant */
                  uint32_t   tq_protect_layers,
+                 uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
+                     bool   tq_deferred_v,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,
@@ -31,7 +33,8 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
                      bool   unified,
                             /* layer filters */
     const layer_filter_cb & filter_attn,
-    const layer_filter_cb & filter_recr) :
+    const layer_filter_cb & filter_recr,
+    const std::vector<ggml_type> & type_v_layers) :
     hparams(model.hparams),
     mem_attn(new llama_kv_cache_iswa(
         model,
@@ -46,11 +49,14 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
         n_ubatch,
         n_pad,
         tq_protect_layers,
+        tq_protect_sinks,
         tq_deferred_k,
+        tq_deferred_v,
         filter_attn == nullptr ?
             [&](int32_t il) { return !hparams.is_recurrent(il); }
             : filter_attn,
-        nullptr
+        nullptr,
+        type_v_layers
     )),
     mem_recr(new llama_memory_recurrent(
         model,

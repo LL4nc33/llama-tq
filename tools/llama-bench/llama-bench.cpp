@@ -515,6 +515,15 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "vtq4_1") {
         return GGML_TYPE_VTQ4_1;
     }
+    if (s == "vtq2_2") {
+        return GGML_TYPE_VTQ2_2;
+    }
+    if (s == "vtq3_2") {
+        return GGML_TYPE_VTQ3_2;
+    }
+    if (s == "vtq4_2") {
+        return GGML_TYPE_VTQ4_2;
+    }
 
     return GGML_TYPE_COUNT;
 }
@@ -1248,6 +1257,19 @@ struct cmd_params_instance {
         cparams.embeddings      = embeddings;
         cparams.op_offload      = !no_op_offload;
         cparams.swa_full        = false;
+
+        if (const char * e = getenv("LLAMA_ARG_TQ_DEFERRED_V")) {
+            cparams.tq_deferred_v = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+        }
+        if (const char * e = getenv("LLAMA_ARG_TQ_DEFERRED_K")) {
+            cparams.tq_deferred_k = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+        }
+        if (const char * e = getenv("LLAMA_ARG_TQ_PROTECT_SINKS")) {
+            cparams.tq_protect_sinks = (uint32_t) std::max(0, atoi(e));
+        }
+        if (const char * e = getenv("LLAMA_ARG_TQ_PROTECT_LAYERS")) {
+            cparams.tq_protect_layers = (uint32_t) std::max(0, atoi(e));
+        }
 
         return cparams;
     }
