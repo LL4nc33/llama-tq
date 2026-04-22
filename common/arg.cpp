@@ -3156,6 +3156,28 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--anthropic-cache"}, "BOOL",
+        "enable Anthropic-compatible prompt caching on /v1/messages (default: enabled when --slot-save-path is set)",
+        [](common_params & params, const std::string & value) {
+            params.anthropic_cache_enabled =
+                (value == "1" || value == "true" || value == "on" || value == "yes");
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ANTHROPIC_CACHE"));
+    add_opt(common_arg(
+        {"--anthropic-cache-ttl-default"}, "SECONDS",
+        "default ephemeral TTL in seconds for Anthropic prompt-caching entries (default: 300)",
+        [](common_params & params, int value) {
+            params.anthropic_cache_ttl_default_sec = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--anthropic-cache-max-gb"}, "N",
+        "soft disk quota for Anthropic prompt-cache directory in GiB (default: 32)",
+        [](common_params & params, int value) {
+            params.anthropic_cache_max_gb = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",
         [](common_params & params, const std::string & value) {
