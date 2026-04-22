@@ -58,12 +58,7 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
 
-    // Inline path: DKQ=DV=128, GQA ratio 8, KTQ2_1 K + f16 V.
-    if (getenv("TQ_MMA_KTQ_DEBUG")) {
-        fprintf(stderr, "[mma-ktq] K.type=%d V.type=%d D=%lld gqa=%lld Q.ne1=%lld\n",
-                (int)K->type, (int)V->type, (long long)Q->ne[0],
-                (long long)(Q->ne[2]/K->ne[2]), (long long)Q->ne[1]);
-    }
+    // Inline path: DKQ=DV=256, GQA ratio 8, KTQ2_1 K + f16 V.
     if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
         Q->ne[0] == 256 && V->ne[0] == 256) {
         const int gqa_ratio = Q->ne[2] / K->ne[2];
