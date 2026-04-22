@@ -1723,6 +1723,66 @@ json convert_anthropic_to_oai(const json & body) {
         }
     }
 
+    // Anthropic prompt-caching breakpoint collection (Phase 1: parse + validate).
+    // Spec: https://docs.claude.com/en/docs/build-with-claude/prompt-caching
+    // Walks system[], messages[*].content[], tools[*] in original Anthropic order
+    // and records any block with `cache_control: {type: "ephemeral", ttl?: "5m"|"1h"}`.
+    // The actual KV save/restore is implemented in a later phase; for now we only
+    // validate the request (reject >4 breakpoints per spec) and emit the collected
+    // breakpoints on oai_body["__anthropic_cache"] for downstream consumers.
+    // Design: docs/plans/2026-04-23-anthropic-prompt-caching-design.md §2.1
+    {
+        json breakpoints = json::array();
+        auto collect = [&breakpoints](const json & block, const std::string & scope) {
+            if (!block.is_object() || !block.contains("cache_control")) return;
+            const json & cc = block.at("cache_control");
+            if (!cc.is_object()) return;
+            std::string type = json_value(cc, "type", std::string());
+            if (type != "ephemeral") return;
+            std::string ttl = json_value(cc, "ttl", std::string("5m"));
+            int ttl_sec = (ttl == "1h") ? 3600 : 300;
+            breakpoints.push_back({
+                {"scope",   scope},
+                {"ttl_sec", ttl_sec},
+            });
+        };
+
+        // system[]
+        if (body.contains("system") && body.at("system").is_array()) {
+            for (const auto & block : body.at("system")) {
+                collect(block, "system");
+            }
+        }
+        // messages[*].content[] (content-block-level breakpoints only; top-level
+        // message cache_control is not standard Anthropic — skip).
+        if (body.contains("messages") && body.at("messages").is_array()) {
+            for (const auto & msg : body.at("messages")) {
+                if (!msg.is_object() || !msg.contains("content")) continue;
+                const json & content = msg.at("content");
+                if (!content.is_array()) continue;
+                for (const auto & block : content) {
+                    collect(block, "messages");
+                }
+            }
+        }
+        // tools[*]
+        if (body.contains("tools") && body.at("tools").is_array()) {
+            for (const auto & tool : body.at("tools")) {
+                collect(tool, "tools");
+            }
+        }
+
+        // Anthropic spec: max 4 breakpoints per request.
+        if (breakpoints.size() > 4) {
+            throw std::runtime_error(
+                "Anthropic prompt-caching: too many cache_control breakpoints (got "
+                + std::to_string(breakpoints.size()) + ", max 4)");
+        }
+        if (!breakpoints.empty()) {
+            oai_body["__anthropic_cache"] = breakpoints;
+        }
+    }
+
     return oai_body;
 }
 
