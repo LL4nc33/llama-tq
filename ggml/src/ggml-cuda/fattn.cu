@@ -497,11 +497,15 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     ggml_cuda_set_device(ctx.device);
     best_fattn_kernel k = ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst);
     {
+        static FILE * dbgf = nullptr;
+        if (!dbgf) dbgf = fopen("/tmp/ktq_dispatch.log", "w");
         static int c = 0;
-        if (c++ < 5) {
+        if (dbgf && c++ < 20) {
             const ggml_tensor * K = dst->src[1];
-            printf("[FA-SWITCH#%d] K.type=%d -> kernel=%d\n", c, (int)K->type, (int)k);
-            fflush(stdout);
+            const ggml_tensor * Q = dst->src[0];
+            fprintf(dbgf, "[FA-SWITCH#%d] K.type=%d Q.ne0=%d Q.ne1=%lld -> kernel=%d\n",
+                    c, (int)K->type, (int)Q->ne[0], (long long)Q->ne[1], (int)k);
+            fflush(dbgf);
         }
     }
     switch (k) {
