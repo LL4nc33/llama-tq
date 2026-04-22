@@ -65,21 +65,21 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
                 (long long)(Q->ne[2]/K->ne[2]), (long long)Q->ne[1]);
     }
     if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
-        Q->ne[0] == 128 && V->ne[0] == 128) {
+        Q->ne[0] == 256 && V->ne[0] == 256) {
         const int gqa_ratio = Q->ne[2] / K->ne[2];
         if (gqa_ratio == 8) {
             constexpr int ncols2 = 8;
             if (Q->ne[1] <= 1) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 1, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 1, ncols2>(ctx, dst);
                 return;
             } else if (Q->ne[1] <= 2) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 2, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 2, ncols2>(ctx, dst);
                 return;
             } else if (Q->ne[1] <= 4) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 4, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 4, ncols2>(ctx, dst);
                 return;
             } else {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 8, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 8, ncols2>(ctx, dst);
                 return;
             }
         }
