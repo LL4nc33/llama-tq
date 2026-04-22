@@ -62,10 +62,10 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
     {
         static int e = 0;
         if (e++ < 5) {
-            fprintf(stderr, "[KTQ-ENTRY#%d] K=%d V=%d D=%d gqa=%d Qne1=%lld\n",
+            printf("[KTQ-ENTRY#%d] K=%d V=%d D=%d gqa=%d Qne1=%lld\n",
                     e, (int)K->type, (int)V->type, (int)Q->ne[0],
                     (int)(Q->ne[2]/K->ne[2]), (long long)Q->ne[1]);
-            fflush(stderr);
+            fflush(stdout);
         }
     }
     if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
