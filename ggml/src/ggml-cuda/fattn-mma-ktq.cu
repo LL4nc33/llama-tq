@@ -22,9 +22,18 @@ static void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & c
     const int64_t ne03 = K->ne[3];
     const int64_t scratch_elems = ne00 * ne01 * ne02 * ne03;
 
-    const int64_t s01 = K->nb[1];
-    const int64_t s02 = K->nb[2];
-    const int64_t s03 = K->nb[3];
+    // dequantize_block_ktq*_nc kernels expect strides in block units, not bytes
+    // (ibx0 = i03*s03 + i02*s02 + i01*s01 is used directly as a block index into
+    // vx, which is then offset by sizeof(block_ktq*_1) via `x[ib]`). Match the
+    // convention used by the inline path (fattn-mma-ktq-inline.cuh:1662) and by
+    // every other call site of ggml_get_to_fp16_nc_cuda (fattn-common.cuh:1705).
+    // Passing bytes would overshoot by a factor of sizeof(block_ktq*_1), causing
+    // OOB reads — benign for KTQ2_1 on some shapes, reliable crash for KTQ3_1/4_1.
+    const size_t ts = ggml_type_size(K->type);
+    GGML_ASSERT(K->nb[0] == ts);
+    const int64_t s01 = K->nb[1] / ts;
+    const int64_t s02 = K->nb[2] / ts;
+    const int64_t s03 = K->nb[3] / ts;
 
     ggml_cuda_pool_alloc<half> k_scratch(ctx.pool(), scratch_elems);
     to_fp16(K->data, k_scratch.get(), ne00, ne01, ne02, ne03, s01, s02, s03, ctx.stream());
