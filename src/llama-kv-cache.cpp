@@ -135,9 +135,14 @@ llama_kv_cache::llama_kv_cache(
     (void) tq_deferred_k; // flag retained for backwards compat; always on for KTQ
 
     // check if deferred V quantization is applicable (VTQ_2 Trellis-coded types only)
+    // Auto-enable for VTQ_2 types: per-token Viterbi encoding during decode is
+    // ~21.7ms/call which blocks the decode loop. Deferred V stages f16 writes
+    // during prefill and bulk-Viterbi converts at prefill→decode. The legacy
+    // --tq-deferred-v flag is retained as a no-op for backwards compat.
     const bool is_vtq2_type_v = (type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
                                   type_v == GGML_TYPE_VTQ4_2);
-    const bool use_deferred_v = tq_deferred_v && is_vtq2_type_v;
+    const bool use_deferred_v = is_vtq2_type_v;
+    (void) tq_deferred_v; // flag retained for backwards compat; always on for VTQ_2
 
     // create a context for each buffer type
     // extra tensors per layer when deferred is active: staging + staging_stream views
