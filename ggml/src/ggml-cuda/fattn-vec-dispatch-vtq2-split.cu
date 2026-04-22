@@ -55,12 +55,17 @@ bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * 
     const int64_t ne03 = V->ne[3];
     const int64_t scratch_elems = ne00 * ne01 * ne02 * ne03;
 
-    // Strides (in elements, not bytes) for dst_half output — packed contiguous.
-    // nb[] of V is in bytes; we pass byte strides for ne01..ne03 consistent
-    // with the callee's signature in convert.cuh.
-    const int64_t s01 = V->nb[1];
-    const int64_t s02 = V->nb[2];
-    const int64_t s03 = V->nb[3];
+    // Strides are passed as BLOCK units, not bytes — the k_dequantize_trellis_nc
+    // kernel uses them as block-index offsets (ibx0 = i03*s03 + i02*s02 + i01*s01,
+    // then x[ib] indexes by sizeof(block_vtq{2,3,4}_2) via typed pointer). Passing
+    // raw bytes over-indexes by a factor of sizeof(block_vtq*_2) → CUDA OOB.
+    // Matches the convention in fattn-common.cuh:1705, fattn-mma-ktq.cu (post-fix),
+    // and fattn-mma-ktq-inline.cuh:1662.
+    const size_t ts = ggml_type_size(V->type);
+    GGML_ASSERT(V->nb[0] == ts);
+    const int64_t s01 = V->nb[1] / ts;
+    const int64_t s02 = V->nb[2] / ts;
+    const int64_t s03 = V->nb[3] / ts;
 
     ggml_cuda_pool_alloc<half> v_scratch(ctx.pool(), scratch_elems);
     to_fp16(V->data, v_scratch.get(), ne00, ne01, ne02, ne03, s01, s02, s03, ctx.stream());
