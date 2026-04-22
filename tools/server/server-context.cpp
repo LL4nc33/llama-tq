@@ -3978,9 +3978,16 @@ void server_routes::init_routes() {
                     auto & u = body_json["usage"];
                     const int32_t total_prompt = u.value("input_tokens", 0) +
                                                  u.value("cache_read_input_tokens", 0);
-                    const int32_t cache_read   = anthropic_cache_hit_tokens > 0
-                                                     ? u.value("cache_read_input_tokens", 0)
-                                                     : u.value("cache_read_input_tokens", 0);
+                    // On a restore hit, the slot's automatic prefix-match
+                    // counter (`n_prompt_tokens_cache` → cache_read_input_tokens)
+                    // may not reflect the reloaded KV state because the hit
+                    // path loaded the snapshot directly. Fall back to the
+                    // explicit token count returned by restore_slot_from_file
+                    // so the client actually sees cache_read_input_tokens > 0.
+                    int32_t cache_read = u.value("cache_read_input_tokens", 0);
+                    if (anthropic_cache_hit_tokens > 0 && cache_read < anthropic_cache_hit_tokens) {
+                        cache_read = anthropic_cache_hit_tokens;
+                    }
                     const int32_t cache_create = anthropic_cache_creation_tokens;
                     // Recompute input_tokens so it excludes both cache_read
                     // and cache_creation (Anthropic semantics).
