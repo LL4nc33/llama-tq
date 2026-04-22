@@ -536,8 +536,12 @@ bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
         if (!df) df = fopen("/tmp/ktq_supported.log", "w");
         static int c = 0;
         if (df && c++ < 20) {
+            const ggml_tensor * Q = dst->src[0];
             const ggml_tensor * K = dst->src[1];
-            fprintf(df, "[SUPP#%d] K.type=%d -> %d\n", c, (int)K->type, (int)k);
+            const ggml_tensor * V = dst->src[2];
+            fprintf(df, "[SUPP#%d] K=%d V=%d Qne0=%d Qne1=%lld Kne1=%lld -> %d\n",
+                    c, (int)K->type, (int)V->type, (int)Q->ne[0],
+                    (long long)Q->ne[1], (long long)K->ne[1], (int)k);
             fflush(df);
         }
     }
