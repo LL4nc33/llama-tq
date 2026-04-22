@@ -3856,27 +3856,44 @@ void server_routes::init_routes() {
 
         if (anthropic_cache.is_enabled() && body.contains("__anthropic_cache")) {
             anthropic_cache_had_bp = true;
-            // Pull TTL from the LAST breakpoint — that is the longest prefix
-            // the user asked us to cache and the one our single-key v1 maps
-            // to.
+            // Pull TTL + prefix-identity from the LAST breakpoint. The prefix
+            // identity is a canonicalized concatenation of all blocks up to
+            // and including the breakpoint (see server-common.cpp, the
+            // `append_block`/`collect` pair). It is stable across requests
+            // that share the same cacheable prefix but diverge AFTER the
+            // breakpoint — which is the whole point of prompt caching.
+            std::string anthropic_cache_prefix_identity;
             try {
                 const json & bps = body.at("__anthropic_cache");
                 if (bps.is_array() && !bps.empty()) {
                     const auto & last = bps.back();
                     anthropic_cache_ttl_sec   = last.value("ttl_sec", anthropic_cache_ttl_sec);
                     anthropic_cache_ttl_label = (anthropic_cache_ttl_sec >= 3600) ? "1h" : "5m";
+                    anthropic_cache_prefix_identity =
+                        last.value("prefix_identity", std::string());
                 }
             } catch (...) { /* fall through with defaults */ }
 
             try {
-                const json & prompt = body_parsed.at("prompt");
-                llama_tokens tokens = tokenize_mixed(ctx_server.vocab, prompt, true, true);
-                if (!tokens.empty()) {
+                if (anthropic_cache_prefix_identity.empty()) {
+                    SRV_WRN("%s", "anthropic-cache: breakpoint has no prefix_identity; skipping\n");
+                } else {
                     const std::string model_fp =
                         meta->model_name + "|" + meta->model_path + "|" +
                         std::to_string(meta->model_size);
-                    anthropic_cache_key =
-                        anthropic_cache_manager::compute_key(model_fp, tokens, tokens.size());
+
+                    // Treat the prefix identity as a pseudo-token stream for the
+                    // key hasher. compute_key() FNV-hashes over model_fp +
+                    // n_prefix + token bytes — passing one llama_token per
+                    // character gives us a stable content-based key that does
+                    // NOT depend on the divergent user turn after the break.
+                    std::vector<llama_token> identity_tokens;
+                    identity_tokens.reserve(anthropic_cache_prefix_identity.size());
+                    for (unsigned char c : anthropic_cache_prefix_identity) {
+                        identity_tokens.push_back(static_cast<llama_token>(c));
+                    }
+                    anthropic_cache_key = anthropic_cache_manager::compute_key(
+                        model_fp, identity_tokens, identity_tokens.size());
 
                     if (auto hit = anthropic_cache.lookup(anthropic_cache_key)) {
                         SRV_INF("anthropic-cache: hit key=%s n_tokens=%d ttl=%s\n",
@@ -3890,8 +3907,9 @@ void server_routes::init_routes() {
                                     hit->key_hex.c_str());
                         }
                     } else {
-                        SRV_INF("anthropic-cache: miss key=%s n_prefix_tokens=%zu\n",
-                                anthropic_cache_key.c_str(), tokens.size());
+                        SRV_INF("anthropic-cache: miss key=%s prefix_bytes=%zu\n",
+                                anthropic_cache_key.c_str(),
+                                anthropic_cache_prefix_identity.size());
                     }
                 }
             } catch (const std::exception & e) {

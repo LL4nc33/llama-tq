@@ -1732,8 +1732,33 @@ json convert_anthropic_to_oai(const json & body) {
     // breakpoints on oai_body["__anthropic_cache"] for downstream consumers.
     // Design: docs/plans/2026-04-23-anthropic-prompt-caching-design.md §2.1
     {
+        // We build a "prefix identity" string as we walk blocks in the
+        // canonical Anthropic order (system[] → messages[*].content[] → tools[]).
+        // Each block's JSON (with cache_control stripped so identical prefixes
+        // match across requests with different ttls) is appended. When we hit
+        // a cache_control breakpoint, we snapshot the current prefix identity
+        // into the breakpoint record so the downstream cache layer can key on
+        // the PREFIX content — not on the full (post-breakpoint-divergent)
+        // prompt. This is the correctness fix for the cache-miss-on-identical-
+        // system-prefix bug.
         json breakpoints = json::array();
-        auto collect = [&breakpoints](const json & block, const std::string & scope) {
+        std::string prefix_identity;
+        prefix_identity.reserve(4096);
+
+        auto append_block = [&prefix_identity](const json & block, const std::string & scope) {
+            // Strip cache_control so two requests with different ttl values but
+            // the same content still hash to the same prefix identity.
+            json sanitized = block;
+            if (sanitized.is_object()) {
+                sanitized.erase("cache_control");
+            }
+            prefix_identity += scope;
+            prefix_identity += '\x1f'; // unit separator
+            prefix_identity += sanitized.dump();
+            prefix_identity += '\x1e'; // record separator
+        };
+
+        auto collect = [&breakpoints, &prefix_identity](const json & block, const std::string & scope) {
             if (!block.is_object() || !block.contains("cache_control")) return;
             const json & cc = block.at("cache_control");
             if (!cc.is_object()) return;
@@ -1742,14 +1767,20 @@ json convert_anthropic_to_oai(const json & body) {
             std::string ttl = json_value(cc, "ttl", std::string("5m"));
             int ttl_sec = (ttl == "1h") ? 3600 : 300;
             breakpoints.push_back({
-                {"scope",   scope},
-                {"ttl_sec", ttl_sec},
+                {"scope",           scope},
+                {"ttl_sec",         ttl_sec},
+                // Snapshot of the prefix identity INCLUDING this block. The
+                // downstream cache keys off this rather than the full tokenized
+                // prompt, so divergent user-turn content after the breakpoint
+                // does not change the cache key.
+                {"prefix_identity", prefix_identity},
             });
         };
 
         // system[]
         if (body.contains("system") && body.at("system").is_array()) {
             for (const auto & block : body.at("system")) {
+                append_block(block, "system");
                 collect(block, "system");
             }
         }
@@ -1761,6 +1792,7 @@ json convert_anthropic_to_oai(const json & body) {
                 const json & content = msg.at("content");
                 if (!content.is_array()) continue;
                 for (const auto & block : content) {
+                    append_block(block, "messages");
                     collect(block, "messages");
                 }
             }
@@ -1768,6 +1800,7 @@ json convert_anthropic_to_oai(const json & body) {
         // tools[*]
         if (body.contains("tools") && body.at("tools").is_array()) {
             for (const auto & tool : body.at("tools")) {
+                append_block(tool, "tools");
                 collect(tool, "tools");
             }
         }
