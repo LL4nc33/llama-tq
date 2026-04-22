@@ -58,23 +58,23 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
 
-    // Inline path: DKQ=DV=256, GQA ratio 8, KTQ2_1 K + f16 V.
+    // Inline path: DKQ=DV=128, GQA ratio 4, KTQ2_1 K + f16 V (Ministral-3 family).
     if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
-        Q->ne[0] == 256 && V->ne[0] == 256) {
+        Q->ne[0] == 128 && V->ne[0] == 128) {
         const int gqa_ratio = Q->ne[2] / K->ne[2];
-        if (gqa_ratio == 8) {
-            constexpr int ncols2 = 8;
+        if (gqa_ratio == 4) {
+            constexpr int ncols2 = 4;
             if (Q->ne[1] <= 1) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 1, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 1, ncols2>(ctx, dst);
                 return;
             } else if (Q->ne[1] <= 2) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 2, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 2, ncols2>(ctx, dst);
                 return;
             } else if (Q->ne[1] <= 4) {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 4, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 4, ncols2>(ctx, dst);
                 return;
             } else {
-                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 8, ncols2>(ctx, dst);
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 8, ncols2>(ctx, dst);
                 return;
             }
         }
