@@ -111,6 +111,37 @@ PPL impact is model-dependent; ranges below span the four tested Qwen3.5/3.6 con
 
 All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attention on, all layers offloaded.
 
+### Single-GPU 35B-A3B (12 GB VRAM, expert-offload to CPU)
+
+For users with a single 12 GB card. Uses llama.cpp expert-offloading (`-ot` pattern)
+to keep only attention on GPU and move MoE experts to CPU RAM. KTQ2_1 K + VTQ2_1 V
++ `--cache-reuse 256` applies unchanged.
+
+| Config | PP512 tok/s | TG128 tok/s | VRAM | ctx |
+|--------|:---:|:---:|:---:|:---:|
+| Qwen3.6-35B-A3B-UD-IQ2_XXS, single RTX 2060 | **187.6 ± 0.1** | **37.0 ± 0.7** | 8.5 GB / 12 | 200k |
+| same model, dual RTX 2060 (`-ts 12,12`) | ~875 | ~66-68 | 16.6 GB / 24 | 400k |
+
+Single-GPU config for production with 200k ctx:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-server \
+    -m Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
+    --host 0.0.0.0 --port 8791 --jinja --flash-attn on \
+    -c 200000 -ngl 99 --no-mmap \
+    -ot 'blk.1[5-9].ffn_.*_exps.=CPU' \
+    -ot 'blk.[2-4][0-9].ffn_.*_exps.=CPU' \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+    --cache-reuse 256 \
+    --parallel 1 -ub 512 --reasoning off
+```
+
+Trade-off: ~21% of dual-GPU PP512 (PCIe traffic to CPU experts is the bottleneck),
+~55% of dual-GPU TG128 (decode is less expert-parallel). Still usable for single-user
+interactive workloads — real-world test at 4.2k-token generation: **35.76 tok/s**
+sustained on a creative-writing prompt. 3.5 GB VRAM headroom for larger context if
+`-c 300000` fits.
+
 ### Throughput (llama-bench, PP512/TG128)
 
 ![Decode throughput by config](docs/img/decode_throughput.png)
