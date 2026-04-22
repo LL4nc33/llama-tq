@@ -1,25 +1,24 @@
-// MMA-KTQ split-dequant path.
+// MMA-KTQ entry point. Currently dispatches to:
+//   * inline kernel (DKQ=128, DV=128, ncols1=8, ncols2=1) for KTQ2_1 K + f16 V
+//   * legacy split-dequant (bulk K→f16 + MMA-F16) for everything else
 //
-// Strategy: re-use the existing KTQ→fp16 bulk dequant (convert.cu) and the
-// existing MMA-F16 tensor-core FA kernel. Eliminates the PP regression that
-// stems from fattn.cu routing KTQ unconditionally to the VEC kernel (which
-// supports only cols_per_block ∈ {1, 2}, i.e. no tensor-core parallelism on
-// PP batches).
-//
-// Trade-off: one extra K memory pass per FA call to stage an fp16 scratch
-// buffer. That cost is amortized over the entire PP prefill batch, so the
-// tensor-core win dominates. For TG (ne[1] ≤ 2) the dispatcher in fattn.cu
-// keeps routing to VEC, so this path is prefill-only.
+// The inline path does tile-wise warp-cooperative KTQ dequant in the shmem
+// K-tile load, so no ctx-dependent extra HBM pass. The split path is kept as
+// a fallback for shapes we haven't instantiated yet.
 
 #include "fattn-mma-ktq.cuh"
+#include "fattn-mma-ktq-inline.cuh"
 #include "convert.cuh"
 #include "ggml-cuda/common.cuh"
 
-void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+template <int DKQ, int DV, int ncols1, int ncols2>
+void ggml_cuda_flash_attn_ext_mma_ktq_inline_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
+static void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_tensor * K = dst->src[1];
 
     to_fp16_nc_cuda_t to_fp16 = ggml_get_to_fp16_nc_cuda(K->type);
-    GGML_ASSERT(to_fp16 != nullptr && "MMA-KTQ: no KTQ→fp16 bulk dequant registered for K->type");
+    GGML_ASSERT(to_fp16 != nullptr);
 
     const int64_t ne00 = K->ne[0];
     const int64_t ne01 = K->ne[1];
@@ -56,4 +55,20 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
     K->nb[1] = saved_nb1;
     K->nb[2] = saved_nb2;
     K->nb[3] = saved_nb3;
+}
+
+void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    // Inline path: only the one instantiated shape.
+    if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
+        Q->ne[0] == 128 && V->ne[0] == 128 && Q->ne[1] == 8) {
+        ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 8, 1>(ctx, dst);
+        return;
+    }
+
+    // Fallback: split-dequant.
+    ggml_cuda_flash_attn_ext_mma_ktq_split(ctx, dst);
 }
