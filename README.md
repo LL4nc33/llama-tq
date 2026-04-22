@@ -394,6 +394,7 @@ As of 2026-04-23:
 - Laplace-optimized 2-bit codebooks
 
 **Active research (no guarantees):**
+- **MMA-KTQ inline tile-load** — KTQ prefill currently routes to the VEC FA kernel which tops out at ~97 t/s on KTQ2_1 PP512 vs 877 t/s for f16. The dispatcher hook and entry point are wired (`BEST_FATTN_KERNEL_MMA_KTQ`). A split-dequant prototype (bulk K→f16 + MMA-F16) was tested and rejected — it wins at short ctx (PP64 264 t/s, +164%) but regresses at PP ≥ 512 because dequant cost scales with K·head_dim per call. The remaining path is warp-cooperative KTQ dequant inside the MMA tile-load (5-patch plan drafted, ~560 LOC).
 - mmvq tuning for IQ2_XS on sm_75
 - Trellis v2 (VTQ_2 family) — currently broken on D=256
 - C1 streaming window — designed, not implemented
@@ -402,6 +403,7 @@ As of 2026-04-23:
 - Speculative decoding — does not work on A3B MoE (expert saturation)
 - VTQ_MIXED — dominated by VTQ3_1, not CUDA-ported
 - Calibrated outlier selection — marginal gain after RHT
+- MMA-KTQ split-dequant (bulk K→f16 scratch + MMA-F16) — positive at ctx<256, breaks even at 512, regresses beyond. Architecture is wrong for K-cache; only inline tile-load dequant can scale.
 
 **Deliberately not on roadmap:**
 - FA3 port (requires sm_80+ hardware)
