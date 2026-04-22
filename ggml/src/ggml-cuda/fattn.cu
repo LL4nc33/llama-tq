@@ -385,7 +385,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // Inline warp-cooperative dequant (Phase 2 variant A) will supersede this
         // once it lands.
         if (is_tq_k && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
-            turing_mma_available(cc) && Q->ne[1] >= 8 && K->ne[1] < 384) {
+            turing_mma_available(cc) && Q->ne[1] >= 8) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
         return BEST_FATTN_KERNEL_VEC;
