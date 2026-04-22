@@ -15,6 +15,8 @@ add_library(${TARGET} STATIC
     server-context.h
     server-tools.cpp
     server-tools.h
+    server-anthropic-cache.cpp
+    server-anthropic-cache.h
 )
 
 if (BUILD_SHARED_LIBS)

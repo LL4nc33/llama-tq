@@ -3307,7 +3307,61 @@ server_routes::server_routes(const common_params & params, server_context & ctx_
           ctx_server(*ctx_server.impl),
           queue_tasks(ctx_server.impl->queue_tasks),
           queue_results(ctx_server.impl->queue_results) {
+    // Anthropic prompt-cache bootstrap. Feature is active only when the user
+    // explicitly set --slot-save-path; otherwise we silently leave the
+    // manager disabled so Phase 1 breakpoint parsing still runs (and we just
+    // always report cache_creation = 0). See design doc §2.3 / §2.8.
+    if (params.anthropic_cache_enabled && !params.slot_save_path.empty()) {
+        anthropic_cache.init(params.slot_save_path,
+                             params.anthropic_cache_ttl_default_sec,
+                             params.anthropic_cache_max_gb);
+    } else if (params.anthropic_cache_enabled) {
+        fprintf(stderr,
+                "anthropic-cache: --anthropic-cache requested but --slot-save-path is not set; feature disabled\n");
+    }
     init_routes();
+}
+
+// ---------------------------------------------------------------------------
+// Programmatic slot save / restore helpers. Used by the Anthropic prompt-
+// caching layer (post_anthropic_messages) to move KV state in and out of
+// per-cache-key files without going through an HTTP request.
+// ---------------------------------------------------------------------------
+
+int32_t server_routes::save_slot_to_file(int id_slot, const std::string & filepath) {
+    server_response_reader rd(queue_tasks, queue_results, HTTP_POLLING_SECONDS);
+    {
+        server_task task(SERVER_TASK_TYPE_SLOT_SAVE);
+        task.id = rd.get_new_id();
+        task.slot_action.id_slot  = id_slot;
+        task.slot_action.filename = filepath;
+        task.slot_action.filepath = filepath;
+        rd.post_task(std::move(task));
+    }
+    auto never_stop = []() { return false; };
+    auto result = rd.next(never_stop);
+    if (!result || result->is_error()) return -1;
+    auto * r = dynamic_cast<server_task_result_slot_save_load*>(result.get());
+    if (!r) return -1;
+    return static_cast<int32_t>(r->n_tokens);
+}
+
+int32_t server_routes::restore_slot_from_file(int id_slot, const std::string & filepath) {
+    server_response_reader rd(queue_tasks, queue_results, HTTP_POLLING_SECONDS);
+    {
+        server_task task(SERVER_TASK_TYPE_SLOT_RESTORE);
+        task.id = rd.get_new_id();
+        task.slot_action.id_slot  = id_slot;
+        task.slot_action.filename = filepath;
+        task.slot_action.filepath = filepath;
+        rd.post_task(std::move(task));
+    }
+    auto never_stop = []() { return false; };
+    auto result = rd.next(never_stop);
+    if (!result || result->is_error()) return -1;
+    auto * r = dynamic_cast<server_task_result_slot_save_load*>(result.get());
+    if (!r) return -1;
+    return static_cast<int32_t>(r->n_tokens);
 }
 
 void server_routes::init_routes() {
@@ -3775,12 +3829,163 @@ void server_routes::init_routes() {
             body,
             meta->chat_params,
             files);
-        return handle_completions_impl(
+
+        // -----------------------------------------------------------------
+        // Anthropic prompt caching (Phase 2, v1): if the request carries at
+        // least one `cache_control` breakpoint (collected in Phase 1 via
+        // `body["__anthropic_cache"]`) and the cache manager is enabled,
+        // tokenize the rendered prompt, derive a key from the FULL token
+        // sequence, and attempt a restore-before-prefill on slot 0. After
+        // the request completes we save the slot state back under the same
+        // key so a subsequent request with the same prefix hits warm.
+        //
+        // This intentionally supports the most common real workflow (Claude
+        // Code CLI re-issuing a request with identical system + tools + long
+        // context prefix and only the last user turn changed): the slot's
+        // existing automatic prefix-match handles the actual delta prefill
+        // — we just preload enough state for that match to succeed.
+        //
+        // Design: docs/plans/2026-04-23-anthropic-prompt-caching-design.md
+        //         §2.2 / §2.3 / §2.4
+        // -----------------------------------------------------------------
+        std::string                         anthropic_cache_key;
+        int32_t                             anthropic_cache_hit_tokens = 0;
+        std::string                         anthropic_cache_ttl_label  = "5m";
+        int32_t                             anthropic_cache_ttl_sec    = anthropic_cache.ttl_default_sec();
+        bool                                anthropic_cache_had_bp     = false;
+
+        if (anthropic_cache.is_enabled() && body.contains("__anthropic_cache")) {
+            anthropic_cache_had_bp = true;
+            // Pull TTL from the LAST breakpoint — that is the longest prefix
+            // the user asked us to cache and the one our single-key v1 maps
+            // to.
+            try {
+                const json & bps = body.at("__anthropic_cache");
+                if (bps.is_array() && !bps.empty()) {
+                    const auto & last = bps.back();
+                    anthropic_cache_ttl_sec   = last.value("ttl_sec", anthropic_cache_ttl_sec);
+                    anthropic_cache_ttl_label = (anthropic_cache_ttl_sec >= 3600) ? "1h" : "5m";
+                }
+            } catch (...) { /* fall through with defaults */ }
+
+            try {
+                const json & prompt = body_parsed.at("prompt");
+                llama_tokens tokens = tokenize_mixed(ctx_server.vocab, prompt, true, true);
+                if (!tokens.empty()) {
+                    const std::string model_fp =
+                        meta->model_name + "|" + meta->model_path + "|" +
+                        std::to_string(meta->model_size);
+                    anthropic_cache_key =
+                        anthropic_cache_manager::compute_key(model_fp, tokens, tokens.size());
+
+                    if (auto hit = anthropic_cache.lookup(anthropic_cache_key)) {
+                        SRV_INF("anthropic-cache: hit key=%s n_tokens=%d ttl=%s\n",
+                                hit->key_hex.c_str(), hit->n_tokens, hit->ttl_label.c_str());
+                        const int32_t n_restored =
+                            restore_slot_from_file(/*id_slot=*/0, hit->filepath);
+                        if (n_restored > 0) {
+                            anthropic_cache_hit_tokens = n_restored;
+                        } else {
+                            SRV_WRN("anthropic-cache: restore failed for key=%s\n",
+                                    hit->key_hex.c_str());
+                        }
+                    } else {
+                        SRV_INF("anthropic-cache: miss key=%s n_prefix_tokens=%zu\n",
+                                anthropic_cache_key.c_str(), tokens.size());
+                    }
+                }
+            } catch (const std::exception & e) {
+                SRV_WRN("anthropic-cache: prefix hashing failed: %s (feature bypassed)\n",
+                        e.what());
+                anthropic_cache_key.clear();
+            }
+        }
+
+        auto completion_res = handle_completions_impl(
             req,
             SERVER_TASK_TYPE_COMPLETION,
             body_parsed,
             files,
             TASK_RESPONSE_TYPE_ANTHROPIC);
+
+        // Save-on-miss: only once the request has produced a result do we
+        // know the slot has been fully prefilled and (for non-stream
+        // requests) fully generated. We fire this unconditionally after a
+        // miss — on a hit the file is already up-to-date and we just bump
+        // its mtime via `refresh-on-hit` inside lookup().
+        //
+        // Streaming: skipped in v1. The lambda returns before the SSE body
+        // is flushed, so the slot is still busy generating. Post-stream
+        // save hooking lives with the `to_json_anthropic_stream()` wiring
+        // in follow-up work.
+        const bool anthropic_save_allowed = completion_res && !completion_res->is_stream();
+        int32_t anthropic_cache_creation_tokens = 0;
+        if (anthropic_save_allowed && anthropic_cache_had_bp && anthropic_cache.is_enabled() &&
+            !anthropic_cache_key.empty() && anthropic_cache_hit_tokens == 0) {
+            const std::string bin = anthropic_cache.bin_path(anthropic_cache_key);
+            const int32_t n_saved = save_slot_to_file(/*id_slot=*/0, bin);
+            if (n_saved > 0) {
+                anthropic_cache.record(anthropic_cache_key,
+                                       n_saved,
+                                       anthropic_cache_ttl_sec,
+                                       anthropic_cache_ttl_label,
+                                       /*scope=*/"messages");
+                anthropic_cache_creation_tokens = n_saved;
+                SRV_INF("anthropic-cache: saved key=%s n_tokens=%d ttl=%ds\n",
+                        anthropic_cache_key.c_str(), n_saved, anthropic_cache_ttl_sec);
+            } else {
+                SRV_WRN("anthropic-cache: save failed for key=%s\n",
+                        anthropic_cache_key.c_str());
+            }
+        }
+
+        // For non-streaming responses, patch the `usage` object with correct
+        // cache_creation counters. The queue-generated response only knows
+        // about auto-prefix-reuse (`n_prompt_tokens_cache` → cache_read); it
+        // cannot know whether this particular request caused us to persist a
+        // new snapshot. We stamp that in here.
+        //
+        // Streaming responses are NOT patched in v1: the SSE framing is
+        // already written out by the time we get here. Follow-up work:
+        // thread the cache state through to `to_json_anthropic_stream()` at
+        // server-task.cpp:1705.
+        if (anthropic_cache_had_bp &&
+            completion_res && completion_res->status == 200 &&
+            !completion_res->is_stream() &&
+            !completion_res->data.empty()) {
+            try {
+                json body_json = json::parse(completion_res->data);
+                if (body_json.is_object() && body_json.contains("usage") &&
+                    body_json["usage"].is_object()) {
+                    auto & u = body_json["usage"];
+                    const int32_t total_prompt = u.value("input_tokens", 0) +
+                                                 u.value("cache_read_input_tokens", 0);
+                    const int32_t cache_read   = anthropic_cache_hit_tokens > 0
+                                                     ? u.value("cache_read_input_tokens", 0)
+                                                     : u.value("cache_read_input_tokens", 0);
+                    const int32_t cache_create = anthropic_cache_creation_tokens;
+                    // Recompute input_tokens so it excludes both cache_read
+                    // and cache_creation (Anthropic semantics).
+                    int32_t input_tokens = total_prompt - cache_read - cache_create;
+                    if (input_tokens < 0) input_tokens = 0;
+
+                    u["cache_read_input_tokens"]     = cache_read;
+                    u["cache_creation_input_tokens"] = cache_create;
+                    u["input_tokens"]                = input_tokens;
+                    u["cache_creation"] = {
+                        {"ephemeral_5m_input_tokens",
+                         anthropic_cache_ttl_label == "5m" ? cache_create : 0},
+                        {"ephemeral_1h_input_tokens",
+                         anthropic_cache_ttl_label == "1h" ? cache_create : 0},
+                    };
+                    completion_res->data = safe_json_to_str(body_json);
+                }
+            } catch (const std::exception & e) {
+                SRV_WRN("anthropic-cache: usage-patch failed: %s\n", e.what());
+            }
+        }
+
+        return completion_res;
     };
 
     this->post_anthropic_count_tokens = [this](const server_http_req & req) {
