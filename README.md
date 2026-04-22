@@ -92,6 +92,22 @@ official Claude Code CLI can talk to it directly:
 ./scripts/onllama-launch-claude.sh --server http://localhost:8080
 ```
 
+Server-side optimizations for Claude Code already wired into the prod config:
+
+- **Tool-call early-stop** — injects `</tool_call>` stop sequence on `/v1/messages`
+  requests carrying `tools:[]`, skipping the 2-10 dribble tokens Qwen3 emits after
+  a finished tool call. Saves 1-15 seconds per agent turn.
+- **`--keep 8192`** — pins the first 8k prompt tokens across context shifts,
+  protecting the Claude Code system prompt (~15-25k tokens) from silent discard.
+- **`--cache-reuse 256`** — KV-shift-based prompt-prefix reuse across turns.
+  Second-turn latency drops from ~60s to ~5-10s on a 35B model.
+- **Full Anthropic `usage` response shape** — `cache_read_input_tokens`,
+  `cache_creation_input_tokens`, and `cache_creation.ephemeral_5m/1h_input_tokens`
+  fields are all emitted (strict clients no longer error on missing fields).
+- **`cache_control` breakpoints parsed + validated** — requests with the
+  Anthropic prompt-caching markers are accepted and 4-breakpoint-cap enforced.
+  KV persistence on those breakpoints is work-in-progress.
+
 Full setup (including SSH tunnel for a remote server): [docs/claude-code.md](docs/claude-code.md).
 
 ## Recommended Configurations
