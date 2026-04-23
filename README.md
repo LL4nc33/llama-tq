@@ -227,6 +227,8 @@ Config: `-ts 12,12`, `-ot 'blk\.([0-9]|[1-4][0-9])\.ffn_(up|down|gate)_exps\.=CP
 
 A full `262144` context fits in ~13 GB total VRAM across both cards because the tiny 2-head KV + KTQ/VTQ compression makes per-token KV ~9 KB. Most of the remaining VRAM is the compute buffer, not the cache itself. The active 10B parameters per token means TG is CPU-RAM-bandwidth-bound rather than GPU-bound.
 
+**Sweet-spot — 10 GPU-expert layers instead of all-CPU:** moving layers 0–9 back onto GPU while leaving 10–47 on CPU gets pp512 ≈ **175 tok/s** (+15%) and tg128 ≈ **14.7 tok/s** (+16%). At 12 GPU-expert layers the model still loads but the `-ub 512` compute buffer pushes over 12 GB. Live server perf at 262k ctx: ~13.5 tok/s TG, ~28 tok/s PP. Full sweep + prod config in [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md).
+
 ### Perplexity (wikitext-2, 512 ctx, 3 chunks)
 
 #### Qwen3.6-35B-A3B (UD-IQ2_XXS)
