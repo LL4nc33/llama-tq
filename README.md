@@ -523,6 +523,7 @@ As of 2026-04-23:
   - **Qwen3.5-35B-A3B IQ2_XS** (reference config): PP128 **727 t/s** (vs f16 431 — KTQ *faster*), PP512 **875** (vs 861), PP2048 **868** (vs 857), TG128 67 (vs 71). That's a **9.5× jump over the pre-fix 92 t/s** PP512 number.
   - **Ministral-3-14B IQ2_M**: PP128 674 (96% of f16), PP512 687 (93%), TG128 24.4 (96%).
 - **MMA-KTQ inline tile-load (compiled, dormant)** — warp-cooperative KTQ dequant inside the MMA tile-load. Wired and building but the split path wins on current shapes; kept for future use.
+- **When to pick MMA-KTQ:** only if your V-cache stays f16 (you only compress K). For the more common asymmetric config `--cache-type-k ktq2_1 --cache-type-v vtq2_1` the VEC path is used and MMA-KTQ does not apply.
 - mmvq tuning for IQ2_XS on sm_75
 - Trellis v2 (VTQ_2 family) — currently broken on D=256
 - C1 streaming window — designed, not implemented
