@@ -143,27 +143,39 @@ Measured on Qwen3.6-35B-A3B (UD-IQ2_XXS & Q4_K_M); PPL is sensitive to weight qu
 
 ## Benchmarks
 
-All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attention on, all layers offloaded.
+All benchmarks on **2× NVIDIA RTX 2060 12 GB** (CC 7.5, PCIe 3.0), Flash Attention on, 1 rep, pp512 / tg128, build `bc7c2e3d3`. Full K × V matrix in [docs/bench-safe-2026-04-23.md](docs/bench-safe-2026-04-23.md).
 
-### Single-GPU 35B-A3B (12 GB VRAM, expert-offload to CPU)
+### Dual-GPU 35B-A3B MoE (24 GB VRAM, no offload, `-ts 12,12`)
 
-For users with a single 12 GB card. Uses llama.cpp expert-offloading (`-ot` pattern)
-to keep only attention on GPU and move MoE experts to CPU RAM. `--cache-reuse 256` applies unchanged.
+Qwen3.6-35B-A3B-UD-IQ2_XXS (10 GB weights, doesn't fit on one 12 GB card → real dual-GPU split).
 
-Measured on Qwen3.6-35B-A3B-UD-IQ2_XXS, single RTX 2060 (CC 7.5):
+| K | V | PP512 tok/s | TG128 tok/s | ΔPP | ΔTG |
+|---|---|:---:|:---:|:---:|:---:|
+| f16 | f16 | **986** | **72.8** | baseline | baseline |
+| ktq2_1 | f16 | 938 | 70.6 | −5% | −3% |
+| f16 | vtq2_1 | 909 | 71.4 | −8% | −2% |
+| **ktq2_1** | **vtq2_1** | **877** | **69.4** | **−11%** | **−5%** |
+| q8_0 | q8_0 | 974 | 70.0 | −1% | −4% |
+| q4_0 | q4_0 | 961 | 69.2 | −3% | −5% |
+| q8_0 | vtq2_1 | 874 | 69.6 | −11% | −4% |
 
-| K | V | Offload | PP512 tok/s | TG128 tok/s |
-|---|---|---|:---:|:---:|
-| f16 | f16 | 30 layers (prod-like) | 213.7 ± 0.9 | 43.0 ± 3.5 |
-| f16 | vtq2_1 | 30 layers | 216.1 ± 0.4 | 42.1 ± 4.2 |
-| ktq2_1 | f16 | 30 layers | 226.9 ± 3.6 | 44.6 ± 0.9 |
-| ktq2_1 | vtq2_1 | 30 layers | 202.8 ± 0.7 | 42.4 ± 0.7 |
-| ktq2_1 | vtq2_1 | 5 layers (light offload) | 508.1 ± 2.4 | 55.3 ± 0.3 |
-| ktq2_1 | f16 | 5 layers | 540.8 ± 0.2 | 53.3 ± 3.5 |
+Notes:
+- KTQ K + f16 V loses ~5% PP for ~40% KV-cache savings. Good default for dual-GPU users.
+- Full asymmetric `ktq2_1 + vtq2_1` = 3.5+2.5 bpw averaged over K+V, smallest footprint at ~11% PP cost.
+- `q8_0` as *V*-cache hits the non-MMA FA dispatch on CC 7.5 — it's not broken, but `vtq2_1` is measurably faster at similar quality cost.
 
-Full expert-offload (prod): ~42 tok/s TG, ~215 tok/s PP. Light offload (5 layers) buys 2–3× PP and ~30% more TG but leaves less RAM headroom.
+### Single-GPU 35B-A3B MoE (12 GB VRAM, expert-offload to CPU RAM)
 
-Single-GPU config with 200k ctx:
+Same model, single RTX 2060, `-ot blk.1[5-9].ffn_.*_exps.=CPU` (5 MoE layers to CPU). This is the "light offload" configuration — most layers stay on GPU, only the first few MoE experts move to CPU. Full 30-layer offload drops PP to ~200 tok/s as expected.
+
+| K | V | PP512 tok/s | TG128 tok/s | ΔPP | ΔTG |
+|---|---|:---:|:---:|:---:|:---:|
+| f16 | f16 | 547 | 57.1 | baseline | baseline |
+| ktq2_1 | f16 | 521 | 55.6 | −5% | −3% |
+| f16 | vtq2_1 | 517 | 51.3 | −6% | −10% |
+| ktq2_1 | vtq2_1 | 509 | 52.6 | −7% | −8% |
+
+PP scales ~55% of dual-GPU because PCIe traffic to CPU experts is the bottleneck. Reference 200k-ctx config:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-server \
@@ -177,23 +189,28 @@ CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-server \
     --parallel 1 -ub 512 --reasoning off
 ```
 
-Trade-off vs the dual-GPU config below: ~24% of dual-GPU PP512 (PCIe traffic to CPU experts is the bottleneck), ~60% of dual-GPU TG128. Still usable for single-user interactive workloads.
+### Dense model — Qwen3.5-27B (single-GPU)
 
-### Dual-GPU 35B-A3B (24 GB VRAM, no offload, `-ts 12,12`)
+Qwen3.5-27B-UD-IQ2_XXS (7.97 GiB, fits on one 12 GB card). TG is CPU-bound because the dense weights already saturate memory bandwidth — KV-cache quant barely moves it.
 
-Same model, split across 2× RTX 2060, all weights and KV on GPU. Fresh llama-bench run:
-
-| K | V | PP512 tok/s | TG128 tok/s | ΔPP vs f16 | ΔTG vs f16 |
+| K | V | PP512 tok/s | TG128 tok/s | ΔPP | ΔTG |
 |---|---|:---:|:---:|:---:|:---:|
-| f16 | f16 | **902 ± 3** | **68.7 ± 0.0** | baseline | baseline |
-| ktq2_1 | f16 | 901 ± 4 | 68.0 ± 0.1 | 0% | −1% |
-| f16 | vtq2_1 | 834 ± 13 | 67.9 ± 0.1 | −7.5% | −1.2% |
-| ktq2_1 | vtq2_1 | 837 ± 3 | 67.0 ± 0.1 | −7% | −2.5% |
+| f16 | f16 | **409** | **15.0** | baseline | baseline |
+| ktq2_1 | f16 | 392 | 14.7 | −4% | −2% |
+| f16 | vtq2_1 | 375 | 14.7 | −8% | −2% |
+| ktq2_1 | vtq2_1 | 374 | 14.6 | −9% | −3% |
+| q8_0 | q8_0 | 393 | 14.6 | −4% | −3% |
+| q4_0 | q4_0 | 391 | 14.5 | −4% | −3% |
+| q8_0 | vtq2_1 | 360 | 14.5 | −12% | −3% |
 
-Observations from the tables above:
-- **TG holds steady** (−1% to −2.5%) across all KTQ/VTQ combos vs f16.
-- **KTQ K + f16 V** has essentially no PP penalty on dual-GPU (0% vs f16).
-- **Full asymmetric (`ktq2_1` + `vtq2_1`)** trades 7% PP and 2.5% TG for the smallest KV footprint.
+Notable: dual-GPU split on 27B-Dense buys nothing (the model fits on one GPU and llama.cpp's `-ts` heuristic skips the split). The GPU1 only holds ~90 MiB CUDA context and stays idle. See the appendix bench for confirmation.
+
+### Takeaways
+
+- **If the model fits on one GPU, single-GPU wins.** The llama.cpp `-ts` split only kicks in when weights don't fit. Dual-RTX-2060 is only worth it for >12 GB models.
+- **KTQ × f16 V is the lowest-overhead compression.** 4–5% PP cost, 2–3% TG cost, ~40% KV savings.
+- **Full asymmetric `ktq2_1 + vtq2_1` is the maximum-compression config.** 7–11% PP cost, 3–5% TG cost, ~80% KV savings vs f16.
+- **Skip `q8_0` as V-cache on CC 7.5.** Falls out of the fastest FA dispatch; VTQ is both smaller and faster.
 
 ### Perplexity (wikitext-2, 512 ctx, 3 chunks)
 
