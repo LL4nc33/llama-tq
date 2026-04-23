@@ -214,20 +214,19 @@ Notable: dual-GPU split on 27B-Dense buys nothing (the model fits on one GPU and
 
 ### Extreme case — Qwen3.5-122B-A10B (34 GB weights, expert-offload)
 
-This model has **256 experts / 8 active per token** and **2 KV heads (GQA)** — the expert sparsity is enough that even a 122B-parameter model runs on 2× RTX 2060 with all 48 FFN experts offloaded to CPU RAM.
+This model has **256 experts / 8 active per token** and **2 KV heads (GQA)** — the expert sparsity is enough that even a 122B-parameter model runs on 2× RTX 2060 with 19 expert-layers on GPU and 29 offloaded to CPU RAM.
 
-Config: `-ts 12,12`, `-ot 'blk\.([0-9]|[1-4][0-9])\.ffn_(up|down|gate)_exps\.=CPU'` (all 48 layers' expert FFNs on CPU, attention + shared FFN on GPU), `--no-mmap`.
+**Measured (5-run average, 2026-04-23):** **14.06 ± 0.49 tok/s TG**, **28.4 ± 2.3 tok/s PP** at 200k ctx with PCIe-aware expert split (GPU0 x16: layers 0–9, GPU1 x4: 10–18, CPU: 19–47), `ktq2_1/vtq2_1` KV cache.
 
-| K | V | ctx | VRAM used (GPU0/GPU1) | PP tok/s | TG tok/s |
+| K | V | ctx | VRAM GPU0/GPU1 | PP tok/s | TG tok/s |
 |---|---|---|---|:---:|:---:|
-| f16 | f16 | 2k (bench) | — | ~56 (pp128) | ~13.6 (tg32) |
-| ktq2_1 | vtq2_1 | 2k (bench) | — | **148** (pp512) | **12.6** (tg128) |
-| ktq2_1 | vtq2_1 | **200k** | 4.4 / 4.8 GB | — | — |
-| ktq2_1 | vtq2_1 | **262k** (max) | 6.7 / 6.4 GB | — | — |
+| ktq2_1 | vtq2_1 | 2k (bench, all-CPU) | — | 148 | 12.6 |
+| ktq2_1 | vtq2_1 | 2k (bench, 10L GPU) | — | 175 (+18%) | 14.7 (+17%) |
+| ktq2_1 | vtq2_1 | 200k | 10.9 / 10.5 GB | **28.4** | **14.06** |
 
-A full `262144` context fits in ~13 GB total VRAM across both cards because the tiny 2-head KV + KTQ/VTQ compression makes per-token KV ~9 KB. Most of the remaining VRAM is the compute buffer, not the cache itself. The active 10B parameters per token means TG is CPU-RAM-bandwidth-bound rather than GPU-bound.
+Full `262144` context fits too (~+140 MB KV delta thanks to GQA(2) + TQ2_1); 200k just leaves more compute-buffer headroom. TG is CPU-RAM-bandwidth-bound rather than GPU-bound (2.5 GB/token traffic at ~56 GB/s effective = ~22 tok/s physics ceiling, 64% efficiency).
 
-**Sweet-spot — 10 GPU-expert layers instead of all-CPU:** moving layers 0–9 back onto GPU while leaving 10–47 on CPU gets pp512 ≈ **175 tok/s** (+15%) and tg128 ≈ **14.7 tok/s** (+16%). At 12 GPU-expert layers the model still loads but the `-ub 512` compute buffer pushes over 12 GB. Live server perf at 262k ctx: ~13.5 tok/s TG, ~28 tok/s PP. Full sweep + prod config in [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md).
+**PCIe-aware expert-shift is the key lever:** asymmetric GPU0 x16 / GPU1 x4 means moving heavier expert-load onto GPU0 saves x4 cross-GPU traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep in [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md).
 
 ### Perplexity (wikitext-2, 512 ctx, 3 chunks)
 
