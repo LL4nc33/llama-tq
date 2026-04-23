@@ -111,6 +111,14 @@ Server-side optimizations for Claude Code already wired into the live config:
   restores KV from file and skips prefill on that segment. TTL 5m/1h with lazy
   delete + refresh-on-hit. Enable with `--slot-save-path PATH` (auto-enables
   `--anthropic-cache`). 400 on >4 breakpoints per spec.
+  - **Hybrid/recurrent model caveat:** for models classified as hybrid memory
+    (e.g. Qwen3-MoE), a companion `<filepath>.ckpt` is written alongside the
+    main KV blob and injected into `slot.prompt.checkpoints` on restore. This
+    passes the hybrid-arch gate in the prefix-match path. On these models, a
+    subsequent `memory_seq_rm` during the new user turn may still trigger a
+    re-prefill because the hybrid memory cannot be truncated at arbitrary
+    positions — response fields are correct, but wall-time speedup is limited.
+    Pure SWA / dense models get the full prefill-skip benefit.
 - **TCP_NODELAY on SSE** — disables Nagle buffering so streaming token deltas
   flush immediately (no ~40ms stalls per chunk).
 - **gzip response compression** (opt-in, `LLAMA_SERVER_ZLIB=ON` at build time) —
