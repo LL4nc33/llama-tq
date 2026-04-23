@@ -1233,6 +1233,25 @@ common_init_result::common_init_result(common_params & params) :
 
     // Trick 2 PR2: resolve per-layer V-cache types now that model is loaded (n_layer known)
     {
+        // VTQ_2 trellis family (VTQ2_2/VTQ3_2/VTQ4_2) is known-broken on head_dim=256.
+        // Warn early so users hitting silent corruption or crashes get a hint.
+        auto is_vtq_2 = [](ggml_type t) {
+            return t == GGML_TYPE_VTQ2_2 || t == GGML_TYPE_VTQ3_2 || t == GGML_TYPE_VTQ4_2;
+        };
+        const int32_t n_head = llama_model_n_head(model);
+        const int32_t n_embd = llama_model_n_embd(model);
+        const int32_t head_dim = n_head > 0 ? n_embd / n_head : 0;
+        if (head_dim == 256) {
+            if (is_vtq_2(params.cache_type_v) ||
+                is_vtq_2(params.tq_v_base)    ||
+                is_vtq_2(params.tq_v_high)    ||
+                is_vtq_2(params.tq_v_low)) {
+                LOG_WRN("%s: VTQ_2 (vtq2_2/vtq3_2/vtq4_2) is known broken on head_dim=256 "
+                        "(this model). Use vtq*_1 instead, or expect corruption/crash.\n",
+                        __func__);
+            }
+        }
+
         const bool want_mixed =
             !params.tq_v_profile_path.empty() ||
             !params.tq_v_strategy.empty()     ||
