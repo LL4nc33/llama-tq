@@ -104,9 +104,17 @@ Server-side optimizations for Claude Code already wired into the prod config:
 - **Full Anthropic `usage` response shape** — `cache_read_input_tokens`,
   `cache_creation_input_tokens`, and `cache_creation.ephemeral_5m/1h_input_tokens`
   fields are all emitted (strict clients no longer error on missing fields).
-- **`cache_control` breakpoints parsed + validated** — requests with the
-  Anthropic prompt-caching markers are accepted and 4-breakpoint-cap enforced.
-  KV persistence on those breakpoints is work-in-progress.
+- **Anthropic prompt caching (`cache_control`)** — `cache_control:{type:"ephemeral"}`
+  markers on `system`, `messages.content`, and `tools` blocks are parsed, validated
+  against the 4-breakpoint spec cap, and their KV state is persisted to disk under
+  `<slot_save_path>/anthropic-cache/`. A second request with the same cached prefix
+  restores KV from file and skips prefill on that segment. TTL 5m/1h with lazy
+  delete + refresh-on-hit. Enable with `--slot-save-path PATH` (auto-enables
+  `--anthropic-cache`). 400 on >4 breakpoints per spec.
+- **TCP_NODELAY on SSE** — disables Nagle buffering so streaming token deltas
+  flush immediately (no ~40ms stalls per chunk).
+- **gzip response compression** (opt-in, `LLAMA_SERVER_ZLIB=ON` at build time) —
+  4-6× ratio on tool-call JSON. Non-streaming responses only.
 
 Full setup (including SSH tunnel for a remote server): [docs/claude-code.md](docs/claude-code.md).
 
