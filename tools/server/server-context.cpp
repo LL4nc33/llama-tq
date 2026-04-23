@@ -1855,6 +1855,44 @@ private:
                     const llama_tokens & tokens = slot->prompt.tokens.get_text_tokens();
                     const size_t nwrite = llama_state_seq_save_file(ctx, filepath.c_str(), slot->id, tokens.data(), token_count);
 
+                    // Anthropic-cache companion: for hybrid/recurrent/SWA models the
+                    // main KV blob alone is insufficient to bypass full re-prefill
+                    // (see server-context.cpp refusal path ~line 2432). We also
+                    // serialize the PARTIAL_ONLY state into `<filepath>.ckpt` so
+                    // SLOT_RESTORE can inject a server_prompt_checkpoint entry.
+                    const bool needs_ckpt =
+                        llama_model_is_recurrent(model) ||
+                        llama_model_is_hybrid(model) ||
+                        (llama_model_n_swa(model) > 0 && !params_base.swa_full);
+                    if (needs_ckpt && nwrite > 0) {
+                        const size_t sz = llama_state_seq_get_size_ext(
+                            ctx, slot->id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        if (sz > 0) {
+                            std::vector<uint8_t> buf(sz);
+                            const size_t got = llama_state_seq_get_data_ext(
+                                ctx, buf.data(), sz, slot->id,
+                                LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                            if (got == sz) {
+                                const std::string ckpt_path = filepath + ".ckpt";
+                                FILE * fp = fopen(ckpt_path.c_str(), "wb");
+                                if (fp) {
+                                    const uint32_t magic = 0x4B434854u; // 'TKHC'
+                                    const uint32_t version = 1;
+                                    const uint64_t n_tokens_u64 = (uint64_t) token_count;
+                                    const uint64_t payload_sz = (uint64_t) sz;
+                                    fwrite(&magic, sizeof(magic), 1, fp);
+                                    fwrite(&version, sizeof(version), 1, fp);
+                                    fwrite(&n_tokens_u64, sizeof(n_tokens_u64), 1, fp);
+                                    fwrite(&payload_sz, sizeof(payload_sz), 1, fp);
+                                    fwrite(buf.data(), 1, sz, fp);
+                                    fclose(fp);
+                                    SRV_DBG("slot-save: wrote checkpoint companion %s (%.3f MiB)\n",
+                                            ckpt_path.c_str(), (float) sz / 1024 / 1024);
+                                }
+                            }
+                        }
+                    }
+
                     const int64_t t_end = ggml_time_us();
                     const double t_save_ms = (t_end - t_start) / 1000.0;
 
@@ -1901,6 +1939,42 @@ private:
                     tokens.resize(token_count);
                     slot->prompt.tokens.clear();
                     slot->prompt.tokens.insert(tokens);
+
+                    // Anthropic-cache companion: for hybrid/recurrent/SWA models
+                    // inject a server_prompt_checkpoint entry from `<filepath>.ckpt`
+                    // so the prefix-match path at line ~2399 finds a valid
+                    // checkpoint instead of forcing full re-prefill.
+                    {
+                        const std::string ckpt_path = filepath + ".ckpt";
+                        FILE * fp = fopen(ckpt_path.c_str(), "rb");
+                        if (fp) {
+                            uint32_t magic = 0, version = 0;
+                            uint64_t n_tokens_u64 = 0, payload_sz = 0;
+                            bool ok =
+                                fread(&magic, sizeof(magic), 1, fp) == 1 &&
+                                fread(&version, sizeof(version), 1, fp) == 1 &&
+                                fread(&n_tokens_u64, sizeof(n_tokens_u64), 1, fp) == 1 &&
+                                fread(&payload_sz, sizeof(payload_sz), 1, fp) == 1 &&
+                                magic == 0x4B434854u && version == 1 &&
+                                n_tokens_u64 > 0 && payload_sz > 0;
+                            if (ok) {
+                                std::vector<uint8_t> buf(payload_sz);
+                                ok = fread(buf.data(), 1, payload_sz, fp) == payload_sz;
+                                if (ok) {
+                                    server_prompt_checkpoint ckpt;
+                                    ckpt.pos_min = 0;
+                                    ckpt.pos_max = (llama_pos) (n_tokens_u64 - 1);
+                                    ckpt.n_tokens = (int64_t) n_tokens_u64;
+                                    ckpt.data = std::move(buf);
+                                    slot->prompt.checkpoints.clear();
+                                    slot->prompt.checkpoints.push_back(std::move(ckpt));
+                                    SRV_DBG("slot-restore: injected checkpoint from %s (n_tokens=%" PRIu64 ", %.3f MiB)\n",
+                                            ckpt_path.c_str(), n_tokens_u64, (float) payload_sz / 1024 / 1024);
+                                }
+                            }
+                            fclose(fp);
+                        }
+                    }
 
                     const int64_t t_end = ggml_time_us();
                     const double t_restore_ms = (t_end - t_start) / 1000.0;
