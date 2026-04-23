@@ -16,10 +16,10 @@ KV-cache quantization research fork of llama.cpp. Asymmetric K/V dispatch — K-
 
 **What it is not:**
 - Not a performance fork — TG throughput matches upstream llama.cpp. This fork saves VRAM, not time.
-- Not an alternative to production-scale serving systems — single-node, no paged attention, no batching focus.
+- Not an alternative to large-scale serving systems — single-node, no paged attention, no batching focus.
 - Not tested on newer architectures (Ampere/Hopper). sm_75 is the primary calibration target.
 
-**Status:** Research-grade. Production-validated on Qwen3.5-35B-A3B with 400k context, but V-cache configuration is workload-dependent (see trade-offs below).
+**Status:** Research-grade. Validated live on Qwen3.5-35B-A3B with 400k context, but V-cache configuration is workload-dependent (see trade-offs below).
 
 > **Measured on 2x RTX 2060 12GB (CC 7.5), 5 model/quant pairs:**
 > - `q8_0` K + `vtq2_1` V (5.5 bpw avg): **+5.1% to +10.0%** PPL Δ depending on model, ~65% KV VRAM vs f16
@@ -29,10 +29,10 @@ KV-cache quantization research fork of llama.cpp. Asymmetric K/V dispatch — K-
 
 > **⚠ Long-context TG (historical):** an earlier 2026-04 build measured a 5.5× TG regression
 > (12.4 vs 67.7 tok/s) for `vtq3_1` V-cache at 400k ctx on 35B. Not re-measured against the
-> phase3 FA-path fixes. **`vtq2_1` at 400k is validated in production at −3% TG** (see
+> phase3 FA-path fixes. **`vtq2_1` at 400k is validated live at −3% TG** (see
 > [Quick Start](#quick-start)); short-context `vtq3_1` on the current build is stable at −3% to −4% TG.
 
-> **Honest bottleneck assessment (2026-04-23):** nvprof profiling on the prod config shows
+> **Honest bottleneck assessment (2026-04-23):** nvprof profiling on the live config shows
 > FA-vec kernel is only 6.4% of kernel time. The real bottleneck at 67 tok/s baseline is
 > `mmvq` (IQ2_XS expert matmuls at 28%), which is already upstream-optimized. Further TG
 > improvements on this hardware + model combination are likely small.
@@ -57,8 +57,8 @@ cmake --build build -j$(nproc) --target llama-server
     --cache-type-k q8_0 --cache-type-v vtq2_1 \
     -fa on -ngl 99
 
-# Production deploy — true asymmetric KTQ2_1 K + VTQ2_1 V + 400k ctx on 2x RTX 2060 12GB
-# (this is the live config for Qwen3.6-35B-A3B on the production server)
+# Live deploy — true asymmetric KTQ2_1 K + VTQ2_1 V + 400k ctx on 2x RTX 2060 12GB
+# (this is the live config for Qwen3.6-35B-A3B)
 ./build/bin/llama-server -m /path/to/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
     --host 0.0.0.0 --port 8791 \
     -c 400000 -ngl 99 --flash-attn on --no-mmap --parallel 2 \
@@ -92,7 +92,7 @@ official Claude Code CLI can talk to it directly:
 ./scripts/onllama-launch-claude.sh --server http://localhost:8080
 ```
 
-Server-side optimizations for Claude Code already wired into the prod config:
+Server-side optimizations for Claude Code already wired into the live config:
 
 - **Tool-call early-stop** — injects `</tool_call>` stop sequence on `/v1/messages`
   requests carrying `tools:[]`, skipping the 2-10 dribble tokens Qwen3 emits after
@@ -146,7 +146,7 @@ to keep only attention on GPU and move MoE experts to CPU RAM. KTQ2_1 K + VTQ2_1
 | Qwen3.6-35B-A3B-UD-IQ2_XXS, single RTX 2060 | **187.6 ± 0.1** | **37.0 ± 0.7** | 8.5 GB / 12 | 200k |
 | same model, dual RTX 2060 (`-ts 12,12`) | ~875 | ~66-68 | 16.6 GB / 24 | 400k |
 
-Single-GPU config for production with 200k ctx:
+Single-GPU live config with 200k ctx:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-server \
@@ -181,15 +181,15 @@ sustained on a creative-writing prompt. 3.5 GB VRAM headroom for larger context 
 > Two fixes landed: `QK_VTQ_TRELLIS` 256→128 (`1d92cfe5c`) and a warp-
 > cooperative cached decode kernel (E11, `31c6790c0`) gated on
 > `-DFATTN_VTQ2_CACHED=1` for KTQ2_1 × VTQ3_2 at D=128, ncols=1 (Phase 3A1).
-> **Current recommendation:** use `vtq2_1` (stable) for production
+> **Current recommendation:** use `vtq2_1` (stable) for live deployment
 > until Phase 3A1 TG measurement confirms ≥25 tok/s. See
 > `docs/plans/2026-04-21-vtq2-regression-analysis.md` (root cause) and
 > `docs/plans/2026-04-21-e11-cuda-port-spec.md` (fix). Numbers below are
 > for D=128 (0.8B model) where VTQ_2 still performs well.
 
 New VTQ_2 Trellis V-cache family with `--tq-deferred-v` and
-`--tq-protect-sinks 4` active (production recipe). Measured on single
-RTX 2060 with production server running on the other GPU.
+`--tq-protect-sinks 4` active (live recipe). Measured on single
+RTX 2060 with the live server running on the other GPU.
 
 | K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | Notes |
 |---------|---------|:---:|:---:|:---|
@@ -493,7 +493,7 @@ CUDA CC 6.1+. CPU fallback available.
 
 - **When VRAM is not a constraint:** upstream llama.cpp with f16 KV is simpler and equally fast.
 - **When sub-50ms/token latency matters:** VTQ V-cache increases per-token dequant overhead at long context. Use f16 V or other forks.
-- **For multi-node inference:** this fork makes no changes to llama.cpp's split logic. Production-scale serving systems are designed for that use case.
+- **For multi-node inference:** this fork makes no changes to llama.cpp's split logic. Large-scale serving systems are designed for that use case.
 - **On Ampere+ (CC 8.0+):** untested. The sm_75-specific launch_bounds and FA tuning are calibrated for Turing, not newer tensor-core generations.
 
 ## Roadmap Reality
@@ -509,7 +509,7 @@ As of 2026-04-23:
 
 **Active research (no guarantees):**
 - **MMA-KTQ asymmetric dispatch (shipped)** — KTQ K + f16 V now takes the tensor-core MMA path via bulk K→f16 split-dequant. A silent early `supports_op` guard in `fattn.cu` was rejecting `K.type != V.type` for all KTQ+f16V shapes, so every prior "KTQ PP regression" number was actually the FA op falling out of the CUDA graph and splitting to a non-FA CPU-fallback. After the fix:
-  - **Qwen3.5-35B-A3B IQ2_XS** (prod config): PP128 **727 t/s** (vs f16 431 — KTQ *faster*), PP512 **875** (vs 861), PP2048 **868** (vs 857), TG128 67 (vs 71). That's a **9.5× jump over the pre-fix 92 t/s** PP512 number.
+  - **Qwen3.5-35B-A3B IQ2_XS** (live config): PP128 **727 t/s** (vs f16 431 — KTQ *faster*), PP512 **875** (vs 861), PP2048 **868** (vs 857), TG128 67 (vs 71). That's a **9.5× jump over the pre-fix 92 t/s** PP512 number.
   - **Ministral-3-14B IQ2_M**: PP128 674 (96% of f16), PP512 687 (93%), TG128 24.4 (96%).
 - **MMA-KTQ inline tile-load (compiled, dormant)** — warp-cooperative KTQ dequant inside the MMA tile-load. Wired and building but the split path wins on current shapes; kept for future use.
 - mmvq tuning for IQ2_XS on sm_75
