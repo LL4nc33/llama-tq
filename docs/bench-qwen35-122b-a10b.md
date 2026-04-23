@@ -1,4 +1,6 @@
-# Qwen3.5-122B-A10B Bench — Expert-Offload Sweep + Prod Deploy
+# Qwen3.5-122B-A10B Bench — Expert-Offload Sweep (Research)
+
+Experimental deployment test on a research fork — not a production guide.
 
 Date: 2026-04-23
 Model: `Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf` (34.11 GiB)
@@ -23,9 +25,9 @@ From GGUF metadata:
 
 GQA(2) + 48 layers = ~9 KB per-token KV at f16 → even 262k ctx needs only ~2.3 GB f16 or ~0.4 GB at `ktq2_1/vtq2_1`. Delta 200k→262k is only +140 MB with TQ2_1.
 
-## Production Deploy (on-llm-122b.service)
+## Measured Config (5-run average, 2026-04-23)
 
-**Validated 5× (2026-04-23):** 14.06 ± 0.49 tok/s TG, 28.4 ± 2.3 tok/s PP @ 200k ctx.
+14.06 ± 0.49 tok/s TG, 28.4 ± 2.3 tok/s PP @ 200k ctx on the test rig.
 
 ```bash
 /home/claude/llama-tq/build/bin/llama-server \
@@ -61,7 +63,7 @@ Coarse/fine sweep `-ngl 99 -ts 12,12 -fa 1 -r 3 -p 512 -n 256`:
 
 **Bench täuscht:** `-ts 12,12` + `-ot` Layer 0-9 nutzt de-facto nur GPU0. "Dual-GPU" Bench-Configs liefen echt dual, waren aber langsamer wegen PCIe-Cross-Traffic bei nur 4k Compute-Buffer.
 
-### Phase 2: Prod-Smoke @ 262k ctx mit TQ2_1
+### Phase 2: Live-server smoke @ 262k ctx mit TQ2_1
 
 Single-side Winner failed bei realem ctx (GPU0 Compute-Buffer OOM). Balanced-Configs liefen:
 
@@ -80,7 +82,7 @@ User-Insight: GPU0 x16, GPU1 x4 → Expert-Heavy auf GPU0 spart Cross-GPU-Traffi
 | 20L (10+10) | 20 | 0.9 | 0.7 | 27.34±4.45 | 14.34±0.45 |
 | 21L (11+10) | 21 | 0.3 | 0.7 | **31.31±0.75** | 14.34±0.38 |
 
-**Gewinner 19L (10+9):** +11% PP-Stabilität, +2% TG vs balanced 9+9. 0.9 GB GPU0-Headroom ist Prod-safe (0.3 GB crasht bei großen Prompts).
+**Gewinner 19L (10+9):** +11% PP-Stabilität, +2% TG vs balanced 9+9. 0.9 GB GPU0-Headroom reicht für längere Prompts (0.3 GB crasht bei großen Prompts).
 
 ## Key Findings
 
@@ -97,7 +99,7 @@ User-Insight: GPU0 x16, GPU1 x4 → Expert-Heavy auf GPU0 spart Cross-GPU-Traffi
 
 5. **Physik-Ceiling:** 2.5 GB/Token Memory-Traffic, ~56 GB/s effektive Bandwidth (GPU+CPU-Mix) → theoretisch 22 tok/s max. Real 14 tok/s = **64% Effizienz**.
 
-6. **Thinking-Mode:** `--reasoning off` kritisch für Prod (64 Token Reasoning-Overhead pro kurzer Antwort).
+6. **Thinking-Mode:** `--reasoning off` wichtig bei kurzen Antworten (64 Token Reasoning-Overhead).
 
 ## Use-Case
 
