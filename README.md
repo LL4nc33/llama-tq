@@ -32,7 +32,7 @@ KV-cache quantization research fork of llama.cpp. Asymmetric K/V dispatch — K-
 > phase3 FA-path fixes. **`vtq2_1` at 400k is validated in production at −3% TG** (see
 > [Quick Start](#quick-start)); short-context `vtq3_1` on the current build is stable at −3% to −4% TG.
 
-> **Honest bottleneck assessment (2026-04-23):** nvprof profiling on our prod config shows
+> **Honest bottleneck assessment (2026-04-23):** nvprof profiling on the prod config shows
 > FA-vec kernel is only 6.4% of kernel time. The real bottleneck at 67 tok/s baseline is
 > `mmvq` (IQ2_XS expert matmuls at 28%), which is already upstream-optimized. Further TG
 > improvements on this hardware + model combination are likely small.
@@ -58,7 +58,7 @@ cmake --build build -j$(nproc) --target llama-server
     -fa on -ngl 99
 
 # Production deploy — true asymmetric KTQ2_1 K + VTQ2_1 V + 400k ctx on 2x RTX 2060 12GB
-# (this is the live config for Qwen3.6-35B-A3B on our production server)
+# (this is the live config for Qwen3.6-35B-A3B on the production server)
 ./build/bin/llama-server -m /path/to/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
     --host 0.0.0.0 --port 8791 \
     -c 400000 -ngl 99 --flash-attn on --no-mmap --parallel 2 \
@@ -559,22 +559,22 @@ This fork is a research collection combining several building blocks. Where each
 ### Core Foundation
 
 - **llama.cpp** — Upstream fork. Unchanged runtime, server, GGML infrastructure. Non-KV-cache changes come from upstream and are merged back regularly.
-- **ggml** — Tensor library enabling type_traits: our VTQ dispatch goes through the standard ggml mechanism, so CPU fallback, quantize, dequantize, and set-rows work automatically once types are registered.
+- **ggml** — Tensor library enabling type_traits: the VTQ dispatch goes through the standard ggml mechanism, so CPU fallback, quantize, dequantize, and set-rows work automatically once types are registered.
 
 ### Primary Research Methods
 
-- **TurboQuant** — Random Hadamard Transform (RHT) for outlier diffusion, Lloyd-Max codebook for 1D-optimal quantization. We implement the MSE-optimal Stage 1 (PolarQuant). Stage 2 (QJL residual) was evaluated and found ineffective for attention workloads.
-- **Flash Attention 2** — The FA kernel on which our asymmetric K/V dispatch extension is built. We modify the vec-path for VTQ V-cache support.
+- **TurboQuant** — Random Hadamard Transform (RHT) for outlier diffusion, Lloyd-Max codebook for 1D-optimal quantization. The MSE-optimal Stage 1 (PolarQuant) is implemented. Stage 2 (QJL residual) was evaluated and found ineffective for attention workloads.
+- **Flash Attention 2** — The FA kernel on which the asymmetric K/V dispatch extension is built. The vec-path is modified for VTQ V-cache support.
 - **Streaming-LLM / Attention Sinks** — The first 4 tokens in a sequence have disproportionate attention weights. Trick 1 keeps these in f16 instead of quantized.
-- **Laplace-optimal codebooks** — Post-RHT data is Laplace-distributed, not Gaussian. We fit centroids directly to Laplace.
+- **Laplace-optimal codebooks** — Post-RHT data is Laplace-distributed, not Gaussian. Centroids are fit directly to Laplace.
 
 ### Considered & Documented Inspirations
 
-- **Trellis-Coded Quantization (TCQ)** — classical signal processing method. We built a Phase-1 harness, derived the VTQ_2 family from it. Currently broken on D=256, functional on D=128.
-- **Paged Attention** — KV-cache management via fixed-size pages. Not directly usable because Python/Triton-based while our stack is pure C++. Documented as a possible porting source.
+- **Trellis-Coded Quantization (TCQ)** — classical signal processing method. A Phase-1 harness was built and the VTQ_2 family was derived from it. Currently broken on D=256, functional on D=128.
+- **Paged Attention** — KV-cache management via fixed-size pages. Not directly usable because Python/Triton-based while this stack is pure C++. Documented as a possible porting source.
 - **Triton Autoresearch** — autoresearch methodology applied to the 2060 FA kernel. 8 experiments, E11 cached-decode reaches 112 GB/s (14× over naive).
 - **CUDA Graphs** — for launch overhead reduction. llama.cpp has this already upstream, default enabled.
-- **Speculative Decoding** — already implemented upstream in llama.cpp. We verified whether it fits our A3B MoE config — expert-saturation pathology makes it ineffective on this architecture.
+- **Speculative Decoding** — already implemented upstream in llama.cpp. Verified whether it fits the A3B MoE config — expert-saturation pathology makes it ineffective on this architecture.
 
 ### Measurement Infrastructure
 
