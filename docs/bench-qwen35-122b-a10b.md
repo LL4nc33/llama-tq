@@ -30,8 +30,8 @@ GQA(2) + 48 layers = ~9 KB per-token KV at f16 → even 262k ctx needs only ~2.3
 14.06 ± 0.49 tok/s TG, 28.4 ± 2.3 tok/s PP @ 200k ctx on the test rig.
 
 ```bash
-/home/claude/llama-tq/build/bin/llama-server \
-  -m /home/claude/models/Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf \
+.//build/bin/llama-server \
+  -m ./models/Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf \
   --host 0.0.0.0 --port 8794 \
   -c 200000 -ngl 99 -ts 12,12 -fa on \
   --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
