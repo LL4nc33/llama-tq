@@ -212,6 +212,21 @@ Notable: dual-GPU split on 27B-Dense buys nothing (the model fits on one GPU and
 - **Full asymmetric `ktq2_1 + vtq2_1` is the maximum-compression config.** 7–11% PP cost, 3–5% TG cost, ~80% KV savings vs f16.
 - **Skip `q8_0` as V-cache on CC 7.5.** Falls out of the fastest FA dispatch; VTQ is both smaller and faster.
 
+### Extreme case — Qwen3.5-122B-A10B (34 GB weights, expert-offload)
+
+This model has **256 experts / 8 active per token** and **2 KV heads (GQA)** — the expert sparsity is enough that even a 122B-parameter model runs on 2× RTX 2060 with all 48 FFN experts offloaded to CPU RAM.
+
+Config: `-ts 12,12`, `-ot 'blk\.([0-9]|[1-4][0-9])\.ffn_(up|down|gate)_exps\.=CPU'` (all 48 layers' expert FFNs on CPU, attention + shared FFN on GPU), `--no-mmap`.
+
+| K | V | ctx | VRAM used (GPU0/GPU1) | PP tok/s | TG tok/s |
+|---|---|---|---|:---:|:---:|
+| f16 | f16 | 2k (bench) | — | ~56 (pp128) | ~13.6 (tg32) |
+| ktq2_1 | vtq2_1 | 2k (bench) | — | **148** (pp512) | **12.6** (tg128) |
+| ktq2_1 | vtq2_1 | **200k** | 4.4 / 4.8 GB | — | — |
+| ktq2_1 | vtq2_1 | **262k** (max) | 6.7 / 6.4 GB | — | — |
+
+A full `262144` context fits in ~13 GB total VRAM across both cards because the tiny 2-head KV + KTQ/VTQ compression makes per-token KV ~9 KB. Most of the remaining VRAM is the compute buffer, not the cache itself. The active 10B parameters per token means TG is CPU-RAM-bandwidth-bound rather than GPU-bound.
+
 ### Perplexity (wikitext-2, 512 ctx, 3 chunks)
 
 #### Qwen3.6-35B-A3B (UD-IQ2_XXS)
