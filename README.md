@@ -131,14 +131,13 @@ Full setup (including SSH tunnel for a remote server): [docs/claude-code.md](doc
 
 ## Recommended Configurations
 
-PPL impact is model-dependent; ranges below span the four tested Qwen3.5/3.6 configurations.
+Measured on Qwen3.6-35B-A3B (UD-IQ2_XXS & Q4_K_M); PPL is sensitive to weight quant.
 
-| Config | K | V | Avg bpw | PPL Δ (range) | Notes |
-|--------|---|---|:---:|---|---|
-| Safe | `q8_0` | `vtq3_1` | 6.25 | +0.6% to +2.5% | quality-first |
-| Balanced | `q4_0` | `vtq3_1` | 4.25 | +0.6% to +2.5% (est.) | general use |
-| Compact | `q8_0` | `vtq2_1` | 5.5 | +5.1% to +10.0% | VRAM/quality tradeoff |
-| Aggressive | `q4_0` | `vtq2_1` | 3.5 | +7.2% to +10.4% | long context, VRAM-limited |
+| Config | K | V | Avg bpw | PPL Δ | Notes |
+|--------|---|---|:---:|:---:|---|
+| Safe | `q8_0` | `vtq3_1` | 6.25 | +1.1% to +2.1% | quality-first |
+| Compact | `q8_0` | `vtq2_1` | 5.5 | +6.6% to +8.5% | VRAM/quality tradeoff |
+| Asymmetric (reference) | `ktq2_1` | `vtq2_1` | 3.5 | not yet re-measured on 64-chunk PPL | the reference config |
 
 ---
 
@@ -149,13 +148,20 @@ All benchmarks on **2x NVIDIA RTX 2060 12GB** (CC 7.5, PCIe 3.0), Flash Attentio
 ### Single-GPU 35B-A3B (12 GB VRAM, expert-offload to CPU)
 
 For users with a single 12 GB card. Uses llama.cpp expert-offloading (`-ot` pattern)
-to keep only attention on GPU and move MoE experts to CPU RAM. KTQ2_1 K + VTQ2_1 V
-+ `--cache-reuse 256` applies unchanged.
+to keep only attention on GPU and move MoE experts to CPU RAM. `--cache-reuse 256` applies unchanged.
 
-| Config | PP512 tok/s | TG128 tok/s | VRAM | ctx |
-|--------|:---:|:---:|:---:|:---:|
-| Qwen3.6-35B-A3B-UD-IQ2_XXS, single RTX 2060 | **187.6 ± 0.1** | **37.0 ± 0.7** | 8.5 GB / 12 | 200k |
-| same model, dual RTX 2060 (`-ts 12,12`) | ~875 | ~66-68 | 16.6 GB / 24 | 400k |
+Measured on Qwen3.6-35B-A3B-UD-IQ2_XXS, single RTX 2060 (CC 7.5):
+
+| K | V | Offload | PP512 tok/s | TG128 tok/s |
+|---|---|---|:---:|:---:|
+| f16 | f16 | 30 layers (prod-like) | 213.7 ± 0.9 | 43.0 ± 3.5 |
+| f16 | vtq2_1 | 30 layers | 216.1 ± 0.4 | 42.1 ± 4.2 |
+| ktq2_1 | f16 | 30 layers | 226.9 ± 3.6 | 44.6 ± 0.9 |
+| ktq2_1 | vtq2_1 | 30 layers | 202.8 ± 0.7 | 42.4 ± 0.7 |
+| ktq2_1 | vtq2_1 | 5 layers (light offload) | 508.1 ± 2.4 | 55.3 ± 0.3 |
+| ktq2_1 | f16 | 5 layers | 540.8 ± 0.2 | 53.3 ± 3.5 |
+
+Full expert-offload (prod): ~42 tok/s TG, ~215 tok/s PP. Light offload (5 layers) buys 2–3× PP and ~30% more TG but leaves less RAM headroom.
 
 Single-GPU config with 200k ctx:
 
@@ -171,154 +177,25 @@ CUDA_VISIBLE_DEVICES=1 ./build/bin/llama-server \
     --parallel 1 -ub 512 --reasoning off
 ```
 
-Trade-off: ~21% of dual-GPU PP512 (PCIe traffic to CPU experts is the bottleneck),
-~55% of dual-GPU TG128 (decode is less expert-parallel). Still usable for single-user
-interactive workloads — real-world test at 4.2k-token generation: **35.76 tok/s**
-sustained on a creative-writing prompt. 3.5 GB VRAM headroom for larger context if
-`-c 300000` fits.
+Trade-off vs the dual-GPU config below: ~24% of dual-GPU PP512 (PCIe traffic to CPU experts is the bottleneck), ~60% of dual-GPU TG128. Still usable for single-user interactive workloads.
 
-### Throughput (llama-bench, PP512/TG128)
+### Dual-GPU 35B-A3B (24 GB VRAM, no offload, `-ts 12,12`)
 
-![Decode throughput by config](docs/img/decode_throughput.png)
+Same model, split across 2× RTX 2060, all weights and KV on GPU. Fresh llama-bench run:
 
-#### Qwen3.5-0.8B-Q8_0 — VTQ_2 types (2026-04-20, single RTX 2060)
+| K | V | PP512 tok/s | TG128 tok/s | ΔPP vs f16 | ΔTG vs f16 |
+|---|---|:---:|:---:|:---:|:---:|
+| f16 | f16 | **902 ± 3** | **68.7 ± 0.0** | baseline | baseline |
+| ktq2_1 | f16 | 901 ± 4 | 68.0 ± 0.1 | 0% | −1% |
+| f16 | vtq2_1 | 834 ± 13 | 67.9 ± 0.1 | −7.5% | −1.2% |
+| ktq2_1 | vtq2_1 | 837 ± 3 | 67.0 ± 0.1 | −7% | −2.5% |
 
-> **⚠ KNOWN ISSUE (2026-04-21):** VTQ_2 family has a severe decode regression
-> on **D=256 head-dim models** (e.g. Qwen3.5-35B-A3B): TG drops from 66 tok/s
-> (VTQ_1) to 4.32 tok/s (VTQ_3_2). Root cause confirmed via `cuobjdump
-> --dump-resource-usage`: FA-vec kernel at D=256 uses **249 regs/thread** →
-> `__launch_bounds__(D, 1)` forces 1 block/SM occupancy (primary, ~4-5×).
-> Secondary: LUT L2-thrashing (~2-3×) and sequential qs loads (~1.5×).
-> Two fixes landed: `QK_VTQ_TRELLIS` 256→128 (`1d92cfe5c`) and a warp-
-> cooperative cached decode kernel (E11, `31c6790c0`) gated on
-> `-DFATTN_VTQ2_CACHED=1` for KTQ2_1 × VTQ3_2 at D=128, ncols=1 (Phase 3A1).
-> **Current recommendation:** use `vtq2_1` if you want a stable default
-> until Phase 3A1 TG measurement confirms ≥25 tok/s. See
-> `docs/plans/2026-04-21-vtq2-regression-analysis.md` (root cause) and
-> `docs/plans/2026-04-21-e11-cuda-port-spec.md` (fix). Numbers below are
-> for D=128 (0.8B model) where VTQ_2 still performs well.
-
-New VTQ_2 Trellis V-cache family with `--tq-deferred-v` and
-`--tq-protect-sinks 4` active. Measured on a single RTX 2060 with
-another llama-server instance running on the other GPU.
-
-| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | Notes |
-|---------|---------|:---:|:---:|:---|
-| f16 | f16 | 6363 | **200** | baseline |
-| f16 | vtq2_2 | 7564 | 198 | +19% PP, -1% TG |
-| f16 | vtq3_2 | 7530 | 198 | +18% PP, -1% TG (*recommended*) |
-| f16 | vtq4_2 | 7532 | 198 | +18% PP, -1% TG |
-| ktq2_1 | vtq2_2 | 7146 | 194 | full-TQ, +12% PP, -3% TG |
-| ktq2_1 | vtq3_2 | 7435 | 193 | full-TQ, +17% PP, -3% TG |
-| q8_0 | vtq2_2 | 2574 | 9 | ⚠ q8_0 K triggers CPU path |
-| q8_0 | vtq3_2 | 2239 | 9 | ⚠ q8_0 K triggers CPU path |
-
-Observations:
-- **VTQ_2 V-cache is faster than f16** on PP512 (+18%). The Trellis
-  dequant shader is compute-bound, not memory-bound, and the shorter
-  row-reads win net over the reconstruction work.
-- **`q8_0` K-cache collapses tg to 9 tok/s** with VTQ_2 V — likely
-  hits a CPU fallback path not yet implemented for this combo.
-  Use `ktq2_1` or `f16` for K instead.
-- TG128 delta is within noise for all GPU-native K/V combos.
-
-#### Qwen3.5-35B-A3B (IQ2_XS, 10.16 GiB) — legacy vtq_1 series
-
-> **Context note:** TG128 numbers below measure short-context generation (128 tokens).
-> At **long context (400k)** the VTQ V-cache per-token dequant cost becomes dominant
-> and causes a significant TG regression. See the warning box at the top of this README.
-
-| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
-|---------|---------|:---:|:---:|:---:|:---:|
-| f16 | f16 | **731** | **58.8** | baseline | baseline |
-| q8_0 | vtq2_1 | 684 | 57.5 | -6% | **-2%** |
-| q4_0 | vtq2_1 | 682 | 57.4 | -7% | **-2%** |
-| q8_0 | vtq3_1 | 664 | 56.9 | -9% | -3% |
-| q4_0 | f16 | 531 | 49.1 | -27% | -17% |
-| q8_0 | q4_0 | 485 | 50.6 | -34% | -14% |
-| f16 | q4_0 | 483 | 49.3 | -34% | -16% |
-
-#### Qwen3.6-35B-A3B (UD-IQ2_XXS, 10.01 GiB) — **full KTQ×VTQ matrix (2026-04-22)**
-
-Re-measured after KTQ3/4 MMA dispatch fix and VTQ_2 split-stride fix.
-Full diagonal + cross + baseline combinations.
-
-| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
-|---------|---------|:---:|:---:|:---:|:---:|
-| **f16** | **f16** | **980** | **72.4** | baseline | baseline |
-| f16 | vtq2_1 | 916 | 71.2 | -6% | **-2%** |
-| f16 | vtq3_1 | 881 | 70.0 | -10% | -3% |
-| f16 | vtq4_1 | 845 | 70.3 | -14% | -3% |
-| ktq2_1 | f16 | 953 | 70.8 | **-3%** | **-2%** |
-| ktq3_1 | f16 | 950 | 70.7 | **-3%** | **-2%** |
-| ktq4_1 | f16 | 948 | 70.6 | **-3%** | **-2%** |
-| ktq1_1 | vtq1_1 | 894 | 69.6 | -9% | -4% |
-| ktq2_1 | vtq2_1 | 900 | 70.2 | -8% | -3% |
-| ktq3_1 | vtq3_1 | 869 | 69.2 | -11% | -4% |
-| ktq4_1 | vtq4_1 | 835 | 69.7 | -15% | -4% |
-| ktq2_1 | vtq3_1 | 869 | 69.1 | -11% | -4% |
-| ktq3_1 | vtq2_1 | 896 | 70.2 | -9% | -3% |
-| ktq4_1 | vtq2_1 | 896 | 70.0 | -9% | -3% |
-| q8_0 | vtq2_1 | 879 | 69.1 | -10% | -5% |
-| q8_0 | vtq3_1 | 849 | 68.2 | -13% | -6% |
-| q8_0 | f16 | 724 | 65.9 | -26% | -9% |
-
-Observations:
-- **All 16 non-f16 configs stay within −6% TG** — no TG cliff on any KTQ×VTQ combo.
-- **KTQ K + f16 V (all three KTQ types) is the highest-throughput compressed config** at only −3% PP and −2% TG. Enabled by the MMA-KTQ dispatcher fix (phase3 commit `077956d77`).
-- **Symmetric KTQn_1 + VTQn_1 diagonals** cluster at −8% to −15% PP, −3% to −4% TG — consistent behavior across bit-widths.
-- **`q8_0` K collapses PP to 724** (−26%), confirming the `q8_0 + vtq*` combo still hits a non-MMA dispatch path. `ktq*_1` K is the correct choice for compressed K on this hardware.
-
-Across the tables above, `vtq2_1` V-cache yields higher PP512 and TG128 than `q4_0` V-cache (e.g. 757 vs 508 PP512 on Qwen3.6-35B IQ2_XXS). Likely cause: VTQ V-dequant in the FA inner loop is a single codebook load (`__forceinline__`), whereas q4_0 V-dequant does per-lane shift+scale arithmetic. I have not isolated the effect with nsight-compute; this is an empirical observation on CC 7.5, not a proven register-pressure argument.
-
-#### Qwen3.5-35B-A3B (Q4_K_M, 19.92 GiB)
-
-| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
-|---------|---------|:---:|:---:|:---:|:---:|
-| f16 | f16 | **842** | **61.9** | baseline | baseline |
-| q8_0 | vtq2_1 | 781 | 60.4 | -7% | **-2%** |
-| q4_0 | vtq2_1 | 783 | 60.4 | -7% | **-2%** |
-| q8_0 | vtq3_1 | 757 | 59.7 | -10% | -4% |
-| f16 | q4_0 | 519 | 48.9 | -38% | -21% |
-| q8_0 | q4_0 | 527 | 48.6 | -37% | -22% |
-
-#### Qwen3.6-35B-A3B (Q4_K_M, 19.91 GiB)
-
-| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
-|---------|---------|:---:|:---:|:---:|:---:|
-| f16 | f16 | **847** | **62.4** | baseline | baseline |
-| q8_0 | vtq2_1 | 781 | 60.7 | -8% | **-3%** |
-| q4_0 | vtq2_1 | 783 | 60.7 | -8% | **-3%** |
-| q8_0 | vtq3_1 | 756 | 59.9 | -11% | -4% |
-| f16 | q4_0 | 524 | 52.4 | -38% | -16% |
-| q8_0 | q4_0 | 521 | 53.5 | -38% | -14% |
-
-#### Qwen3.5-27B Dense (Q4_K_M, 15.94 GiB)
-
-| K-Cache | V-Cache | PP512 tok/s | TG128 tok/s | PP vs f16 | TG vs f16 |
-|---------|---------|:---:|:---:|:---:|:---:|
-| f16 | f16 | **318** | **14.6** | baseline | baseline |
-| q8_0 | vtq2_1 | 297 | 14.5 | -7% | **-1%** |
-| q4_0 | vtq2_1 | 297 | 14.5 | -7% | **-1%** |
-| q8_0 | vtq3_1 | 288 | 14.4 | -9% | -1% |
-| f16 | q4_0 | 205 | 12.8 | -36% | -12% |
-| q8_0 | q4_0 | 214 | 12.8 | -33% | -12% |
-
-The 27B Dense model is slower in absolute tok/s (no MoE sparsity: all 27B parameters active per token) but shows the same -1 to -2% TG128 overhead pattern for `vtq2_1` / `vtq3_1`.
+Observations from the tables above:
+- **TG holds steady** (−1% to −2.5%) across all KTQ/VTQ combos vs f16.
+- **KTQ K + f16 V** has essentially no PP penalty on dual-GPU (0% vs f16).
+- **Full asymmetric (`ktq2_1` + `vtq2_1`)** trades 7% PP and 2.5% TG for the smallest KV footprint.
 
 ### Perplexity (wikitext-2, 512 ctx, 3 chunks)
-
-#### Qwen3.5-35B-A3B (IQ2_XS)
-
-| K-Cache | V-Cache | KV bpw | PPL | vs baseline |
-|---------|---------|:---:|:---:|:---:|
-| f16 | f16 | 16.0 | **6.598** | -- |
-| q8_0 | q8_0 | 8.5 | 6.600 | +0.03% |
-| q4_0 | q4_0 | 4.5 | 6.619 | +0.32% |
-| f16 | vtq3_1 | 10.0 | 6.716 | +1.8% |
-| q8_0 | vtq2_1 | 5.5 | **7.072** | **+7.2%** |
-| f16 | vtq2_1 | 9.3 | 7.115 | +7.8% |
-| ktq2_1 | f16 | 9.8 | 7.246 | +9.8% |
 
 #### Qwen3.6-35B-A3B (UD-IQ2_XXS)
 
@@ -333,18 +210,6 @@ The 27B Dense model is slower in absolute tok/s (no MoE sparsity: all 27B parame
 
 On IQ2_XS/IQ2_XXS weights, `vtq3_1` sits at +1.05–1.8% PPL and `q8_0 + vtq2_1` at +6.6–7.2%. The Q4_K_M results below show larger deltas. See the [Observation](#perplexity-wikitext-2-512-ctx-3-chunks) block after the Q4_K_M tables.
 
-#### Qwen3.5-35B-A3B (Q4_K_M)
-
-| K-Cache | V-Cache | PPL | vs baseline |
-|---------|---------|:---:|:---:|
-| f16 | f16 | **5.205** | -- |
-| f16 | q4_0 | 5.247 | +0.8% |
-| q4_0 | q4_0 | 5.271 | +1.3% |
-| q8_0 | vtq3_1 | 5.312 | **+2.1%** |
-| f16 | vtq3_1 | 5.334 | +2.5% |
-| q8_0 | vtq2_1 | 5.727 | **+10.0%** |
-| q4_0 | vtq2_1 | 5.744 | +10.4% |
-
 #### Qwen3.6-35B-A3B (Q4_K_M)
 
 | K-Cache | V-Cache | PPL | vs baseline |
@@ -357,27 +222,7 @@ On IQ2_XS/IQ2_XXS weights, `vtq3_1` sits at +1.05–1.8% PPL and `q8_0 + vtq2_1`
 | q4_0 | vtq2_1 | 5.498 | +7.2% |
 | q8_0 | vtq2_1 | 5.563 | +8.5% |
 
-#### Qwen3.5-27B Dense (Q4_K_M)
-
-| K-Cache | V-Cache | PPL | vs baseline |
-|---------|---------|:---:|:---:|
-| f16 | f16 | **6.343** | -- |
-| q4_0 | q4_0 | 6.381 | +0.6% |
-| q8_0 | vtq3_1 | 6.383 | **+0.6%** |
-| f16 | q4_0 | 6.386 | +0.7% |
-| f16 | vtq3_1 | 6.414 | +1.1% |
-| q4_0 | vtq2_1 | 6.638 | +4.7% |
-| q8_0 | vtq2_1 | 6.665 | +5.1% |
-
-**Observation.** `q8_0 + vtq2_1` PPL delta varies by model and weight quantization:
-- Qwen3.5-27B Dense (Q4_K_M): +5.1%
-- Qwen3.5-35B-A3B MoE (IQ2_XS): +7.2%
-- Qwen3.6-35B-A3B MoE (Q4_K_M): +8.5%
-- Qwen3.5-35B-A3B MoE (Q4_K_M): +10.0%
-
-The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights show larger deltas than the same architecture on IQ2_XS weights, which I did not anticipate. Higher-precision weights amplifying KV-quant PPL is counterintuitive. One hypothesis is that MoE sparse expert routing (8/128 active) interacts with V-quant noise differently per-token, but I have not confirmed this. The measurement is on 3 wikitext-2 chunks at 512 ctx, so the chunk-to-chunk variance is non-trivial; I plan to rerun at 64+ chunks before drawing conclusions. `vtq3_1` stays within +0.6% to +2.5% across all four tests.
-
-![vtq2_1 vs vtq3_1 by model](docs/img/vtq2_variance.png)
+**Caveat:** 3-chunk wikitext-2 measurements are noisy. A proper 64-chunk re-run is pending. `vtq3_1` stays at +1.0–2.1% across both configs.
 
 ### KV-Cache Memory (4096 ctx)
 
@@ -389,42 +234,9 @@ The Dense model shows the smallest delta. The two MoE models on Q4_K_M weights s
 | q4_0 / vtq2_1 | 8.7 MiB | **78%** |
 | ktq2_1 / vtq2_1 | 7.5 MiB | **81%** |
 
-### Comparison with Other Approaches
+### Comparison with other approaches
 
-PPL delta vs f16 baseline (lower is better). Different hardware, models, and metrics. Relative deltas only are indicative.
-
-![Cross-project: quality vs decode speed tradeoff](docs/img/cross_project.png)
-
-| Approach | Type | bpw | PPL Delta | Decode Delta | Hardware | Model | Model Quant |
-|----------|------|:---:|:---:|:---:|---|---|---|
-| buun turbo3_tcq | K+V trellis | 3.25 | **-0.05%**\*\* | **-3%** | RTX 3090 | Qwen3.5-27B | Q6_K |
-| TheTom turbo4 | K+V sym | 4.25 | **+0.23%** | -7% | M5 Max | Qwen3.5 MoE | Q4_K_M |
-| **llama-tq vtq3_1** (Qwen3.6) | V-only | 4.0 | **+1.0%** | **-3%** | 2x RTX 2060 | Qwen3.6-35B MoE | Q4_K_M |
-| TheTom turbo3 | K+V sym | 3.5 | +1.06% | -10% | M5 Max | Qwen3.5 MoE | Q4_K_M |
-| **llama-tq vtq3_1** (27B) | V-only | 4.0 | +1.1% | **-1%** | 2x RTX 2060 | Qwen3.5-27B | Q4_K_M |
-| **llama-tq vtq3_1** (IQ2_XS) | V-only | 4.0 | +1.8% | **-2%** | 2x RTX 2060 | Qwen3.5-35B MoE | IQ2_XS |
-| **llama-tq vtq3_1** (Qwen3.5) | V-only | 4.0 | +2.5% | -4% | 2x RTX 2060 | Qwen3.5-35B MoE | Q4_K_M |
-| **llama-tq q8_0+vtq2_1** (27B) | asymmetric | 5.5 | **+5.1%** | **-1%** | 2x RTX 2060 | Qwen3.5-27B | Q4_K_M |
-| TheTom turbo2 | K+V sym | 2.5 | +6.48% | -22%\* | M5 Max | Qwen3.5 MoE | Q4_K_M |
-| **llama-tq q8_0+vtq2_1** (IQ2_XS) | asymmetric | 5.5 | +7.2% | **-2%** | 2x RTX 2060 | Qwen3.5-35B MoE | IQ2_XS |
-| **llama-tq q8_0+vtq2_1** (Qwen3.6) | asymmetric | 5.5 | +8.5% | **-3%** | 2x RTX 2060 | Qwen3.6-35B MoE | Q4_K_M |
-| **llama-tq q8_0+vtq2_1** (Qwen3.5) | asymmetric | 5.5 | +10.0% | **-2%** | 2x RTX 2060 | Qwen3.5-35B MoE | Q4_K_M |
-| buun turbo2_tcq | K+V trellis | 2.25 | KLD 0.101\*\*\* | **-3%** | RTX 3090 | Qwen3.5-27B | Q6_K |
-| q4_0 (K+V) | symmetric | 4.5 | +0.3-1.3% | -12 to -16% | 2x RTX 2060 | all tested | all tested |
-
-\*TheTom turbo2 decode varies: -22% on MoE short context, but +33.9% on M1 Max with turbo4.
-\*\*buun turbo3_tcq: PPL 5.802 vs f16 5.805 (Qwen3.5-27B Q6_K, 2K ctx). Uses KL-divergence metric, not directly comparable to wikitext-2 PPL.
-\*\*\*buun turbo2_tcq: KLD 0.101 at 2K context, different metric.
-
-**Note:** These results use different models, hardware, quantizations, and metrics. Direct comparison is approximate at best.
-
-**Observations (caveats above apply, different hardware/weights/metrics):**
-- TheTom turbo3/turbo4 report lower PPL delta at 3-4 bit on MoE (+1.06% / +0.23%) than this fork's `vtq3_1` on the same Q4_K_M MoE (+1.0–2.5%).
-- buun's TCQ (Viterbi-encoded trellis) reports the lowest 3-bit PPL delta in the table, measured on Q6_K weights at 2K context with KLD rather than wikitext-2 PPL.
-- llama-tq's `vtq3_1` on the Dense Qwen3.5-27B Q4_K_M shows +1.1% PPL at −1% TG128.
-- At 2.5 bpw V-cache, llama-tq `q8_0 + vtq2_1` (+5.1% to +10.0%) and TheTom turbo2 (+6.48%) are in the same range, model-dependent.
-- TG128 overhead: VTQ −1% to −3% vs TheTom's symmetric TQ −7% to −22%. Plausible cause is the simpler V-dequant path (codebook lookup + scale) vs a full symmetric TQ dequant for both K and V; I have not profiled TheTom's kernel directly.
-- Platform support: TheTom supports Metal and CUDA; llama-tq and buun are CUDA-only.
+Other KV-quant forks exist (TheTom's symmetric TurboQuant, buun's TCQ trellis). They run on different hardware, different weights, and different metrics, so a direct side-by-side table would be misleading. If you want cross-project numbers, run them yourself on the same model + hardware.
 
 ---
 
