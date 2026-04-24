@@ -45,58 +45,81 @@ def _savefig(name: str, fig):
 # ----------------------------------------------------------------------------
 
 def chart_ppl_vs_bpw():
-    # Pareto frontier: V-cache bpw vs PPL delta.
-    # Shows the bpw-quality trade-off across V-cache types (v1 + v2 series),
-    # averaged across Qwen3.5/3.6-35B model-quant pairs from benchmarks.csv,
-    # plus Trellis-v2 (vtq*_2) measurements from tests/trellis-phase1
-    # (source: docs/blog/2026-04-19-v-cache-validation.md).
+    # Pareto frontier: average KV bpw (= (K_bpw + V_bpw) / 2) vs PPL delta.
+    # Shows the trade-off across all KV cache configurations — baselines
+    # (f16/f16, q8_0/q8_0, q4_0/q4_0), v1 K/V types (ktq/vtq*_1),
+    # and v2 Trellis V types (vtq*_2, post-Trick-6).
 
-    # V-cache type -> (bpw, avg PPL delta across 35B-A3B measurements)
-    v1_rows = []
-    for v_type in ["vtq2_1", "vtq3_1", "q4_0", "q8_0"]:
-        sub = df[(df["v_cache"] == v_type)
-                 & (df["k_cache"] == "f16")
+    # Single-V "averaged across 35B-A3B" points from benchmarks.csv.
+    # Use k_cache = f16 so bpw is dominated by V-cache quant.
+    V_BPW = {
+        "f16": 16.0, "q8_0": 8.5, "q4_0": 4.5,
+        "vtq2_1": 2.5, "vtq3_1": 3.5, "vtq4_1": 4.5,
+    }
+    K_BPW = dict(V_BPW)
+    K_BPW["ktq2_1"] = 3.5  # KTQ types carry the K-side header overhead
+    K_BPW["ktq3_1"] = 4.5
+    K_BPW["ktq4_1"] = 5.5
+
+    def avg_bpw(k, v):
+        return (K_BPW.get(k, 16.0) + V_BPW.get(v, 16.0)) / 2
+
+    # v1 + baseline configs — averaged across 35B-A3B model/quant pairs
+    v1_configs = [
+        ("f16", "f16"),
+        ("q8_0", "q8_0"),
+        ("q4_0", "q4_0"),
+        ("f16", "vtq3_1"),
+        ("q8_0", "vtq3_1"),
+        ("f16", "vtq2_1"),
+        ("q8_0", "vtq2_1"),
+        ("q4_0", "vtq2_1"),
+    ]
+    v1_points = []
+    for k, v in v1_configs:
+        sub = df[(df["k_cache"] == k) & (df["v_cache"] == v)
                  & df["ppl"].notna()
                  & df["model"].str.contains("35B-A3B")]
         if not sub.empty:
-            bpw = {"vtq2_1": 2.5, "vtq3_1": 3.5, "q4_0": 4.5, "q8_0": 8.5}[v_type]
-            avg_delta = sub["ppl_delta_pct"].mean()
-            v1_rows.append((v_type, bpw, avg_delta))
+            v1_points.append((f"{k}/{v}", avg_bpw(k, v),
+                              sub["ppl_delta_pct"].mean()))
 
-    # Trellis-v2 (Qwen3.5-0.8B wikitext-2, ctx=512, 5 chunks)
-    v2_rows = [
-        ("vtq2_2", 2.06, 7.74),
-        ("vtq3_2", 3.06, 1.05),
-        ("vtq4_2", 4.06, 0.44),
+    # KTQ×VTQ combos — from production deploy measurements on gpu00
+    # (source: docs/bench-qwen35-122b-a10b.md + devlogs for 35B).
+    # These are representative configs not fully in benchmarks.csv yet.
+    ktq_vtq_points = [
+        ("ktq2_1/vtq2_1", avg_bpw("ktq2_1", "vtq2_1"), 6.9),
+        ("ktq2_1/vtq3_1", avg_bpw("ktq2_1", "vtq3_1"), 1.4),
+        ("ktq3_1/vtq3_1", avg_bpw("ktq3_1", "vtq3_1"), 1.1),
     ]
 
-    fig, ax = plt.subplots(figsize=(11, 6))
+    # v2 Trellis V-types (Qwen3.5-0.8B wikitext-2, ctx=512, 5 chunks, f16 K)
+    v2_points = [
+        ("f16/vtq2_2", (16.0 + 2.06) / 2, 7.74),
+        ("f16/vtq3_2", (16.0 + 3.06) / 2, 1.05),
+        ("f16/vtq4_2", (16.0 + 4.06) / 2, 0.44),
+    ]
 
-    # Plot v1 (circles, blue)
-    for name, bpw, delta in v1_rows:
-        ax.scatter(bpw, delta, s=120, c="#1f77b4", edgecolor="black",
-                   linewidth=0.6, zorder=3, label="_nolegend_")
-        ax.annotate(name, (bpw, delta), xytext=(6, 4),
-                    textcoords="offset points", fontsize=9, color="#1f77b4")
+    fig, ax = plt.subplots(figsize=(12, 6.5))
 
-    # Plot v2 (stars, red — Trick-6 improvements)
-    for name, bpw, delta in v2_rows:
-        ax.scatter(bpw, delta, s=200, c="#d62728", marker="*",
-                   edgecolor="black", linewidth=0.6, zorder=3,
-                   label="_nolegend_")
-        ax.annotate(name, (bpw, delta), xytext=(6, 4),
-                    textcoords="offset points", fontsize=9,
-                    color="#d62728", fontweight="bold")
+    def plot_group(points, color, marker, size, label, weight="normal"):
+        for name, bpw, delta in points:
+            ax.scatter(bpw, delta, s=size, c=color, marker=marker,
+                       edgecolor="black", linewidth=0.6, zorder=3)
+            ax.annotate(name, (bpw, delta), xytext=(6, 4),
+                        textcoords="offset points", fontsize=8,
+                        color=color, fontweight=weight)
+        ax.scatter([], [], s=size, c=color, marker=marker,
+                   edgecolor="black", linewidth=0.6, label=label)
 
-    # Legend proxies
-    ax.scatter([], [], s=120, c="#1f77b4", edgecolor="black",
-               linewidth=0.6, label="v1 series (35B-A3B, f16 K)")
-    ax.scatter([], [], s=200, c="#d62728", marker="*", edgecolor="black",
-               linewidth=0.6, label="v2 Trellis (0.8B, Trick-6)")
+    plot_group(v1_points,       "#1f77b4", "o", 110, "v1 baseline + vtq*_1 (35B-A3B)")
+    plot_group(ktq_vtq_points,  "#2ca02c", "s", 130, "KTQ×VTQ combos (35B-A3B prod)", weight="bold")
+    plot_group(v2_points,       "#d62728", "*", 220, "v2 Trellis (0.8B, Trick-6)",    weight="bold")
 
-    # Pareto frontier line through best points (lower envelope)
+    # Pareto frontier
     all_pts = sorted(
-        [(bpw, d) for _, bpw, d in v1_rows] + [(bpw, d) for _, bpw, d in v2_rows]
+        [(bpw, d) for _, bpw, d in v1_points + ktq_vtq_points + v2_points],
+        key=lambda t: (t[0], t[1]),
     )
     pareto = []
     best = float("inf")
@@ -106,8 +129,8 @@ def chart_ppl_vs_bpw():
             best = d
     if len(pareto) >= 2:
         xs, ys = zip(*pareto)
-        ax.plot(xs, ys, "--", color="#888", alpha=0.6, linewidth=1.2,
-                label="Pareto frontier")
+        ax.plot(xs, ys, "--", color="#888", alpha=0.5, linewidth=1.2,
+                label="Pareto frontier", zorder=2)
 
     # Near-lossless band
     ax.axhspan(0, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
@@ -115,14 +138,14 @@ def chart_ppl_vs_bpw():
             transform=ax.get_yaxis_transform(), fontsize=8,
             color="#2ca02c", ha="right", style="italic", va="center")
 
-    ax.set_xlabel("V-cache bpw (lower = more compression)")
-    ax.set_ylabel("PPL delta vs f16 (lower is better)")
+    ax.set_xlabel("Average KV cache bpw ((K+V)/2, lower = more compression)")
+    ax.set_ylabel("PPL delta vs f16/f16 (lower is better)")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
-    ax.set_title("llama-tq V-cache: bpw / quality Pareto frontier")
+    ax.set_title("llama-tq KV-cache: bpw / quality Pareto frontier")
     ax.legend(loc="upper right", fontsize=9, framealpha=0.95)
     ax.grid(True, ls=":", alpha=0.4)
     ax.set_axisbelow(True)
-    ax.set_xlim(1.5, 9)
+    ax.set_xlim(1.5, 17)
     ax.set_ylim(-0.5, max(10, ax.get_ylim()[1]))
 
     _savefig("ppl_vs_bpw.png", fig)
