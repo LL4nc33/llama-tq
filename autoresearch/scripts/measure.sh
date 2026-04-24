@@ -6,7 +6,7 @@
 # Env:   MODEL_PATH  (default: /home/lance/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf)
 #        WIKI_PATH   (default: wikitext-2-raw/wiki.test.raw)
 #        PPL_BASE    (default: 6.7251 — f16/f16 on this model at ctx=2048/5ch)
-#        TG_BASE     (default: 60.1 — f16/f16 tg256 tok/s)
+#        TG_BASE     (default: 72.91 — f16/f16 tg256 tok/s on 2x RTX 2060, FA on)
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ OUT="${3:?need output dir}"
 MODEL_PATH="${MODEL_PATH:-/home/lance/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf}"
 WIKI_PATH="${WIKI_PATH:-wikitext-2-raw/wiki.test.raw}"
 PPL_BASE="${PPL_BASE:-6.7251}"
-TG_BASE="${TG_BASE:-60.1}"
+TG_BASE="${TG_BASE:-72.91}"
 
 mkdir -p "$OUT"
 
