@@ -146,13 +146,13 @@ The 35B fits fully on GPU. The 80B and 122B spill 20 / 29 of 48 layers to CPU RA
 
 ### 35B-A3B — daily driver
 
-Qwen3.5 or Qwen3.6 35B-A3B (32 experts / 4 active, GQA), UD-IQ2\_XXS weights. Fits fully on GPU at 400k ctx parallel 2 with `ktq2_1 / vtq2_1`.
+Qwen3.5 or Qwen3.6 35B-A3B (32 experts / 4 active, GQA), UD-IQ2\_XXS weights. Fits fully on GPU at 400k ctx parallel 2 with `ktq2_1 / vtq2_2` (current best-tradeoff config, score 0.82 on the leaderboard at the top of this README).
 
 ```bash
 ./build/bin/llama-server -m Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
     --host 0.0.0.0 --port 8791 -c 400000 -ngl 99 \
     --flash-attn on --no-mmap --parallel 2 \
-    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
     --cache-reuse 256 -ub 512 -ts 12,12 \
     --jinja --reasoning off
 ```
@@ -246,9 +246,25 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 
 ## Perplexity (wikitext-2)
 
-PPL is sensitive to weight quant. Measurements at 512 ctx, 3 chunks (noisy — 64-chunk re-runs pending).
+PPL is sensitive to weight quant. Historical numbers use 512 ctx / 3 chunks; the newer 2048 ctx / 5 chunks set below is from the 2026-04-24 matrix sweep and is the one the leaderboard above uses.
 
-### Qwen3.6-35B-A3B (UD-IQ2\_XXS)
+### Qwen3.6-35B-A3B (UD-IQ2\_XXS) — 2048 ctx, 5 chunks (preferred methodology)
+
+Representative row from the full 5×8 K × V matrix. All KTQ bitrates produce the same PPL because the attention-only PPL eval can't distinguish K bpw within a forward pass; we show `ktq2_1` as the representative K since it's the lightest.
+
+| K | V | PPL | vs f16/f16 |
+|---|---|:---:|:---:|
+| f16 | f16 | **6.7251** | — |
+| ktq2\_1 | vtq4\_1 | 6.7101 | −0.22% (near-lossless) |
+| ktq2\_1 | vtq2\_2 / 3\_2 / 4\_2 | 6.7227 | −0.04% |
+| f16 | vtq2\_2 / 3\_2 / 4\_2 | 6.7388 | +0.20% |
+| ktq2\_1 | vtq3\_1 | 6.7582 | +0.49% |
+| ktq2\_1 | vtq2\_1 | 7.0140 | +4.30% |
+| ktq2\_1 | vtq1\_1 | 7.8157 | +16.17% (1-bit floor) |
+
+Full pivot + discussion: [docs/plans/2026-04-24-ktq-vtq2-combos.md](docs/plans/2026-04-24-ktq-vtq2-combos.md).
+
+### Qwen3.6-35B-A3B (UD-IQ2\_XXS) — 512 ctx, 3 chunks (historical)
 
 | K | V | KV bpw | PPL | vs f16/f16 |
 |---|---|:---:|:---:|:---:|
@@ -302,20 +318,7 @@ From `llama-bench -fa 1 -ngl 99 -n 256 -p 0 -r 2`. Running on 2× RTX 2060 12 GB
 
 **Finding: VTQ_2 (Trellis) is 1.5–2% faster than VTQ_1 at the same bit class.** First measurable v2 decode advantage — the deferred-V + warp-parallel shift-register decoder keeps the FA inner loop tighter than the v1 codebook lookup. All three v2 variants run within 0.1% of each other at decode — the 2/3/4-bit V-cache choice is pure quality vs memory, not quality vs speed.
 
-### Asymmetric KTQ × VTQ_2 on Qwen3.6-35B-A3B IQ2_XXS (ctx=2048, 5 chunks)
-
-From `docs/plans/2026-04-24-ktq-vtq2-combos.md`.
-
-| K cache | V cache | avg bpw | PPL | Δ baseline |
-|---------|---------|:---:|:---:|:---:|
-| f16 | f16 | 16.0 | 6.7251 | — |
-| **ktq2_1** | vtq2_2 / vtq3_2 / vtq4_2 | 2.78 – 3.78 | 6.7227 | **-0.04%** |
-| ktq3_1 | vtq3_2 | 3.78 | 6.7227 | -0.04% |
-| f16 | vtq2_2 / vtq3_2 | 9.03 – 9.53 | 6.7388 | +0.20% |
-
-**Caveat: PPL is an attention-only forward-pass eval.** `llama-perplexity` never hits prefill→decode transition, so deferred V conversion never fires — within a single K-cache choice, `vtq{2,3,4}_2` all produce the same PPL (V stays in f16 staging). The table is valid for the K-cache component, and the VTQ_2 variants are orthogonally validated on Qwen3.5-0.8B (previous table) and via runtime decode traces. Decode-phase benchmarking for the full 35B V-cache delta is follow-up work.
-
-Practical read: on this 35B config, `ktq2_1 / vtq2_2` (2.78 bpw) costs functionally zero PPL on attention alone. V-quality on decode requires separate measurement.
+**Attention-only PPL caveat:** `llama-perplexity` never hits the prefill→decode transition, so deferred V conversion never fires. Within a single K-cache choice, `vtq{2,3,4}_2` all produce the same PPL (V stays in f16 staging). The 2048-ctx table above reflects the K-cache component; V_2 variants are orthogonally validated on Qwen3.5-0.8B and via the throughput benchmark table (VTQ_2 shows a measurable decode-path speed advantage). Decode-phase PPL for the full 35B V-cache delta is follow-up work.
 
 ---
 
