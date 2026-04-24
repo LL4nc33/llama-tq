@@ -45,77 +45,85 @@ def _savefig(name: str, fig):
 # ----------------------------------------------------------------------------
 
 def chart_ppl_vs_bpw():
-    # Grouped bar chart: one group per KV config (sorted by typical avg bpw),
-    # bars within a group = models. Immediately readable.
-    have_ppl = df.dropna(subset=["ppl_delta_pct"]).copy()
-    have_ppl["model_label"] = have_ppl["model_label"].str.replace(
-        "Qwen3.5-27B-Dense", "Qwen3.5-27B Dense"
+    # Pareto frontier: V-cache bpw vs PPL delta.
+    # Shows the bpw-quality trade-off across V-cache types (v1 + v2 series),
+    # averaged across Qwen3.5/3.6-35B model-quant pairs from benchmarks.csv,
+    # plus Trellis-v2 (vtq*_2) measurements from tests/trellis-phase1
+    # (source: docs/blog/2026-04-19-v-cache-validation.md).
+
+    # V-cache type -> (bpw, avg PPL delta across 35B-A3B measurements)
+    v1_rows = []
+    for v_type in ["vtq2_1", "vtq3_1", "q4_0", "q8_0"]:
+        sub = df[(df["v_cache"] == v_type)
+                 & (df["k_cache"] == "f16")
+                 & df["ppl"].notna()
+                 & df["model"].str.contains("35B-A3B")]
+        if not sub.empty:
+            bpw = {"vtq2_1": 2.5, "vtq3_1": 3.5, "q4_0": 4.5, "q8_0": 8.5}[v_type]
+            avg_delta = sub["ppl_delta_pct"].mean()
+            v1_rows.append((v_type, bpw, avg_delta))
+
+    # Trellis-v2 (Qwen3.5-0.8B wikitext-2, ctx=512, 5 chunks)
+    v2_rows = [
+        ("vtq2_2", 2.06, 7.74),
+        ("vtq3_2", 3.06, 1.05),
+        ("vtq4_2", 4.06, 0.44),
+    ]
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+
+    # Plot v1 (circles, blue)
+    for name, bpw, delta in v1_rows:
+        ax.scatter(bpw, delta, s=120, c="#1f77b4", edgecolor="black",
+                   linewidth=0.6, zorder=3, label="_nolegend_")
+        ax.annotate(name, (bpw, delta), xytext=(6, 4),
+                    textcoords="offset points", fontsize=9, color="#1f77b4")
+
+    # Plot v2 (stars, red — Trick-6 improvements)
+    for name, bpw, delta in v2_rows:
+        ax.scatter(bpw, delta, s=200, c="#d62728", marker="*",
+                   edgecolor="black", linewidth=0.6, zorder=3,
+                   label="_nolegend_")
+        ax.annotate(name, (bpw, delta), xytext=(6, 4),
+                    textcoords="offset points", fontsize=9,
+                    color="#d62728", fontweight="bold")
+
+    # Legend proxies
+    ax.scatter([], [], s=120, c="#1f77b4", edgecolor="black",
+               linewidth=0.6, label="v1 series (35B-A3B, f16 K)")
+    ax.scatter([], [], s=200, c="#d62728", marker="*", edgecolor="black",
+               linewidth=0.6, label="v2 Trellis (0.8B, Trick-6)")
+
+    # Pareto frontier line through best points (lower envelope)
+    all_pts = sorted(
+        [(bpw, d) for _, bpw, d in v1_rows] + [(bpw, d) for _, bpw, d in v2_rows]
     )
-
-    # Only show the representative asymmetric/clean configs (skip broken
-    # KTQ+VTQ and skip redundant f16/f16 baseline which is always 0%)
-    interesting = [
-        ("q8_0/vtq3_1", "q8_0 + vtq3_1 (6.25 bpw)"),
-        ("f16/vtq3_1",  "f16  + vtq3_1 (10.0 bpw)"),
-        ("q4_0/q4_0",   "q4_0 + q4_0   (4.5 bpw)"),
-        ("q8_0/vtq2_1", "q8_0 + vtq2_1 (5.5 bpw)"),
-        ("q4_0/vtq2_1", "q4_0 + vtq2_1 (3.5 bpw)"),
-    ]
-    model_order = [
-        "Qwen3.5-27B Dense (Q4_K_M)",
-        "Qwen3.5-35B-A3B (IQ2_XS)",
-        "Qwen3.6-35B-A3B (IQ2_XXS)",
-        "Qwen3.6-35B-A3B (Q4_K_M)",
-        "Qwen3.5-35B-A3B (Q4_K_M)",
-    ]
-    model_colors = {
-        "Qwen3.5-27B Dense (Q4_K_M)": "#9467bd",
-        "Qwen3.5-35B-A3B (IQ2_XS)":   "#1f77b4",
-        "Qwen3.6-35B-A3B (IQ2_XXS)":  "#ff7f0e",
-        "Qwen3.6-35B-A3B (Q4_K_M)":   "#d62728",
-        "Qwen3.5-35B-A3B (Q4_K_M)":   "#2ca02c",
-    }
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    n_models = len(model_order)
-    n_configs = len(interesting)
-    width = 0.16
-    x_base = range(n_configs)
-
-    for i, model in enumerate(model_order):
-        vals = []
-        for cfg, _ in interesting:
-            sub = have_ppl[(have_ppl["model_label"] == model)
-                           & (have_ppl["config"] == cfg)]
-            vals.append(sub["ppl_delta_pct"].iloc[0] if not sub.empty else 0)
-        offsets = [xi + (i - (n_models - 1) / 2) * width for xi in x_base]
-        bars = ax.bar(offsets, vals, width, color=model_colors[model],
-                      edgecolor="black", linewidth=0.4, label=model)
-        # Put value on top of each bar
-        for bar, v in zip(bars, vals):
-            if v == 0:
-                continue
-            ax.text(bar.get_x() + bar.get_width() / 2, v + 0.15,
-                    f"{v:.1f}%", ha="center", va="bottom",
-                    fontsize=7, color="#333")
+    pareto = []
+    best = float("inf")
+    for bpw, d in all_pts:
+        if d < best:
+            pareto.append((bpw, d))
+            best = d
+    if len(pareto) >= 2:
+        xs, ys = zip(*pareto)
+        ax.plot(xs, ys, "--", color="#888", alpha=0.6, linewidth=1.2,
+                label="Pareto frontier")
 
     # Near-lossless band
     ax.axhspan(0, 1.5, color="#e6f4ea", alpha=0.5, zorder=0)
-    ax.text(n_configs - 0.5, 0.75, "near-lossless zone (<1.5%)",
-            fontsize=7.5, color="#2ca02c", ha="right",
-            style="italic", va="center")
+    ax.text(0.98, 0.75, "near-lossless zone (<1.5%)",
+            transform=ax.get_yaxis_transform(), fontsize=8,
+            color="#2ca02c", ha="right", style="italic", va="center")
 
-    ax.set_xticks(list(x_base))
-    ax.set_xticklabels([label for _, label in interesting], fontsize=9)
+    ax.set_xlabel("V-cache bpw (lower = more compression)")
     ax.set_ylabel("PPL delta vs f16 (lower is better)")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(decimals=1))
-    ax.set_title("llama-tq: PPL delta by KV config and model "
-                 "(5 model/quant pairs, 2x RTX 2060)")
-    ax.legend(loc="upper left", fontsize=8, title="Model / weight quant",
-              title_fontsize=8, framealpha=0.95)
-    ax.grid(True, axis="y", ls=":", alpha=0.4, zorder=0)
+    ax.set_title("llama-tq V-cache: bpw / quality Pareto frontier")
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.95)
+    ax.grid(True, ls=":", alpha=0.4)
     ax.set_axisbelow(True)
-    ax.set_ylim(0, max(12, ax.get_ylim()[1]))
+    ax.set_xlim(1.5, 9)
+    ax.set_ylim(-0.5, max(10, ax.get_ylim()[1]))
 
     _savefig("ppl_vs_bpw.png", fig)
 
