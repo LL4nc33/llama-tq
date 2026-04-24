@@ -300,17 +300,24 @@ Practical read: on this 35B config, `ktq2_1 / vtq2_2` (2.78 bpw) costs functiona
 
 ## KV memory savings
 
-At 4096 ctx (shorter context makes the per-block header overhead more visible; at 200k+ the amortized bpw dominates).
+Measured on Qwen3.6-35B-A3B-UD-IQ2_XXS at ctx=8192 (10 attention layers out of 48 have KV). Numbers are the actual allocated KV-cache size as reported by the runtime, not a theoretical bpw calculation.
 
-| K / V | KV size | vs f16/f16 |
-|-------|:---:|:---:|
-| f16 / f16 | 40.0 MiB | — |
-| q8\_0 / vtq2\_1 | 13.8 MiB | **65%** |
-| q4\_0 / vtq3\_1 | 10.6 MiB | **73%** |
-| q4\_0 / vtq2\_1 | 8.7 MiB | **78%** |
-| **ktq2\_1 / vtq2\_1** | **7.5 MiB** | **81%** |
+| K / V | K (MiB) | V (MiB) | **Total KV** | vs f16/f16 | avg bpw |
+|-------|:---:|:---:|:---:|:---:|:---:|
+| f16 / f16 | 80.0 | 80.0 | **160.0** | 100% | 16.0 |
+| ktq2\_1 / f16 | 17.5 | 80.0 | 97.5 | **61%** | 9.75 |
+| ktq4\_1 / vtq4\_1 | 27.5 | 22.5 | 50.0 | **31%** | 5.5 |
+| ktq3\_1 / vtq3\_1 | 22.5 | 20.0 | 42.5 | **27%** | 4.25 |
+| ktq2\_1 / vtq4\_1 | 17.5 | 22.5 | 40.0 | **25%** | 4.0 |
+| ktq2\_1 / vtq4\_2 | 17.5 | 21.25 | 38.75 | **24%** | 3.78 |
+| ktq2\_1 / vtq3\_1 | 17.5 | 20.0 | 37.5 | **23%** | 3.75 |
+| ktq2\_1 / vtq3\_2 | 17.5 | 16.25 | 33.75 | **21%** | 3.28 |
+| ktq2\_1 / vtq2\_1 | 17.5 | 12.5 | 30.0 | **19%** | 3.0 |
+| **ktq2\_1 / vtq2\_2** | 17.5 | 11.25 | **28.75** | **18%** | 2.78 |
 
-GQA models (e.g. Qwen3.5-122B, head\_count\_kv=2) benefit even more in absolute terms — 200k ctx at `ktq2_1/vtq2_1` is ~450 MB total.
+`ktq2_1 / vtq2_2` is the smallest config at **5.6× less KV** than f16/f16. For large contexts the absolute savings matter more — at 200k ctx on the Qwen3.5-122B-A10B GQA(2) config, `ktq2_1 / vtq2_1` is ~450 MB total vs ~2.3 GB at f16/f16.
+
+Measurement note: the 10-layer count is Qwen3.6-35B-A3B specific (48 blocks total, 10 with attention after the MoE filter). Different architectures allocate KV on different block counts; scale the per-layer numbers accordingly.
 
 ---
 
