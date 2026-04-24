@@ -61,7 +61,7 @@ Coarse/fine sweep `-ngl 99 -ts 12,12 -fa 1 -r 3 -p 512 -n 256`:
 | L0-5 + L6-11 | 12 | 167.9 | 14.41 |
 | L0-6 + L7-13 | 14 | 172.5 | 14.72 |
 
-**Bench täuscht:** `-ts 12,12` + `-ot` Layer 0-9 nutzt de-facto nur GPU0. "Dual-GPU" Bench-Configs liefen echt dual, waren aber langsamer wegen PCIe-Cross-Traffic bei nur 4k Compute-Buffer.
+**Bench is misleading:** `-ts 12,12` + `-ot` on layers 0-9 de-facto uses only GPU0. "Dual-GPU" bench configs did run dual but were slower because of PCIe cross-traffic with only a 4k compute buffer.
 
 ### Phase 2: Live-server smoke @ 262k ctx mit TQ2_1
 
@@ -82,42 +82,42 @@ User-Insight: GPU0 x16, GPU1 x4 → Expert-Heavy auf GPU0 spart Cross-GPU-Traffi
 | 20L (10+10) | 20 | 0.9 | 0.7 | 27.34±4.45 | 14.34±0.45 |
 | 21L (11+10) | 21 | 0.3 | 0.7 | **31.31±0.75** | 14.34±0.38 |
 
-**Gewinner 19L (10+9):** +11% PP-Stabilität, +2% TG vs balanced 9+9. 0.9 GB GPU0-Headroom reicht für längere Prompts (0.3 GB crasht bei großen Prompts).
+**Winner 19L (10+9):** +11% PP stability, +2% TG vs balanced 9+9. 0.9 GB GPU0 headroom is enough for longer prompts (0.3 GB crashes on large prompts).
 
-## Key Findings
+## Key findings
 
-1. **`--fit-target` Default 1024 MiB blockt asymmetrische Configs.** Workaround: `--fit-target 128`.
+1. **`--fit-target` default 1024 MiB blocks asymmetric configs.** Workaround: `--fit-target 128`.
 
-2. **PCIe-Asymmetrie messbar:** GPU0-Heavier spart x4-Cross-Traffic bei Expert-Outputs. Kein Gamechanger, aber +11% PP-σ-Stabilität.
+2. **PCIe asymmetry is measurable:** GPU0-heavier saves x4 cross-traffic on expert outputs. Not a gamechanger, but +11% PP-σ stability.
 
-3. **Bench-Tool-Gotchas:**
-   - `-ctk ktq2_1 -ctv vtq2_1` funktioniert bei `-ngl 99`, **failed bei `-ngl 0`** (CPU-only path hat keinen TQ-Init — Issue low-prio).
-   - `llama-bench -ot` Syntax: Single flag mit `;` Separator (Multi-Flag = Test-Varianten!)
-   - `llama-server -ot` Syntax: Multiple Flags ODER single flag mit `,` Separator.
+3. **Bench-tool gotchas:**
+   - `-ctk ktq2_1 -ctv vtq2_1` works at `-ngl 99`, **fails at `-ngl 0`** (CPU-only path has no TQ init — low-priority issue).
+   - `llama-bench -ot` syntax: single flag with `;` separator (multi-flag = test variants!).
+   - `llama-server -ot` syntax: multiple flags OR single flag with `,` separator.
 
-4. **KV-Size TQ2_1:** 200k = ~450 MB, 262k = ~590 MB. Delta nur 140 MB dank GQA(2) + TQ2_1.
+4. **KV size TQ2_1:** 200k = ~450 MB, 262k = ~590 MB. Delta only 140 MB thanks to GQA(2) + TQ2_1.
 
-5. **Physik-Ceiling:** 2.5 GB/Token Memory-Traffic, ~56 GB/s effektive Bandwidth (GPU+CPU-Mix) → theoretisch 22 tok/s max. Real 14 tok/s = **64% Effizienz**.
+5. **Physics ceiling:** 2.5 GB per-token memory traffic, ~56 GB/s effective bandwidth (GPU+CPU mix) → theoretical 22 tok/s max. Real 14 tok/s = **64% efficiency**.
 
-6. **Thinking-Mode:** `--reasoning off` wichtig bei kurzen Antworten (64 Token Reasoning-Overhead).
+6. **Thinking mode:** `--reasoning off` matters on short answers (64-token reasoning overhead).
 
-## Use-Case
+## Use case
 
-**Passt:** Chat, Q&A, Reasoning mit moderaten Prompts.
-**Passt nicht:** Claude-Code-Style (14 tok/s × 100k ctx = 2h/Response).
+**Fits:** chat, Q&A, reasoning with moderate prompts.
+**Doesn't fit:** Claude-Code-style (14 tok/s × 100k ctx = 2h/response).
 
-Für >20 tok/s: IQ1_M (Quality-Loss), DDR5 (2× Bandwidth), oder Single-GPU mit 24+ GB.
+To reach >20 tok/s: IQ1_M (quality loss), DDR5 (2× bandwidth), or single-GPU with 24+ GB.
 
-## Open Work
+## Open work
 
-- **Activation-Profiling** — Hot-Expert-Detection könnte +10-20% TG bringen. Braucht Source-Patch in Expert-Selection.
-- **llama-bench CPU-only TQ-Init Bug** — Issue #167, low-prio.
-- **Shared-Experts-only GPU** — Qwen3.5 hat `expert_shared_feed_forward_length=1024` → jedes Token hits Shared-Expert. Isoliertes Pinning nicht getestet.
+- **Activation profiling** — hot-expert detection might bring +10-20% TG. Needs a source patch in expert selection.
+- **llama-bench CPU-only TQ-init bug** — issue #167, low priority.
+- **Shared-experts-only GPU** — Qwen3.5 has `expert_shared_feed_forward_length=1024` → every token hits the shared expert. Isolated pinning not tested.
 
 ## Credit
 
-- **distillery-claude:** Full sweep methodology, PCIe-aware final config, 5× statistical validation.
-- **User (LL4nc33):** PCIe-aware Expert-Shift Idee — +11% PP vom balanced Baseline.
-- **llamatq-claude:** TQ2_1 KV-Cache — Enabler für 200k ctx (sonst OOM).
+- **distillery-claude:** full sweep methodology, PCIe-aware final config, 5× statistical validation.
+- **User (LL4nc33):** PCIe-aware expert-shift idea — +11% PP over the balanced baseline.
+- **llamatq-claude:** TQ2_1 KV cache — enabler for 200k ctx (OOM otherwise).
 
 Source: `LEGION/2026-04-23_2340_distillery_122b-deploy-complete-results.md`.
