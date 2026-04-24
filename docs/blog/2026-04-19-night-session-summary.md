@@ -1,14 +1,14 @@
 # Night Session Summary — 2026-04-18/19
 
-**Datum:** 2026-04-18 23:00 → 2026-04-19 02:00 local
+**Date:** 2026-04-18 23:00 → 2026-04-19 02:00 local
 **Branch:** `trellis-v2-phase1`
 **Commits:** `9c06bdceb` → `8c03e39cb` (17 commits ahead of master)
 
 ## TL;DR
 
-Drei Milestones in einer Nacht:
-1. **Build grün** nach OOM + ptxas-zombie debugging
-2. **Trick 6 validiert**: 4× encoder speedup + 1.75pp PPL improvement (bonus)
+Three milestones in one night:
+1. **Build green** after OOM + ptxas-zombie debugging
+2. **Receiver-side encoder validated**: 4× encoder speedup + 1.75 pp PPL improvement (bonus)
 3. **vtq4_2 first measurement**: +0.44% PPL vs f16, essentially indistinguishable
 
 ## Timeline
