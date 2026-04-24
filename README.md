@@ -214,9 +214,9 @@ Notable: dual-GPU split on 27B-Dense buys nothing (the model fits on one GPU and
 
 ### Large MoE — Qwen3-Next-80B-A3B (Hybrid DeltaNet + Attention, expert-offload)
 
-Hybrid architecture (Gated-DeltaNet + Full-Attention) with **512 experts / 10 active per token**. 80B params, ~25 GB weights at UD-IQ2_XXS. Runs on 2× RTX 2060 with 14 expert-layers per GPU and 20 offloaded to CPU RAM. **Claude-Code-capable** at 100k+ prompts.
+Hybrid architecture (Gated-DeltaNet + Full-Attention) with **512 experts / 10 active per token**. 80B params, ~25 GB weights at UD-IQ2_XXS. Runs on 2× RTX 2060 with 14 expert-layers per GPU and 20 offloaded to CPU RAM. Usable at 100k+ prompts.
 
-**Measured on gpu00 (Ryzen 7 5700G, 40 GB DDR4-3200):** **25–28 tok/s TG** at 200k ctx, `ktq2_1/vtq2_1` KV cache, parallel 1.
+**Measured on a Ryzen 7 5700G / 40 GB DDR4-3200 test box:** **25–28 tok/s TG** at 200k ctx, `ktq2_1/vtq2_1` KV cache, parallel 1.
 
 | K | V | ctx | Split | TG tok/s |
 |---|---|---|---|:---:|
