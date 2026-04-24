@@ -212,6 +212,29 @@ Notable: dual-GPU split on 27B-Dense buys nothing (the model fits on one GPU and
 - **Full asymmetric `ktq2_1 + vtq2_1` is the maximum-compression config.** 7–11% PP cost, 3–5% TG cost, ~80% KV savings vs f16.
 - **Skip `q8_0` as V-cache on CC 7.5.** Falls out of the fastest FA dispatch; VTQ is both smaller and faster.
 
+### Large MoE — Qwen3-Next-80B-A3B (Hybrid DeltaNet + Attention, expert-offload)
+
+Hybrid architecture (Gated-DeltaNet + Full-Attention) with **512 experts / 10 active per token**. 80B params, ~25 GB weights at UD-IQ2_XXS. Runs on 2× RTX 2060 with 14 expert-layers per GPU and 20 offloaded to CPU RAM. **Claude-Code-capable** at 100k+ prompts.
+
+**Measured on gpu00 (Ryzen 7 5700G, 40 GB DDR4-3200):** **25–28 tok/s TG** at 200k ctx, `ktq2_1/vtq2_1` KV cache, parallel 1.
+
+| K | V | ctx | Split | TG tok/s |
+|---|---|---|---|:---:|
+| ktq2_1 | vtq2_1 | 200k | GPU0: 0–13, GPU1: 14–27, CPU: 28–47 | **25.7** |
+
+Physics ceiling for this model on this box is ~53 tok/s (DDR4-3200 dual @ 40 GB/s real / 0.75 GB per-token CPU traffic). Current 48% efficiency; no-code-change quick wins (thread pinning, ngram-spec for repetitive output) may push toward 32 tok/s.
+
+```bash
+./build/bin/llama-server -m ./models/Qwen3-Next-80B-A3B-Instruct-UD-IQ2_XXS.gguf \
+  --host 0.0.0.0 --port 8791 -c 200000 -ngl 99 -ts 12,12 -fa on \
+  --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+  --parallel 1 --fit-target 128 \
+  -ot "blk\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13)\.ffn_(up|down|gate)_exps\.=CUDA0,\
+blk\.(14|15|16|17|18|19|20|21|22|23|24|25|26|27)\.ffn_(up|down|gate)_exps\.=CUDA1,\
+blk\.(2[89]|3[0-9]|4[0-7])\.ffn_(up|down|gate)_exps\.=CPU" \
+  --jinja --reasoning off
+```
+
 ### Extreme case — Qwen3.5-122B-A10B (34 GB weights, expert-offload)
 
 This model has **256 experts / 8 active per token** and **2 KV heads (GQA)** — the expert sparsity is enough that even a 122B-parameter model runs on 2× RTX 2060 with 19 expert-layers on GPU and 29 offloaded to CPU RAM.
