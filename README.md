@@ -201,11 +201,12 @@ Full `262144` ctx fits too — GQA(2) + TQ2\_1 means only +140 MB KV delta from 
 
 ## Benchmarks
 
-All numbers: Qwen3.6-35B-A3B-UD-IQ2\_XXS, 2× RTX 2060 12 GB, `-ts 12,12`, Flash Attention on, `-p 512 -n 128 -r 2`. Measured 2026-04-24 with build `f30e85aa5`.
+All measurements: 2× RTX 2060 12 GB, Flash Attention on, `-p 512 -n 128 -r 2`. Build `f30e85aa5` / 2026-04-24 unless noted.
 
 ![Decode throughput by KV config](docs/img/decode_throughput.png)
 
-### 35B-A3B dual-GPU — full K × V matrix
+<details>
+<summary><b>Qwen3.6-35B-A3B (UD-IQ2_XXS)</b> — full 21-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
 
 | K | V | PP512 | TG128 | ΔPP | ΔTG |
 |---|---|:---:|:---:|:---:|:---:|
@@ -233,14 +234,28 @@ All numbers: Qwen3.6-35B-A3B-UD-IQ2\_XXS, 2× RTX 2060 12 GB, `-ts 12,12`, Flash
 
 Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on FA (−0.8% PP, −1.1% TG) and `ktq2_1/vtq2_2` is the lightest-with-K-quant config at −3.1% / −3.1%.
 
-### Observations
-
+**Observations:**
 - **VTQ_2 (Trellis v2) is the cheapest V-cache on FA** — 0.8–1.1% slowdown vs f16, beats every VTQ_1 variant at the same or lower bpw. The deferred encoder + warp-parallel shift-register decoder keep the FA inner loop tight.
 - **`q8_0` / `q4_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG. Those legacy types fall out of the fastest FA path on CC 7.5. VTQ is smaller and faster.
 - **`ktq2_1 + f16 V` is the lowest-overhead single-side compression** — 2.2% PP and 2.2% TG for ~40% KV savings. Good starting point if you don't need V-cache compression.
 - **Asymmetric `ktq2_1 / vtq2_2` is the new Pareto winner** at 3.1% throughput cost for **~80% KV savings** (28.75 MiB vs 160 MiB total at ctx=8192). Replaces the old `ktq2_1 / vtq2_1` recommendation.
-- Full asymmetric `ktq2_1 + vtq2_1` gives ~80% KV saving at 7–11% PP / 3–5% TG.
-- Skip `q8_0` as V-cache on CC 7.5 — it falls out of the fastest FA dispatch. VTQ is smaller and faster at similar quality cost.
+
+</details>
+
+<details>
+<summary><b>Gemma4-26B-A4B (UD-IQ2_XXS)</b> — MoE with iSWA hybrid attention · research / not yet deployable</summary>
+
+Model: [unsloth/gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF). 26B MoE with 4B active, hybrid attention (5 sliding-window layers + 25 full-attention layers).
+
+**Status:** The `fix: TQ support for Gemma4/iSWA/Hybrid models` commit is already on `turboquant` HEAD, but f16/f16 PPL on the IQ2_XS variant returned ≈ 79000 (gibberish). Needs the same kind of deployment work Qwen3.6-A3B got — iSWA-aware KV layout, MoE expert-offload tuning, tokenizer-template validation.
+
+**Follow-ups parked for an own session:**
+- Re-run PPL baseline on the UD-IQ2_XXS variant (unsloth imatrix may fix what IQ2_XS can't)
+- Characterize sliding-window vs full-attention KV allocation under KTQ/VTQ
+- Figure out the right `-ot` MoE expert-offload pattern for the 30-layer architecture
+- Validate tokenizer template (Gemma4 has its own chat format that differs from Qwen)
+
+</details>
 
 ---
 
