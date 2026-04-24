@@ -85,12 +85,14 @@ def chart_ppl_vs_bpw():
                               sub["ppl_delta_pct"].mean()))
 
     # KTQ×VTQ combos — measured on the 35B-A3B test box
-    # (source: docs/bench-qwen35-122b-a10b.md + devlogs for 35B).
-    # These are representative configs not fully in benchmarks.csv yet.
+    # Updated 2026-04-24 with full 5x8 matrix (ctx=2048/5ch on IQ2_XXS).
+    # Clean V_1 hierarchy; all KTQ bitrates produce identical PPL under
+    # attention-only eval, so we pick ktq2_1 as the representative K.
     ktq_vtq_points = [
-        ("ktq2_1/vtq2_1", avg_bpw("ktq2_1", "vtq2_1"), 6.9),
-        ("ktq2_1/vtq3_1", avg_bpw("ktq2_1", "vtq3_1"), 1.4),
-        ("ktq3_1/vtq3_1", avg_bpw("ktq3_1", "vtq3_1"), 1.1),
+        ("ktq2_1/vtq1_1", 2.5,  16.1),
+        ("ktq2_1/vtq2_1", 3.0,   4.3),
+        ("ktq2_1/vtq3_1", 3.75,  0.49),
+        ("ktq2_1/vtq4_1", 4.5,  -0.22),
     ]
 
     # v2 Trellis V-types (Qwen3.5-0.8B wikitext-2, ctx=512, 5 chunks, f16 K)
@@ -98,6 +100,18 @@ def chart_ppl_vs_bpw():
         ("f16/vtq2_2", (16.0 + 2.06) / 2, 7.74),
         ("f16/vtq3_2", (16.0 + 3.06) / 2, 1.05),
         ("f16/vtq4_2", (16.0 + 4.06) / 2, 0.44),
+    ]
+
+    # KTQ × VTQ_2 combos — 35B-A3B IQ2_XXS, wikitext-2 ctx=2048, 5 chunks
+    # (measured 2026-04-24; see docs/plans/2026-04-24-ktq-vtq2-combos.md)
+    # Note: V component is inactive under attention-only PPL eval, so deltas
+    # reflect the K-cache effect. Shown for bpw placement; decode-phase V
+    # evaluation is follow-up work.
+    ktq_vtq2_points = [
+        ("ktq2_1/vtq2_2", 2.78, -0.04),
+        ("ktq2_1/vtq3_2", 3.28, -0.04),
+        ("ktq2_1/vtq4_2", 3.78, -0.04),
+        ("ktq3_1/vtq3_2", 3.78, -0.04),
     ]
 
     fig, ax = plt.subplots(figsize=(12, 6.5))
@@ -115,10 +129,11 @@ def chart_ppl_vs_bpw():
     plot_group(v1_points,       "#1f77b4", "o", 120, "v1 baseline + vtq*_1 (35B-A3B)")
     plot_group(ktq_vtq_points,  "#2ca02c", "o", 120, "KTQ×VTQ combos (35B-A3B)",      weight="bold")
     plot_group(v2_points,       "#d62728", "o", 120, "v2 Trellis (0.8B wikitext-2)",  weight="bold")
+    plot_group(ktq_vtq2_points, "#9467bd", "o", 120, "KTQ×VTQ_2 (35B-A3B, attn-only)", weight="bold")
 
     # Pareto frontier
     all_pts = sorted(
-        [(bpw, d) for _, bpw, d in v1_points + ktq_vtq_points + v2_points],
+        [(bpw, d) for _, bpw, d in v1_points + ktq_vtq_points + v2_points + ktq_vtq2_points],
         key=lambda t: (t[0], t[1]),
     )
     pareto = []
