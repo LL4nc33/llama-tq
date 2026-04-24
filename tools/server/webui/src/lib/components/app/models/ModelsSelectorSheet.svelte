@@ -14,6 +14,7 @@
 	import { isRouterMode } from '$lib/stores/server.svelte';
 	import {
 		DialogModelInformation,
+		ModelId,
 		ModelsSelectorList,
 		SearchInput,
 		TruncatedText
@@ -233,7 +234,15 @@
 			>
 				<Package class="h-3.5 w-3.5" />
 
-				<TruncatedText text={selectedOption?.model || 'Select model'} class="min-w-0 font-medium" />
+				{#if selectedOption}
+					<ModelId
+						modelId={selectedOption.model}
+						class="min-w-0 overflow-hidden"
+						showOrgName
+					/>
+				{:else}
+					<span class="min-w-0 font-medium">Select model</span>
+				{/if}
 
 				{#if updating || isLoadingModel}
 					<Loader2 class="h-3 w-3.5 animate-spin" />
@@ -307,7 +316,13 @@
 			>
 				<Package class="h-3.5 w-3.5" />
 
-				<TruncatedText text={selectedOption?.model || ''} class="min-w-0 font-medium" />
+				{#if selectedOption}
+					<ModelId
+						modelId={selectedOption.model}
+						class="min-w-0 overflow-hidden"
+						showOrgName
+					/>
+				{/if}
 
 				{#if updating}
 					<Loader2 class="h-3 w-3.5 animate-spin" />
