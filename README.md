@@ -302,20 +302,28 @@ Practical read: on this 35B config, `ktq2_1 / vtq2_2` (2.78 bpw) costs functiona
 
 Measured on Qwen3.6-35B-A3B-UD-IQ2_XXS at ctx=8192 (10 attention layers out of 48 have KV). Numbers are the actual allocated KV-cache size as reported by the runtime, not a theoretical bpw calculation.
 
-| K / V | K (MiB) | V (MiB) | **Total KV** | vs f16/f16 | avg bpw |
-|-------|:---:|:---:|:---:|:---:|:---:|
-| f16 / f16 | 80.0 | 80.0 | **160.0** | 100% | 16.0 |
-| ktq2\_1 / f16 | 17.5 | 80.0 | 97.5 | **61%** | 9.75 |
-| ktq4\_1 / vtq4\_1 | 27.5 | 22.5 | 50.0 | **31%** | 5.5 |
-| ktq3\_1 / vtq3\_1 | 22.5 | 20.0 | 42.5 | **27%** | 4.25 |
-| ktq2\_1 / vtq4\_1 | 17.5 | 22.5 | 40.0 | **25%** | 4.0 |
-| ktq2\_1 / vtq4\_2 | 17.5 | 21.25 | 38.75 | **24%** | 3.78 |
-| ktq2\_1 / vtq3\_1 | 17.5 | 20.0 | 37.5 | **23%** | 3.75 |
-| ktq2\_1 / vtq3\_2 | 17.5 | 16.25 | 33.75 | **21%** | 3.28 |
-| ktq2\_1 / vtq2\_1 | 17.5 | 12.5 | 30.0 | **19%** | 3.0 |
-| **ktq2\_1 / vtq2\_2** | 17.5 | 11.25 | **28.75** | **18%** | 2.78 |
+### Full 5 × 8 K × V matrix — total KV in MiB (percentage of f16/f16)
 
-`ktq2_1 / vtq2_2` is the smallest config at **5.6× less KV** than f16/f16. For large contexts the absolute savings matter more — at 200k ctx on the Qwen3.5-122B-A10B GQA(2) config, `ktq2_1 / vtq2_1` is ~450 MB total vs ~2.3 GB at f16/f16.
+| K \ V | f16 | vtq1_1 | vtq2_1 | vtq3_1 | vtq4_1 | vtq2_2 | vtq3_2 | vtq4_2 |
+|-------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **f16**     | 160.0 (100%) | 87.50 (55%) | 92.50 (58%) | 100.00 (63%) | 102.50 (64%) | 91.25 (57%) | 96.25 (60%) | 101.25 (63%) |
+| **ktq1_1**  |  92.50 (58%) | **20.00 (13%)** 🏆 | 25.00 (16%) |  32.50 (20%) |  35.00 (22%) | **23.75 (15%)** |  28.75 (18%) |  33.75 (21%) |
+| **ktq2_1**  |  97.50 (61%) | 25.00 (16%) | 30.00 (19%) |  37.50 (23%) |  40.00 (25%) |  28.75 (18%) |  33.75 (21%) |  38.75 (24%) |
+| **ktq3_1**  | 102.50 (64%) | 30.00 (19%) | 35.00 (22%) |  42.50 (27%) |  45.00 (28%) |  33.75 (21%) |  38.75 (24%) |  43.75 (27%) |
+| **ktq4_1**  | 107.50 (67%) | 35.00 (22%) | 40.00 (25%) |  47.50 (30%) |  50.00 (31%) |  38.75 (24%) |  43.75 (27%) |  48.75 (30%) |
+
+### Per-cache sizes (constant regardless of partner)
+
+| Type  | Size (MiB @ ctx=8192, 10 layers) | Effective bpw |
+|-------|:---:|:---:|
+| f16   | 80.0  | 16.0 |
+| ktq1_1 / vtq1_1 | 12.5 / 7.5   | 2.5 / 1.5 |
+| ktq2_1 / vtq2_1 | 17.5 / 12.5  | 3.5 / 2.5 |
+| ktq3_1 / vtq3_1 | 22.5 / 20.0  | 4.5 / 4.0 |
+| ktq4_1 / vtq4_1 | 27.5 / 22.5  | 5.5 / 4.5 |
+| vtq2_2 / vtq3_2 / vtq4_2 | 11.25 / 16.25 / 21.25 | 2.25 / 3.25 / 4.25 |
+
+**Smallest usable:** `ktq1_1 / vtq1_1` at **20 MiB total (13% of f16/f16, 8× smaller)** — but vtq1_1 costs +16% PPL, not practical. **Smallest PPL-sensible:** `ktq1_1 / vtq2_2` at 23.75 MiB (15%, 6.7× smaller). For large contexts the absolute savings matter more — at 200k ctx on the Qwen3.5-122B-A10B GQA(2) config, `ktq2_1 / vtq2_1` is ~450 MB total vs ~2.3 GB at f16/f16.
 
 Measurement note: the 10-layer count is Qwen3.6-35B-A3B specific (48 blocks total, 10 with attention after the MoE filter). Different architectures allocate KV on different block counts; scale the per-layer numbers accordingly.
 
