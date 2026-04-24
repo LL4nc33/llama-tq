@@ -281,6 +281,24 @@ From `docs/blog/2026-04-19-v-cache-validation.md`, `tests/trellis-phase1/results
 
 **Why 2-bit is stuck at ~7%:** 4-state codebook hits an entropy floor for Gaussian/Laplace V entries. Paths to sub-2% at 2 bits on the roadmap: outlier-channel split (v6 VTQ\_OUT, designed) + correction overlay buffer (Trick 4, designed). Neither shipped yet.
 
+### Decode throughput (tg256, 35B-A3B IQ2_XXS, measured 2026-04-24)
+
+From `llama-bench -fa 1 -ngl 99 -n 256 -p 0 -r 2`. Running on 2× RTX 2060 12 GB.
+
+| K cache | V cache | tok/s | vs f16/f16 |
+|---------|---------|:---:|:---:|
+| f16 | f16 | 73.40 | 100% |
+| ktq2_1 | f16 | 72.77 | 99.1% |
+| f16 | vtq2_2 | 73.01 | 99.5% |
+| **ktq2_1** | **vtq2_2** | **72.00** | **98.1%** |
+| ktq2_1 | vtq3_2 | 71.99 | 98.1% |
+| ktq2_1 | vtq4_2 | 71.97 | 98.0% |
+| ktq2_1 | vtq2_1 | 71.59 | 97.5% |
+| ktq2_1 | vtq3_1 | 70.51 | 96.1% |
+| ktq2_1 | vtq4_1 | 70.52 | 96.1% |
+
+**Finding: VTQ_2 (Trellis) is 1.5–2% faster than VTQ_1 at the same bit class.** First measurable v2 decode advantage — the deferred-V + warp-parallel shift-register decoder keeps the FA inner loop tighter than the v1 codebook lookup. All three v2 variants run within 0.1% of each other at decode — the 2/3/4-bit V-cache choice is pure quality vs memory, not quality vs speed.
+
 ### Asymmetric KTQ × VTQ_2 on Qwen3.6-35B-A3B IQ2_XXS (ctx=2048, 5 chunks)
 
 From `docs/plans/2026-04-24-ktq-vtq2-combos.md`.
