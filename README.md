@@ -10,6 +10,22 @@ Experimental llama.cpp fork focused on **KV-cache quantization**. Different K an
 
 ![KV-cache bpw vs PPL Pareto frontier](docs/img/ppl_vs_bpw.png)
 
+### Quality-vs-throughput score (35B-A3B IQ2_XXS, wikitext-2 ctx=2048/5ch + tg256)
+
+Combined score: `ppl_delta_pct + 0.5 × tg_slowdown_pct`. Lower is better. f16/f16 is the reference.
+
+| Score | K / V | Note |
+|:---:|---|---|
+|  0.00 | f16 / f16 | reference |
+| **0.82** | **ktq2_1 / vtq2_2** | 🏆 best tradeoff |
+|  1.69 | ktq4_1 / vtq4_1 | |
+|  2.40 | ktq2_1 / vtq3_1 | deployed prod config |
+|  2.47 | ktq3_1 / vtq3_1 | |
+|  5.50 | ktq2_1 / vtq2_1 | |
+| 17.66 | ktq1_1 / vtq1_1 | 1-bit floor, unusable |
+
+From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/README.md) for iterating on new quant variants.
+
 ---
 
 ## Contents
@@ -185,57 +201,44 @@ Full `262144` ctx fits too — GQA(2) + TQ2\_1 means only +140 MB KV delta from 
 
 ## Benchmarks
 
-All numbers: 2× RTX 2060 12 GB, Flash Attention on, 1 rep, pp512 / tg128. Full matrix: [docs/bench-safe-2026-04-23.md](docs/bench-safe-2026-04-23.md).
+All numbers: Qwen3.6-35B-A3B-UD-IQ2\_XXS, 2× RTX 2060 12 GB, `-ts 12,12`, Flash Attention on, `-p 512 -n 128 -r 2`. Measured 2026-04-24 with build `f30e85aa5`.
 
 ![Decode throughput by KV config](docs/img/decode_throughput.png)
 
-### 35B-A3B (dual-GPU, no offload)
-
-Qwen3.6-35B-A3B UD-IQ2\_XXS, `-ts 12,12`.
+### 35B-A3B dual-GPU — full K × V matrix
 
 | K | V | PP512 | TG128 | ΔPP | ΔTG |
 |---|---|:---:|:---:|:---:|:---:|
-| f16 | f16 | **986** | **72.8** | baseline | baseline |
-| ktq2\_1 | f16 | 938 | 70.6 | −5% | −3% |
-| f16 | vtq2\_1 | 909 | 71.4 | −8% | −2% |
-| **ktq2\_1** | **vtq2\_1** | **877** | **69.4** | **−11%** | **−5%** |
-| q8\_0 | q8\_0 | 974 | 70.0 | −1% | −4% |
-| q4\_0 | q4\_0 | 961 | 69.2 | −3% | −5% |
-| q8\_0 | vtq2\_1 | 874 | 69.6 | −11% | −4% |
+| **f16** | **f16** | **971.4** | **74.82** | baseline | baseline |
+| f16 | vtq2\_1 | 908.2 | 73.83 | −6.5% | −1.3% |
+| f16 | vtq3\_1 | 884.8 | 72.58 | −8.9% | −3.0% |
+| **f16** | **vtq2\_2** | **963.7** | **74.03** | **−0.8%** | **−1.1%** |
+| f16 | vtq3\_2 | 962.4 | 74.13 | −0.9% | −0.9% |
+| f16 | q4\_0 | 648.9 | 66.70 | −33.2% | −10.8% |
+| f16 | q8\_0 | 652.3 | 60.28 | −32.8% | −19.4% |
+| ktq2\_1 | f16 | 950.4 | 73.19 | −2.2% | −2.2% |
+| ktq2\_1 | vtq2\_1 | 885.9 | 72.18 | −8.8% | −3.5% |
+| ktq2\_1 | vtq3\_1 | 857.9 | 71.12 | −11.7% | −4.9% |
+| **ktq2\_1** | **vtq2\_2** | **941.0** | **72.51** | **−3.1%** | **−3.1%** |
+| ktq2\_1 | vtq3\_2 | 941.4 | 72.37 | −3.1% | −3.3% |
+| ktq2\_1 | q4\_0 | 636.6 | 64.74 | −34.5% | −13.5% |
+| ktq2\_1 | q8\_0 | 646.6 | 62.74 | −33.4% | −16.2% |
+| ktq3\_1 | f16 | 938.9 | 72.44 | −3.4% | −3.2% |
+| ktq3\_1 | vtq2\_2 | 924.0 | 71.83 | −4.9% | −4.0% |
+| ktq3\_1 | vtq3\_1 | 848.2 | 70.25 | −12.7% | −6.1% |
+| ktq3\_1 | vtq3\_2 | 926.9 | 71.53 | −4.6% | −4.4% |
+| q8\_0 | q8\_0 | 943.4 | 70.71 | −2.9% | −5.5% |
+| q4\_0 | q4\_0 | 929.6 | 70.19 | −4.3% | −6.2% |
+| q8\_0 | vtq2\_1 | 856.2 | 70.45 | −11.9% | −5.8% |
 
-### 35B-A3B (single-GPU, 5 MoE layers to CPU)
-
-Qwen3.6-35B-A3B, `-ot blk.1[5-9].ffn_.*_exps.=CPU`.
-
-| K | V | PP512 | TG128 | ΔPP | ΔTG |
-|---|---|:---:|:---:|:---:|:---:|
-| f16 | f16 | 547 | 57.1 | baseline | baseline |
-| ktq2\_1 | f16 | 521 | 55.6 | −5% | −3% |
-| f16 | vtq2\_1 | 517 | 51.3 | −6% | −10% |
-| ktq2\_1 | vtq2\_1 | 509 | 52.6 | −7% | −8% |
-
-PCIe traffic to CPU experts is the bottleneck here — PP drops to ~55% of dual-GPU.
-
-### Dense — Qwen3.5-27B (single-GPU, no offload)
-
-UD-IQ2\_XXS, 7.97 GiB, fits on one 12 GB card.
-
-| K | V | PP512 | TG128 | ΔPP | ΔTG |
-|---|---|:---:|:---:|:---:|:---:|
-| f16 | f16 | **409** | **15.0** | baseline | baseline |
-| ktq2\_1 | f16 | 392 | 14.7 | −4% | −2% |
-| f16 | vtq2\_1 | 375 | 14.7 | −8% | −2% |
-| ktq2\_1 | vtq2\_1 | 374 | 14.6 | −9% | −3% |
-| q8\_0 | q8\_0 | 393 | 14.6 | −4% | −3% |
-| q4\_0 | q4\_0 | 391 | 14.5 | −4% | −3% |
-| q8\_0 | vtq2\_1 | 360 | 14.5 | −12% | −3% |
-
-On dense 27B, TG is weight-bandwidth-bound — KV-cache quant barely moves it.
+Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on FA (−0.8% PP, −1.1% TG) and `ktq2_1/vtq2_2` is the lightest-with-K-quant config at −3.1% / −3.1%.
 
 ### Observations
 
-- If the model fits on one GPU, single-GPU wins. llama.cpp's `-ts` only kicks in when weights don't fit; on 27B-Dense the GPU1 sits at 90 MiB idle.
-- `ktq2_1 + f16 V` is the lowest-overhead compression. 4–5% PP, 2–3% TG, ~40% KV saving.
+- **VTQ_2 (Trellis v2) is the cheapest V-cache on FA** — 0.8–1.1% slowdown vs f16, beats every VTQ_1 variant at the same or lower bpw. The deferred encoder + warp-parallel shift-register decoder keep the FA inner loop tight.
+- **`q8_0` / `q4_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG. Those legacy types fall out of the fastest FA path on CC 7.5. VTQ is smaller and faster.
+- **`ktq2_1 + f16 V` is the lowest-overhead single-side compression** — 2.2% PP and 2.2% TG for ~40% KV savings. Good starting point if you don't need V-cache compression.
+- **Asymmetric `ktq2_1 / vtq2_2` is the new Pareto winner** at 3.1% throughput cost for **~80% KV savings** (28.75 MiB vs 160 MiB total at ctx=8192). Replaces the old `ktq2_1 / vtq2_1` recommendation.
 - Full asymmetric `ktq2_1 + vtq2_1` gives ~80% KV saving at 7–11% PP / 3–5% TG.
 - Skip `q8_0` as V-cache on CC 7.5 — it falls out of the fastest FA dispatch. VTQ is smaller and faster at similar quality cost.
 
