@@ -427,7 +427,10 @@
 	>
 		<div class="w-full max-w-[48rem] px-4">
 			<div class="mb-10 text-center" in:fade={{ duration: 300 }}>
-				<h1 class="mb-2 text-2xl font-semibold tracking-tight md:text-3xl">llama.cpp</h1>
+				<h1 class="group mb-2 text-2xl font-semibold tracking-tight md:text-3xl cursor-default select-none inline-flex items-center justify-center gap-0 w-full">
+					<span>O</span><span class="inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out max-w-0 group-hover:max-w-[2em]">ida</span><span>N</span><span class="inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out max-w-0 group-hover:max-w-[2em]">ice</span>
+					<span class="text-primary/80">&thinsp;llama-tq</span>
+				</h1>
 
 				<p class="text-muted-foreground md:text-lg">
 					{serverStore.props?.modalities?.audio
