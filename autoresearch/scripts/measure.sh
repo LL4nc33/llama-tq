@@ -33,8 +33,10 @@ tg_out=$(./build/bin/llama-bench \
     -m "$MODEL_PATH" \
     -ctk "$K" -ctv "$V" \
     -fa 1 -ngl 99 -n 256 -p 0 -r 2 2>&1)
-# llama-bench table row: pick tg256 column (last numeric before "t/s")
-tg=$(echo "$tg_out" | awk '/tg256/ {for(i=1;i<=NF;i++) if($i ~ /^[0-9.]+$/) last=$i; print last}' | tail -1 || echo "0")
+# llama-bench table row: pick tg256 row, parse tok/s column (second-to-last
+# pipe-separated cell, format "NN.NN ± S.SS")
+tg=$(echo "$tg_out" | awk -F'|' '/tg256/ {gsub(/[[:space:]]/,"",$(NF-1)); split($(NF-1), a, "±"); print a[1]}' | tail -1)
+tg="${tg:-0}"
 
 # Compute deltas + score
 ppl_delta=$(python3 -c "print(round(($ppl - $PPL_BASE) / $PPL_BASE * 100, 3))")
