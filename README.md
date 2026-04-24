@@ -124,6 +124,10 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 
 These are the three models that drive the fork's existence. All measured on the same box: Ryzen 7 5700G, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB, PCIe asymmetric (GPU0 x16 / GPU1 x4).
 
+![Large-MoE TG: 35B / 80B / 122B on 2x RTX 2060 + Ryzen 7 5700G](docs/img/large_moe_tg.png)
+
+The 35B fits fully on GPU. The 80B and 122B spill 20 / 29 of 48 layers to CPU RAM — TG becomes CPU-memory-bandwidth-bound, so the numbers are read against a physics ceiling (DDR4-3200 @ ~40 GB/s real / per-token CPU traffic).
+
 ### 35B-A3B — daily driver
 
 Qwen3.5 or Qwen3.6 35B-A3B (32 experts / 4 active, GQA), UD-IQ2\_XXS weights. Fits fully on GPU at 400k ctx parallel 2 with `ktq2_1 / vtq2_1`.
