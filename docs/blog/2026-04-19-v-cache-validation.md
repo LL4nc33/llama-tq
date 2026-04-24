@@ -1,23 +1,23 @@
-# V-Cache Pipeline Validated — Trick 6 liefert 4× Encoder-Speedup
+# V-cache pipeline validated — receiver-side Viterbi gives a 4× encoder speedup
 
-**Datum:** 2026-04-19
+**Date:** 2026-04-19
 **Branch:** `trellis-v2-phase1` (`b688c99af`)
 **Status:** V-cache CPU-fallback pipeline validated, Phase-2c native GPU path gated
 
 ## TL;DR
 
-Wir haben den komplett neu geschriebenen V-cache-Encoder (Trellis-Coded
-Quantization mit receiver-side Viterbi DP) gegen den alten Path gemessen.
-**Resultat: 4× schneller bei gleicher PPL-Qualität.** Phase-2c
-(native GPU-Dequant im Attention-Kernel) bleibt gegated wegen
-CUDA-Linker-Limitation, Fix-Path dokumentiert.
+The newly rewritten V-cache encoder (trellis-coded quantization with
+receiver-side Viterbi DP) was measured against the old path.
+**Result: 4× faster at the same PPL quality.** Phase-2c (native GPU
+dequant in the attention kernel) remains gated because of a CUDA linker
+limitation; the fix path is documented below.
 
-## Was haben wir gemessen
+## What was measured
 
-Qwen3.5-0.8B, wikitext-2, ctx=512, 5 chunks (matched run19 baseline),
-2× RTX 2060 via TP.
+Qwen3.5-0.8B, wikitext-2, ctx=512, 5 chunks (matched the earlier
+baseline), 2× RTX 2060 via TP.
 
-| Config | bpw | PPL | Δ f16 | vs run19 (pre-Trick-6) |
+| Config | bpw | PPL | Δ f16 | vs earlier run (sender-side) |
 |---|---|---|---|---|
 | f16 | 16.0 | 15.60 | — | matches (15.59) |
 | vtq2_2 | 2.06 | 16.80 | +7.74% | matches (16.76) |
@@ -26,111 +26,114 @@ Qwen3.5-0.8B, wikitext-2, ctx=512, 5 chunks (matched run19 baseline),
 
 *Source: `tests/trellis-phase1/results/run22_08b_full_sweep.csv`*
 
-### The surprise: Trick 6 improved PPL, not just speed
+### The surprise: the receiver-side refactor improved PPL, not just speed
 
-We expected receiver-side Viterbi DP to speed up encoding. It also **improved
-PPL** from +2.8% to +1.05% for vtq3_2 — a **1.75 percentage-point gain** from
-a refactor that was supposed to be cosmetic.
+Receiver-side Viterbi DP was expected to speed up encoding. It also
+**improved PPL** from +2.8% to +1.05% for vtq3_2 — a **1.75 percentage-point
+gain** from a refactor that was supposed to be cosmetic.
 
-Why? The atomic-free DP evaluates all state-transitions in parallel without
-race conditions. The old sender-side DP had occasional state-skip artifacts
-from contended atomicMin updates — small but measurable quality degradation.
+Why? The atomic-free DP evaluates all state transitions in parallel
+without race conditions. The old sender-side DP had occasional
+state-skip artifacts from contended atomicMin updates — small but
+measurable quality degradation.
 
 Fixing the race fixed the quality too. Free lunch.
 
 ### vtq4_2 is the headline
 
-**+0.44% PPL at 4× smaller V-cache** is essentially indistinguishable from f16
-under any practical use. This is the "near-f16" target that motivated the
-whole Trellis v2 design.
+**+0.44% PPL at a 4× smaller V-cache** is essentially indistinguishable
+from f16 under any practical use. This is the "near-f16" target that
+motivated the whole Trellis v2 design.
 
-### Quick-smoke (ctx=256/3 chunks) showed 4× encoder speedup
+### Quick smoke test (ctx=256 / 3 chunks) shows the 4× encoder speedup
 
-Pre-Trick-6: 90 s/pass
-Post-Trick-6: 22.57 s/pass
+Before: 90 s/pass
+After: 22.57 s/pass
 Encoder-only speedup: **4×**
 
-### Encoder-Speedup (Trick 6)
+### Encoder speedup in detail
 
-Vor Trick 6: **90 s/pass** (vtq3_2 ctx=256/3ch, aus devlog 2026-04-18).
-Nach Trick 6: **22.57 s/pass** = **4× Speedup**.
+Before: **90 s/pass** (vtq3_2 ctx=256/3ch, earlier dev measurement).
+After: **22.57 s/pass** = **4× speedup**.
 
-Trick 6 ändert Viterbi DP von atomic-heavy sender-side zu atomic-free
-receiver-side (commit `9c06bdceb`). Jeder Thread besitzt 256 next-states
-via stride-256 sharding, keine atomicMin-Konkurrenz auf kritischem Pfad.
+The refactor changes Viterbi DP from atomic-heavy sender-side to
+atomic-free receiver-side (commit `9c06bdceb`). Each thread owns 256
+next-states via stride-256 sharding, no atomicMin contention on the
+critical path.
 
-### Trick 1 (attention-sink fp16 layer 0)
+### Attention-sink fp16 (layer 0)
 
-Kein messbarer Effekt auf 0.8B/ctx=256. PPL identisch zu vanilla vtq3_2.
-Erwartung: Effekt nur sichtbar auf großen Modellen + langen Kontexten
-(35B+, ctx≥2048). Flag bleibt drin für 35B validation.
+No measurable effect on 0.8B/ctx=256. PPL identical to vanilla vtq3_2.
+Expected: the effect is only visible on larger models with longer
+contexts (35B+, ctx ≥ 2048). Flag stays in for the 35B validation.
 
-## Warum?
+## Why
 
-V-cache Quantization spart Attention-VRAM um 80%. Aber jeder attention-step
-muss dequantizen — wenn der Encoder zu langsam ist, killt Latency den Gewinn.
-Trick 6 holt den Encoder aus dem bottleneck-Bereich.
+V-cache quantization saves ~80% attention VRAM. But every attention
+step has to dequantize — if the encoder is too slow, latency kills
+the gain. The refactor pulls the encoder out of the bottleneck range.
 
-## Wie?
+## How
 
 **Receiver-side Viterbi DP** (`9c06bdceb`):
-- Alt: jeder Thread emittiert Kandidat für nachfolgende States → atomicMin
-  Kontention auf shared L2
-- Neu: jeder Thread sammelt alle Kandidaten für seine 256 next-states
-  via bit-permutation (`prev = ((next << K) | e) & 0xFFFF`)
-- Resultat: coalesced writes, keine atomics, L2 hit-rate ~100%
+- Old: each thread emits a candidate for successor states → atomicMin
+  contention on shared L2
+- New: each thread gathers all candidates for its 256 next-states via
+  bit permutation (`prev = ((next << K) | e) & 0xFFFF`)
+- Result: coalesced writes, no atomics, L2 hit-rate ~100%
 
-## Wann?
+## When
 
-Test-run: 2026-04-19 01:30 local.
-Commit-Kette auf `trellis-v2-phase1`:
-- `9c06bdceb` — Trick 6 receiver-side Viterbi (5-10× encoder speedup erwartet, 4× gemessen)
-- `82d35aacf` + `daba36055` — Trick 1 attention-sink protection
-- `9d526db23` — `__ldg` revert (L2 > RO cache für 256 KiB LUT)
-- `b688c99af` — Phase-2c gated mit dokumentiertem LUT-fix path
+Test run: 2026-04-19 01:30 local.
+Commit chain on `trellis-v2-phase1`:
+- `9c06bdceb` — receiver-side Viterbi (5-10× encoder speedup expected, 4× measured)
+- `82d35aacf` + `daba36055` — attention-sink protection
+- `9d526db23` — `__ldg` revert (L2 > RO cache for 256 KiB LUT)
+- `b688c99af` — Phase-2c gated with documented LUT-fix path
 
-## Wo?
+## Where
 
 - `ggml/src/ggml-cuda/trellis-encode.cuh` — receiver-side Viterbi
 - `ggml/src/ggml-cuda/trellis.cuh` — decoder + LUT (static __device__ per-TU)
 - `ggml/src/ggml-cuda/fattn.cu` — Phase-2c dispatch + bypass
-- `src/llama-kv-cache.cpp` — Trick 1 sink protection routing
+- `src/llama-kv-cache.cpp` — sink-protection routing
 - `tests/trellis-phase1/results/run21_08b_postbuild.csv`
 
-## Wer?
+## Credits
 
 - Encoder algorithm: TurboQuant paper (Google Research, ICLR 2026)
 - Trellis design: QTIP (arXiv:2406.11235)
-- Receiver-side DP variant: klassisches Viterbi-Decoder-Rewrite
+- Receiver-side DP variant: classic Viterbi decoder rewrite
 - Maintainer: LL4nc33 (llama-tq fork)
 
-## Wie viel? (Zusammenfassung)
+## Summary
 
-**Encoder**: 4× schneller (90s → 22.57s per pass, vtq3_2 ctx=256/3ch)
+**Encoder**: 4× faster (90 s → 22.57 s per pass, vtq3_2 ctx=256/3ch)
 
-**PPL quality ladder** (0.8B, ctx=512/5ch = matched run19 baseline):
+**PPL quality ladder** (0.8B, ctx=512/5ch):
 - vtq2_2 (2.06 bpw): +7.74% PPL
-- vtq3_2 (3.06 bpw): **+1.05% PPL** ← improved from +2.8% pre-Trick-6
+- vtq3_2 (3.06 bpw): **+1.05% PPL** ← improved from +2.8%
 - vtq4_2 (4.06 bpw): **+0.44% PPL** ← indistinguishable from f16
 
-**VRAM savings** (V-cache only, from model_config):
+**VRAM savings** (V-cache only):
 - f16 → vtq3_2 = 5.2× smaller V-cache
 - f16 → vtq2_2 = 7.8× smaller V-cache
 
-## Warum nicht anders?
+## Alternatives rejected
 
-- **`extern __device__` für shared LUT**: nvcc ohne RDC demoted zu static
-  (warning 20044-D), per-TU copy bleibt. Fix wäre CUDA_SEPARABLE_COMPILATION,
-  das ist ein Build-System-Change und braucht Link-Time-Profiling.
-- **Phase-2c native GPU path aktivieren**: ohne LUT-Fix würden die 120
-  fattn-vec-instance TUs jeweils uninitialisierte LUTs haben → garbage.
-  Bypass bleibt bis RDC oder per-TU init wired ist.
-- **Trick 1 auf kleine Modelle testen**: 0.8B zeigt keinen Effekt,
-  attention-sink bias skaliert mit Modell-size. Test auf 35B geplant.
+- **`extern __device__` for a shared LUT**: nvcc without RDC demotes it
+  to static (warning 20044-D), so the per-TU copy stays. The fix would
+  be `CUDA_SEPARABLE_COMPILATION`, which is a build-system change and
+  needs link-time profiling.
+- **Enabling the Phase-2c native GPU path now**: without the LUT fix
+  the 120 fattn-vec-instance TUs would each hold uninitialized LUTs →
+  garbage. The bypass stays until RDC or per-TU init is wired up.
+- **Testing attention-sink protection on small models**: 0.8B shows no
+  effect. Sink bias scales with model size; 35B test planned.
 
-## Was kommt danach?
+## What's next
 
-1. Phase-2d: RDC enable oder per-TU LUT init → Phase-2c unblocken
-2. TP `-sm row` combined mit vtq3_2 auf 2× RTX 2060
-3. 35B MoE full-stack validation mit Trick 1 + 6
-4. TQW Option-B CUDA sprint (weight quantization, separater branch)
+1. Phase-2d: enable RDC or per-TU LUT init → unblock Phase-2c
+2. TP `-sm row` combined with vtq3_2 on 2× RTX 2060
+3. 35B MoE full-stack validation with sink + receiver-side encoder
+4. TQW Option-B CUDA sprint (weight quantization, separate branch)
