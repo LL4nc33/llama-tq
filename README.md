@@ -40,7 +40,7 @@ Experimental llama.cpp fork focused on **KV-cache quantization**. Different K an
 | **Deferred K/V quantization** — f16 staging during prefill, bulk-convert at prefill→decode boundary; avoids repetition-loop pathology on K | auto-enabled for KTQ / VTQ\_2 |
 | **Anthropic-compatible `/v1/messages`** with prompt caching, tool-call early-stop, `--keep` shift protection | shipped |
 
-**Hardware target:** NVIDIA Turing (CC 7.5). The sm\_75 launch\_bounds and FA tuning are calibrated for Turing, not Ampere/Ada/Hopper. Runs on CC 6.1+ but is not optimized for anything newer.
+**Hardware target:** NVIDIA Turing (CC 7.5) — launch\_bounds and FA tuning are calibrated for sm\_75. **Runs on all CUDA GPUs from CC 6.1+** — Pascal (GTX 10-series), Turing (GTX 16 / RTX 20), Ampere (RTX 30), Ada (RTX 40) and Blackwell (RTX 50). On newer archs everything is functional but not yet arch-specifically tuned. Arch-specific contributions (FP8 Tensor Cores on Ada+, WGMMA on Hopper) welcome.
 
 ---
 
@@ -280,6 +280,21 @@ From `docs/blog/2026-04-19-v-cache-validation.md`, `tests/trellis-phase1/results
 | **vtq4\_2** | 4.06 | 15.67 | **+0.44%** |
 
 **Why 2-bit is stuck at ~7%:** 4-state codebook hits an entropy floor for Gaussian/Laplace V entries. Paths to sub-2% at 2 bits on the roadmap: outlier-channel split (v6 VTQ\_OUT, designed) + correction overlay buffer (Trick 4, designed). Neither shipped yet.
+
+### Asymmetric KTQ × VTQ_2 on Qwen3.6-35B-A3B IQ2_XXS (ctx=2048, 5 chunks)
+
+From `docs/plans/2026-04-24-ktq-vtq2-combos.md`.
+
+| K cache | V cache | avg bpw | PPL | Δ baseline |
+|---------|---------|:---:|:---:|:---:|
+| f16 | f16 | 16.0 | 6.7251 | — |
+| **ktq2_1** | vtq2_2 / vtq3_2 / vtq4_2 | 2.78 – 3.78 | 6.7227 | **-0.04%** |
+| ktq3_1 | vtq3_2 | 3.78 | 6.7227 | -0.04% |
+| f16 | vtq2_2 / vtq3_2 | 9.03 – 9.53 | 6.7388 | +0.20% |
+
+**Caveat: PPL is an attention-only forward-pass eval.** `llama-perplexity` never hits prefill→decode transition, so deferred V conversion never fires — within a single K-cache choice, `vtq{2,3,4}_2` all produce the same PPL (V stays in f16 staging). The table is valid for the K-cache component, and the VTQ_2 variants are orthogonally validated on Qwen3.5-0.8B (previous table) and via runtime decode traces. Decode-phase benchmarking for the full 35B V-cache delta is follow-up work.
+
+Practical read: on this 35B config, `ktq2_1 / vtq2_2` (2.78 bpw) costs functionally zero PPL on attention alone. V-quality on decode requires separate measurement.
 
 ---
 
