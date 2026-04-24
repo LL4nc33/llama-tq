@@ -243,24 +243,18 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 </details>
 
 <details>
-<summary><b>Gemma4-26B-A4B (UD-IQ2_XXS)</b> — MoE with iSWA hybrid attention · research / not yet deployable</summary>
+<summary><b>Gemma4-26B-A4B</b> — MoE with iSWA hybrid attention · blocked upstream on Turing sm_75</summary>
 
-Model: [unsloth/gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF). 26B MoE with 4B active, 30 layers, hybrid attention.
+26B MoE with 4B active, 30 layers, hybrid attention (iSWA). FA-vec dispatch already covers D=64/128/256/512 for all TQ types in this fork, so the kernel side is ready.
 
-**Architecture findings (from `llama-perplexity` load logs):**
+**Status (verified 2026-04-25 on 2× RTX 2060):**
 
-- **Mixed head_count_kv array** per layer: `[8, 8, 8, 8, 8, 2, 8, 8, 8, 8, 8, 2, ...]` — every 6th layer is a sliding-window layer with GQA(2). iSWA hybrid confirmed.
-- **Full-attention layers use `n_embd_head_k/v = 512`** — twice Qwen3.6-35B's 128, and beyond VTQ_2's D=256 hard limit. Even D=256 full attention would push us past the FA kernel's fastest dispatch window.
-- **SWA layers use D=256** (`n_embd_head_k_swa = 256`) — those would also exceed the current VTQ_2 D=128 path but might work with VTQ_1.
-- **Current shipped binaries OOM on dual-RTX-2060 even with q8_0/q8_0 KV and expert-offload** — the D=512 compute buffer alone is ~5 GB per pass, on top of model weights.
+- Model loads and runs with `-ngl 99 -ts 12,12` dual-GPU split (weights ~9 GiB, compute buffer fits at ctx=512).
+- Output is gibberish (EOG-token storm, PPL in the thousands) with both [unsloth UD-IQ2_XXS](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF) and [bartowski IQ2_XXS](https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF).
+- Same gibberish on a vanilla upstream `llama.cpp` master build — confirmed **not a fork bug**. Likely a Turing sm_75 + Gemma4 iSWA forward-pass issue upstream.
+- Our only non-cherry-picked Gemma4-touching commits (`df8e77c56`, `65100daa0`) are additive TQ-parameter plumbing, inactive for f16/f16 KV — ruled out as cause.
 
-**Status:** Not deployable on this hardware without dedicated work. The `fix: TQ support for Gemma4/iSWA/Hybrid models` commit is on `turboquant` HEAD, but the D=512 attention path still needs separate tuning plus whatever MoE offload pattern fits 30 layers on 2× 12 GB.
-
-**Follow-ups parked for an own session:**
-- Extend VTQ_1 FA dispatch to cover D=256 reliably, then add a D=512 path (currently blocks at D=256 for v2, D is constrained in the FA vec kernel layout).
-- MoE expert-offload `-ot` pattern — 30 layers means different split math than Qwen's 48-layer assumptions.
-- Minimum-viable context size so the compute buffer fits (probably ~1024 initially, scaling up with offload).
-- Tokenizer-template validation (Gemma4 has its own chat format).
+**Deferred until upstream has a Turing-compatible Gemma4 path.**
 
 </details>
 
