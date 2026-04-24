@@ -245,15 +245,22 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 <details>
 <summary><b>Gemma4-26B-A4B (UD-IQ2_XXS)</b> — MoE with iSWA hybrid attention · research / not yet deployable</summary>
 
-Model: [unsloth/gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF). 26B MoE with 4B active, hybrid attention (5 sliding-window layers + 25 full-attention layers).
+Model: [unsloth/gemma-4-26B-A4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF). 26B MoE with 4B active, 30 layers, hybrid attention.
 
-**Status:** The `fix: TQ support for Gemma4/iSWA/Hybrid models` commit is already on `turboquant` HEAD, but f16/f16 PPL on the IQ2_XS variant returned ≈ 79000 (gibberish). Needs the same kind of deployment work Qwen3.6-A3B got — iSWA-aware KV layout, MoE expert-offload tuning, tokenizer-template validation.
+**Architecture findings (from `llama-perplexity` load logs):**
+
+- **Mixed head_count_kv array** per layer: `[8, 8, 8, 8, 8, 2, 8, 8, 8, 8, 8, 2, ...]` — every 6th layer is a sliding-window layer with GQA(2). iSWA hybrid confirmed.
+- **Full-attention layers use `n_embd_head_k/v = 512`** — twice Qwen3.6-35B's 128, and beyond VTQ_2's D=256 hard limit. Even D=256 full attention would push us past the FA kernel's fastest dispatch window.
+- **SWA layers use D=256** (`n_embd_head_k_swa = 256`) — those would also exceed the current VTQ_2 D=128 path but might work with VTQ_1.
+- **Current shipped binaries OOM on dual-RTX-2060 even with q8_0/q8_0 KV and expert-offload** — the D=512 compute buffer alone is ~5 GB per pass, on top of model weights.
+
+**Status:** Not deployable on this hardware without dedicated work. The `fix: TQ support for Gemma4/iSWA/Hybrid models` commit is on `turboquant` HEAD, but the D=512 attention path still needs separate tuning plus whatever MoE offload pattern fits 30 layers on 2× 12 GB.
 
 **Follow-ups parked for an own session:**
-- Re-run PPL baseline on the UD-IQ2_XXS variant (unsloth imatrix may fix what IQ2_XS can't)
-- Characterize sliding-window vs full-attention KV allocation under KTQ/VTQ
-- Figure out the right `-ot` MoE expert-offload pattern for the 30-layer architecture
-- Validate tokenizer template (Gemma4 has its own chat format that differs from Qwen)
+- Extend VTQ_1 FA dispatch to cover D=256 reliably, then add a D=512 path (currently blocks at D=256 for v2, D is constrained in the FA vec kernel layout).
+- MoE expert-offload `-ot` pattern — 30 layers means different split math than Qwen's 48-layer assumptions.
+- Minimum-viable context size so the compute buffer fits (probably ~1024 initially, scaling up with offload).
+- Tokenizer-template validation (Gemma4 has its own chat format).
 
 </details>
 
