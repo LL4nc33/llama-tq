@@ -84,7 +84,7 @@ def chart_ppl_vs_bpw():
             v1_points.append((f"{k}/{v}", avg_bpw(k, v),
                               sub["ppl_delta_pct"].mean()))
 
-    # KTQ×VTQ combos — from production deploy measurements on gpu00
+    # KTQ×VTQ combos — measured on the 35B-A3B test box
     # (source: docs/bench-qwen35-122b-a10b.md + devlogs for 35B).
     # These are representative configs not fully in benchmarks.csv yet.
     ktq_vtq_points = [
@@ -113,7 +113,7 @@ def chart_ppl_vs_bpw():
                    edgecolor="black", linewidth=0.6, label=label)
 
     plot_group(v1_points,       "#1f77b4", "o", 120, "v1 baseline + vtq*_1 (35B-A3B)")
-    plot_group(ktq_vtq_points,  "#2ca02c", "o", 120, "KTQ×VTQ combos (35B-A3B prod)", weight="bold")
+    plot_group(ktq_vtq_points,  "#2ca02c", "o", 120, "KTQ×VTQ combos (35B-A3B)",      weight="bold")
     plot_group(v2_points,       "#d62728", "o", 120, "v2 Trellis (0.8B wikitext-2)",  weight="bold")
 
     # Pareto frontier

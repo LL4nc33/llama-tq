@@ -87,7 +87,7 @@ Fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) applied once at 
 | Type | Index bits | bpw | Block | Intended use |
 |------|:---:|:---:|:---:|---|
 | `vtq1_1` | 1 | 1.5 | 6 B | extreme VRAM, quality drops sharply |
-| `vtq2_1` | 2 | 2.5 | 10 B | production long-ctx default |
+| `vtq2_1` | 2 | 2.5 | 10 B | long-ctx default |
 | `vtq3_1` | 3 | 4.0 | 16 B | near-f16 V-cache for quality-sensitive work |
 | `vtq4_1` | 4 | 4.5 | 18 B | smallest codebook-fit error of v1 |
 
