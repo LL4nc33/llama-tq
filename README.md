@@ -93,12 +93,12 @@ Fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) applied once at 
 
 ### v2 — VTQ Trellis (research)
 
-Group-level Viterbi trellis with shared state and shared scale. 512-sample groups, 16-bit open-start state, inverse-Gaussian CDF code table. Post-Trick-6 receiver-side DP also improved PPL (free lunch from removing atomicMin race conditions).
+Group-level Viterbi trellis with shared state and shared scale. 512-sample groups, 16-bit open-start state, inverse-Gaussian CDF code table. Receiver-side DP (atomic-free) is what makes the encoder fast and also reduces PPL vs the earlier sender-side variant.
 
 | Type | Index bits | bpw | Block | PPL Δ vs f16 (0.8B wikitext-2) |
 |------|:---:|:---:|:---:|:---:|
 | `vtq2_2` | 2 | 2.06 | 132 B | +7.74% |
-| `vtq3_2` | 3 | 3.06 | 196 B | **+1.05%** ← previously +2.8% pre-Trick-6 |
+| `vtq3_2` | 3 | 3.06 | 196 B | **+1.05%** |
 | `vtq4_2` | 4 | 4.06 | 260 B | **+0.44%** ← indistinguishable from f16 |
 
 **Caveats:** v2 only works at head-dim D=128 at the moment; D=256 still crashes. Encoder is ~22 ms/call, which is why `--cache-type-v vtq*_2` auto-enables f16 staging during prefill and runs the bulk Viterbi exactly once at the prefill→decode boundary. No flag needed — logs say `deferred V quantization enabled (N layers with f16 staging)` on startup. Source: `docs/blog/2026-04-19-v-cache-validation.md`.

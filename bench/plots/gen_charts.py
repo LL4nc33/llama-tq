@@ -112,9 +112,9 @@ def chart_ppl_vs_bpw():
         ax.scatter([], [], s=size, c=color, marker=marker,
                    edgecolor="black", linewidth=0.6, label=label)
 
-    plot_group(v1_points,       "#1f77b4", "o", 110, "v1 baseline + vtq*_1 (35B-A3B)")
-    plot_group(ktq_vtq_points,  "#2ca02c", "s", 130, "KTQ×VTQ combos (35B-A3B prod)", weight="bold")
-    plot_group(v2_points,       "#d62728", "*", 220, "v2 Trellis (0.8B, Trick-6)",    weight="bold")
+    plot_group(v1_points,       "#1f77b4", "o", 120, "v1 baseline + vtq*_1 (35B-A3B)")
+    plot_group(ktq_vtq_points,  "#2ca02c", "o", 120, "KTQ×VTQ combos (35B-A3B prod)", weight="bold")
+    plot_group(v2_points,       "#d62728", "o", 120, "v2 Trellis (0.8B wikitext-2)",  weight="bold")
 
     # Pareto frontier
     all_pts = sorted(
