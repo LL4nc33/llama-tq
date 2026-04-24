@@ -150,4 +150,7 @@ DISCUSSION_POST.md
 
 # Local-only: development plans, devlogs, design docs
 # Private development notes — never push to remote
-docs/plans/
+docs/plans/*
+# Whitelist: measurement logs + design docs linked from the README
+!docs/plans/2026-04-24-ktq-vtq2-combos.md
+!docs/plans/2026-04-24-ktq2-trellis-design.md
