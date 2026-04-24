@@ -626,12 +626,77 @@ def chart_cross_project_dual():
     _savefig("cross_project.png", fig)
 
 
+def chart_large_moe_tg():
+    # TG tok/s across the three large-MoE deployments (35B / 80B / 122B),
+    # same box (Ryzen 7 5700G + 2x RTX 2060), same KV config
+    # (ktq2_1 / vtq2_1), 200k ctx. Each bar annotated with the physics
+    # ceiling (memory-bandwidth bound on CPU-offloaded traffic) and
+    # resulting efficiency.
+
+    rows = [
+        # name, tg, ceiling, label
+        ("35B-A3B\n(no offload, 400k ctx)",     66.0, None, "all on GPU"),
+        ("80B-A3B\n(hybrid, 200k ctx)",         25.7, 53.0, "20/48 layers on CPU"),
+        ("122B-A10B\n(GQA(2), 200k ctx)",       14.06, 22.0, "29/48 layers on CPU"),
+    ]
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    x = range(len(rows))
+    bar_color = "#1f77b4"
+    ceil_color = "#d62728"
+
+    # Ceiling bars (faint red)
+    ceil_vals = [r[2] if r[2] is not None else r[1] for r in rows]
+    ax.bar(x, ceil_vals, width=0.62, color=ceil_color, alpha=0.12,
+           edgecolor=ceil_color, linewidth=1.0, zorder=1,
+           label="Physics ceiling (memory-BW)")
+
+    # Measured TG bars (solid blue)
+    tg_vals = [r[1] for r in rows]
+    bars = ax.bar(x, tg_vals, width=0.58, color=bar_color,
+                  edgecolor="black", linewidth=0.5, zorder=2,
+                  label="Measured TG tok/s")
+
+    # Annotate each measured bar with tok/s and efficiency
+    for i, (name, tg, ceil, note) in enumerate(rows):
+        ax.text(i, tg + 1.2, f"{tg:.1f} tok/s",
+                ha="center", va="bottom", fontsize=11,
+                fontweight="bold", color="#222")
+        if ceil is not None:
+            eff = tg / ceil * 100
+            ax.text(i, ceil + 1.2, f"ceiling ≈ {ceil:.0f}",
+                    ha="center", va="bottom", fontsize=8.5,
+                    color=ceil_color, style="italic")
+            ax.text(i, tg / 2, f"{eff:.0f}% of ceiling",
+                    ha="center", va="center", fontsize=9,
+                    color="white", fontweight="bold")
+        ax.text(i, -3.5, note, ha="center", va="top",
+                fontsize=8.5, color="#555", style="italic")
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels([r[0] for r in rows], fontsize=10)
+    ax.set_ylabel("TG tok/s (higher is better)")
+    ax.set_title(
+        "llama-tq: large-MoE TG on 2× RTX 2060 + Ryzen 7 5700G\n"
+        "(ktq2_1 K + vtq2_1 V, UD-IQ2_XXS weights, 200k–400k ctx)",
+        fontsize=12, pad=12,
+    )
+    ax.grid(True, axis="y", ls=":", alpha=0.4, zorder=0)
+    ax.set_axisbelow(True)
+    ax.set_ylim(-7, max(ceil_vals) * 1.25)
+    ax.legend(loc="upper right", fontsize=9)
+
+    fig.tight_layout()
+    _savefig("large_moe_tg.png", fig)
+
+
 def main():
     print(f"Output dir: {OUT}")
     chart_ppl_vs_bpw()
     chart_decode_throughput()
     chart_cross_project_dual()
     chart_vtq2_variance()
+    chart_large_moe_tg()
     print("done.")
 
 
