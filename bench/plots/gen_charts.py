@@ -104,23 +104,21 @@ def chart_ppl_vs_bpw():
 
     # KTQ × VTQ_2 combos — 35B-A3B IQ2_XXS, wikitext-2 ctx=2048, 5 chunks
     # (measured 2026-04-24; see docs/plans/2026-04-24-ktq-vtq2-combos.md)
-    # Note: V component is inactive under attention-only PPL eval, so deltas
-    # reflect the K-cache effect. Shown for bpw placement; decode-phase V
-    # evaluation is follow-up work.
+    # Note: V component is inactive under attention-only PPL eval — all v2
+    # variants collapse to the same PPL because deferred V never fires.
+    # Plot the lightest config as representative; decode-phase eval is TODO.
     ktq_vtq2_points = [
-        ("ktq2_1/vtq2_2", 2.78, -0.04),
-        ("ktq2_1/vtq3_2", 3.28, -0.04),
-        ("ktq2_1/vtq4_2", 3.78, -0.04),
-        ("ktq3_1/vtq3_2", 3.78, -0.04),
+        ("ktq2_1/vtq2_2 (v2, attn-only)", 2.78, -0.04),
     ]
 
     fig, ax = plt.subplots(figsize=(12, 6.5))
 
-    def plot_group(points, color, marker, size, label, weight="normal"):
+    def plot_group(points, color, marker, size, label, weight="normal",
+                   label_offset=(6, 4)):
         for name, bpw, delta in points:
             ax.scatter(bpw, delta, s=size, c=color, marker=marker,
                        edgecolor="black", linewidth=0.6, zorder=3)
-            ax.annotate(name, (bpw, delta), xytext=(6, 4),
+            ax.annotate(name, (bpw, delta), xytext=label_offset,
                         textcoords="offset points", fontsize=8,
                         color=color, fontweight=weight)
         ax.scatter([], [], s=size, c=color, marker=marker,
@@ -129,7 +127,7 @@ def chart_ppl_vs_bpw():
     plot_group(v1_points,       "#1f77b4", "o", 120, "v1 baseline + vtq*_1 (35B-A3B)")
     plot_group(ktq_vtq_points,  "#2ca02c", "o", 120, "KTQ×VTQ combos (35B-A3B)",      weight="bold")
     plot_group(v2_points,       "#d62728", "o", 120, "v2 Trellis (0.8B wikitext-2)",  weight="bold")
-    plot_group(ktq_vtq2_points, "#9467bd", "o", 120, "KTQ×VTQ_2 (35B-A3B, attn-only)", weight="bold")
+    plot_group(ktq_vtq2_points, "#9467bd", "o", 120, "KTQ×VTQ_2 (35B-A3B, attn-only)", weight="bold", label_offset=(8, -14))
 
     # Pareto frontier
     all_pts = sorted(
