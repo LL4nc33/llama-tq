@@ -1,46 +1,46 @@
 # llama-tq Roadmap
 
-Letzte Aktualisierung: 2026-04-20
-Maintainer: LL4nc33 (Lance / Maverick)
+Last updated: 2026-04-20
+Maintainer: LL4nc33
 
-## Status: Phase 1 abgeschlossen ✅
+## Status: Phase 1 complete ✅
 
-Die `trellis-v2-phase1` Arbeit ist auf `master` gemerged und
-production-validiert. Das VTQ_2 Trellis-coded V-cache System ist
-fertig und deployable.
+The `trellis-v2-phase1` work is merged to `master` and validated on
+the author's hardware. The VTQ_2 Trellis-coded V-cache pipeline is
+functional and deployable.
 
-### Production Numbers (Qwen3.5-35B-A3B IQ2_XS on 2× RTX 2060 12 GB)
+### Reference numbers (Qwen3.5-35B-A3B IQ2_XS on 2× RTX 2060 12 GB)
 
-| config | tg tok/s | speedup vs alt |
+| config | tg tok/s | speedup vs old |
 |--------|----------|----------------|
-| alt (f16 V-cache) | ~8-10 | baseline |
-| neu (vtq3_2 + ktq2_1 + deferred + sink, parallel=2) | **~66.7** | **7×** |
+| old (f16 V-cache) | ~8-10 | baseline |
+| new (vtq3_2 + ktq2_1 + deferred + sink, parallel=2) | **~66.7** | **7×** |
 
-Messung: 250-token generation, deutsche Prompts, 2026-04-20.
+Measurement: 250-token generation, German prompts, 2026-04-20.
 
-### Was Phase 1 geliefert hat
+### What Phase 1 shipped
 
-**Typen:** VTQ2_2 / VTQ3_2 / VTQ4_2 (2.06 / 3.06 / 4.06 bpw V-cache,
-bit-exact Trellis-Coded-Quantization mit Viterbi-Encoder und
-Shift-Register-Decoder)
+**Types:** VTQ2_2 / VTQ3_2 / VTQ4_2 (2.06 / 3.06 / 4.06 bpw V-cache,
+bit-exact Trellis-Coded Quantization with Viterbi encoder and
+shift-register decoder)
 
-**CUDA-Pfad:** Dequant-Kernel, Viterbi-Encoder (~57μs/call),
-Flash-Attention-Dispatch, `convert.cu` + `set-rows.cu` Integration
+**CUDA path:** dequant kernel, Viterbi encoder (~57μs/call),
+Flash-Attention dispatch, `convert.cu` + `set-rows.cu` integration
 
-**Runtime-Features:**
-- `--tq-deferred-v` — f16-Staging-Buffer, bulk Viterbi am prefill→decode-Übergang
-- `--tq-protect-sinks N` — StreamingLLM-inspirierter Schutz des ersten KV-Layers
-- `--tq-protect-layers N` — Boundary-Protection (first/last N layers q8_0)
-- CLI-Flags in `server`, `cli`, `perplexity`, `bench`, `mtmd`
+**Runtime features:**
+- `--tq-deferred-v` — f16 staging buffer, bulk Viterbi at the prefill→decode transition
+- `--tq-protect-sinks N` — StreamingLLM-inspired protection of the first N tokens
+- `--tq-protect-layers N` — boundary protection (first/last N layers in q8_0)
+- CLI flags in `server`, `cli`, `perplexity`, `bench`, `mtmd`
 
-**Validierung:**
+**Validation:**
 - Qwen3.5-0.8B tg512: 7 → 196 t/s (28×)
 - Qwen3.5-27B dual-GPU tg1024: 14.62 vs f16 14.89 (-1.8%)
-- Qwen3.5-35B-A3B live: byte-identischer deterministic output, ~6× schneller
+- Qwen3.5-35B-A3B live: byte-identical deterministic output, ~6× faster
 - PPL: vtq3_2 +1.9%, vtq2_2 +8.0%, vtq4_2 +0.6% (wikitext-2)
-- Zero crashes in 6h+ akkumulierten Runs
+- Zero crashes in 6h+ cumulative runs
 
-**Production Recipe:**
+**Reference recipe:**
 ```
 --cache-type-k ktq2_1 --cache-type-v vtq3_2 \
 --tq-deferred-k --tq-deferred-v --tq-protect-sinks 4
@@ -48,163 +48,165 @@ Flash-Attention-Dispatch, `convert.cu` + `set-rows.cu` Integration
 
 ---
 
-## Benchmark-Spur (kontinuierlich, parallel zu allen Phasen)
+## Benchmark track (continuous, parallel to all phases)
 
-Solide Baselines sind Voraussetzung für jede Optimierung. Dauerhafte
-Messreihe in `docs/plans/benchmarks/` (pro Messung YYYY-MM-DD-topic.md).
+Solid baselines are a prerequisite for every optimization. Running
+measurement series in `docs/plans/benchmarks/` (one file per run,
+`YYYY-MM-DD-topic.md`).
 
-**Regelmäßig:**
-- Production-Vergleich: master-build vs ältere Commits (Regression-Check)
-- Context-Scaling: tg @ 4k / 16k / 64k / 200k Ctx-Länge
-- Model-Scaling: 0.8B / 2B / 27B / 35B mit fixem V-Recipe
-- Competitor-Comparison: Q4_K_M / IQ4_XS / Q8_0 V vs VTQ_2
+**Regular:**
+- Master-vs-older-commit comparison (regression check)
+- Context scaling: tg @ 4k / 16k / 64k / 200k ctx length
+- Model scaling: 0.8B / 2B / 27B / 35B with fixed V recipe
+- Competitor comparison: Q4_K_M / IQ4_XS / Q8_0 V vs VTQ_2
 
-**Ad-hoc bei jedem Trick:**
+**Ad hoc per trick:**
 - PPL wikitext-2 10/40 chunks
-- tg/pp bench mit gleicher Hardware-Config
-- Speicherverbrauch
+- tg/pp bench on the same hardware config
+- Memory footprint
 
 ---
 
-## Phase 2 — Aktuelle Version verbessern (sofort)
+## Phase 2 — Polish the current version (immediate)
 
-Ziel: die bestehende VTQ_2-Implementierung schrittweise robuster und
-schneller machen, ohne den Scope zu erweitern. Kleine Wins, viel
-Messen.
+Goal: make the existing VTQ_2 implementation progressively more
+robust and faster without expanding scope. Small wins, lots of
+measurement.
 
-**Offene Arbeitspunkte aus Phase 1:**
-- ~~35B Production-Deploy~~ ✅ DONE 2026-04-20
-  (ctx=200K statt geplanten 400K wegen compute-buffer OOM bei parallel=2)
-- PPL-Prefill im `--tq-deferred-v` Modus echt quantisiert messbar
-  machen (aktuell bleibt State in STAGING bei pure prefill)
-- 27B pp1024 um -3% unter f16 — Bulk-Viterbi am Übergang optimieren
-- 400K ctx auf 2x 12GB GPU: entweder parallel=1 oder kleinere ubatch
-- CUDA-Kernel-Review: noch überall `__syncthreads()` optimal?
-- Fehlerzustände: was passiert bei OOM, invalidem `-ngl`, kaputten
-  GGUFs — graceful failure messages statt crash
+**Open items from Phase 1:**
+- ~~35B deploy~~ ✅ DONE 2026-04-20
+  (ctx=200K instead of the planned 400K due to compute-buffer OOM at parallel=2)
+- Make PPL-prefill measurable under `--tq-deferred-v` mode (state
+  currently stays in STAGING during pure prefill)
+- 27B pp1024 target −3% under f16 — optimize the bulk-Viterbi transition
+- 400K ctx on 2× 12 GB GPU: either parallel=1 or smaller ubatch
+- CUDA kernel review: `__syncthreads()` placement still optimal everywhere?
+- Error paths: OOM, invalid `-ngl`, broken GGUFs — graceful failure
+  messages instead of crashes
 
-**Quality-of-life:**
-- `--help` Output für VTQ-Flags aufräumen
-- Defaults überprüfen (sollten die TQ-Flags ein default-on-Profil haben?)
-- Fehler-Logging bei failed dequant (aktuell silent fallback auf f16)
+**Quality of life:**
+- Clean up `--help` output for VTQ flags
+- Review defaults (should the TQ flags have a default-on profile?)
+- Error logging on failed dequant (silent f16 fallback at the moment)
 
-**Zeithorizont:** 1-3 Wochen. Kein Research, nur polish.
+**Timeframe:** 1-3 weeks. No research, only polish.
 
 ---
 
-## Phase 3 — Trick-17-Serie (Research-Parallelspur)
+## Phase 3 — Trick-17 series (research lane)
 
-Ziel: Qualität/bpw-Ratio verbessern durch klügere Quantisierungs-
-Algorithmen. Jeder Trick ist unabhängig, hat eigenes Mess-Gate.
+Goal: improve the quality/bpw ratio through smarter quantization
+algorithms. Each trick is independent and has its own measurement
+gate.
 
-Siehe `tests/trellis-phase1/BACKLOG.md` für Details. Hard-limit:
-Es werden nie mehr als 17. Neue Ideen ersetzen alte.
+See `tests/trellis-phase1/BACKLOG.md` for details. Hard limit: never
+more than 17. New ideas replace old ones.
 
 **Done:**
-- Trick 1 — Attention-sink protection (Layer-level)
+- Trick 1 — Attention-sink protection (layer-level)
 - Trick 3 — Per-model RHT seed calibration
 
-**Nächste:**
-- Trick 2 — Per-head precision mixing (hohe Varianz → höhere bpw)
+**Next:**
+- Trick 2 — Per-head precision mixing (high variance → higher bpw)
 - Trick 4 — Correction overlay buffer (lossless top-N patch)
-- Trick 5 — Per-head learned lambda sharpening (braucht Training)
+- Trick 5 — Per-head learned lambda sharpening (needs training)
 
-**Später (6-16):** siehe BACKLOG — FWHT per token, deferred K hybrid
+**Later (6-16):** see BACKLOG — FWHT per token, deferred K hybrid
 precision, learned RHT matrix, block-variable bpw, adaptive Lloyd-Max.
 
-**Trick 17** — "The Big One". Reserviert. Wenn er kommt, ist das
-Paper geschrieben.
+**Trick 17** — "The big one". Reserved. If it lands, the paper is
+written.
 
-**Zeithorizont:** Parallel zu Phase 2, pro Trick 1-2 Wochen.
+**Timeframe:** parallel to Phase 2, 1-2 weeks per trick.
 
 ---
 
-## Phase 4 — TQW2 Weight Quantization (großer Hebel)
+## Phase 4 — TQW2 weight quantization (the big lever)
 
-VTQ war nur KV-cache. Modell-Weights sind weiterhin IQ2_XXS / Q8_0.
-**Weights stellen den Großteil des VRAM** — TQW2 würde Weights selbst
-auf 2-3 bpw bringen mit Lloyd-Max-Qualität.
+VTQ was KV-cache only. Model weights remain IQ2_XXS / Q8_0.
+**Weights are the bulk of VRAM** — TQW2 would push weights themselves
+into the 2-3 bpw range with Lloyd-Max-level quality.
 
 **Status:**
-- Python-Validierung: RHT + Lloyd-Max vs IQ2_XXS MSE — DONE (Task #126)
-- CUDA-Sprint: offen (Task #127, in_progress)
+- Python validation: RHT + Lloyd-Max vs IQ2_XXS MSE — DONE (Task #126)
+- CUDA sprint: open (Task #127, in progress)
 
-**Offene Fragen:**
-- Separate Type-enums `TQW{1,2,3,4}_1` oder Reuse von KTQ*?
-- Integration in `llama.cpp` Convert-Pipeline (gguf-py)
-- Interaktion mit existierenden Quant-Typen
+**Open questions:**
+- Separate type enums `TQW{1,2,3,4}_1` or reuse KTQ*?
+- Integration into llama.cpp's convert pipeline (gguf-py)
+- Interaction with existing quant types
 
-**Zeithorizont:** 1-3 Monate nach Phase-2-Abschluss. Größeres Projekt
-als die Trick-Serie.
+**Timeframe:** 1-3 months after Phase 2. Bigger project than the
+trick series.
 
 ---
 
-## Phase 5 — Community / Paper / Hardware
+## Phase 5 — Community / paper / hardware
 
-**Upstream-PR an `ggml-org/llama.cpp`:**
-Sauber aufgeteilt in digestible PRs (type-enums → CPU-path → CUDA-path),
-mit Paper-ähnlicher Dokumentation. Optional — nur falls relevante
-Community-Nachfrage.
+**Upstream PR to `ggml-org/llama.cpp`:**
+split cleanly into digestible PRs (type enums → CPU path → CUDA
+path), paper-like documentation. Optional — only if there is
+meaningful community demand.
 
 **Paper:**
-Sobald Trick 17 benannt und validiert ist: Draft für ICLR 2027
-oder ähnlich. Konkurrenz-Benchmarks: KVQuant, Aquila, QuaRot.
+once Trick 17 is named and validated, draft for ICLR 2027 or
+similar. Competitor benchmarks: KVQuant, Aquila, QuaRot.
 
-**Hardware-Support:**
+**Hardware support:**
 - RTX 40-series tuning (Ada architecture)
-- AMD ROCm-Path (falls Community-Interesse)
-- Apple Silicon MPS (Metal-Shader-Äquivalente zum Viterbi-Encoder)
+- AMD ROCm path (contingent on community interest)
+- Apple Silicon MPS (Metal-shader equivalents of the Viterbi encoder)
 
-**Zeithorizont:** 3-12 Monate, abhängig von Paper-Timing.
+**Timeframe:** 3-12 months, depending on paper timing.
 
 ---
 
-## Infrastructure / Ops
+## Infrastructure / ops
 
 ### Repositories
-- `LL4nc33/llama-tq` — aktiv gepflegter Fork mit VTQ_2
-- `ggml-org/llama.cpp` — upstream (periodisch rebase/merge)
-- `LL4nc33/oidanice-llama` — whitelabel AI platform (nutzt llama-tq als backend)
+- `LL4nc33/llama-tq` — actively maintained fork with VTQ_2
+- `ggml-org/llama.cpp` — upstream (periodic rebase/merge)
+- `LL4nc33/oidanice-llama` — whitelabel AI platform (uses llama-tq as backend)
 
-### Production-Server
-- primary — Qwen3.5-35B-A3B, VTQ_2 (ab 2026-04-20)
+### Deployed servers
+- primary — Qwen3.5-35B-A3B, VTQ_2 (since 2026-04-20)
 - secondary — FunctionGemma 270M (tool router)
 
 ### Testing
-- Lokaler CPU-Roundtrip in `tests/trellis-phase1/`
-- PPL sweep on production hardware (wikitext-2)
-- Stability-Runs: bench tg1024, long generation
+- Local CPU round-trip in `tests/trellis-phase1/`
+- PPL sweep on the test hardware (wikitext-2)
+- Stability runs: bench tg1024, long generation
 
 ### LEGION
-Shared message board mit `oidanice-distillery` für Training/Deployment
-coordination. Lokal only, nie remote.
+Local-only shared message board with `oidanice-distillery` for
+training/deployment coordination. Never pushed to remote.
 
 ---
 
-## Decision Log (lose Sammlung)
+## Decision log (loose)
 
-**Warum 17 Tricks?** Deutsches Idiom für "die geniale, scheinbar banale
-Lösung die das Problem wegzaubert". Hard-limit gegen Featurism.
+**Why 17 tricks?** German idiom for "the clever-but-simple solution
+that makes the problem go away". Hard limit against featurism.
 
-**Warum Trellis statt Codebook?** Paper-Validierung: Trellis schlägt
-Lloyd-Max-Codebücher bei gleichem bpw um ~0.3-0.5% PPL. Kosten:
-komplexerer Encoder (Viterbi DP) vs LUT.
+**Why trellis instead of codebook?** Paper validation: trellis beats
+Lloyd-Max codebooks at the same bpw by ~0.3-0.5% PPL. Cost: more
+complex encoder (Viterbi DP) vs LUT.
 
-**Warum deferred_v?** Per-token Viterbi auf kurzen ubatches = 21.7ms
-GPU-call-overhead dominiert. Bulk-quantize am prefill→decode-Übergang
-= eine einzige Viterbi-Instanz, dann lese-optimierter decoder.
-26× tg Speedup, keine Quality-Änderung.
+**Why deferred_v?** Per-token Viterbi on short ubatches = 21.7 ms
+GPU-call overhead dominates. Bulk-quantize at the prefill→decode
+transition = one Viterbi invocation, then a read-optimized decoder.
+26× tg speedup, no quality change.
 
-**Warum nicht k_cache-Protect-Sinks?** K-cache wird symmetrisch per
-Token geschrieben und verhält sich anders unter Quantisierung.
-Erste Messungen zeigen keine sink-Dominanz → nicht gemacht.
+**Why no k_cache protect-sinks?** K-cache is written symmetrically
+per token and behaves differently under quantization. Early
+measurements show no sink dominance → not pursued.
 
 ---
 
-## Referenzen
+## References
 - [docs/plans/2026-04-20-cuda-stability-validation.md](plans/2026-04-20-cuda-stability-validation.md)
 - [docs/plans/2026-04-19-deferred-v-results.md](plans/2026-04-19-deferred-v-results.md)
 - [docs/plans/2026-04-19-sink-protection-results.md](plans/2026-04-19-sink-protection-results.md)
 - [docs/plans/2026-04-17-trellis-v2-design.md](plans/2026-04-17-trellis-v2-design.md)
 - [tests/trellis-phase1/BACKLOG.md](../tests/trellis-phase1/BACKLOG.md)
-- [docs/turboquant.md](turboquant.md) — TQ v5 technische Details
+- [docs/turboquant.md](turboquant.md) — TQ v5 technical details
