@@ -492,6 +492,34 @@ def chart_cross_project_dual():
             "project": "llama-tq",
         })
 
+    # KTQ×VTQ asymmetric combos — measured on 35B-A3B test box,
+    # not yet in benchmarks.csv (single-V column). TG deltas from the
+    # 35B sweep in README dual-GPU section.
+    for label, ppl, tg in [
+        ("ktq2_1 + vtq3_1 (4.0 bpw)",  1.4, -5.0),
+        ("ktq3_1 + vtq3_1 (4.25 bpw)", 1.1, -5.0),
+        ("ktq2_1 + vtq2_1 (3.0 bpw)",  6.9, -5.0),
+    ]:
+        picks.append({
+            "label": f"llama-tq  {label}",
+            "ppl": ppl,
+            "tg": tg,
+            "project": "llama-tq",
+        })
+
+    # v2 Trellis (Qwen3.5-0.8B wikitext-2, V-only; f16 K assumed).
+    # TG delta is negligible thanks to deferred-V bulk quantize.
+    for label, ppl, tg in [
+        ("f16 + vtq4_2 (10.03 bpw)", 0.44, -2.0),
+        ("f16 + vtq3_2 (9.53 bpw)",  1.05, -2.0),
+    ]:
+        picks.append({
+            "label": f"llama-tq  {label}",
+            "ppl": ppl,
+            "tg": tg,
+            "project": "llama-tq",
+        })
+
     for _, r in other[other["project"] == "TheTom"].iterrows():
         picks.append({
             "label": f"TheTom    {r['config']} ({r['avg_bpw']:.2f} bpw)",
@@ -587,7 +615,7 @@ def chart_cross_project_dual():
 
     fig.text(
         0.5, 0.005,
-        "llama-tq: 2x RTX 2060 (Qwen3.5-35B-A3B Q4_K_M).  "
+        "llama-tq: 2x RTX 2060 (Qwen3.5-35B-A3B Q4_K_M, v2 Trellis on Qwen3.5-0.8B wikitext-2).  "
         "TheTom: M5 Max (Qwen3.5-35B-A3B Q4_K_M).  "
         "buun: RTX 3090 (Qwen3.5-27B Q6_K, KL divergence).  "
         "Absolute numbers across projects are approximate.",
