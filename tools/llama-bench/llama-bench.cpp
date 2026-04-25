@@ -23,6 +23,7 @@
 #include "download.h"
 #include "ggml.h"
 #include "llama.h"
+#include "tq-profile.h"
 
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
@@ -2301,6 +2302,33 @@ int main(int argc, char ** argv) {
                 return 1;
             }
             prev_inst = &inst;
+        }
+
+        // Optional per-layer V-cache override via env var.
+        // Same syntax as common --tq-v-override: "0-1:vtq4_2,*:vtq2_2"
+        // Resolved here because n_layer is only known after model load.
+        std::vector<ggml_type> tq_v_layers;
+        if (const char * env_override = getenv("LLAMA_ARG_TQ_V_OVERRIDE")) {
+            std::string err;
+            const int n_layer = (int) llama_model_n_layer(lmodel);
+            // base type = configured uniform type_v (so unspecified layers fall back to it)
+            tq_v_layers = llama_tq::resolve_v_types(
+                    /*profile_path=*/ "",
+                    /*strategy    =*/ "",
+                    /*base        =*/ cparams.type_v,
+                    /*low         =*/ cparams.type_v,
+                    /*high        =*/ cparams.type_v,
+                    /*override    =*/ std::string(env_override),
+                    /*n_layer     =*/ n_layer,
+                    /*budget_bpw  =*/ 0.0f,
+                    &err);
+            if (tq_v_layers.empty()) {
+                fprintf(stderr, "%s: warning: --tq-v-override env var resolution failed (%s) — falling back to uniform type_v\n",
+                        __func__, err.c_str());
+            } else {
+                cparams.type_v_layers       = tq_v_layers.data();
+                cparams.type_v_layers_count = (int32_t) tq_v_layers.size();
+            }
         }
 
         llama_context * ctx = llama_init_from_model(lmodel, cparams);
