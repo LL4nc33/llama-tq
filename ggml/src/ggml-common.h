@@ -420,6 +420,49 @@ typedef struct {
 } block_vtq4_2;
 static_assert(sizeof(block_vtq4_2) == 68, "wrong vtq4_2 block size");  // 4.25 bpw
 
+// --- VTQ{K}_3: Outlier-Channel-Split (Phase 3, Roadmap 2026-04-25) ---
+// Same trellis backbone as VTQ_2, plus K_OUT positions per block stored in fp16.
+// During dequant: trellis-decode all 128 samples, then overwrite the K_OUT
+// outlier positions with their fp16 ground-truth values.
+//
+// Hypothesis: closes the Gemma4 -6.6% TG gap at D=512 by absorbing the long-tail
+// V-distribution outliers that the trellis codebook can't represent without
+// scale-blowup. PPL gap to f16 expected to drop below 0.5%.
+//
+// Layout: same head as block_vtq{K}_2 + uint8_t outlier_pos[4] + half outlier_val[4]
+// Overhead vs _2: 4 B positions + 8 B values = 12 B per 128-sample block.
+//
+// bpw = (sizeof(block_vtq{K}_3) * 8) / QK_VTQ_TRELLIS
+
+#define VTQ_OUTLIER_K 4  // outliers per trellis block
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 2 / 8];        // 32 B
+    uint8_t   outlier_pos[VTQ_OUTLIER_K];        // 4 B
+    ggml_half outlier_val[VTQ_OUTLIER_K];        // 8 B
+} block_vtq2_3;
+static_assert(sizeof(block_vtq2_3) == 48, "wrong vtq2_3 block size");  // 3.00 bpw
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];        // 48 B
+    uint8_t   outlier_pos[VTQ_OUTLIER_K];        // 4 B
+    ggml_half outlier_val[VTQ_OUTLIER_K];        // 8 B
+} block_vtq3_3;
+static_assert(sizeof(block_vtq3_3) == 64, "wrong vtq3_3 block size");  // 4.00 bpw
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 4 / 8];        // 64 B
+    uint8_t   outlier_pos[VTQ_OUTLIER_K];        // 4 B
+    ggml_half outlier_val[VTQ_OUTLIER_K];        // 8 B
+} block_vtq4_3;
+static_assert(sizeof(block_vtq4_3) == 80, "wrong vtq4_3 block size");  // 5.00 bpw
+
 // --- VTQ Correction Overlay (Trick 4) ---
 // Per-trellis-block top-N error sidecar. Stored in a separate tensor,
 // parallel to block_vtq{2,3,4}_2 (whose struct layout is frozen by GGUF

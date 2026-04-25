@@ -36,6 +36,9 @@ ggml_type type_from_name(const std::string & name) {
     if (n == "vtq2_2") return GGML_TYPE_VTQ2_2;
     if (n == "vtq3_2") return GGML_TYPE_VTQ3_2;
     if (n == "vtq4_2") return GGML_TYPE_VTQ4_2;
+    if (n == "vtq2_3") return GGML_TYPE_VTQ2_3;
+    if (n == "vtq3_3") return GGML_TYPE_VTQ3_3;
+    if (n == "vtq4_3") return GGML_TYPE_VTQ4_3;
     // Allow falling back to f16 / q8_0 for protected layers if explicitly requested
     if (n == "f16")    return GGML_TYPE_F16;
     if (n == "q8_0")   return GGML_TYPE_Q8_0;
@@ -197,6 +200,9 @@ static float bpw_of(ggml_type t) {
         case GGML_TYPE_VTQ2_2: return 34.0f * 8.0f / 32.0f; // 8.5
         case GGML_TYPE_VTQ3_2: return 50.0f * 8.0f / 32.0f; // 12.5  -> actually 3.0625 bpw per value but matching block-level is fine for ranking
         case GGML_TYPE_VTQ4_2: return 66.0f * 8.0f / 32.0f; // 16.5
+        case GGML_TYPE_VTQ2_3: return 48.0f * 8.0f / 128.0f; // 3.0 bpw (block=128 samples)
+        case GGML_TYPE_VTQ3_3: return 64.0f * 8.0f / 128.0f; // 4.0 bpw
+        case GGML_TYPE_VTQ4_3: return 80.0f * 8.0f / 128.0f; // 5.0 bpw
         case GGML_TYPE_F16:    return 16.0f;
         case GGML_TYPE_Q8_0:   return 8.5f;
         default:               return 32.0f;
@@ -214,6 +220,9 @@ static float bpw_per_elem(ggml_type t) {
         case GGML_TYPE_VTQ2_2: return (34.0f * 8.0f) / 32.0f; // 8.5
         case GGML_TYPE_VTQ3_2: return (50.0f * 8.0f) / 32.0f; // 12.5
         case GGML_TYPE_VTQ4_2: return (66.0f * 8.0f) / 32.0f; // 16.5
+        case GGML_TYPE_VTQ2_3: return (48.0f * 8.0f) / 128.0f; // 3.00
+        case GGML_TYPE_VTQ3_3: return (64.0f * 8.0f) / 128.0f; // 4.00
+        case GGML_TYPE_VTQ4_3: return (80.0f * 8.0f) / 128.0f; // 5.00
         case GGML_TYPE_F16:    return 16.0f;
         case GGML_TYPE_Q8_0:   return 8.5f;
         default:               return 32.0f;
