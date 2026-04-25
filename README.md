@@ -290,7 +290,7 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 | f16 | vtq4\_1 | 808.93 | 79.61 | −40.8% | −6.0% |
 | **f16** | **vtq2\_2** | **1343.97** | **82.73** | **−1.6%** | **−2.3%** |
 | f16 | vtq3\_2 | 1344.84 | 82.70 | −1.5% | −2.4% |
-| f16 | vtq4\_2 | 1356.80 | 83.55 | −0.7% | −1.4% |
+| **f16** | **vtq4\_2** | **1356.80** | **83.55** | **−0.7%** | **−1.4%** ⭐ |
 | f16 | q4\_0 | 380.72 | 55.11 | −72.1% | −35.0% |
 | f16 | q8\_0 | 393.75 | 52.65 | −71.2% | −37.9% |
 | ktq1\_1 | vtq1\_1 | 1058.42 | 78.03 | −22.5% | −7.9% |
@@ -303,7 +303,7 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 | ktq2\_1 | vtq4\_1 | 800.99 | 76.43 | −41.4% | −9.8% |
 | **ktq2\_1** | **vtq2\_2** | **1318.67** | **79.88** | **−3.5%** | **−5.7%** |
 | ktq2\_1 | vtq3\_2 | 1314.98 | 79.74 | −3.7% | −5.9% |
-| ktq2\_1 | vtq4\_2 | 1324.86 | 80.06 | −3.0% | −5.5% |
+| **ktq2\_1** | **vtq4\_2** | **1324.86** | **80.06** | **−3.0%** | **−5.5%** ⭐ |
 | ktq2\_1 | q4\_0 | 367.10 | 55.30 | −73.1% | −34.7% |
 | ktq2\_1 | q8\_0 | 375.96 | 53.11 | −72.5% | −37.3% |
 | ktq3\_1 | f16 | 1320.73 | 81.92 | −3.3% | −3.3% |
@@ -333,6 +333,8 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 | q4\_0 | vtq3\_2 | 505.58 | 53.06 | −63.0% | −37.4% |
 | q4\_0 | q4\_0 | 1300.30 | 75.18 | −4.8% | −11.3% |
 | q4\_0 | q8\_0 | 390.69 | 58.18 | −71.4% | −31.3% |
+
+**⭐ marks Pareto winners** (best speed/compression tradeoff for given column constraint).
 
 **Observations (vs Qwen3.6 sweep):**
 - **VTQ_2 family is the Pareto winner on Gemma4 too** — `f16/vtq4_2` only −0.7% PP / −1.4% TG (best non-baseline). `f16/vtq2_2` slightly behind at −1.6% / −2.3%.
