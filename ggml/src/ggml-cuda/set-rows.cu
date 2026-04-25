@@ -503,6 +503,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ2_2) {
+        static int _dbg_vtq2_2 = 0; if (_dbg_vtq2_2++ < 3) fprintf(stderr, "[SETROWS] VTQ2_2 dispatch ne00=%lld ne01=%lld ne02=%lld\n", (long long)ne00, (long long)ne01, (long long)ne02);
         vtq_cuda_encode_set_rows<idx_t, block_vtq2_2, 2>(
             src0_d, src1_d, (block_vtq2_2*)dst->data,
             ne00, ne01, ne02, ne03,
@@ -513,6 +514,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ3_2) {
+        static int _dbg_vtq3_2 = 0; if (_dbg_vtq3_2++ < 3) fprintf(stderr, "[SETROWS] VTQ3_2 dispatch ne00=%lld ne01=%lld ne02=%lld\n", (long long)ne00, (long long)ne01, (long long)ne02);
         vtq_cuda_encode_set_rows<idx_t, block_vtq3_2, 3>(
             src0_d, src1_d, (block_vtq3_2*)dst->data,
             ne00, ne01, ne02, ne03,
@@ -523,6 +525,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ4_2) {
+        static int _dbg_vtq4_2 = 0; if (_dbg_vtq4_2++ < 3) fprintf(stderr, "[SETROWS] VTQ4_2 dispatch ne00=%lld ne01=%lld ne02=%lld\n", (long long)ne00, (long long)ne01, (long long)ne02);
         vtq_cuda_encode_set_rows<idx_t, block_vtq4_2, 4>(
             src0_d, src1_d, (block_vtq4_2*)dst->data,
             ne00, ne01, ne02, ne03,

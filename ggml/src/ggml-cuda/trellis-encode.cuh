@@ -525,7 +525,15 @@ static void vtq_cuda_encode_set_rows(
 {
     GGML_ASSERT(ne00 % VTQ_ENC_N == 0);
     const int64_t ne_total = (ne00 * ne01 * ne02 * ne03) / VTQ_ENC_N;
-    if (ne_total == 0 || ne00 <= 0 || ne01 <= 0 || ne02 <= 0 || ne11 <= 0 || ne12 <= 0) return;
+    {
+        static int _dbg = 0;
+        if (_dbg++ < 4) fprintf(stderr, "[VTQ_ENC] K=%d ne00=%lld ne01=%lld ne02=%lld ne03=%lld ne11=%lld ne12=%lld ne_total=%lld\n",
+            K, (long long)ne00, (long long)ne01, (long long)ne02, (long long)ne03, (long long)ne11, (long long)ne12, (long long)ne_total);
+    }
+    if (ne_total == 0 || ne00 <= 0 || ne01 <= 0 || ne02 <= 0 || ne11 <= 0 || ne12 <= 0) {
+        static int _dbg2 = 0; if (_dbg2++ < 4) fprintf(stderr, "[VTQ_ENC] K=%d EARLY RETURN (zero dim)\n", K);
+        return;
+    }
 
     GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
     const vtq_encode_workspace * ws = vtq_get_encode_workspace(stream);
