@@ -1671,6 +1671,17 @@ static void ggml_compute_forward_mul_mat_id(
         }
 
         const char * src0_cur = (const char *) src0->data + cur_a * nb02;
+
+        // Prefetch the next active expert's first weight cacheline while we
+        // process the current one. On CPU-offloaded MoE, this hides part of
+        // the DRAM-fetch latency behind the in-flight mat-vec.
+        for (int next_a = cur_a + 1; next_a < n_as; ++next_a) {
+            if (matrix_row_counts[next_a] > 0) {
+                __builtin_prefetch((const char *) src0->data + next_a * nb02, 0, 0);
+                __builtin_prefetch((const char *) src0->data + next_a * nb02 + 64, 0, 0);
+                break;
+            }
+        }
         const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
         const size_t row_size = ggml_row_size(vec_dot_type, ne10);
 
