@@ -141,7 +141,7 @@ Group-level Viterbi trellis with shared state and shared scale. 512-sample group
 
 ### KTQ K-cache
 
-Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max codebook. The FA kernel applies FWHT to Q once per tile and computes Q·K entirely in the Hadamard domain — K is never explicitly dequantized in the vec path. On CC ≥ 8.0 an MMA-KTQ tensor-core path is also wired (untested locally).
+Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max codebook. The FA kernel applies FWHT to Q once per tile and computes Q·K entirely in the Hadamard domain — K is never explicitly dequantized in the vec path. On CC ≥ 7.5 (Turing+) an **MMA-KTQ tensor-core path** is wired and live: split-dequant for prefill (PP ≥ 8 tokens), routes through the existing MMA-F16 tensor-core kernel. Measured KTQ2_1: PP128 **727 t/s** (vs 431 f16 baseline), PP512 875 (parity with f16), PP2048 868 (parity). TG falls back to VEC. Source: `ggml/src/ggml-cuda/fattn-mma-ktq.{cu,cuh}`.
 
 | Type | Index bits | bpw | Block |
 |------|:---:|:---:|:---:|
@@ -580,7 +580,7 @@ CUDA CC 6.1+. CPU fallback available for all KTQ / VTQ types.
 
 ### Hardware notes
 
-sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` and thread-count tuning are set for Turing's SM layout. On Ampere/Ada/Hopper the code compiles and should run, but the MMA-KTQ tensor-core path is untested and the FA tuning is probably sub-optimal.
+sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` and thread-count tuning are set for Turing's SM layout. The MMA-KTQ tensor-core path is live and tested on Turing; on Ampere/Ada/Hopper the code compiles and should run but the FA tuning is probably sub-optimal.
 
 ---
 
