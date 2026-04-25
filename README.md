@@ -247,38 +247,41 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 
 26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. FA-vec dispatch covers D=64/128/256/512 for all TQ types.
 
+After Phase 1 V_rows=8 D≥256 fix (`fattn-vec.cuh:89`, commit `584378082`). Halved block-header reload waste at D=512 layouts.
+
 | K | V | PP512 | TG128 | ΔPP | ΔTG |
 |---|---|:---:|:---:|:---:|:---:|
-| **f16** | **f16** | **1395.74** | **82.70** | baseline | baseline |
-| f16 | vtq2\_1 | 1054.38 | 78.95 | −24.5% | −4.5% |
-| f16 | vtq3\_1 | 908.74 | 75.35 | −34.9% | −8.9% |
-| **f16** | **vtq2\_2** | **1381.58** | **80.70** | **−1.0%** | **−2.4%** |
-| f16 | vtq3\_2 | 1381.17 | 80.72 | −1.0% | −2.4% |
-| f16 | q4\_0 | 326.56 | 32.23 | −76.6% | −61.0% |
-| f16 | q8\_0 | 333.95 | 30.69 | −76.1% | −62.9% |
-| ktq2\_1 | f16 | 1345.45 | 78.81 | −3.6% | −4.7% |
-| ktq2\_1 | vtq2\_1 | 1025.33 | 75.36 | −26.5% | −8.9% |
-| ktq2\_1 | vtq3\_1 | 889.54 | 71.92 | −36.3% | −13.0% |
-| **ktq2\_1** | **vtq2\_2** | **1334.21** | **77.27** | **−4.4%** | **−6.6%** |
-| ktq2\_1 | vtq3\_2 | 1331.86 | 77.21 | −4.6% | −6.6% |
-| ktq2\_1 | q4\_0 | 328.68 | 31.37 | −76.5% | −62.1% |
-| ktq2\_1 | q8\_0 | 330.06 | 28.88 | −76.4% | −65.1% |
-| ktq3\_1 | f16 | 1342.35 | 78.82 | −3.8% | −4.7% |
-| ktq3\_1 | vtq2\_2 | 1332.11 | 77.12 | −4.6% | −6.7% |
-| ktq3\_1 | vtq3\_1 | 887.59 | 71.94 | −36.4% | −13.0% |
-| ktq3\_1 | vtq3\_2 | 1328.92 | 77.01 | −4.8% | −6.9% |
-| q8\_0 | q8\_0 | 1315.82 | 72.79 | −5.7% | −12.0% |
-| q4\_0 | q4\_0 | 1312.87 | 72.26 | −5.9% | −12.6% |
-| q8\_0 | vtq2\_1 | 938.08 | 71.06 | −32.8% | −14.1% |
+| **f16** | **f16** | **1365.97** | **84.72** | baseline | baseline |
+| f16 | vtq2\_1 | 1024.38 | 80.54 | −25.0% | −4.9% |
+| f16 | vtq3\_1 | 913.67 | 79.06 | −33.1% | −6.7% |
+| **f16** | **vtq2\_2** | **1343.97** | **82.73** | **−1.6%** | **−2.4%** |
+| f16 | vtq3\_2 | 1344.84 | 82.70 | −1.5% | −2.4% |
+| f16 | q4\_0 | 380.72 | 55.11 | −72.1% | −34.9% |
+| f16 | q8\_0 | 393.75 | 52.65 | −71.2% | −37.9% |
+| ktq2\_1 | f16 | 1321.62 | 81.78 | −3.2% | −3.5% |
+| ktq2\_1 | vtq2\_1 | 1005.42 | 78.08 | −26.4% | −7.8% |
+| ktq2\_1 | vtq3\_1 | 900.80 | 76.44 | −34.0% | −9.8% |
+| **ktq2\_1** | **vtq2\_2** | **1318.67** | **79.88** | **−3.5%** | **−5.7%** |
+| ktq2\_1 | vtq3\_2 | 1314.98 | 79.74 | −3.7% | −5.9% |
+| ktq2\_1 | q4\_0 | 367.10 | 55.30 | −73.1% | −34.7% |
+| ktq2\_1 | q8\_0 | 375.96 | 53.11 | −72.5% | −37.3% |
+| ktq3\_1 | f16 | 1320.73 | 81.92 | −3.3% | −3.3% |
+| ktq3\_1 | vtq2\_2 | 1319.96 | 79.94 | −3.4% | −5.6% |
+| ktq3\_1 | vtq3\_1 | 903.14 | 76.26 | −33.9% | −10.0% |
+| ktq3\_1 | vtq3\_2 | 1316.41 | 79.74 | −3.6% | −5.9% |
+| q8\_0 | q8\_0 | 1305.33 | 76.00 | −4.4% | −10.3% |
+| q4\_0 | q4\_0 | 1300.30 | 75.18 | −4.8% | −11.3% |
+| q8\_0 | vtq2\_1 | 930.84 | 74.16 | −31.9% | −12.5% |
 
 Generates coherent reasoning output. Sample (greedy, `--log-verbose`):
 - `<|channel>thought\nThe user is asking a simple factual question: "What is the capital of France?"...`
 
-**Observations (vs Qwen3.6 sweep):**
-- **VTQ_2 is the cheapest V-cache on Gemma4 too** — `f16/vtq2_2` is only 1.0% PP / 2.4% TG slowdown. Same Pareto position as on Qwen.
-- **Legacy `q4_0` / `q8_0` as V is catastrophic** at D=512 — drops PP to ~330 (−76%), TG to ~32 (−61%). Gemma4's full-attention head dim is the worst case for those types.
-- **VTQ_1 family suffers more on D=512** than on Qwen's D=128 — `f16/vtq2_1` is −24.5% PP (vs −6.5% on Qwen). Trellis-v2 (vtq2_2) wins decisively here.
-- **`ktq2_1 / vtq2_2` Pareto winner**: −4.4% PP / −6.6% TG for ~80% KV savings. Slightly worse than Qwen's −3.1% / −3.1% — the V-rms-norm pre-quant interaction (Gemma4-specific) is the suspect.
+**Observations (vs Qwen3.6 sweep, post V_rows=8 D≥256 fix):**
+- **VTQ_2 is the cheapest V-cache on Gemma4 too** — `f16/vtq2_2` is only 1.6% PP / 2.4% TG slowdown. Same Pareto position as on Qwen.
+- **Legacy `q4_0` / `q8_0` as V is still catastrophic** at D=512 — PP ~380 (−72%), TG ~55 (−35%). Gemma4's full-attention head dim is the worst case for those types (also benefited from V_rows fix; previously −76% / −61%).
+- **VTQ_1 family suffers more on D=512** than on Qwen's D=128 — `f16/vtq2_1` is −25.0% PP. Trellis-v2 (vtq2_2) wins decisively.
+- **`ktq2_1 / vtq2_2` Pareto winner**: −3.5% PP / −5.7% TG for ~80% KV savings (improved from −4.4% / −6.6% pre-fix).
+- **TG improvements vs pre-fix**: VTQ-family configs gained +2 to +6% TG. Best: `ktq2_1/vtq3_1` +6.3% TG. Detailed delta in [docs/plans/2026-04-25-phase1-vrows-results.md](docs/plans/2026-04-25-phase1-vrows-results.md).
 
 **Earlier "gibberish" reports** were a test-harness artifact: llama-cli's interactive REPL prompt-prefix (`> `) made the actual reasoning tokens (control tokens not rendered on stdout) look like empty newlines. Token-ID dump confirms valid sampling. Add `--log-verbose` and grep `next token` to verify locally.
 
