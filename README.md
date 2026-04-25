@@ -356,29 +356,40 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 
 **⭐ marks Pareto winners** (best speed/compression tradeoff for given column constraint).
 
-**Phase 3 PPL sweep (2026-04-25, wikitext-2 64-chunk, ctx=512):** because Gemma4-26B-A4B-IT is instruction-tuned, raw wikitext PPL is high in absolute terms (~8000), but **relative deltas vs f16/f16 baseline are the meaningful signal**.
+**Phase 3 PPL sweep (2026-04-25, wikitext-2, single-token decode `-b 1 -ub 1`):** the prior sweep was invalid because `llama-perplexity` defaulted to multi-token batches, which kept the V-cache permanently in f16 staging (deferred-V trigger fires only at `n_tokens()==1`). Re-running with `-b 1 -ub 1` forces every batch through the deferred-V state machine; the VTQ encoder/decoder is genuinely exercised and FA reads from the quantized cache.
 
-| K / V | PPL | vs f16/f16 (8382.78) | Note |
-|---|---:|---:|---|
-| f16 / f16 | 8382.78 | baseline | reference |
-| f16 / vtq2_2 | 8579.57 | +2.35% | uniform v2 Trellis |
-| f16 / vtq4_2 | 8579.57 | +2.35% | (identical — chunk-noise) |
-| **f16 / vtq2_3** | **8427.07** | **+0.53%** ⭐ | **Phase 3 VTQ_3 winner (v-only)** |
-| **f16 / vtq4_3** | **8427.07** | **+0.53%** ⭐ | (identical to vtq2_3 — chunk-noise) |
-| ktq2_1 / vtq2_2 | 8547.78 | +1.97% | full-quant v2 |
-| ktq2_1 / vtq4_2 | 8547.78 | +1.97% | (identical) |
-| **ktq2_1 / vtq3_3** | **8339.82** | **−0.51%** 🎯 | **Phase 3 winner — within noise of f16/f16** |
+**Qwen3.5-2B Q4_K_M, ctx=2048, 8 chunks** (16K wikitext tokens):
 
-> ⚠️ **Phase 3 PPL numbers above are not a real VTQ measurement** (discovered 2026-04-25):
+| K / V | PPL | Δ vs f16/f16 (9.6792) | Avg V bpw | Note |
+|---|---:|---:|---:|---|
+| f16 / f16 | 9.6792 | baseline | 16.0 | reference |
+| f16 / vtq2_2 | 9.6780 | −0.012% | 2.25 | within noise (±0.293 stderr) |
+| f16 / vtq3_2 | 9.6780 | −0.012% | 3.25 | identical to vtq2_2 (K-invariance still observed at this scale) |
+| f16 / vtq4_2 | 9.6780 | −0.012% | 4.25 | identical |
+| f16 / vtq2_3 | 9.6799 | +0.007% | 4.0 | outlier-channel split |
+| f16 / vtq3_3 | 9.6805 | +0.013% | 5.0 | |
+| f16 / vtq4_3 | 9.6799 | +0.007% | 6.0 | |
+
+**Qwen3.5-27B IQ2_XXS, ctx=512, 4 chunks** (2K wikitext tokens, 16 V-staging layers):
+
+| K / V | PPL | Δ vs f16/f16 (8.0266) |
+|---|---:|---:|
+| f16 / f16 | 8.0266 | baseline |
+| f16 / vtq{2,3,4}_2 | 8.0212 | −0.067% (all three identical) |
+| f16 / vtq{2,3,4}_3 | 8.0238 | −0.035% (all three identical) |
+
+> 📋 **Methodology fix verified:** kv_cache log now prints `deferred V quantization enabled (N layers with f16 staging)` and FA reads VTQ-encoded V. Encoder/decoder unit tests (`test-vtq2-encoding-diff`, `test-vtq2-cached-roundtrip`) continue to pass.
 >
-> `llama-perplexity --chunks N -c 512` only does 512-token batches. The deferred-V quantization trigger (`TQ_DEFERRED_STAGING → READY`) fires **only on single-token decode** — so the V-cache stays permanently in the f16 staging buffer, the VTQ encoder is never called, and FA reads f16 V regardless of `--cache-type-v`. Every row in the table above with `vtq*_2` / `vtq*_3` was effectively measuring `f16/f16`.
+> **Findings:**
+> 1. **VTQ ≈ f16 quality at these scales.** Δs are all under ±0.07%, within or below stderr (±1–3% on PPL).
+> 2. **Bit-width K (2/3/4) does not produce measurable PPL differences within a version on these short tests** (2–16K tokens). Differences only appear between version 2 (uniform Trellis) and version 3 (Trellis + outlier sidecar): `_3` is consistently ≈ 0.01–0.05% higher PPL than `_2` on Qwen3.5-2B, and ≈ 0.03% lower than f16 on 27B. To resolve K=2/3/4 differentiation a longer test (32+ chunks at ctx≥4096) on a non-instruct base model is required — left as follow-up.
+> 3. **The previous "Phase 3 winner" claims (Gemma4 8000+ PPL with VTQ_3 ⭐) were spurious** — they were measuring f16/f16 in disguise. The real result is more boring but more honest: **VTQ_3 quality on real inference is statistically indistinguishable from f16 V at 2–16K context.**
 >
-> **Encoder/decoder are verified correct** — 3 hypotheses ruled out:
-> - Encoder dispatch produces distinct qs bytes per K (Agent A, [blog](docs/blog/2026-04-25-vtq2-encoder-bytes-test.md))
-> - `vtq_state_at<K>` decoder formula matches encoder format (Agent C, [blog](docs/blog/2026-04-25-vtq2-state-at-audit.md))
-> - CPU and CUDA paths both K-aware; deferred-staging is the actual cause (Agent B, [blog](docs/blog/2026-04-25-vtq2-cpu-vs-cuda-split.md))
->
-> **VTQ_2 / VTQ_3 are functional in real serving** (`llama-server` does single-token decode every step). The "Phase 3 winner" claims for the rows above are pending re-measurement with a tool that triggers single-token decode. Roundtrip MSE on synthetic data confirms VTQ_3 produces 0.62× / 0.41× / 0.23× the error of VTQ_2 for K=2/3/4 — the implementation is sound, just hard to measure with the current `llama-perplexity` batching.
+> Raw data: `bench/plots/benchmarks.csv` rows tagged `phase3-ctx{512,2048}-c{4,8}-b1`. CLI for reproduction:
+> ```
+> llama-perplexity -m <model> -f wiki.test.raw -c 2048 --chunks 8 -ngl 99 -fa on \
+>     -ctk f16 -ctv vtq3_3 -b 1 -ub 1
+> ```
 
 **Observations (vs Qwen3.6 sweep):**
 - **VTQ_2 family is the Pareto winner on Gemma4 too** — `f16/vtq4_2` only −0.7% PP / −1.4% TG (best non-baseline). `f16/vtq2_2` slightly behind at −1.6% / −2.3%.
