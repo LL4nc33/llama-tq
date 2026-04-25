@@ -167,7 +167,9 @@ if (CUDAToolkit_FOUND)
     set_source_files_properties(
         fattn-vec-dispatch-f16.cu
         fattn-vec-dispatch-ktq.cu
-        fattn-vec-dispatch-vtq.cu
+        fattn-vec-dispatch-vtq1.cu
+        fattn-vec-dispatch-vtq2.cu
+        fattn-vec-dispatch-vtq3.cu
         PROPERTIES JOB_POOL_COMPILE heavy_compile)
 
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})

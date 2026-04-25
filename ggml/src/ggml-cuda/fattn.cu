@@ -229,6 +229,7 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     // defined, otherwise this function is a no-op returning false.
     if (try_dispatch_vec_vtq2_split(ctx, dst)) return;
     if (try_dispatch_vec_vtq2(ctx, dst)) return;
+    if (try_dispatch_vec_vtq3(ctx, dst)) return;
 
     GGML_ABORT("fatal error");
 }
