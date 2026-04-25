@@ -532,6 +532,53 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
+    } else if (dst->type == GGML_TYPE_VTQ2_3) {
+        // Phase 3 Step 4d — VTQ_3 (Trellis backbone + outlier sidecar).
+        // The encoder shares the trellis-write path with VTQ_2 (block_vtq2_3
+        // has the same {d, start_state, qs} prefix layout, statically asserted
+        // in ggml-common.h). Outlier_pos/outlier_val are populated CPU-side
+        // via ggml_trellis_outliers_pick during the prefill→decode handoff
+        // (deferred-V machinery). Zero the destination first so the FA
+        // dequant kernel sees outlier_pos=0 + outlier_val=0 (effectively
+        // "patch sample 0 to 0") rather than uninitialized pool memory until
+        // the CPU pick-pass overwrites them.
+        // TODO(phase3): wire the GPU outlier-pick kernel directly into this
+        // launcher to eliminate the host roundtrip.
+        const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq2_3);
+        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        vtq_cuda_encode_set_rows<idx_t, block_vtq2_3, 2>(
+            src0_d, src1_d, (block_vtq2_3*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_VTQ3_3) {
+        const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq3_3);
+        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        vtq_cuda_encode_set_rows<idx_t, block_vtq3_3, 3>(
+            src0_d, src1_d, (block_vtq3_3*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_VTQ4_3) {
+        const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq4_3);
+        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        vtq_cuda_encode_set_rows<idx_t, block_vtq4_3, 4>(
+            src0_d, src1_d, (block_vtq4_3*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
     } else {
         GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
     }

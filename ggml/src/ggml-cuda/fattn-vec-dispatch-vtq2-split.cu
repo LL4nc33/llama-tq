@@ -21,7 +21,11 @@ extern bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * 
 #ifdef FATTN_VTQ2_SPLIT_ENABLE
 
 static bool is_vtq2_family(ggml_type t) {
-    return t == GGML_TYPE_VTQ2_2 || t == GGML_TYPE_VTQ3_2 || t == GGML_TYPE_VTQ4_2;
+    return t == GGML_TYPE_VTQ2_2 || t == GGML_TYPE_VTQ3_2 || t == GGML_TYPE_VTQ4_2 ||
+           // VTQ_3 reuses the same trellis backbone + outlier sidecar; the
+           // split-decode path bulk-dequants via ggml_get_to_fp16_nc_cuda which
+           // already covers VTQ_3 (convert.cu Phase-3 wiring).
+           t == GGML_TYPE_VTQ2_3 || t == GGML_TYPE_VTQ3_3 || t == GGML_TYPE_VTQ4_3;
 }
 
 // Attempt the E14 split-decode path.
