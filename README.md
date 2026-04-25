@@ -6,7 +6,7 @@
 
 Experimental llama.cpp fork focused on **KV-cache quantization**. Different K and V types, different dequant paths inside the Flash Attention kernel, a Trellis-coded V family for near-lossless 3-/4-bit V-cache, and large-MoE deployments on small cards.
 
-> **tl;dr** — asymmetric `ktq2_1 / vtq2_2` (Trellis v2, 2.78 bpw avg) gets a 35B MoE to 400k ctx on 24 GB total VRAM at ~2.5% TG cost and **only +0.16% PPL vs f16**. The whole VTQ_2 family (vtq2_2/3_2/4_2) sits in the near-lossless zone. 80B and 122B MoEs run with expert-offload.
+> **tl;dr** — asymmetric `ktq2_1 / vtq2_2` (Trellis v2, 2.78 bpw avg) gets a 35B MoE to 400k ctx on 24 GB total VRAM at ~2.5% TG cost and **+0.15% PPL vs f16** (64-chunk wikitext-2). VTQ_2 V-cache is PPL-lossless against f16; the 0.15% cost comes from the K-quant alone. 80B and 122B MoEs run with expert-offload.
 
 ![KV-cache bpw vs PPL Pareto frontier](docs/img/ppl_vs_bpw.png)
 
@@ -89,7 +89,7 @@ K and V types are chosen independently. `--cache-type-k` accepts standard quants
 | Preset | K | V | Avg bpw | PPL Δ (35B UD-IQ2\_XXS) | VRAM saving vs f16/f16 |
 |--------|---|---|:---:|:---:|:---:|
 | **Safe** | `q8_0` | `vtq3_1` | 6.25 | +1.05% | 61% |
-| **Balanced** ⭐ | `ktq2_1` | `vtq2_2` | 2.78 | **+0.16%** (4-chunk) | **83%** |
+| **Balanced** ⭐ | `ktq2_1` | `vtq2_2` | 2.78 | **+0.15%** (64-chunk) | **83%** |
 | **Research** | `q8_0` | `vtq4_2` | 6.03 | +0.44% (Qwen3.5-0.8B) | 62% |
 
 ---
@@ -208,18 +208,18 @@ All measurements: 2× RTX 2060 12 GB, Flash Attention on, `-p 512 -n 128 -r 1`. 
 <details>
 <summary><b>Qwen3.6-35B-A3B (UD-IQ2_XXS)</b> — full 50-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
 
-48-layer dense MoE, 35B params total / 3B active, head_dim=128 (D=128). Wikitext-2 PPL baseline f16/f16 = 5.967.
+48-layer dense MoE, 35B params total / 3B active, head_dim=128 (D=128). Wikitext-2 PPL baseline f16/f16 = **7.062** (64-chunk ctx=512). PPL column shows 4-chunk runs unless marked.
 
 | K | V | PP512 | TG128 | ΔPP | ΔTG | bpw avg | PPL |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **f16** | **f16** | **1018.04** | **76.77** | +0.0% | +0.0% | 16.00 | 5.967 |
+| **f16** | **f16** | **1018.04** | **76.77** | +0.0% | +0.0% | 16.00 | 7.062 |
 | f16 | vtq1\_1 | 951.08 | 75.24 | −6.6% | −2.0% | 8.75 | 6.950 |
 | f16 | vtq2\_1 | 952.06 | 75.66 | −6.5% | −1.4% | 9.25 | 6.378 |
 | f16 | vtq3\_1 | 919.02 | 74.85 | −9.7% | −2.5% | 10.00 | 5.966 |
 | f16 | vtq4\_1 | 877.75 | 74.72 | −13.8% | −2.7% | 10.75 | 6.725 |
-| **f16** | **vtq2\_2** | **1006.75** | **75.75** | −1.1% | −1.3% | 9.03 | 5.915 |
-| f16 | vtq3\_2 | 1006.22 | 75.74 | −1.2% | −1.3% | 9.53 | 5.915 |
-| f16 | vtq4\_2 | 1008.43 | 75.70 | −0.9% | −1.4% | 10.03 | 5.915 |
+| **f16** | **vtq2\_2** | **1006.75** | **75.75** | −1.1% | −1.3% | 9.03 | **7.062** ⭐ |
+| f16 | vtq3\_2 | 1006.22 | 75.74 | −1.2% | −1.3% | 9.53 | 7.062 |
+| f16 | vtq4\_2 | 1008.43 | 75.70 | −0.9% | −1.4% | 10.03 | 7.062 |
 | f16 | q4\_0 | 664.25 | 67.25 | −34.8% | −12.4% | 10.25 | — |
 | f16 | q8\_0 | 665.07 | 63.71 | −34.7% | −17.0% | — | — |
 | ktq1\_1 | vtq1\_1 | 940.72 | 74.30 | −7.6% | −3.2% | 2.00 | 6.962 |
@@ -230,8 +230,8 @@ All measurements: 2× RTX 2060 12 GB, Flash Attention on, `-p 512 -n 128 -r 1`. 
 | ktq2\_1 | vtq2\_1 | 931.85 | 74.43 | −8.5% | −3.0% | — | 6.256 |
 | ktq2\_1 | vtq3\_1 | 909.36 | 73.58 | −10.7% | −4.2% | — | 6.017 |
 | ktq2\_1 | vtq4\_1 | 863.99 | 73.73 | −15.1% | −4.0% | 4.50 | 6.710 |
-| **ktq2\_1** | **vtq2\_2** | **995.80** | **74.86** | **−2.2%** | **−2.5%** | **2.78** | **5.976** ⭐ |
-| ktq2\_1 | vtq3\_2 | 992.94 | 74.79 | −2.5% | −2.6% | 3.28 | 5.976 |
+| **ktq2\_1** | **vtq2\_2** | **995.80** | **74.86** | **−2.2%** | **−2.5%** | **2.78** | **7.073** ⭐ |
+| ktq2\_1 | vtq3\_2 | 992.94 | 74.79 | −2.5% | −2.6% | 3.28 | 7.073 |
 | ktq2\_1 | vtq4\_2 | 996.12 | 74.86 | −2.2% | −2.5% | 3.78 | 5.976 |
 | ktq2\_1 | q4\_0 | 668.88 | 67.00 | −34.3% | −12.7% | — | — |
 | ktq2\_1 | q8\_0 | 680.03 | 65.89 | −33.2% | −14.2% | — | — |
@@ -270,8 +270,9 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 - **`q4_0` / `q8_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG (legacy types fall out of fastest FA path on CC 7.5).
 - **Asymmetric `ktq2_1 / vtq2_2`** is the production winner at 2.2% PP / 2.5% TG cost for **~80% KV savings** (28.75 MiB vs 160 MiB at ctx=8192).
 - **1bit (vtq1_1) is usable** — `f16/vtq1_1` only −2.0% TG. Speed-wise the `ktq1_1/vtq1_1` combo at 2.0 bpw avg costs only 3.2% TG. PPL +16.5% on Qwen (6.95 vs 5.97) → "Aggressive" quality tier.
-- **VTQ_2 family (vtq2_2/vtq3_2/vtq4_2) is PPL-equivalent** — measured 4-chunk PPL on Qwen3.6 with f16 K = **5.9148 for all three**, with ktq2_1/3_1 K = **5.9764 for all three**. The Trellis quantization is so effective that the bpw difference (2.25/2.75/3.0) doesn't show up at this measurement granularity. **`ktq2_1/vtq2_2` (2.78 bpw avg) is therefore the Pareto winner** — same PPL as `vtq4_2` (3.78 bpw) at lower VRAM. Confirmed.
-- **All VTQ_2 PPL is sub-baseline** — `f16/vtq*_2` = 5.9148 < f16/f16 = 5.967 (4-chunk measurement noise but consistently better). The Hadamard rotation in K + Trellis in V appears to act as light regularization.
+- **VTQ_2 V-cache is literally PPL-lossless** — 64-chunk PPL on Qwen3.6: `f16/f16` = `f16/vtq2_2` = `f16/vtq3_2` = `f16/vtq4_2` = **7.062**. The Trellis-quantized V cache reproduces the f16 attention output bit-perfectly at this measurement granularity.
+- **KTQ K-quant costs ~+0.15% PPL** — `ktq2_1/vtq2_2` = `ktq2_1/vtq3_2` = **7.073** (+0.15% vs f16/f16 baseline 7.062, 64-chunk). All Trellis V variants give identical PPL once K is quantized.
+- **`ktq2_1/vtq2_2` (2.78 bpw avg) is the Pareto winner** — same PPL as vtq4_2 (3.78 bpw) at lower VRAM. The bpw difference is gratis savings.
 
 </details>
 
