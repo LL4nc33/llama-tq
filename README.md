@@ -342,6 +342,27 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 - **`ktq*/vtq2_2/3_2/4_2` cluster** all within −5.5 to −5.9% TG of baseline at ~3.0–4.78 bpw avg — multiple Pareto points to choose from.
 - **TG improvements vs pre-fix** (commit `584378082` vs prior): VTQ-family configs gained +2 to +6% TG. Detailed delta in [docs/plans/2026-04-25-phase1-vrows-results.md](docs/plans/2026-04-25-phase1-vrows-results.md).
 
+**Lever 1 — SWA-mix: per-layer V-cache override** (Phase 6 tooling, 2026-04-25):
+
+Gemma4's 30 layers alternate full-attention (D=512) and SWA (D=256, every 6th: layers 5/11/17/23/29). Quantizing the SWA layers as f16 while keeping full-attn as vtq2_2 trades 25% of expected V-cache savings for **better than uniform-baseline throughput**:
+
+| K | V config | PP512 | TG128 | avg V bpw | Note |
+|---|---|:---:|:---:|:---:|---|
+| f16 | vtq2_2 (uniform) | 1343.97 | 82.73 | 2.25 | reference |
+| f16 | vtq2_2 + SWA=f16 | **1381.16** | **84.81** | 3.55 | **+2.8% PP / +2.5% TG** ⭐ |
+| ktq2_1 | vtq2_2 (uniform) | 1318.67 | 79.88 | 2.25 | |
+| ktq2_1 | vtq2_2 + SWA=f16 | **1344.61** | **80.89** | 3.55 | +2.0% PP / +1.3% TG |
+
+The SWA-f16/full-vtq2_2 mix on `f16` K is **faster than f16/f16 uniform** (1381 vs 1366 PP / 84.81 vs 84.72 TG) — the smaller V-cache reduces FA memory pressure on full-attn layers more than the dispatch cost adds.
+
+Available via env var on llama-bench (Phase 6 tooling, commit `78c3ece6d`):
+```bash
+LLAMA_ARG_TQ_V_OVERRIDE='5:f16,11:f16,17:f16,23:f16,29:f16' \
+  llama-bench -m gemma4.gguf --cache-type-k f16 --cache-type-v vtq2_2 ...
+```
+
+For llama-server use the existing `--tq-v-override` flag.
+
 **Sample reasoning output** (greedy, `--log-verbose`):
 - `<|channel>thought\nThe user is asking a simple factual question: "What is the capital of France?"...`
 
