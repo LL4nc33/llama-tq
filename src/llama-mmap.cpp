@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <climits>
+#include <cstdlib>
 #include <stdexcept>
 #include <cerrno>
 #include <algorithm>
@@ -450,6 +451,23 @@ struct llama_mmap::impl {
         if (addr == MAP_FAILED) {
             throw std::runtime_error(format("mmap failed: %s", strerror(errno)));
         }
+
+#ifdef __linux__
+        // Opt-in transparent hugepages for the model mapping. Reduces TLB pressure
+        // for sparse MoE expert routing on CPU-offloaded layers.
+        // Enable with LLAMA_MMAP_HUGEPAGES=1.
+        if (const char * env = std::getenv("LLAMA_MMAP_HUGEPAGES")) {
+            if (env[0] == '1') {
+                if (madvise(addr, file->size(), MADV_HUGEPAGE)) {
+                    LLAMA_LOG_WARN("warning: madvise(.., MADV_HUGEPAGE) failed: %s\n",
+                            strerror(errno));
+                } else {
+                    LLAMA_LOG_INFO("mmap: MADV_HUGEPAGE enabled for %.2f GiB mapping\n",
+                            file->size() / (1024.0 * 1024.0 * 1024.0));
+                }
+            }
+        }
+#endif
 
         if (prefetch > 0) {
             if (posix_madvise(addr, std::min(file->size(), prefetch), POSIX_MADV_WILLNEED)) {
