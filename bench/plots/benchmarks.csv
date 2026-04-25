@@ -170,3 +170,25 @@ Gemma4-26B-A4B,bartowski-IQ2_XXS,f16,vtq4_3,12.0,,,8427.07,VTQ_3 phase3
 Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq2_1,vtq2_2,2.78,1318.67,79.88,8547.78,
 Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq2_1,vtq4_2,3.78,1324.86,80.06,8547.78,
 Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq2_1,vtq3_3,4.5,,,8339.82,VTQ_3 phase3 winner
+# Phase 3 PPL — single-token decode (batch=1 ubatch=1) triggers deferred-V path. Methodology fix 2026-04-25.
+Qwen3.5-2B,Q4_K_M,f16,f16,16.0,,,12.1335,12.1335,phase3-ctx512-c4-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq2_2,9.03,,,12.1522,12.1335,phase3-ctx512-c4-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq3_2,9.53,,,12.1522,12.1335,phase3-ctx512-c4-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq4_2,10.03,,,12.1522,12.1335,phase3-ctx512-c4-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq2_3,10.0,,,12.1318,12.1335,phase3-ctx512-c4-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq3_3,10.5,,,12.1318,12.1335,phase3-ctx512-c4-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq4_3,11.0,,,12.1318,12.1335,phase3-ctx512-c4-b1
+Qwen3.5-2B,Q4_K_M,f16,f16,16.0,,,9.6792,9.6792,phase3-ctx2048-c8-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq2_2,9.03,,,9.6780,9.6792,phase3-ctx2048-c8-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq3_2,9.53,,,9.6780,9.6792,phase3-ctx2048-c8-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq4_2,10.03,,,9.6780,9.6792,phase3-ctx2048-c8-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq2_3,10.0,,,9.6799,9.6792,phase3-ctx2048-c8-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq3_3,10.5,,,9.6805,9.6792,phase3-ctx2048-c8-b1
+Qwen3.5-2B,Q4_K_M,f16,vtq4_3,11.0,,,9.6799,9.6792,phase3-ctx2048-c8-b1
+Qwen3.5-27B,IQ2_XXS,f16,f16,16.0,,,8.0266,8.0266,phase3-ctx512-c4-b1
+Qwen3.5-27B,IQ2_XXS,f16,vtq2_2,9.03,,,8.0212,8.0266,phase3-ctx512-c4-b1
+Qwen3.5-27B,IQ2_XXS,f16,vtq3_2,9.53,,,8.0212,8.0266,phase3-ctx512-c4-b1
+Qwen3.5-27B,IQ2_XXS,f16,vtq4_2,10.03,,,8.0212,8.0266,phase3-ctx512-c4-b1
+Qwen3.5-27B,IQ2_XXS,f16,vtq2_3,10.0,,,8.0238,8.0266,phase3-ctx512-c4-b1
+Qwen3.5-27B,IQ2_XXS,f16,vtq3_3,10.5,,,8.0238,8.0266,phase3-ctx512-c4-b1
+Qwen3.5-27B,IQ2_XXS,f16,vtq4_3,11.0,,,8.0238,8.0266,phase3-ctx512-c4-b1
