@@ -1,6 +1,6 @@
 // Trellis v2 CUDA encoder (full Viterbi, no pruning).
 //
-// 1 CUDA block == 1 trellis block (N=256 samples, S=2^16=65536 states).
+// 1 CUDA block == 1 trellis block (N=QK_VTQ_TRELLIS=128 samples, S=2^16=65536 states).
 // VTQ_ENC_THREADS=256 threads per CUDA block.
 //
 // RECEIVER-SIDE DP (Trick 6): each thread owns 256 "next" states
@@ -46,7 +46,10 @@
 #define VTQ_ENC_THREADS 256
 #endif
 
-#define VTQ_ENC_N 256
+// Must match QK_VTQ_TRELLIS (128) — block qs[] is sized for that many samples.
+// Was 256 prior to task #143; OOB-wrote 32-64 bytes into next-block headers,
+// corrupting all VTQ_2 / VTQ_3 PPL measurements (see blog 2026-04-25).
+#define VTQ_ENC_N QK_VTQ_TRELLIS
 #define VTQ_ENC_L 16
 #define VTQ_ENC_S (1u << VTQ_ENC_L)
 
