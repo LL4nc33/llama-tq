@@ -86,7 +86,14 @@ static __global__ void flash_attn_ext_vec(
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
     static_assert(WARP_SIZE % nthreads_V  == 0, "bad nthreads_V");
 
-    constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne : 4;
+    // VTQ types: at large head dims (D >= 256) increase V_rows_per_thread so each
+    // dequant call covers more samples per block — reduces wasted block-header
+    // reloads (d, start_state) on D=256/512 paths used by Gemma4 etc.
+    // Conservative: only kicks in for VTQ_2 family at D >= 256; D <= 128 (Qwen)
+    // keeps the existing 4-sample stride to avoid register pressure regression.
+    constexpr bool is_vtq2_family = type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2;
+    constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne
+                                    : (is_vtq2_family && D >= 256 ? 8 : 4);
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, D, nthreads_KQ>();
