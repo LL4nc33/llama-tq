@@ -162,3 +162,11 @@ Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq3_1,vtq4_2,,1324.48,80.16,,
 Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq4_1,vtq1_1,,1057.68,78.61,,
 Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq4_1,vtq4_1,,799.65,76.26,,
 Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq4_1,vtq4_2,,1321.25,79.99,,
+Gemma4-26B-A4B,bartowski-IQ2_XXS,f16,f16,16.0,1365.97,84.72,8382.78,baseline
+Gemma4-26B-A4B,bartowski-IQ2_XXS,f16,vtq2_2,9.03,1343.97,82.73,8579.57,
+Gemma4-26B-A4B,bartowski-IQ2_XXS,f16,vtq4_2,10.03,1356.80,83.55,8579.57,
+Gemma4-26B-A4B,bartowski-IQ2_XXS,f16,vtq2_3,10.0,,,8427.07,VTQ_3 phase3
+Gemma4-26B-A4B,bartowski-IQ2_XXS,f16,vtq4_3,12.0,,,8427.07,VTQ_3 phase3
+Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq2_1,vtq2_2,2.78,1318.67,79.88,8547.78,
+Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq2_1,vtq4_2,3.78,1324.86,80.06,8547.78,
+Gemma4-26B-A4B,bartowski-IQ2_XXS,ktq2_1,vtq3_3,4.5,,,8339.82,VTQ_3 phase3 winner
