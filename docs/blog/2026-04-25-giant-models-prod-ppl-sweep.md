@@ -67,3 +67,29 @@ On bigger models with more attention heads (122B has 32-head GQA(2)), the Viterb
 - Production deploys:
   - 80B: `docs/plans/2026-04-24-80b-low-hanging-perf.md`
   - 122B: `docs/bench-qwen35-122b-a10b.md`
+
+## TG-bench Update (2026-04-25 21:51)
+
+llama-perplexity timing (ctx=512, b=1, 3 reps each — TG = 512/seconds-per-pass):
+
+### 80B
+
+| V cache | seconds per pass | TG (t/s) |
+|---|---:|---:|
+| vtq2_1 (deployed) | 19.10 ± 0.12 | 26.81 |
+| vtq2_2 (recommend) | 19.36 ± 0.25 | 26.45 |
+
+**Δ TG = −1.4%** (within stderr).
+
+### 122B
+
+| V cache | seconds per pass | TG (t/s) |
+|---|---:|---:|
+| vtq2_1 (deployed) | 35.45 ± 1.78 (cold-cache outlier 1st run) | 14.44 |
+| vtq2_2 (recommend) | 34.02 ± 0.23 | 15.05 |
+
+**Δ TG = +4.2%** with cold-cache outlier or **+1.3%** if first run discarded — vtq2_2 is at worst equal, more likely slightly faster.
+
+## Gate cleared
+
+Both giants pass the TG-non-regression gate. Switch from `vtq2_1` to `vtq2_2` is recommended for both production deployments. Quality gain (+2.75% on 80B / +5% on 122B PPL) without measurable TG cost.
