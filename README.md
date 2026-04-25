@@ -336,6 +336,8 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 
 **⭐ marks Pareto winners** (best speed/compression tradeoff for given column constraint).
 
+> **Note:** `bpw avg` and `PPL` columns omitted from this Gemma4 matrix because PPL sweep on the 26B reasoning model is pending. See Qwen3.6 above for PPL patterns — VTQ_2 family is PPL-lossless there (delta < 0.2%), and Gemma4 PPL behavior is expected to track. Sweep on the [Phase 3 follow-up](docs/plans/2026-04-25-roadmap.md).
+
 **Observations (vs Qwen3.6 sweep):**
 - **VTQ_2 family is the Pareto winner on Gemma4 too** — `f16/vtq4_2` only −0.7% PP / −1.4% TG (best non-baseline). `f16/vtq2_2` slightly behind at −1.6% / −2.3%.
 - **1bit on D=512 works well** — `f16/vtq1_1` only −3.4% TG (1.0625 bpw V). Phase 1 V_rows=8 D≥256 fix made this practical.
