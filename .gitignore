@@ -154,3 +154,4 @@ docs/plans/*
 # Whitelist: measurement logs + design docs linked from the README
 !docs/plans/2026-04-24-ktq-vtq2-combos.md
 !docs/plans/2026-04-24-ktq2-trellis-design.md
+!docs/plans/2026-04-25-gemma4-optimization-design.md
