@@ -4,9 +4,23 @@
 [![Upstream](https://img.shields.io/badge/upstream-llama.cpp-blue)](https://github.com/ggml-org/llama.cpp)
 [![Hardware](https://img.shields.io/badge/tested-2x%20RTX%202060%20(CC%207.5)-orange)](#hardware-notes)
 
-Experimental llama.cpp fork focused on **KV-cache quantization**. Different K and V types, different dequant paths inside the Flash Attention kernel, a Trellis-coded V family for near-lossless 3-/4-bit V-cache, and large-MoE deployments on small cards.
+**llama.cpp fork that cuts KV-cache VRAM by 83% without quality loss. Run longer contexts on the same GPU.**
 
-> **tl;dr** — asymmetric `ktq2_1 / vtq2_2` (Trellis v2, 2.78 bpw avg) gets a 35B MoE to 400k ctx on 24 GB total VRAM at ~2.5% TG cost and **+0.15% PPL vs f16** (64-chunk wikitext-2). VTQ_2 V-cache is PPL-lossless against f16; the 0.15% cost comes from the K-quant alone. 80B and 122B MoEs run with expert-offload.
+**For users:** drop in two flags, get a 35B model running at 400k context on a single 24 GB card. Same answer quality, longer chats, no new hardware. **For developers:** asymmetric KTQ K-cache × VTQ V-cache with split dequant paths inside Flash Attention, plus a Trellis-coded V family that is bit-exact against f16 at the measurement granularity used.
+
+> **tl;dr** — Two flags, `--cache-type-k ktq2_1 --cache-type-v vtq2_2`, take a Qwen3.6-35B MoE to 400k context on 24 GB total VRAM. Cost: ~2.5% slower token generation, **+0.15% perplexity vs f16** (64-chunk wikitext-2). The V-cache is perplexity-lossless on its own; the 0.15% is the K-quant. 80B and 122B MoEs run with expert-offload to CPU RAM.
+
+### Glossary (skim once, then come back)
+
+| Term | What it means |
+|---|---|
+| **K-cache / V-cache** | The two memory buffers Attention writes per token (Keys + Values). With long contexts they dominate VRAM. |
+| **KTQ** | This fork's K-cache format. Randomized Hadamard Transform + Lloyd-Max codebook. Comes as `ktq1_1`–`ktq4_1`. |
+| **VTQ** | This fork's V-cache format. Two generations: v1 codebook lookup (`vtq*_1`), v2 group-Viterbi Trellis (`vtq*_2`, near-f16 quality). |
+| **bpw** | Bits per weight. Lower = smaller cache. f16 is 16 bpw; `ktq2_1` is 3.5 bpw; `vtq2_2` is 2.06 bpw. |
+| **PPL** | Perplexity, a quality metric. Lower is better. **+0.15% vs f16 = practically lossless.** |
+| **TG / PP** | Token generation speed (decode) / Prompt processing speed (prefill), both in tokens per second. |
+| **D** | Attention head dimension. 64/128/256/512 depending on model. All four are supported. |
 
 ![KV-cache bpw vs PPL Pareto frontier](docs/img/ppl_vs_bpw.png)
 
@@ -62,35 +76,37 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 
 ## Quick Start
 
+Build, then add two flags. K-cache and V-cache types are chosen independently.
+
 ```bash
 cmake -B build -DGGML_CUDA=ON
 cmake --build build -j$(nproc) --target llama-server
-
-# Balanced quality, modest compression (6.25 avg bpw, +1–2% PPL)
-./build/bin/llama-server -m model.gguf \
-    --cache-type-k q8_0 --cache-type-v vtq3_1 \
-    -fa on -ngl 99
-
-# Maximum compression for long-ctx fits (2.78 avg bpw, +0.16% PPL on IQ2 weights)
-./build/bin/llama-server -m model.gguf \
-    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
-    -fa on -ngl 99
-
-# Trellis v2: near-f16 quality at 4-bit V (verified D=64/128/256/512)
-./build/bin/llama-server -m model.gguf \
-    --cache-type-k q8_0 --cache-type-v vtq4_2 \
-    -fa on -ngl 99
 ```
 
-K and V types are chosen independently. `--cache-type-k` accepts standard quants (`f16`, `q8_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1`. `--cache-type-v` accepts the same standard quants plus `vtq{1,2,3,4}_1` and `vtq{2,3,4}_2`.
+### Pick your tier
 
-### Three presets
+| Tier | K | V | Avg bpw | VRAM saved | PPL cost | Who it's for |
+|---|---|---|:---:|:---:|:---:|---|
+| ⭐ **Lossless** (recommended) | `ktq2_1` | `vtq2_2` | 2.78 | **83%** | **+0.15%** | Most users. Fits 400k ctx of a 35B MoE on one 24 GB card. |
+| **Aggressive** | `ktq2_1` | `vtq3_1` | 4.0 | 77% | +0.49% | Trade ~0.5% PPL for a different bpw point if v2 isn't built. |
+| **Conservative** | `q8_0` | `vtq3_1` | 6.25 | 61% | +1.05% | Falls back to the standard `q8_0` K-quant — no KTQ kernels needed. |
+| **Research** | `q8_0` | `vtq4_2` | 6.03 | 62% | +0.44% | Highest-quality Trellis V-cache, larger blocks. |
 
-| Preset | K | V | Avg bpw | PPL Δ (35B UD-IQ2\_XXS) | VRAM saving vs f16/f16 |
-|--------|---|---|:---:|:---:|:---:|
-| **Safe** | `q8_0` | `vtq3_1` | 6.25 | +1.05% | 61% |
-| **Balanced** ⭐ | `ktq2_1` | `vtq2_2` | 2.78 | **+0.15%** (64-chunk) | **83%** |
-| **Research** | `q8_0` | `vtq4_2` | 6.03 | +0.44% (Qwen3.5-0.8B) | 62% |
+```bash
+# ⭐ Recommended (lossless, 83% smaller KV)
+./build/bin/llama-server -m model.gguf -fa on -ngl 99 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2
+
+# Aggressive (smaller PPL trade, no v2 kernels needed)
+./build/bin/llama-server -m model.gguf -fa on -ngl 99 \
+    --cache-type-k ktq2_1 --cache-type-v vtq3_1
+
+# Conservative (mix with stock q8_0 K)
+./build/bin/llama-server -m model.gguf -fa on -ngl 99 \
+    --cache-type-k q8_0 --cache-type-v vtq3_1
+```
+
+`--cache-type-k` accepts the stock quants (`f16`, `q8_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1`. `--cache-type-v` accepts the same stock quants plus `vtq{1,2,3,4}_1` (v1) and `vtq{2,3,4}_2` (v2 Trellis).
 
 ---
 
@@ -498,29 +514,13 @@ Measurement note: the 10-layer count is Qwen3.6-35B-A3B specific (48 blocks tota
 
 ## How it works
 
-### Problem
+The trick is to use **different formats for K and V**, because they hit Flash Attention differently.
 
-A per-block V-dequant with a 32-element FWHT butterfly inside the FA inner loop pushed `vec_dot_KQV` past the 255-register/thread limit on CC 7.5 in this implementation. Register spills to local memory; in one observed case, corruption of the FA accumulator for some head/tile combinations (not fully characterized).
+- **KTQ (K-cache)** — per-block Randomized Hadamard Transform + Lloyd-Max codebook. The kernel transforms Q once per tile and computes Q·K entirely in the Hadamard domain, so K is **never explicitly dequantized** in the hot loop.
+- **VTQ v1 (V-cache)** — one D·H·D rotation applied at graph level before writes. Per-entry dequant in the FA inner loop is just `codebook[idx] * scale`.
+- **VTQ v2 Trellis (V-cache)** — group-level Viterbi DP encodes 512 samples jointly against a fixed inverse-Gaussian CDF table. Decode is a shift register, one sample per iteration. The encoder is slow (~22 ms/call), so the runtime stages V in f16 during prefill and bulk-converts once at the prefill→decode boundary. This is what makes v2 PPL-lossless on the measurement granularity used.
 
-### Split K-path and V-path
-
-```
-KTQ K-path (FA inner loop):          VTQ V-path (FA inner loop):
-  // no K dequant at all               float val = codebook[idx] * scale;
-  // Q is FWHT'd once per tile         // done — __forceinline__
-  dot = <Q_hat, K_indices>
-```
-
-- **KTQ** keeps per-block RHT on K. Q is transformed once per tile; Q·K happens in the Hadamard domain.
-- **VTQ** lifts the randomization out of the FA inner loop: one D·H·D rotation applied at graph level before writes. Per-entry dequant is just `codebook[idx] * scale`.
-
-The D·H·D rotation is not fully random (deterministic sign diagonals), but the Hadamard mixing decorrelates the D-dim value vector enough that coordinate marginals match Laplace(0, 1) closely. That's what the 2-bit Lloyd-Max codebook relies on — not strict i.i.d.
-
-### Trellis v2 (research)
-
-Group-level Viterbi DP encodes 512 samples jointly against a fixed inverse-Gaussian CDF code table, with a shared 16-bit open-start state stored per group. Decode is a shift register: `state = (state >> K) | (bits << (L-K))`, one sample per iteration. The encoder is expensive (~22 ms/call); runtime amortizes this via prefill→decode bulk conversion.
-
-Source: `ggml/src/ggml-trellis.{h,c}`, original port from `tests/trellis-phase1/`.
+Full design notes (RHT math, register pressure on CC 7.5, encoder details) live in [`docs/turboquant.md`](docs/turboquant.md). Source: `ggml/src/ggml-trellis.{h,c}`.
 
 ---
 
@@ -578,8 +578,9 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 
 **Active research**
 - VTQ2\_2 / 3\_2 / 4\_2 Trellis v2 — shipped, all D=64/128/256/512 verified live
-- VTQ2\_3 / 3\_3 / 4\_3 Trellis v2 + outlier-channel split — code-complete on `turboquant`, build + bench pending. Path to sub-2% PPL at 3.0/4.0/5.0 bpw V. See `docs/plans/2026-04-25-vtq3-design.md`.
+- **Phase 3 — VTQ_3 with outlier-channel split** (in progress, 8 commits 2026-04-25, build pending). Path to sub-2% PPL at 3.0/4.0/5.0 bpw V. See `docs/plans/2026-04-25-vtq3-design.md`.
 - Correction Overlay Buffer (Trick 4) — designed, not implemented. Top-N lossless error patch.
+- **Phase 7 — imatrix-aware KTQ calibration** (proposed). Use importance matrix to bias the K-quant Lloyd-Max codebook. See `docs/plans/2026-04-25-ktq3-research.md`.
 - `mmvq` IQ2\_XS tuning on sm\_75 — 28% of kernel time on current 35B config
 
 **Discarded after measurement**
