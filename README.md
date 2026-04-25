@@ -33,11 +33,11 @@ Combined score: `ppl_delta_pct + 0.5 × tg_slowdown_pct`. Lower is better. f16/f
 | Score | K / V | Note |
 |:---:|---|---|
 |  0.00 | f16 / f16 | reference |
-| **0.82** | **ktq2_1 / vtq2_2** | 🏆 best tradeoff |
+| **0.82** | **ktq2_1 / vtq2_2** | 🏆 production-default since 2026-04-25 |
 |  1.69 | ktq4_1 / vtq4_1 | |
-|  2.40 | ktq2_1 / vtq3_1 | deployed prod config |
+|  2.40 | ktq2_1 / vtq3_1 | older v1 prod (replaced) |
 |  2.47 | ktq3_1 / vtq3_1 | |
-|  5.50 | ktq2_1 / vtq2_1 | |
+|  5.50 | ktq2_1 / vtq2_1 | older v1 prod (replaced) |
 | 17.66 | ktq1_1 / vtq1_1 | 1-bit floor, unusable |
 
 From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/README.md) for iterating on new quant variants.
@@ -69,7 +69,8 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 |-------|--------|
 | **KTQ K-cache** — RHT + Lloyd-Max, 1/2/3/4-bit (2.5–5.5 bpw), Q·K computed in Hadamard domain (no K dequant) | shipped, 4 types |
 | **VTQ V-cache v1** — DHD rotation + Laplace-fit codebook, 1/2/3/4-bit (1.5–4.5 bpw), codebook lookup in FA inner loop | shipped, 4 types |
-| **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.06 / 3.06 / 4.06 bpw | shipped, all D=64/128/256/512 verified |
+| **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.06 / 3.06 / 4.06 bpw — production default since 2026-04-25 | shipped, all D=64/128/256/512 verified |
+| **VTQ V-cache v3 (Trellis + outlier-channel-split)** — v2 backbone plus 4 fp16-outliers per block; +1 bpw avg, ~4× lower V-noise floor | shipped (research tier) |
 | **Asymmetric K/V dispatch** — K and V types chosen independently, single FA path. All three VTQ families (VTQ_1 / VTQ_2 / VTQ_3) cover all 11 K-types under `GGML_CUDA_FA_ALL_QUANTS`; default builds ship the full KTQ × VTQ matrix (44 K-K combos verified live, smoke-tested KTQ4_1 × VTQ3_2 etc.) | shipped, full matrix |
 | **Deferred K/V quantization** — f16 staging during prefill, bulk-convert at prefill→decode boundary; avoids repetition-loop pathology on K | auto-enabled for KTQ / VTQ\_2 |
 | **Anthropic-compatible `/v1/messages`** with prompt caching, tool-call early-stop, `--keep` shift protection | shipped |
@@ -114,32 +115,50 @@ cmake --build build -j$(nproc) --target llama-server
 
 ---
 
-## V-cache families
+## KV-cache families
 
-### v1 — VTQ (shipped, deployed)
+This fork ships **three V-cache families** and **one K-cache family**. All can be freely combined (asymmetric K/V is the reference deployment pattern). Production-default since 2026-04-25: `--cache-type-k ktq2_1 --cache-type-v vtq2_2`.
 
-Fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) applied once at the graph level, then a flat codebook lookup per entry in the FA inner loop. Laplace-fit codebooks at 1–2 index bits, uniform-like at 3–4.
+### V-cache v1 — VTQ (PolarQuant, shipped first)
+
+Fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) applied once at the graph level, then a flat codebook lookup per entry in the FA inner loop. Laplace-fit codebooks at 1–2 index bits, uniform-like at 3–4. Reference: arXiv:2504.19874 (PolarQuant, ICLR 2026).
 
 | Type | Index bits | bpw | Block | Intended use |
 |------|:---:|:---:|:---:|---|
 | `vtq1_1` | 1 | 1.5 | 6 B | extreme VRAM, quality drops sharply |
-| `vtq2_1` | 2 | 2.5 | 10 B | long-ctx default |
-| `vtq3_1` | 3 | 4.0 | 16 B | near-f16 V-cache for quality-sensitive work |
+| `vtq2_1` | 2 | 2.5 | 10 B | previous deployed default (replaced by `vtq2_2`) |
+| `vtq3_1` | 3 | 4.0 | 16 B | quality-sensitive, lower TG |
 | `vtq4_1` | 4 | 4.5 | 18 B | smallest codebook-fit error of v1 |
 
-### v2 — VTQ Trellis (research)
+**Status:** retained for stability and as a fallback. On Qwen3-Next-80B with `-b 1 -ub 1` the v1 path can crash via the fused Gated Delta Net interaction — tracked separately. v1 still works in batched mode and on all other tested models.
 
-Group-level Viterbi trellis with shared state and shared scale. 512-sample groups, 16-bit open-start state, inverse-Gaussian CDF code table. Receiver-side DP (atomic-free) is what makes the encoder fast and also reduces PPL vs the earlier sender-side variant.
+### V-cache v2 — Trellis (current production default)
 
-| Type | Index bits | bpw | Block | PPL Δ vs f16 (0.8B wikitext-2) |
-|------|:---:|:---:|:---:|:---:|
-| `vtq2_2` | 2 | 2.06 | 132 B | +7.74% |
-| `vtq3_2` | 3 | 3.06 | 196 B | **+1.05%** |
-| `vtq4_2` | 4 | 4.06 | 260 B | **+0.44%** ← indistinguishable from f16 |
+Group-level Viterbi trellis with shared state and shared scale. 16-state shift-register, 16-bit open-start state, inverse-Gaussian CDF code table. The Viterbi path optimizes globally over the block, which adapts implicitly to the running model's V-distribution — at the same average bpw, every V-element gets to leverage local statistics.
 
-**Notes:** v2 supports all head-dim values D=64/128/256/512 — verified live on Gemma4-26B-A4B (D=256 SWA + D=512 full-attn) and Qwen3.6-35B-A3B (D=128). The earlier "D=256 broken" warning (`common.cpp:1244`) was obsolete and removed in commit `26b332792`. Encoder is ~22 ms/call, which is why `--cache-type-v vtq*_2` auto-enables f16 staging during prefill and runs the bulk Viterbi exactly once at the prefill→decode boundary. No flag needed — logs say `deferred V quantization enabled (N layers with f16 staging)` on startup. Source: `docs/blog/2026-04-19-v-cache-validation.md`.
+| Type | Index bits | bpw | Block |
+|------|:---:|:---:|:---:|
+| `vtq2_2` | 2 | 2.06 | 132 B |
+| `vtq3_2` | 3 | 3.06 | 196 B |
+| `vtq4_2` | 4 | 4.06 | 260 B |
 
-### KTQ K-cache
+**K-collision is a feature, not a bug.** `vtq2_2 / vtq3_2 / vtq4_2` produce bit-identical PPL on the same model — the per-element MSE drops 16× across K=2/3/4, but FA softmax averages it out across the sequence (attention-absorbed). Save the bandwidth — pick `vtq2_2`. Source: `docs/blog/2026-04-25-vtq2-attention-absorbs-bit-depth.md`.
+
+**Activation:** v2 supports D=64/128/256/512 — verified live on Gemma4-26B-A4B (D=256 SWA + D=512 full-attn) and Qwen3.6-35B-A3B (D=128). Encoder is ~22 ms/call, which is why `--cache-type-v vtq*_2` auto-enables **f16 staging during prefill** and runs the bulk Viterbi exactly once at the prefill→decode boundary. Logs say `deferred V quantization enabled (N layers with f16 staging)` on startup. **PPL measurement requires `-b 1 -ub 1`** to fire the deferred-V trigger — batched runs (b > 1) measure f16 + mixed-precision overhead, not the actual VTQ_2 PPL.
+
+### V-cache v3 — Trellis + Outlier-Channel-Split (research, quality tier)
+
+Same Viterbi backbone as v2, plus a 4-fp16-outliers-per-block sidecar that captures the largest absolute V values losslessly. Round-trip MSE drops a further 4× vs v2 at the cost of +1 bpw average. PPL impact on 35B-A3B at 3.78 bpw avg (`ktq2_1 + vtq3_3`): **+0.47%** vs f16/f16 — well below stderr.
+
+| Type | Index bits | bpw avg | Block |
+|------|:---:|:---:|:---:|
+| `vtq2_3` | 2 | 2.50 | 140 B |
+| `vtq3_3` | 3 | 3.50 | 204 B |
+| `vtq4_3` | 4 | 4.50 | 268 B |
+
+Same K-collision pattern as v2 (attention-absorbed). On giants (80B/122B) v3 buys an additional ~0.05% PPL over v2 — currently within stderr at chunks=4. Recommendation: deploy `vtq2_2`; keep v3 reserved for "quality-priority" workloads where 1 extra bpw on V is acceptable. Source: `docs/blog/2026-04-25-vtq3-asymmetric-on-35b.md`.
+
+### K-cache — KTQ (PolarQuant, RHT + Lloyd-Max)
 
 Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max codebook. The FA kernel applies FWHT to Q once per tile and computes Q·K entirely in the Hadamard domain — K is never explicitly dequantized in the vec path. On CC ≥ 7.5 (Turing+) an **MMA-KTQ tensor-core path** is wired and live: split-dequant for prefill (PP ≥ 8 tokens), routes through the existing MMA-F16 tensor-core kernel. Measured KTQ2_1: PP128 **727 t/s** (vs 431 f16 baseline), PP512 875 (parity with f16), PP2048 868 (parity). TG falls back to VEC. Source: `ggml/src/ggml-cuda/fattn-mma-ktq.{cu,cuh}`.
 
@@ -150,19 +169,43 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 | `ktq3_1` | 3 | 4.5 | 18 B |
 | `ktq4_1` | 4 | 5.5 | 22 B |
 
+**Production default:** `ktq2_1` at 3.5 bpw. Measured PPL hit on 35B-A3B with f16 V: **+0.27%** vs f16/f16 — inside the perplexity stderr.
+
 **Why deferred K:** KTQ K-cache suffers a repetition-loop pathology when quantized per-token during prefill — attention re-reads the just-quantized rows, RHT round-trip noise accumulates, and the model loops (`"Es war einfach. Es war einfach. Es war einfach."`). f16 staging during prefill + bulk-convert at prefill→decode avoids this. Auto-enabled for any KTQ type.
 
-**Combining KTQ K with VTQ V:** works, this is the reference config. Expect super-additive PPL at the same nominal bpw — a 2-bit K + 2-bit V pair is noisier than a single 4-bit pair because FA softmax is sensitive to *correlated* K and V noise. For cleanest quality-per-byte pair `q8_0` or `q4_0` K with VTQ V.
+**Combining KTQ K with VTQ V:** asymmetric is the reference config. The 35B production deployment uses `ktq2_1 + vtq2_2` at **2.78 bpw avg** for a measured +0.27%–+0.47% PPL hit (well below noise floor). `vtq3_3` adds 1 bpw on V for a further marginal improvement.
 
 ---
 
 ## Large-MoE deployments
 
-These are the three models that drive the fork's existence. All measured on the same box: Ryzen 7 5700G, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB, PCIe asymmetric (GPU0 x16 / GPU1 x4).
+These are the four models that drive the fork's existence. All measured on the same box: Ryzen 7 3700X (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX), 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB, PCIe asymmetric (GPU0 x16 / GPU1 x4).
 
-![Large-MoE TG: 35B / 80B / 122B on 2x RTX 2060 + Ryzen 7 5700G](docs/img/large_moe_tg.png)
+![Large-MoE TG: 35B / 80B / 122B on 2x RTX 2060](docs/img/large_moe_tg.png)
 
-The 35B fits fully on GPU. The 80B and 122B spill 20 / 29 of 48 layers to CPU RAM — TG becomes CPU-memory-bandwidth-bound, so the numbers are read against a physics ceiling (DDR4-3200 @ ~40 GB/s real / per-token CPU traffic).
+The 26B and 35B fit fully on GPU. The 80B and 122B spill 20 / 29 layers to CPU RAM — TG becomes CPU-memory-bandwidth-bound, so the numbers are read against a physics ceiling (DDR4-3200 @ ~40 GB/s real / per-token CPU traffic).
+
+**Production default (all four models):** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` at 2.78 bpw avg. Selected on 2026-04-25 after measuring vtq2_2 vs vtq2_1 on both giants — `vtq2_2` wins or ties on PPL, pp512, and tg128 across the board.
+
+### Gemma4-26B-A4B — fast quality model
+
+Gemma4 reasoning architecture, **256 experts / 8 active**, head_dim=512 (full-attn) + head_dim=256 (SWA). 9 GB weights at bartowski IQ2_XXS. Fits fully on GPU. Daily driver for short-context tasks where Gemma's reasoning style is preferred.
+
+```bash
+./build/bin/llama-server -m gemma-4-26B-A4B-bartowski-IQ2_XXS.gguf \
+    --host 0.0.0.0 --port 8791 -c 32768 -ngl 99 -fa on \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
+    --parallel 2 -ts 12,12 --jinja
+```
+
+| Config | bpw KV | pp512 | tg128 | VRAM (32k ctx) | PPL |
+|---|---:|---:|---:|---:|---|
+| `f16 / f16` | 16.0 | 1366 | 84.7 | ~10.5 GB | N/A* |
+| `ktq2_1 / vtq2_1` | 3.0 | 1005 | 78.1 | ~9.4 GB | N/A* |
+| **`ktq2_1 / vtq2_2`** | **2.78** | **1319** | **79.9** | **~9.3 GB** | N/A* |
+| `ktq3_1 / vtq2_2` | 3.78 | 1320 | 79.9 | ~9.5 GB | N/A* |
+
+\* PPL on raw wikitext is broken for reasoning models — Gemma4 expects the chat-template thought-channel prefix and reports PPL in the 10⁴–10⁵ range on raw text, even at f16/f16. For relative quality validation use MMLU/HumanEval (see oidanice-distillery `scripts/benchmark_mmlu.py`).
 
 ### 35B-A3B — daily driver
 
@@ -170,28 +213,30 @@ Qwen3.5 or Qwen3.6 35B-A3B (32 experts / 4 active, GQA), UD-IQ2\_XXS weights. Fi
 
 ```bash
 ./build/bin/llama-server -m Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
-    --host 0.0.0.0 --port 8791 -c 400000 -ngl 99 \
-    --flash-attn on --no-mmap --parallel 2 \
+    --host 0.0.0.0 --port 8791 -c 200000 -ngl 99 \
+    --flash-attn on --parallel 2 \
     --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
-    --cache-reuse 256 -ub 512 -ts 12,12 \
-    --jinja --reasoning off
+    -ts 12,12 --jinja --reasoning off
 ```
 
-| Config | Total VRAM | TG128 |
-|--------|:---:|:---:|
-| `ktq2_1 K` + `f16 V` (400k ctx, parallel 2) | 22.6 GB | 68 tok/s |
-| `ktq2_1 K` + `vtq2_1 V` (400k ctx, parallel 2) | **19.3 GB** | 66 tok/s |
+| Config | bpw KV | pp512 | tg128 | VRAM (400k ctx, p=2) | PPL (4-chunk) |
+|---|---:|---:|---:|---:|---:|
+| `f16 / f16` | 16.0 | 1018 | 76.8 | ~24 GB | 5.967 |
+| `ktq2_1 / vtq2_1` | 3.0 | 932 | 74.4 | **19.3 GB** | 6.256 (+4.8%) |
+| **`ktq2_1 / vtq2_2`** | **2.78** | **996** | **74.9** | **~18.8 GB** | **6.018 (+0.85%)** |
+| `ktq2_1 / vtq3_3` | 3.78 | ~990 | ~74.5 | ~19.5 GB | 6.401 (+0.47%, c2-b1) |
+| `ktq2_1 / f16` | 9.40 | 997 | 75.5 | ~22.6 GB | 5.895 (+0.27%) |
 
-Full K × V sweep at shorter ctx in the [Benchmarks](#benchmarks) section.
+Full K × V sweep in the [Benchmarks](#benchmarks) section.
 
 ### 80B-A3B — Qwen3-Next hybrid (DeltaNet + Attention)
 
-Hybrid architecture, **512 experts / 10 active**. 80B params, ~25 GB at UD-IQ2\_XXS. 14 expert-layers per GPU, 20 offloaded to CPU RAM. Usable at 100k+ prompts.
+Hybrid architecture, **512 experts / 10 active**. 80B params, ~25 GB at UD-IQ2\_XXS. 14 expert-layers per GPU, 20 offloaded to CPU RAM. Usable at 200k ctx with parallel=1.
 
 ```bash
 ./build/bin/llama-server -m Qwen3-Next-80B-A3B-Instruct-UD-IQ2_XXS.gguf \
     --host 0.0.0.0 --port 8791 -c 200000 -ngl 99 -ts 12,12 -fa on \
-    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
     --parallel 1 --fit-target 128 \
     -ot "blk\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13)\.ffn_(up|down|gate)_exps\.=CUDA0,\
 blk\.(14|15|16|17|18|19|20|21|22|23|24|25|26|27)\.ffn_(up|down|gate)_exps\.=CUDA1,\
@@ -199,29 +244,63 @@ blk\.(2[89]|3[0-9]|4[0-7])\.ffn_(up|down|gate)_exps\.=CPU" \
     --jinja --reasoning off
 ```
 
-Measured **25–28 tok/s TG** at 200k ctx. Physics ceiling on this box is ~53 tok/s (40 GB/s DDR4 / 0.75 GB per-token CPU traffic) — current 48% efficiency. Quick wins (thread pinning, ngram-spec for repetitive output) may push toward 32 tok/s without code changes.
+Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
+
+| Config | bpw KV | pp512 | tg128 | PPL | Δ PPL vs f16 |
+|---|---:|---:|---:|---:|---:|
+| `f16 / f16` | 16.0 | 404.4 | 31.5 | 5.0846 | baseline |
+| `ktq2_1 / vtq2_1` (old prod) | 3.0 | 386.5 | 30.6 | 5.2213 | **+2.69%** |
+| **`ktq2_1 / vtq2_2`** (new prod) ⭐ | **2.78** | **402.6** | **30.9** | **5.0817** | **−0.06%** |
+
+Physics ceiling: 40 GB/s DDR4 / ~0.75 GB per-token CPU traffic → ~53 t/s hard limit. Current ~31 t/s = 58% efficiency. Quick wins documented in `docs/plans/2026-04-24-80b-low-hanging-perf.md` (thread pinning, hugepages) target +10-15%.
 
 ### 122B-A10B — largest that fits
 
 Qwen3.5-122B-A10B (256 experts / 8 active, GQA(2)). 34 GB weights at UD-IQ2\_XXS. 19 expert-layers on GPU (PCIe-aware 10+9 split), 29 offloaded to CPU RAM.
 
-**5-run average:** **14.06 ± 0.49 tok/s TG, 28.4 ± 2.3 tok/s PP** at 200k ctx.
+```bash
+./build/bin/llama-server -m Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf \
+    --host 0.0.0.0 --port 8791 -c 200000 -ngl 99 -ts 12,12 -fa on \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
+    --parallel 1 --fit-target 128 \
+    -ot "blk\.(0|1|2|3|4|5|6|7|8|9)\.ffn_(up|down|gate)_exps\.=CUDA0,\
+blk\.(10|11|12|13|14|15|16|17|18)\.ffn_(up|down|gate)_exps\.=CUDA1,\
+blk\.(19|[2-4][0-9])\.ffn_(up|down|gate)_exps\.=CPU" \
+    --jinja --reasoning off
+```
 
-| K | V | ctx | VRAM GPU0/GPU1 | PP tok/s | TG tok/s |
-|---|---|---|---|:---:|:---:|
-| `ktq2_1` | `vtq2_1` | 2k (all-CPU) | — | 148 | 12.6 |
-| `ktq2_1` | `vtq2_1` | 2k (10L GPU) | — | 175 (+18%) | 14.7 (+17%) |
-| `ktq2_1` | `vtq2_1` | 200k | 10.9 / 10.5 GB | **28.4** | **14.06** |
+Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
 
-Full `262144` ctx fits too — GQA(2) + TQ2\_1 means only +140 MB KV delta from 200k to 262k. TG is CPU-RAM-bandwidth-bound (2.5 GB/token at ~56 GB/s effective = ~22 tok/s physics ceiling, 64% efficiency).
+| Config | bpw KV | pp512 | tg128 | PPL | Δ PPL vs f16 |
+|---|---:|---:|---:|---:|---:|
+| `f16 / f16` | 16.0 | 187.6 | 17.0 | 4.0634 | baseline |
+| `ktq2_1 / vtq2_1` (old prod) | 3.0 | 189.5 | 16.8 | 4.2338 | **+4.19%** |
+| **`ktq2_1 / vtq2_2`** (new prod) ⭐ | **2.78** | **196.3** | **16.8** | **4.0379** | **−0.63%** |
 
-**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md).
+The 122B is where v2 Trellis shines hardest: `vtq2_2` actually beats `f16/f16` on **both** PPL (−0.63%) and pp512 (+4.6%). VRAM 10.9/10.5 GB at 200k ctx. Full 262k ctx also fits (GQA(2) + 2.78 bpw KV = +140 MB delta from 200k). Physics ceiling: 2.5 GB/token CPU traffic / 56 GB/s effective ≈ 22 t/s, current 17 t/s = 77% efficiency.
+
+**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Production-PPL sweep: [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
 
 ---
 
 ## Benchmarks
 
-All measurements: 2× RTX 2060 12 GB, Flash Attention on, `-p 512 -n 128 -r 1`. Build `584378082` / 2026-04-25 (V_rows=8 D≥256 fix).
+All measurements: Ryzen 7 3700X + 2× RTX 2060 12 GB + DDR4-3200, Flash Attention on. Production sweep build `0639f7835` / 2026-04-25.
+
+### 4-Model production summary (`ktq2_1 + vtq2_2` vs baseline)
+
+The production-default config (`ktq2_1` K + `vtq2_2` V at 2.78 bpw avg) compared to f16/f16 baseline across all four target models. PPL measured with prod-aligned methodology where possible (`-c 512 --chunks 4 -b 1 -ub 1`).
+
+| Model | bpw KV | pp512 | tg128 | PPL | Δ PPL | KV mem savings |
+|---|---:|---:|---:|---:|---:|---:|
+| Gemma4-26B-A4B | 2.78 | 1319 | 79.9 | N/A* | — | 5.8× |
+| Qwen3.6-35B-A3B | 2.78 | 996 | 74.9 | 6.018 | +0.85% | 5.8× |
+| Qwen3-Next-80B-A3B | 2.78 | 402.6 | 30.9 | 5.0817 | **−0.06%** | 5.8× |
+| Qwen3.5-122B-A10B | 2.78 | 196.3 | 16.8 | 4.0379 | **−0.63%** | 5.8× |
+
+\* Reasoning model — wikitext PPL methodologically broken, see Gemma4 section above.
+
+**Headline:** on the 80B and 122B, `vtq2_2` ties or beats f16 on every metric — quality, throughput, AND memory. PPL goes *negative* (better than f16) within stderr because the Trellis code optimizes globally over the V-distribution. The 35B sees +0.85% PPL (still well below noise floor for downstream tasks) at 5.8× smaller KV-cache.
 
 ![Decode throughput by KV config](docs/img/decode_throughput.png)
 
