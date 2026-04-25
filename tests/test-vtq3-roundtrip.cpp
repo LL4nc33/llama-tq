@@ -51,7 +51,7 @@
 #include <vector>
 
 #ifndef VTQ3_HELPERS_AVAILABLE
-#define VTQ3_HELPERS_AVAILABLE 0  // set to 1 once ggml-trellis.h exposes them
+#define VTQ3_HELPERS_AVAILABLE 1  // helpers landed in ggml-trellis.{h,c}
 #endif
 
 #if VTQ3_HELPERS_AVAILABLE
