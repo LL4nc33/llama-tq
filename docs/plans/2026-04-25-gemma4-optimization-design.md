@@ -54,7 +54,25 @@ Gemma4 is a **reasoning model** that prepends `<|channel>thought\n...` before th
 
 Saves wall-clock latency to first useful token (~50-200 hidden reasoning tokens × decode cost).
 
-## Priority
+## Tested 2026-04-25 (after sweep)
+
+**Lever 1 status: infrastructure works, measurement blocked.**
+
+`--tq-v-base vtq2_2 --tq-v-override 5:f16,11:f16,17:f16,23:f16,29:f16` runs successfully — log confirms `tq-v-mixed: n_layer=30 vtq2_2=25 other=5 avg_bpw=3.55`. SWA layers ([5,11,17,23,29]) get f16, full-attention get vtq2_2.
+
+Issues blocking measurement:
+1. **llama-bench doesn't accept `--tq-v-override`** — would need to extend bench arg parser.
+2. **llama-perplexity is prefill-only** → no TG difference observable (uniform vs mixed gave identical 17.3s wall time on 5 chunks @ 2048 ctx).
+3. **PPL on Gemma4 is broken metric** — wikitext PPL=14000-19000 baseline because the model expects `<|channel>thought` chat prefix; raw text is OOD.
+4. **llama-cli with `-no-cnv` doesn't print `llama_perf_context_print` for Gemma4** — no eval time output at all.
+
+Marginal expected gain: SWA is 5 of 30 layers → max ~15% of V-cache work touched. With f16 swap-in being slower than vtq2_2 per layer, net might even be negative on TG.
+
+**Verdict: Lever 1 deprioritized.** The actual bottleneck from sweep data is VTQ_1 family on D=512 (PP −24.5% vs −6.5% on Qwen D=128). That's a kernel-vectorization issue, requires rewrite of `fattn-vec-vtq1.cuh` inner loop for D=512 stride. Major work, deferred.
+
+VTQ_2 already at near-f16 performance on Gemma4 (`f16/vtq2_2` = −1.0% PP, −2.4% TG). Production recommendation for Gemma4: stick with `f16/vtq2_2` or `ktq2_1/vtq2_2`.
+
+## Priority (revised)
 
 1. **Lever 1** (per-layer V type) — code path exists, just CLI ergonomics + bench. ~2h work, expected 5-15% TG win plus PPL near baseline.
 2. **Lever 3** (skip deferred-K on SWA) — simple guard. ~1h work, prefill speedup.
