@@ -418,3 +418,93 @@ void ggml_trellis_overlay_apply(
         y[pos] = ggml_fp16_to_fp32((ggml_fp16_t)fp16_val);
     }
 }
+
+// --- Outlier-Channel-Split (VTQ_3) ---
+// Algorithmically equivalent to overlay_extract, but ranked by |x[i]| (raw
+// magnitude, before encode) instead of |x - decoded| (post-encode error).
+// We pick top-N then ascending-sort by position so dequant reads them in order.
+void ggml_trellis_outliers_pick(
+    const float * x,
+    int           n_out,
+    uint8_t     * out_pos,
+    float       * out_val_fp32,
+    float       * x_masked) {
+
+    const int N = GGML_TRELLIS_QK_GROUP;
+    if (n_out < 0)   n_out = 0;
+    if (n_out > 255) n_out = 255;
+
+    // Default-init outputs to safe values (pos=0, val=0). If n_out > N we cap.
+    if (n_out > N) n_out = N;
+    for (int j = 0; j < n_out; j++) { out_pos[j] = 0; out_val_fp32[j] = 0.0f; }
+
+    // Start with x_masked = x; we'll zero out the picked outlier slots later.
+    if (x_masked != x) memcpy(x_masked, x, (size_t)N * sizeof(float));
+
+    if (n_out == 0) return;
+
+    // Maintain top-N descending by |x[i]| in two parallel arrays. Linear insert
+    // is fine for N<=4 (worst case 4 compares per sample). Same pattern as
+    // overlay_extract, just keyed on |x| instead of |err|.
+    int   top_pos[256];
+    float top_mag[256];
+    for (int j = 0; j < n_out; j++) {
+        top_pos[j] = -1;
+        top_mag[j] = -1.0f;
+    }
+
+    for (int i = 0; i < N; i++) {
+        const float m = fabsf(x[i]);
+        if (m > top_mag[n_out - 1]) {
+            int ins = n_out - 1;
+            while (ins > 0 && m > top_mag[ins - 1]) {
+                top_mag[ins] = top_mag[ins - 1];
+                top_pos[ins] = top_pos[ins - 1];
+                ins--;
+            }
+            top_mag[ins] = m;
+            top_pos[ins] = i;
+        }
+    }
+
+    // Sort the up-to-N picked positions ascending (insertion sort, n_out tiny).
+    int sorted_pos[256];
+    int n_picked = 0;
+    for (int j = 0; j < n_out; j++) {
+        if (top_pos[j] >= 0) sorted_pos[n_picked++] = top_pos[j];
+    }
+    for (int a = 1; a < n_picked; a++) {
+        int   key = sorted_pos[a];
+        int   b   = a - 1;
+        while (b >= 0 && sorted_pos[b] > key) {
+            sorted_pos[b + 1] = sorted_pos[b];
+            b--;
+        }
+        sorted_pos[b + 1] = key;
+    }
+
+    // Emit (pos, val) and zero the masked input.
+    for (int j = 0; j < n_picked; j++) {
+        const int p = sorted_pos[j];
+        out_pos[j]      = (uint8_t)(p & 0xFF);
+        out_val_fp32[j] = x[p];
+        x_masked[p]     = 0.0f;
+    }
+    // If we picked fewer than n_out (only possible when N==0), pad: leave
+    // initial zeros from the default-init above.
+}
+
+void ggml_trellis_outliers_apply(
+    const uint8_t     * pos,
+    const ggml_fp16_t * val_fp16,
+    int                 n_out,
+    float             * y) {
+
+    if (!pos || !val_fp16 || n_out <= 0) return;
+    if (n_out > 255) n_out = 255;
+
+    for (int j = 0; j < n_out; j++) {
+        // Caller guarantees pos[j] < QK_GROUP.
+        y[pos[j]] = ggml_fp16_to_fp32(val_fp16[j]);
+    }
+}
