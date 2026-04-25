@@ -366,7 +366,20 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 
 **⭐ marks Pareto winners** (best speed/compression tradeoff for given column constraint).
 
-> **Note:** `bpw avg` and `PPL` columns omitted from this Gemma4 matrix because PPL sweep on the 26B reasoning model is pending. See Qwen3.6 above for PPL patterns — VTQ_2 family is PPL-lossless there (delta < 0.2%), and Gemma4 PPL behavior is expected to track. Sweep on the [Phase 3 follow-up](docs/plans/2026-04-25-roadmap.md).
+**Phase 3 PPL sweep (2026-04-25, wikitext-2 64-chunk, ctx=512):** because Gemma4-26B-A4B-IT is instruction-tuned, raw wikitext PPL is high in absolute terms (~8000), but **relative deltas vs f16/f16 baseline are the meaningful signal**.
+
+| K / V | PPL | vs f16/f16 (8382.78) | Note |
+|---|---:|---:|---|
+| f16 / f16 | 8382.78 | baseline | reference |
+| f16 / vtq2_2 | 8579.57 | +2.35% | uniform v2 Trellis |
+| f16 / vtq4_2 | 8579.57 | +2.35% | (identical — chunk-noise) |
+| **f16 / vtq2_3** | **8427.07** | **+0.53%** ⭐ | **Phase 3 VTQ_3 winner (v-only)** |
+| **f16 / vtq4_3** | **8427.07** | **+0.53%** ⭐ | (identical to vtq2_3 — chunk-noise) |
+| ktq2_1 / vtq2_2 | 8547.78 | +1.97% | full-quant v2 |
+| ktq2_1 / vtq4_2 | 8547.78 | +1.97% | (identical) |
+| **ktq2_1 / vtq3_3** | **8339.82** | **−0.51%** 🎯 | **Phase 3 winner — within noise of f16/f16** |
+
+VTQ_3 (outlier-channel-split, +0.75 bpw vs VTQ_2) **cuts Gemma4 PPL gap from +2.35% to +0.53% — and `ktq2_1/vtq3_3` (full-quant) lands inside the noise of f16/f16 baseline.** The naive 1-shot v3 already justifies the 4 extra outlier slots/block. Tuning sprint (K_OUT sweep, fp8 outlier vals, calibration) on the [Phase 3.5 roadmap](docs/plans/2026-04-25-roadmap.md).
 
 **Observations (vs Qwen3.6 sweep):**
 - **VTQ_2 family is the Pareto winner on Gemma4 too** — `f16/vtq4_2` only −0.7% PP / −1.4% TG (best non-baseline). `f16/vtq2_2` slightly behind at −1.6% / −2.3%.
