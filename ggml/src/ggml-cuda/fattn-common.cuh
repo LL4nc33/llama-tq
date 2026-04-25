@@ -983,6 +983,77 @@ static __device__ __forceinline__ void dequantize_V_vtq4_2(const void * __restri
     dequantize_V_vtq_2<block_vtq4_2, 4, T, ne>(vx, dst, i0);
 }
 
+// VTQ_3 family — same trellis backbone as VTQ_2 plus VTQ_OUTLIER_K=4 fp16
+// outlier samples per block. After trellis decode, positions listed in
+// outlier_pos[] are overwritten with outlier_val[] (Phase 3 Step 4b).
+template <typename block_t, int K, typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_t * x = (const block_t *) vx;
+    const int64_t ib = i0 / QK_VTQ_TRELLIS;
+    const int     il = (int)(i0 % QK_VTQ_TRELLIS);
+    const float   d  = (float) x[ib].d;
+    const uint16_t s0 = x[ib].start_state;
+    const uint8_t * qs = x[ib].qs;
+
+    constexpr int N = QK_VTQ_TRELLIS;
+    const float cb_scale = rsqrtf((float)N);
+    const float ds = cb_scale * d;
+
+    // Load outlier sidecar once into registers for cheap per-sample compare.
+    const uint8_t op0 = x[ib].outlier_pos[0];
+    const uint8_t op1 = x[ib].outlier_pos[1];
+    const uint8_t op2 = x[ib].outlier_pos[2];
+    const uint8_t op3 = x[ib].outlier_pos[3];
+    const half ov0 = ((const half *) x[ib].outlier_val)[0];
+    const half ov1 = ((const half *) x[ib].outlier_val)[1];
+    const half ov2 = ((const half *) x[ib].outlier_val)[2];
+    const half ov3 = ((const half *) x[ib].outlier_val)[3];
+
+    if (d == 0.0f) {
+        #pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            if constexpr (std::is_same_v<T, half>) {
+                ((half *) dst)[l] = __float2half(0.0f);
+            } else {
+                ((float *) dst)[l] = 0.0f;
+            }
+        }
+        return;
+    }
+
+    #pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const int pos = il + l;
+        const uint32_t state = vtq_state_at<K>(s0, qs, pos + 1);
+        float val = vtq_trellis_table_storage[state] * ds;
+        // Outlier patch — at most one of the four positions matches.
+        if      (pos == (int)op0) val = __half2float(ov0);
+        else if (pos == (int)op1) val = __half2float(ov1);
+        else if (pos == (int)op2) val = __half2float(ov2);
+        else if (pos == (int)op3) val = __half2float(ov3);
+        if constexpr (std::is_same_v<T, half>) {
+            ((half *) dst)[l] = __float2half(val);
+        } else {
+            ((float *) dst)[l] = val;
+        }
+    }
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq2_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_3<block_vtq2_3, 2, T, ne>(vx, dst, i0);
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq3_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_3<block_vtq3_3, 3, T, ne>(vx, dst, i0);
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq4_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_3<block_vtq4_3, 4, T, ne>(vx, dst, i0);
+}
+
 template <typename Tds, int ni>
 static __device__ __forceinline__ void quantize_q8_1_to_shared(
     const float * __restrict__ x, const float scale, int * __restrict__ yq32, void * __restrict__ yds) {
@@ -1340,6 +1411,12 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_vtq3_2<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ4_2) {
         return dequantize_V_vtq4_2<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ2_3) {
+        return dequantize_V_vtq2_3<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ3_3) {
+        return dequantize_V_vtq3_3<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ4_3) {
+        return dequantize_V_vtq4_3<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
