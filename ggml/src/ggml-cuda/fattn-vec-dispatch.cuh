@@ -49,5 +49,6 @@ bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 // E14 split-decode path — see fattn-vec-dispatch-vtq2-split.cu.
 bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
