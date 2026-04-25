@@ -51,7 +51,7 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 |-------|--------|
 | **KTQ K-cache** — RHT + Lloyd-Max, 2/3/4-bit, Q·K computed in Hadamard domain (no K dequant) | shipped, 4 types |
 | **VTQ V-cache v1** — DHD rotation + Laplace-fit codebook, 1/2/3/4-bit, codebook lookup in FA inner loop | shipped, 4 types |
-| **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.06 / 3.06 / 4.06 bpw | research; CPU ref + CUDA dequant work, D=256 still broken |
+| **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.06 / 3.06 / 4.06 bpw | shipped, all D=64/128/256/512 verified |
 | **Asymmetric K/V dispatch** — any KTQ K × any VTQ V through a single FA path | shipped |
 | **Deferred K/V quantization** — f16 staging during prefill, bulk-convert at prefill→decode boundary; avoids repetition-loop pathology on K | auto-enabled for KTQ / VTQ\_2 |
 | **Anthropic-compatible `/v1/messages`** with prompt caching, tool-call early-stop, `--keep` shift protection | shipped |
@@ -76,7 +76,7 @@ cmake --build build -j$(nproc) --target llama-server
     --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
     -fa on -ngl 99
 
-# Research preview: Trellis v2, near-f16 quality at 4-bit V (D=128 only)
+# Trellis v2: near-f16 quality at 4-bit V (verified D=64/128/256/512)
 ./build/bin/llama-server -m model.gguf \
     --cache-type-k q8_0 --cache-type-v vtq4_2 \
     -fa on -ngl 99
@@ -117,7 +117,7 @@ Group-level Viterbi trellis with shared state and shared scale. 512-sample group
 | `vtq3_2` | 3 | 3.06 | 196 B | **+1.05%** |
 | `vtq4_2` | 4 | 4.06 | 260 B | **+0.44%** ← indistinguishable from f16 |
 
-**Caveats:** v2 only works at head-dim D=128 at the moment; D=256 still crashes. Encoder is ~22 ms/call, which is why `--cache-type-v vtq*_2` auto-enables f16 staging during prefill and runs the bulk Viterbi exactly once at the prefill→decode boundary. No flag needed — logs say `deferred V quantization enabled (N layers with f16 staging)` on startup. Source: `docs/blog/2026-04-19-v-cache-validation.md`.
+**Notes:** v2 supports all head-dim values D=64/128/256/512 — verified live on Gemma4-26B-A4B (D=256 SWA + D=512 full-attn) and Qwen3.6-35B-A3B (D=128). The earlier "D=256 broken" warning (`common.cpp:1244`) was obsolete and removed in commit `26b332792`. Encoder is ~22 ms/call, which is why `--cache-type-v vtq*_2` auto-enables f16 staging during prefill and runs the bulk Viterbi exactly once at the prefill→decode boundary. No flag needed — logs say `deferred V quantization enabled (N layers with f16 staging)` on startup. Source: `docs/blog/2026-04-19-v-cache-validation.md`.
 
 ### KTQ K-cache
 
@@ -573,8 +573,8 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 - Anthropic `/v1/messages` with prompt caching
 
 **Active research**
-- VTQ2\_2 / 3\_2 / 4\_2 Trellis v2 — D=128 works, D=256 broken
-- VTQ\_OUT (outlier-channel split) — designed, not implemented. Path to sub-2% PPL at 2-bit V.
+- VTQ2\_2 / 3\_2 / 4\_2 Trellis v2 — shipped, all D=64/128/256/512 verified live
+- VTQ2\_3 / 3\_3 / 4\_3 Trellis v2 + outlier-channel split — code-complete on `turboquant`, build + bench pending. Path to sub-2% PPL at 3.0/4.0/5.0 bpw V. See `docs/plans/2026-04-25-vtq3-design.md`.
 - Correction Overlay Buffer (Trick 4) — designed, not implemented. Top-N lossless error patch.
 - `mmvq` IQ2\_XS tuning on sm\_75 — 28% of kernel time on current 35B config
 
