@@ -4866,7 +4866,12 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                        op->type == GGML_TYPE_KTQ1_1 || op->type == GGML_TYPE_KTQ2_1 || op->type == GGML_TYPE_KTQ3_1 || op->type == GGML_TYPE_KTQ4_1 ||
                        op->type == GGML_TYPE_VTQ1_1 || op->type == GGML_TYPE_VTQ2_1 || op->type == GGML_TYPE_VTQ3_1 || op->type == GGML_TYPE_VTQ4_1 ||
                        // VTQ{2,3,4}_2 (Trellis v2): CUDA Viterbi encoder landed in Phase-2b (see trellis-encode.cuh).
-                       op->type == GGML_TYPE_VTQ2_2 || op->type == GGML_TYPE_VTQ3_2 || op->type == GGML_TYPE_VTQ4_2) &&
+                       op->type == GGML_TYPE_VTQ2_2 || op->type == GGML_TYPE_VTQ3_2 || op->type == GGML_TYPE_VTQ4_2 ||
+                       // VTQ{2,3,4}_3 (Phase 3): Trellis backbone + 4 fp16 outliers/block.
+                       // TODO(phase3): set-rows currently writes only the trellis backbone via the
+                       // VTQ_2 encoder; outlier_pos/outlier_val are picked CPU-side via
+                       // ggml_trellis_outliers_pick before the prefill→decode handoff.
+                       op->type == GGML_TYPE_VTQ2_3 || op->type == GGML_TYPE_VTQ3_3 || op->type == GGML_TYPE_VTQ4_3) &&
                        op->src[0]->type == GGML_TYPE_F32 &&
                        (op->src[1]->type == GGML_TYPE_I64 || op->src[1]->type == GGML_TYPE_I32);
             } break;
