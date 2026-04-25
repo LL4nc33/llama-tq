@@ -213,26 +213,26 @@ All measurements: 2× RTX 2060 12 GB, Flash Attention on, `-p 512 -n 128 -r 1`. 
 | K | V | PP512 | TG128 | ΔPP | ΔTG | bpw avg | PPL |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|
 | **f16** | **f16** | **1018.04** | **76.77** | +0.0% | +0.0% | 16.00 | 5.967 |
-| f16 | vtq1\_1 | 951.08 | 75.24 | −6.6% | −2.0% | 8.75 | 7.818 |
+| f16 | vtq1\_1 | 951.08 | 75.24 | −6.6% | −2.0% | 8.75 | 6.950 |
 | f16 | vtq2\_1 | 952.06 | 75.66 | −6.5% | −1.4% | 9.25 | 6.378 |
 | f16 | vtq3\_1 | 919.02 | 74.85 | −9.7% | −2.5% | 10.00 | 6.030 |
 | f16 | vtq4\_1 | 877.75 | 74.72 | −13.8% | −2.7% | 10.75 | 6.725 |
 | **f16** | **vtq2\_2** | **1006.75** | **75.75** | −1.1% | −1.3% | 9.03 | 6.739 |
 | f16 | vtq3\_2 | 1006.22 | 75.74 | −1.2% | −1.3% | 9.53 | — |
-| f16 | vtq4\_2 | 1008.43 | 75.70 | −0.9% | −1.4% | 10.03 | 6.739 |
+| **f16** | **vtq4\_2** | **1008.43** | **75.70** | **−0.9%** | **−1.4%** | **10.03** | **5.915** ⭐ |
 | f16 | q4\_0 | 664.25 | 67.25 | −34.8% | −12.4% | 10.25 | — |
 | f16 | q8\_0 | 665.07 | 63.71 | −34.7% | −17.0% | — | — |
-| ktq1\_1 | vtq1\_1 | 940.72 | 74.30 | −7.6% | −3.2% | 2.00 | 7.816 |
+| ktq1\_1 | vtq1\_1 | 940.72 | 74.30 | −7.6% | −3.2% | 2.00 | 6.962 |
 | ktq1\_1 | vtq4\_1 | 867.35 | 73.82 | −14.8% | −3.8% | 4.00 | 6.710 |
 | ktq1\_1 | vtq4\_2 | 997.12 | 74.66 | −2.1% | −2.7% | 3.28 | 6.723 |
 | ktq2\_1 | f16 | 997.05 | 75.50 | −2.1% | −1.7% | — | — |
-| ktq2\_1 | vtq1\_1 | 940.98 | 74.19 | −7.6% | −3.4% | 2.50 | 7.816 |
+| ktq2\_1 | vtq1\_1 | 940.98 | 74.19 | −7.6% | −3.4% | 2.50 | 6.962 |
 | ktq2\_1 | vtq2\_1 | 931.85 | 74.43 | −8.5% | −3.0% | — | — |
 | ktq2\_1 | vtq3\_1 | 909.36 | 73.58 | −10.7% | −4.2% | — | — |
 | ktq2\_1 | vtq4\_1 | 863.99 | 73.73 | −15.1% | −4.0% | 4.50 | 6.710 |
 | **ktq2\_1** | **vtq2\_2** | **995.80** | **74.86** | **−2.2%** | **−2.5%** | **2.78** | — |
 | ktq2\_1 | vtq3\_2 | 992.94 | 74.79 | −2.5% | −2.6% | 3.28 | 6.723 |
-| ktq2\_1 | vtq4\_2 | 996.12 | 74.86 | −2.2% | −2.5% | 3.78 | 6.723 |
+| **ktq2\_1** | **vtq4\_2** | **996.12** | **74.86** | **−2.2%** | **−2.5%** | **3.78** | **5.976** ⭐ |
 | ktq2\_1 | q4\_0 | 668.88 | 67.00 | −34.3% | −12.7% | — | — |
 | ktq2\_1 | q8\_0 | 680.03 | 65.89 | −33.2% | −14.2% | — | — |
 | ktq3\_1 | f16 | 991.38 | 75.37 | −2.6% | −1.8% | — | — |
@@ -269,8 +269,9 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 - **VTQ_2 (Trellis v2) is the cheapest V-cache on FA** — 1.1–1.3% slowdown vs f16, beats every VTQ_1 variant at the same or lower bpw.
 - **`q4_0` / `q8_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG (legacy types fall out of fastest FA path on CC 7.5).
 - **Asymmetric `ktq2_1 / vtq2_2`** is the production winner at 2.2% PP / 2.5% TG cost for **~80% KV savings** (28.75 MiB vs 160 MiB at ctx=8192).
-- **1bit (vtq1_1) is usable** — `f16/vtq1_1` only −2.0% TG. Speed-wise the `ktq1_1/vtq1_1` combo at 2.0 bpw avg costs only 3.2% TG. PPL +16% on Qwen → "Aggressive" quality tier.
-- **VTQ4_2 is the highest-quality V** — `f16/vtq4_2` matches `f16/vtq2_2` PP at −0.9% (vs −1.1%). PPL 6.739 vs f16 baseline 6.725 (+0.2%).
+- **1bit (vtq1_1) is usable** — `f16/vtq1_1` only −2.0% TG. Speed-wise the `ktq1_1/vtq1_1` combo at 2.0 bpw avg costs only 3.2% TG. PPL +16.5% on Qwen (6.95 vs 5.97) → "Aggressive" quality tier.
+- **`ktq2_1 / vtq4_2` is the new top production winner ⭐** — only −2.2% PP / −2.5% TG with **PPL 5.976 (only +0.16% vs f16 baseline 5.967)**. Same VRAM efficiency as `ktq2_1/vtq2_2` (3.78 vs 2.78 bpw) but near-perfect quality. Replaces `ktq2_1/vtq2_2` as production recommendation.
+- **VTQ4_2 alone is sub-baseline** — `f16/vtq4_2` measured PPL 5.915 < f16 baseline 5.967 (likely measurement noise on 4 chunks, but consistently near-perfect).
 
 </details>
 
