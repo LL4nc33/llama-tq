@@ -75,12 +75,14 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 
 ## Highlights
 
+> **TL;DR:** K-cache and V-cache are quantized **independently**. You pick a K-type (`ktq1_1`…`ktq4_1` at 2.5–5.5 bpw) and a V-type (`vtq1_1`…`vtq4_1` at 1.5–4.5 bpw, or `vtq2_2`…`vtq4_2` Trellis at 2.06–4.06 bpw) — the FA kernel family covers every combination. Use a low-bpw V-type with a higher-bpw K-type for the cleanest quality-per-byte trade.
+
 | Thing | Status |
 |-------|--------|
-| **KTQ K-cache** — RHT + Lloyd-Max, 2/3/4-bit, Q·K computed in Hadamard domain (no K dequant) | shipped, 4 types |
-| **VTQ V-cache v1** — DHD rotation + Laplace-fit codebook, 1/2/3/4-bit, codebook lookup in FA inner loop | shipped, 4 types |
+| **KTQ K-cache** — RHT + Lloyd-Max, 1/2/3/4-bit (2.5–5.5 bpw), Q·K computed in Hadamard domain (no K dequant) | shipped, 4 types |
+| **VTQ V-cache v1** — DHD rotation + Laplace-fit codebook, 1/2/3/4-bit (1.5–4.5 bpw), codebook lookup in FA inner loop | shipped, 4 types |
 | **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.06 / 3.06 / 4.06 bpw | shipped, all D=64/128/256/512 verified |
-| **Asymmetric K/V dispatch** — any KTQ K × any VTQ V through a single FA path | shipped |
+| **Asymmetric K/V dispatch** — any KTQ K × any VTQ V through a single FA path (12 K × 7 V = 84 valid combos) | shipped |
 | **Deferred K/V quantization** — f16 staging during prefill, bulk-convert at prefill→decode boundary; avoids repetition-loop pathology on K | auto-enabled for KTQ / VTQ\_2 |
 | **Anthropic-compatible `/v1/messages`** with prompt caching, tool-call early-stop, `--keep` shift protection | shipped |
 
