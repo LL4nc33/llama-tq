@@ -350,17 +350,23 @@ Gemma4's 30 layers alternate full-attention (D=512) and SWA (D=256, every 6th: l
 |---|---|:---:|:---:|:---:|---|
 | f16 | f16 (uniform) | 1365.97 | 84.72 | 16.00 | f16 baseline |
 | f16 | vtq2_2 (uniform) | 1343.97 | 82.73 | 2.25 | uniform Trellis |
-| **f16** | **vtq2_2 + SWA=f16** | **1381.16** | **84.81** | **3.55** | ⭐ **safe Lever 1 — verified** |
-| f16 | vtq2_2 + SWA=vtq2_1 | 1382.59 | 84.95 | 2.43 | unverified output coherence |
-| f16 | vtq2_2 + SWA=vtq4_2 | 1383.19 | 85.17 | 2.43 | ⚠ VTQ_2 D=256 has a known-broken flag, output not cli-verified |
+| f16 | vtq2_2 + SWA=f16 | 1381.16 | 84.81 | 3.55 | safe option |
+| f16 | vtq2_2 + SWA=vtq2_1 | 1382.59 | 84.95 | 2.43 | |
+| **f16** | **vtq2_2 + SWA=vtq4_2** | **1383.19** | **85.17** | **2.43** | ⭐ **best Gemma4 config — verified** |
 | ktq2_1 | vtq2_2 + SWA=f16 | 1344.61 | 80.89 | 3.55 | with K-quant |
 
-**Recommended `SWA=f16`** is the verified safe option — SWA layers stay at f16, full-attn at vtq2_2. Other SWA-V types (vtq2_1, vtq4_2) bench faster but the cli-output sanity-check is currently blocked by the llama-cli REPL prefix issue (test-harness artifact, not corruption — but until verified, treat as "experimental"). VTQ_2 family on D=256 has a `LOG_WRN` warning in `common.cpp:1244` that may be obsolete; needs llama-completion or llama-server verification.
+**`SWA=vtq4_2` is the new top Gemma4 config** — verified via llama-server chat completion (`The capital of France is **Paris**.`) and reasoning extraction. Despite the SWA layers having head_dim=256 (where an old `LOG_WRN` cautioned about VTQ_2 corruption), the modern build runs cleanly at D=128, 256, and 512. The warning in `common.cpp:1244` was obsolete and has been removed.
+
+At **avg V bpw 2.43** the config beats both:
+- f16/f16 uniform (16 bpw, 1366 PP / 84.72 TG)
+- vtq2_2 uniform (2.25 bpw, 1344 PP / 82.73 TG)
+
+→ **+1.3% PP / +0.5% TG vs f16 baseline at 6.6× smaller V-cache**.
 
 Available via env var on llama-bench (Phase 6 tooling, commit `78c3ece6d`):
 ```bash
-# Production-safe: SWA=f16 mix
-LLAMA_ARG_TQ_V_OVERRIDE='5:f16,11:f16,17:f16,23:f16,29:f16' \
+# Best Gemma4 config: SWA=vtq4_2
+LLAMA_ARG_TQ_V_OVERRIDE='5:vtq4_2,11:vtq4_2,17:vtq4_2,23:vtq4_2,29:vtq4_2' \
   llama-bench -m gemma4.gguf --cache-type-k f16 --cache-type-v vtq2_2 ...
 ```
 
