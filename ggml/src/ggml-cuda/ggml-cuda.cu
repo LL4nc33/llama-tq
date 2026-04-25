@@ -4101,7 +4101,14 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
 
     if (graph->graph == nullptr) {
-        if (ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_AMPERE) {
+        // Allow opt-in for pre-Ampere GPUs (Turing CC 7.5) via GGML_CUDA_FORCE_GRAPHS=1.
+        // Upstream gates pre-Ampere; on Turing graphs can still help by reducing kernel
+        // launch overhead, which is significant for decode-path TG.
+        static const bool force_graphs = [] {
+            const char * env = getenv("GGML_CUDA_FORCE_GRAPHS");
+            return env != nullptr && atoi(env) == 1;
+        }();
+        if (!force_graphs && ggml_cuda_info().devices[cuda_ctx->device].cc < GGML_CUDA_CC_AMPERE) {
             if (!graph->disable_due_to_gpu_arch) {
                 GGML_LOG_DEBUG("%s: disabling CUDA graphs due to GPU architecture\n", __func__);
             }
