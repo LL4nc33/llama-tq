@@ -243,7 +243,7 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 </details>
 
 <details>
-<summary><b>Gemma4-26B-A4B (bartowski IQ2_XXS)</b> — full 21-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
+<summary><b>Gemma4-26B-A4B (IQ2_XXS)</b> — full 21-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
 
 26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. FA-vec dispatch covers D=64/128/256/512 for all TQ types.
 
