@@ -10,18 +10,6 @@
 
 > **tl;dr** — Two flags, `--cache-type-k ktq2_1 --cache-type-v vtq2_2`, take a Qwen3.6-35B MoE to ~330k single-context (or 2× 200k parallel slots) on 24 GB total VRAM. Cost: ~2.5% slower token generation, **+0.15% perplexity vs f16** (64-chunk wikitext-2). The V-cache is perplexity-lossless on its own; the 0.15% is the K-quant. 80B and 122B MoEs run with expert-offload to CPU RAM.
 >
-> Live ctx ceiling on 2× RTX 2060 (24 GB total), `--parallel 1` (live-tested 2026-04-25):
->
-> | ctx | `-ub 512` (default) | `-ub 128` (compute-buffer trim) |
-> |-----|--------------------:|---------------------------------:|
-> | 300k | ✅ 21.4 GB | ✅ |
-> | 350k | ❌ OOM (23.2 GB) | ✅ |
-> | 400k | ❌ OOM (24.9 GB) | ✅ 20.7 GB |
-> | 450k | — | ✅ 22.0 GB |
-> | 470k | — | ✅ 22.5 GB |
-> | 480k | — | ❌ OOM |
-> | 500k | — | ❌ OOM (23.3 GB) |
->
 > **Default behavior:** ~330k single-context. **Optimized with `-ub 128`:** ~470k single-context (~+40%). Trade-off: prompt processing is ~30% slower at small ubatch (token generation unchanged). Pure KV-cache stays small (~5 GB at 470k); the remaining VRAM is weights (~10 GB), per-GPU Flash Attention compute buffers, and activations. Single-GPU with 24 GB avoids the per-GPU compute-buffer duplication and would push higher.
 
 ### Glossary (skim once, then come back)
