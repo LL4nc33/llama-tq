@@ -250,6 +250,7 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 **Status (verified 2026-04-25 on 2× RTX 2060, dual-GPU split):**
 
 - Loads with `-ngl 99 -ts 12,12`, weights split ~4.7+4.5 GiB, compute buffer fits at ctx=512+.
+- TG throughput **81.89 tok/s** at tg256 with f16/f16 KV cache, FA on.
 - Generates coherent reasoning output. Sample (greedy, `--log-verbose`):
   - `<|channel>thought\nThe user is asking a simple factual question: "What is the capital of France?"...`
 - Earlier "gibberish" reports were a test-harness artifact: llama-cli's interactive REPL prompt-prefix (`> `) made the actual reasoning tokens (control tokens not rendered on stdout) look like empty newlines. Token-ID dump confirms valid sampling.
