@@ -787,6 +787,15 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
         case GGML_TYPE_VTQ4_2:
             GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
             return dequantize_row_vtq4_2_cuda<half>;
+        case GGML_TYPE_VTQ2_3:
+            GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
+            return dequantize_row_vtq2_3_cuda<half>;
+        case GGML_TYPE_VTQ3_3:
+            GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
+            return dequantize_row_vtq3_3_cuda<half>;
+        case GGML_TYPE_VTQ4_3:
+            GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
+            return dequantize_row_vtq4_3_cuda<half>;
         default:
             return nullptr;
     }
@@ -1068,6 +1077,12 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
             return dequantize_block_vtq3_2_nc_cuda;
         case GGML_TYPE_VTQ4_2:
             return dequantize_block_vtq4_2_nc_cuda;
+        case GGML_TYPE_VTQ2_3:
+            return dequantize_block_vtq2_3_nc_cuda;
+        case GGML_TYPE_VTQ3_3:
+            return dequantize_block_vtq3_3_nc_cuda;
+        case GGML_TYPE_VTQ4_3:
+            return dequantize_block_vtq4_3_nc_cuda;
         case GGML_TYPE_BF16:
             return convert_unary_cuda<nv_bfloat16>;
         default:
@@ -1111,6 +1126,12 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
             return dequantize_block_vtq3_2_nc_cuda;
         case GGML_TYPE_VTQ4_2:
             return dequantize_block_vtq4_2_nc_cuda;
+        case GGML_TYPE_VTQ2_3:
+            return dequantize_block_vtq2_3_nc_cuda;
+        case GGML_TYPE_VTQ3_3:
+            return dequantize_block_vtq3_3_nc_cuda;
+        case GGML_TYPE_VTQ4_3:
+            return dequantize_block_vtq4_3_nc_cuda;
         case GGML_TYPE_F16:
             return convert_unary_cuda<half, nv_bfloat16>;
         default:
@@ -1154,6 +1175,12 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
             return dequantize_block_vtq3_2_nc_cuda;
         case GGML_TYPE_VTQ4_2:
             return dequantize_block_vtq4_2_nc_cuda;
+        case GGML_TYPE_VTQ2_3:
+            return dequantize_block_vtq2_3_nc_cuda;
+        case GGML_TYPE_VTQ3_3:
+            return dequantize_block_vtq3_3_nc_cuda;
+        case GGML_TYPE_VTQ4_3:
+            return dequantize_block_vtq4_3_nc_cuda;
         case GGML_TYPE_BF16:
             return convert_unary_cuda<nv_bfloat16, float>;
         default:
