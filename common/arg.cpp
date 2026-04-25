@@ -403,6 +403,9 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_VTQ3_2,
     GGML_TYPE_VTQ4_2,
     GGML_TYPE_VTQ_MIXED,
+    GGML_TYPE_VTQ2_3,
+    GGML_TYPE_VTQ3_3,
+    GGML_TYPE_VTQ4_3,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
