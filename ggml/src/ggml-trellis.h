@@ -16,6 +16,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "ggml.h"  // ggml_fp16_t for outlier helpers
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -83,6 +85,28 @@ void ggml_trellis_overlay_apply(
     const uint8_t * entries,  // n_per_block*4 bytes
     int             n_per_block,
     float         * y);       // QK_GROUP decoded samples, patched in place
+
+// --- Outlier-Channel-Split (VTQ_3) — CPU helpers ---
+// Pick the n_out positions with the largest |x[i]| in a QK_GROUP-sample block.
+// Outputs:
+//   out_pos[0..n_out-1]      : sorted ascending positions (uint8)
+//   out_val_fp32[0..n_out-1] : the picked fp32 values, ordered to match out_pos
+//   x_masked[0..QK_GROUP-1]  : copy of x with out_pos slots zeroed (Trellis-encode input)
+// If n_out >= QK_GROUP, all positions are picked. n_out is clamped to [0, 255].
+void ggml_trellis_outliers_pick(
+    const float * x,
+    int           n_out,
+    uint8_t     * out_pos,
+    float       * out_val_fp32,
+    float       * x_masked);
+
+// Patch decoded y[] in place by overwriting y[pos[k]] with fp16->fp32(val_fp16[k]).
+// Caller guarantees pos[k] < QK_GROUP.
+void ggml_trellis_outliers_apply(
+    const uint8_t     * pos,
+    const ggml_fp16_t * val_fp16,
+    int                 n_out,
+    float             * y);
 
 #ifdef __cplusplus
 }
