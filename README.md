@@ -12,14 +12,14 @@
 >
 > Live ctx ceiling on 2× RTX 2060 (24 GB total), `--parallel 1`:
 >
-> | ctx | projected VRAM | result | KV-cache size |
-> |-----|---------------:|:------:|--------------:|
-> | 200k | 17.8 GB | ✅ runs | 702 MB |
-> | 300k | 21.4 GB | ✅ runs | 1053 MB |
-> | 350k | 23.2 GB | ❌ OOM (162 MB short) | 1229 MB |
-> | 400k | 24.9 GB | ❌ OOM (1946 MB short) | 1404 MB |
+> | ctx | KV-cache total | projected VRAM | result |
+> |-----|---------------:|---------------:|:------:|
+> | 200k | 4.6 GB | 17.8 GB | ✅ runs |
+> | 300k | 6.9 GB | 21.4 GB | ✅ runs |
+> | 350k | 8.1 GB | 23.2 GB | ❌ OOM (162 MB short) |
+> | 400k | 9.2 GB | 24.9 GB | ❌ OOM (1946 MB short) |
 >
-> KV-cache itself is tiny (1.4 GB even at 400k tokens). Most VRAM goes to Flash Attention compute buffers which scale with ctx and don't share across multi-GPU splits — each GPU keeps its own peak buffer. Single-GPU with 24 GB would push higher.
+> KV-cache is `2× per-GPU buffer` = ~9 GB at 400k (vs ~46 GB it would be at f16 — that's the 83% reduction). The remaining VRAM goes to weights (~10 GB), Flash Attention compute buffers (scale with ctx, don't share across GPUs), and activations. Single-GPU with 24 GB would push higher because it avoids the per-GPU compute-buffer duplication.
 
 ### Glossary (skim once, then come back)
 
