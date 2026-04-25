@@ -48,6 +48,18 @@ bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_2)
     FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_2)
 
+    // Phase 3 Step 4c — VTQ_3 family (Trellis backbone + 4 fp16 outliers/block).
+    // Minimal K-type matrix to keep build-time bounded: F16 (debug/baseline)
+    // and the production KTQ2_1/3_1/4_1 trio. Q8_0 omitted intentionally.
+    // TODO(phase3): verify production K/V combinations once benches land.
+    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ2_3)
+    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ3_3)
+    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_F16,    GGML_TYPE_VTQ4_3)
+    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_3)
+    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ3_3)
+    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ4_3)
+    FATTN_VEC_CASES_ALL_D_WITH_512_RET(GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_3)
+
     GGML_UNUSED(ctx); GGML_UNUSED(dst);
     GGML_UNUSED(Q); GGML_UNUSED(K); GGML_UNUSED(V);
     return false;
