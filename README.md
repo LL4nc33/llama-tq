@@ -6,7 +6,7 @@
 
 Experimental llama.cpp fork focused on **KV-cache quantization**. Different K and V types, different dequant paths inside the Flash Attention kernel, a Trellis-coded V family for near-lossless 3-/4-bit V-cache, and large-MoE deployments on small cards.
 
-> **tl;dr** — asymmetric `ktq2_1 / vtq2_1` gets a 35B MoE to 400k ctx on 24 GB total VRAM at ~3% TG cost. `vtq3_2` / `vtq4_2` (Trellis v2, research) sit in the near-lossless zone at 3.06 / 4.06 V-cache bpw. 80B and 122B MoEs run with expert-offload.
+> **tl;dr** — asymmetric `ktq2_1 / vtq2_2` (Trellis v2, 2.78 bpw avg) gets a 35B MoE to 400k ctx on 24 GB total VRAM at ~2.5% TG cost and **only +0.16% PPL vs f16**. The whole VTQ_2 family (vtq2_2/3_2/4_2) sits in the near-lossless zone. 80B and 122B MoEs run with expert-offload.
 
 ![KV-cache bpw vs PPL Pareto frontier](docs/img/ppl_vs_bpw.png)
 
@@ -71,9 +71,9 @@ cmake --build build -j$(nproc) --target llama-server
     --cache-type-k q8_0 --cache-type-v vtq3_1 \
     -fa on -ngl 99
 
-# Maximum compression for long-ctx fits (3.5 avg bpw, ~7% PPL on IQ2 weights)
+# Maximum compression for long-ctx fits (2.78 avg bpw, +0.16% PPL on IQ2 weights)
 ./build/bin/llama-server -m model.gguf \
-    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
     -fa on -ngl 99
 
 # Research preview: Trellis v2, near-f16 quality at 4-bit V (D=128 only)
@@ -89,7 +89,7 @@ K and V types are chosen independently. `--cache-type-k` accepts standard quants
 | Preset | K | V | Avg bpw | PPL Δ (35B UD-IQ2\_XXS) | VRAM saving vs f16/f16 |
 |--------|---|---|:---:|:---:|:---:|
 | **Safe** | `q8_0` | `vtq3_1` | 6.25 | +1.05% | 61% |
-| **Balanced** | `ktq2_1` | `vtq2_1` | 3.0 | not yet 64-chunk re-measured | **81%** |
+| **Balanced** ⭐ | `ktq2_1` | `vtq2_2` | 2.78 | **+0.16%** (4-chunk) | **83%** |
 | **Research** | `q8_0` | `vtq4_2` | 6.03 | +0.44% (Qwen3.5-0.8B) | 62% |
 
 ---
