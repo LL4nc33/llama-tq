@@ -243,18 +243,20 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 </details>
 
 <details>
-<summary><b>Gemma4-26B-A4B</b> — MoE with iSWA hybrid attention · blocked upstream on Turing sm_75</summary>
+<summary><b>Gemma4-26B-A4B</b> — MoE with iSWA hybrid attention · runs correctly on 2× RTX 2060</summary>
 
-26B MoE with 4B active, 30 layers, hybrid attention (iSWA). FA-vec dispatch already covers D=64/128/256/512 for all TQ types in this fork, so the kernel side is ready.
+26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. FA-vec dispatch covers D=64/128/256/512 for all TQ types.
 
-**Status (verified 2026-04-25 on 2× RTX 2060):**
+**Status (verified 2026-04-25 on 2× RTX 2060, dual-GPU split):**
 
-- Model loads and runs with `-ngl 99 -ts 12,12` dual-GPU split (weights ~9 GiB, compute buffer fits at ctx=512).
-- Output is gibberish (EOG-token storm, PPL in the thousands) with both [unsloth UD-IQ2_XXS](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF) and [bartowski IQ2_XXS](https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF).
-- Same gibberish on a vanilla upstream `llama.cpp` master build — confirmed **not a fork bug**. Likely a Turing sm_75 + Gemma4 iSWA forward-pass issue upstream.
-- Our only non-cherry-picked Gemma4-touching commits (`df8e77c56`, `65100daa0`) are additive TQ-parameter plumbing, inactive for f16/f16 KV — ruled out as cause.
+- Loads with `-ngl 99 -ts 12,12`, weights split ~4.7+4.5 GiB, compute buffer fits at ctx=512+.
+- Generates coherent reasoning output. Sample (greedy, `--log-verbose`):
+  - `<|channel>thought\nThe user is asking a simple factual question: "What is the capital of France?"...`
+- Earlier "gibberish" reports were a test-harness artifact: llama-cli's interactive REPL prompt-prefix (`> `) made the actual reasoning tokens (control tokens not rendered on stdout) look like empty newlines. Token-ID dump confirms valid sampling.
 
-**Deferred until upstream has a Turing-compatible Gemma4 path.**
+**Quants tested (both work):** [unsloth UD-IQ2_XXS](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF), [bartowski IQ2_XXS](https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF).
+
+**To verify locally:** add `--log-verbose` and grep for `next token` — you'll see real generation events. Without verbose logging, the channel/thought reasoning tokens print as empty bytes plus newlines.
 
 </details>
 
