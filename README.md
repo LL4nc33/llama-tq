@@ -70,7 +70,7 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 | **KTQ K-cache** — RHT + Lloyd-Max, 1/2/3/4-bit (2.5–5.5 bpw), Q·K computed in Hadamard domain (no K dequant) | shipped, 4 types |
 | **VTQ V-cache v1** — DHD rotation + Laplace-fit codebook, 1/2/3/4-bit (1.5–4.5 bpw), codebook lookup in FA inner loop | shipped, 4 types |
 | **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.06 / 3.06 / 4.06 bpw | shipped, all D=64/128/256/512 verified |
-| **Asymmetric K/V dispatch** — any KTQ K × any VTQ V through a single FA path (12 K × 7 V = 84 valid combos) | shipped |
+| **Asymmetric K/V dispatch** — K and V types chosen independently, single FA path. VTQ_1 family covers all 11 K-types; VTQ_2 / VTQ_3 currently a reduced K-matrix (production: F16/KTQ2_1/KTQ3_1; dispatch expansion in progress) | shipped (matrix being filled) |
 | **Deferred K/V quantization** — f16 staging during prefill, bulk-convert at prefill→decode boundary; avoids repetition-loop pathology on K | auto-enabled for KTQ / VTQ\_2 |
 | **Anthropic-compatible `/v1/messages`** with prompt caching, tool-call early-stop, `--keep` shift protection | shipped |
 
@@ -369,9 +369,16 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 | ktq2_1 / vtq4_2 | 8547.78 | +1.97% | (identical) |
 | **ktq2_1 / vtq3_3** | **8339.82** | **−0.51%** 🎯 | **Phase 3 winner — within noise of f16/f16** |
 
-VTQ_3 (outlier-channel-split, +0.75 bpw vs VTQ_2) **cuts Gemma4 PPL gap from +2.35% to +0.53% — and `ktq2_1/vtq3_3` (full-quant) lands inside the noise of f16/f16 baseline.** The naive 1-shot v3 already justifies the 4 extra outlier slots/block. Tuning sprint (K_OUT sweep, fp8 outlier vals, calibration) on the [Phase 3.5 roadmap](docs/plans/2026-04-25-roadmap.md).
-
-> ⚠️ **Phase 3 PPL results invalid (2026-04-25):** The identical PPLs across vtq2_2/3_2/4_2 turned out NOT to be a decoder bug — `llama-perplexity --chunks N -c 512` only ever runs 512-token batches, but the deferred-V trigger fires only on single-token decode. So V-cache stays permanently in the f16 staging buffer, the VTQ encoder is never called, and FA reads f16 V regardless of `--cache-type-v`. **Encoder/decoder are correct** (3 hypotheses ruled out, see [blog](docs/blog/2026-04-25-vtq2-cpu-vs-cuda-split.md)) — but the PPL numbers in this section measure f16, not VTQ. Need a measurement tool with incremental decode (e.g. llama-cli interactive) to get real VTQ PPL. Phase 3 win/comparison claims are pending re-measurement; the V-cache itself is functional in real serving (where decode-1 happens every token).
+> ⚠️ **Phase 3 PPL numbers above are not a real VTQ measurement** (discovered 2026-04-25):
+>
+> `llama-perplexity --chunks N -c 512` only does 512-token batches. The deferred-V quantization trigger (`TQ_DEFERRED_STAGING → READY`) fires **only on single-token decode** — so the V-cache stays permanently in the f16 staging buffer, the VTQ encoder is never called, and FA reads f16 V regardless of `--cache-type-v`. Every row in the table above with `vtq*_2` / `vtq*_3` was effectively measuring `f16/f16`.
+>
+> **Encoder/decoder are verified correct** — 3 hypotheses ruled out:
+> - Encoder dispatch produces distinct qs bytes per K (Agent A, [blog](docs/blog/2026-04-25-vtq2-encoder-bytes-test.md))
+> - `vtq_state_at<K>` decoder formula matches encoder format (Agent C, [blog](docs/blog/2026-04-25-vtq2-state-at-audit.md))
+> - CPU and CUDA paths both K-aware; deferred-staging is the actual cause (Agent B, [blog](docs/blog/2026-04-25-vtq2-cpu-vs-cuda-split.md))
+>
+> **VTQ_2 / VTQ_3 are functional in real serving** (`llama-server` does single-token decode every step). The "Phase 3 winner" claims for the rows above are pending re-measurement with a tool that triggers single-token decode. Roundtrip MSE on synthetic data confirms VTQ_3 produces 0.62× / 0.41× / 0.23× the error of VTQ_2 for K=2/3/4 — the implementation is sound, just hard to measure with the current `llama-perplexity` batching.
 
 **Observations (vs Qwen3.6 sweep):**
 - **VTQ_2 family is the Pareto winner on Gemma4 too** — `f16/vtq4_2` only −0.7% PP / −1.4% TG (best non-baseline). `f16/vtq2_2` slightly behind at −1.6% / −2.3%.
