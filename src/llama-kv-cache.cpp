@@ -140,7 +140,9 @@ llama_kv_cache::llama_kv_cache(
     // during prefill and bulk-Viterbi converts at prefill→decode. The legacy
     // --tq-deferred-v flag is retained as a no-op for backwards compat.
     const bool is_vtq2_type_v = (type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
-                                  type_v == GGML_TYPE_VTQ4_2);
+                                  type_v == GGML_TYPE_VTQ4_2 ||
+                                  type_v == GGML_TYPE_VTQ2_3 || type_v == GGML_TYPE_VTQ3_3 ||
+                                  type_v == GGML_TYPE_VTQ4_3);
     const bool use_deferred_v = is_vtq2_type_v;
     (void) tq_deferred_v; // flag retained for backwards compat; always on for VTQ_2
 
@@ -288,7 +290,9 @@ llama_kv_cache::llama_kv_cache(
             const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 ||
                                    type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 ||
                                    type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
-                                   type_v == GGML_TYPE_VTQ4_2 || type_v == GGML_TYPE_VTQ_MIXED);
+                                   type_v == GGML_TYPE_VTQ4_2 || type_v == GGML_TYPE_VTQ_MIXED ||
+                                   type_v == GGML_TYPE_VTQ2_3 || type_v == GGML_TYPE_VTQ3_3 ||
+                                   type_v == GGML_TYPE_VTQ4_3);
             const bool is_ktq_v = (type_v == GGML_TYPE_KTQ1_1 || type_v == GGML_TYPE_KTQ2_1 ||
                                    type_v == GGML_TYPE_KTQ3_1 || type_v == GGML_TYPE_KTQ4_1);
             if (is_vtq_v || is_ktq_v) {
@@ -300,7 +304,7 @@ llama_kv_cache::llama_kv_cache(
         if (tq_protect_layers > 0) {
             const bool is_tq_k = (type_k == GGML_TYPE_KTQ1_1 || type_k == GGML_TYPE_KTQ2_1 || type_k == GGML_TYPE_KTQ3_1 || type_k == GGML_TYPE_KTQ4_1);
             const bool is_tq_v = (type_v == GGML_TYPE_KTQ1_1 || type_v == GGML_TYPE_KTQ2_1 || type_v == GGML_TYPE_KTQ3_1 || type_v == GGML_TYPE_KTQ4_1);
-            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 || type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 || type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 || type_v == GGML_TYPE_VTQ4_2 || type_v == GGML_TYPE_VTQ_MIXED);
+            const bool is_vtq_v = (type_v == GGML_TYPE_VTQ1_1 || type_v == GGML_TYPE_VTQ2_1 || type_v == GGML_TYPE_VTQ3_1 || type_v == GGML_TYPE_VTQ4_1 || type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 || type_v == GGML_TYPE_VTQ4_2 || type_v == GGML_TYPE_VTQ_MIXED || type_v == GGML_TYPE_VTQ2_3 || type_v == GGML_TYPE_VTQ3_3 || type_v == GGML_TYPE_VTQ4_3);
 
             if (is_tq_k || is_tq_v || is_vtq_v) {
                 uint32_t kv_layer_idx = 0;
@@ -352,7 +356,9 @@ llama_kv_cache::llama_kv_cache(
 
         if (use_deferred_v && has_v) {
             const bool layer_uses_vtq2 = (eff_type_v == GGML_TYPE_VTQ2_2 || eff_type_v == GGML_TYPE_VTQ3_2 ||
-                                           eff_type_v == GGML_TYPE_VTQ4_2);
+                                           eff_type_v == GGML_TYPE_VTQ4_2 ||
+                                           eff_type_v == GGML_TYPE_VTQ2_3 || eff_type_v == GGML_TYPE_VTQ3_3 ||
+                                           eff_type_v == GGML_TYPE_VTQ4_3);
             if (layer_uses_vtq2) {
                 v_staging = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, n_embd_v_gqa, kv_size, n_stream);
                 ggml_format_name(v_staging, "cache_v_staging_l%d", il);
