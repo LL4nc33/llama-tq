@@ -6,9 +6,20 @@
 
 **llama.cpp fork that cuts KV-cache VRAM by 83% without quality loss. Run longer contexts on the same GPU.**
 
-**For users:** drop in two flags, get a 35B model running at 400k context (or 2× 200k parallel slots) on 24 GB total VRAM. Same answer quality, longer chats, no new hardware. **For developers:** asymmetric KTQ K-cache × VTQ V-cache with split dequant paths inside Flash Attention, plus a Trellis-coded V family that is bit-exact against f16 at the measurement granularity used.
+**For users:** drop in two flags, get a 35B MoE running at ~330k single context (or 2× 200k parallel slots) on 24 GB total VRAM (live-tested 2026-04-25 on 2× RTX 2060). Same answer quality, longer chats, no new hardware. **For developers:** asymmetric KTQ K-cache × VTQ V-cache with split dequant paths inside Flash Attention, plus a Trellis-coded V family that is bit-exact against f16 at the measurement granularity used.
 
-> **tl;dr** — Two flags, `--cache-type-k ktq2_1 --cache-type-v vtq2_2`, take a Qwen3.6-35B MoE to 400k context on 24 GB total VRAM. Cost: ~2.5% slower token generation, **+0.15% perplexity vs f16** (64-chunk wikitext-2). The V-cache is perplexity-lossless on its own; the 0.15% is the K-quant. 80B and 122B MoEs run with expert-offload to CPU RAM. (Multi-GPU note: KV-cache itself is small, ~1.4 GB at 400k tokens. Most VRAM goes to compute buffers for Flash Attention, which scale with ctx and replicate per GPU — so single-GPU and multi-GPU don't have identical ctx ceilings.)
+> **tl;dr** — Two flags, `--cache-type-k ktq2_1 --cache-type-v vtq2_2`, take a Qwen3.6-35B MoE to ~330k single-context (or 2× 200k parallel slots) on 24 GB total VRAM. Cost: ~2.5% slower token generation, **+0.15% perplexity vs f16** (64-chunk wikitext-2). The V-cache is perplexity-lossless on its own; the 0.15% is the K-quant. 80B and 122B MoEs run with expert-offload to CPU RAM.
+>
+> Live ctx ceiling on 2× RTX 2060 (24 GB total), `--parallel 1`:
+>
+> | ctx | projected VRAM | result | KV-cache size |
+> |-----|---------------:|:------:|--------------:|
+> | 200k | 17.8 GB | ✅ runs | 702 MB |
+> | 300k | 21.4 GB | ✅ runs | 1053 MB |
+> | 350k | 23.2 GB | ❌ OOM (162 MB short) | 1229 MB |
+> | 400k | 24.9 GB | ❌ OOM (1946 MB short) | 1404 MB |
+>
+> KV-cache itself is tiny (1.4 GB even at 400k tokens). Most VRAM goes to Flash Attention compute buffers which scale with ctx and don't share across multi-GPU splits — each GPU keeps its own peak buffer. Single-GPU with 24 GB would push higher.
 
 ### Glossary (skim once, then come back)
 
@@ -87,7 +98,7 @@ cmake --build build -j$(nproc) --target llama-server
 
 | Tier | K | V | Avg bpw | VRAM saved | PPL cost | Who it's for |
 |---|---|---|:---:|:---:|:---:|---|
-| ⭐ **Lossless** (recommended) | `ktq2_1` | `vtq2_2` | 2.78 | **83%** | **+0.15%** | Most users. Fits 400k ctx of a 35B MoE on 24 GB total VRAM (parallel-2 = 2× 200k slots). |
+| ⭐ **Lossless** (recommended) | `ktq2_1` | `vtq2_2` | 2.78 | **83%** | **+0.15%** | Most users. Fits ~330k single-ctx (or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. |
 | **Aggressive** | `ktq2_1` | `vtq3_1` | 4.0 | 77% | +0.49% | Trade ~0.5% PPL for a different bpw point if v2 isn't built. |
 | **Conservative** | `q8_0` | `vtq3_1` | 6.25 | 61% | +1.05% | Falls back to the standard `q8_0` K-quant — no KTQ kernels needed. |
 | **Research** | `q8_0` | `vtq4_2` | 6.03 | 62% | +0.44% | Highest-quality Trellis V-cache, larger blocks. |
