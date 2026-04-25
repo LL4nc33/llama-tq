@@ -348,15 +348,18 @@ Gemma4's 30 layers alternate full-attention (D=512) and SWA (D=256, every 6th: l
 
 | K | V config | PP512 | TG128 | avg V bpw | Note |
 |---|---|:---:|:---:|:---:|---|
-| f16 | vtq2_2 (uniform) | 1343.97 | 82.73 | 2.25 | reference |
-| f16 | vtq2_2 + SWA=f16 | **1381.16** | **84.81** | 3.55 | **+2.8% PP / +2.5% TG** ⭐ |
-| ktq2_1 | vtq2_2 (uniform) | 1318.67 | 79.88 | 2.25 | |
-| ktq2_1 | vtq2_2 + SWA=f16 | **1344.61** | **80.89** | 3.55 | +2.0% PP / +1.3% TG |
+| f16 | f16 (uniform) | 1365.97 | 84.72 | 16.00 | f16 baseline |
+| f16 | vtq2_2 (uniform) | 1343.97 | 82.73 | 2.25 | uniform Trellis |
+| **f16** | **vtq2_2 + SWA=f16** | **1381.16** | **84.81** | **3.55** | ⭐ **safe Lever 1 — verified** |
+| f16 | vtq2_2 + SWA=vtq2_1 | 1382.59 | 84.95 | 2.43 | unverified output coherence |
+| f16 | vtq2_2 + SWA=vtq4_2 | 1383.19 | 85.17 | 2.43 | ⚠ VTQ_2 D=256 has a known-broken flag, output not cli-verified |
+| ktq2_1 | vtq2_2 + SWA=f16 | 1344.61 | 80.89 | 3.55 | with K-quant |
 
-The SWA-f16/full-vtq2_2 mix on `f16` K is **faster than f16/f16 uniform** (1381 vs 1366 PP / 84.81 vs 84.72 TG) — the smaller V-cache reduces FA memory pressure on full-attn layers more than the dispatch cost adds.
+**Recommended `SWA=f16`** is the verified safe option — SWA layers stay at f16, full-attn at vtq2_2. Other SWA-V types (vtq2_1, vtq4_2) bench faster but the cli-output sanity-check is currently blocked by the llama-cli REPL prefix issue (test-harness artifact, not corruption — but until verified, treat as "experimental"). VTQ_2 family on D=256 has a `LOG_WRN` warning in `common.cpp:1244` that may be obsolete; needs llama-completion or llama-server verification.
 
 Available via env var on llama-bench (Phase 6 tooling, commit `78c3ece6d`):
 ```bash
+# Production-safe: SWA=f16 mix
 LLAMA_ARG_TQ_V_OVERRIDE='5:f16,11:f16,17:f16,23:f16,29:f16' \
   llama-bench -m gemma4.gguf --cache-type-k f16 --cache-type-v vtq2_2 ...
 ```
