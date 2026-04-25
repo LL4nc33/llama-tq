@@ -243,30 +243,46 @@ Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on F
 </details>
 
 <details>
-<summary><b>Gemma4-26B-A4B</b> — MoE with iSWA hybrid attention · runs correctly on 2× RTX 2060</summary>
+<summary><b>Gemma4-26B-A4B (bartowski IQ2_XXS)</b> — full 21-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
 
 26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. FA-vec dispatch covers D=64/128/256/512 for all TQ types.
 
-**Status (verified 2026-04-25 on 2× RTX 2060, dual-GPU split):**
+| K | V | PP512 | TG128 | ΔPP | ΔTG |
+|---|---|:---:|:---:|:---:|:---:|
+| **f16** | **f16** | **1395.74** | **82.70** | baseline | baseline |
+| f16 | vtq2\_1 | 1054.38 | 78.95 | −24.5% | −4.5% |
+| f16 | vtq3\_1 | 908.74 | 75.35 | −34.9% | −8.9% |
+| **f16** | **vtq2\_2** | **1381.58** | **80.70** | **−1.0%** | **−2.4%** |
+| f16 | vtq3\_2 | 1381.17 | 80.72 | −1.0% | −2.4% |
+| f16 | q4\_0 | 326.56 | 32.23 | −76.6% | −61.0% |
+| f16 | q8\_0 | 333.95 | 30.69 | −76.1% | −62.9% |
+| ktq2\_1 | f16 | 1345.45 | 78.81 | −3.6% | −4.7% |
+| ktq2\_1 | vtq2\_1 | 1025.33 | 75.36 | −26.5% | −8.9% |
+| ktq2\_1 | vtq3\_1 | 889.54 | 71.92 | −36.3% | −13.0% |
+| **ktq2\_1** | **vtq2\_2** | **1334.21** | **77.27** | **−4.4%** | **−6.6%** |
+| ktq2\_1 | vtq3\_2 | 1331.86 | 77.21 | −4.6% | −6.6% |
+| ktq2\_1 | q4\_0 | 328.68 | 31.37 | −76.5% | −62.1% |
+| ktq2\_1 | q8\_0 | 330.06 | 28.88 | −76.4% | −65.1% |
+| ktq3\_1 | f16 | 1342.35 | 78.82 | −3.8% | −4.7% |
+| ktq3\_1 | vtq2\_2 | 1332.11 | 77.12 | −4.6% | −6.7% |
+| ktq3\_1 | vtq3\_1 | 887.59 | 71.94 | −36.4% | −13.0% |
+| ktq3\_1 | vtq3\_2 | 1328.92 | 77.01 | −4.8% | −6.9% |
+| q8\_0 | q8\_0 | 1315.82 | 72.79 | −5.7% | −12.0% |
+| q4\_0 | q4\_0 | 1312.87 | 72.26 | −5.9% | −12.6% |
+| q8\_0 | vtq2\_1 | 938.08 | 71.06 | −32.8% | −14.1% |
 
-- Loads with `-ngl 99 -ts 12,12`, weights split ~4.7+4.5 GiB, compute buffer fits at ctx=512+.
-- Generates coherent reasoning output. Sample (greedy, `--log-verbose`):
-  - `<|channel>thought\nThe user is asking a simple factual question: "What is the capital of France?"...`
-- Earlier "gibberish" reports were a test-harness artifact: llama-cli's interactive REPL prompt-prefix (`> `) made the actual reasoning tokens (control tokens not rendered on stdout) look like empty newlines. Token-ID dump confirms valid sampling.
+Generates coherent reasoning output. Sample (greedy, `--log-verbose`):
+- `<|channel>thought\nThe user is asking a simple factual question: "What is the capital of France?"...`
 
-**Decode throughput (tg256, FA on, dual-GPU):**
+**Observations (vs Qwen3.6 sweep):**
+- **VTQ_2 is the cheapest V-cache on Gemma4 too** — `f16/vtq2_2` is only 1.0% PP / 2.4% TG slowdown. Same Pareto position as on Qwen.
+- **Legacy `q4_0` / `q8_0` as V is catastrophic** at D=512 — drops PP to ~330 (−76%), TG to ~32 (−61%). Gemma4's full-attention head dim is the worst case for those types.
+- **VTQ_1 family suffers more on D=512** than on Qwen's D=128 — `f16/vtq2_1` is −24.5% PP (vs −6.5% on Qwen). Trellis-v2 (vtq2_2) wins decisively here.
+- **`ktq2_1 / vtq2_2` Pareto winner**: −4.4% PP / −6.6% TG for ~80% KV savings. Slightly worse than Qwen's −3.1% / −3.1% — the V-rms-norm pre-quant interaction (Gemma4-specific) is the suspect.
 
-| K cache | V cache | tg256 (tok/s) |
-|---------|---------|:------------:|
-| f16     | f16     | 82.11        |
-| ktq2_1  | vtq2_2  | 77.21        |
-| ktq1_1  | vtq2_2  | 77.20        |
-| q8_0    | q8_0    | 73.48        |
-| ktq2_1  | vtq3_1  | 71.87        |
+**Earlier "gibberish" reports** were a test-harness artifact: llama-cli's interactive REPL prompt-prefix (`> `) made the actual reasoning tokens (control tokens not rendered on stdout) look like empty newlines. Token-ID dump confirms valid sampling. Add `--log-verbose` and grep `next token` to verify locally.
 
 **Quants tested (both work):** [unsloth UD-IQ2_XXS](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF), [bartowski IQ2_XXS](https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF).
-
-**To verify locally:** add `--log-verbose` and grep for `next token` — you'll see real generation events. Without verbose logging, the channel/thought reasoning tokens print as empty bytes plus newlines.
 
 </details>
 
