@@ -201,89 +201,149 @@ Full `262144` ctx fits too — GQA(2) + TQ2\_1 means only +140 MB KV delta from 
 
 ## Benchmarks
 
-All measurements: 2× RTX 2060 12 GB, Flash Attention on, `-p 512 -n 128 -r 2`. Build `f30e85aa5` / 2026-04-24 unless noted.
+All measurements: 2× RTX 2060 12 GB, Flash Attention on, `-p 512 -n 128 -r 1`. Build `584378082` / 2026-04-25 (V_rows=8 D≥256 fix).
 
 ![Decode throughput by KV config](docs/img/decode_throughput.png)
 
 <details>
-<summary><b>Qwen3.6-35B-A3B (UD-IQ2_XXS)</b> — full 21-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
+<summary><b>Qwen3.6-35B-A3B (UD-IQ2_XXS)</b> — full 50-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
 
-| K | V | PP512 | TG128 | ΔPP | ΔTG |
-|---|---|:---:|:---:|:---:|:---:|
-| **f16** | **f16** | **971.4** | **74.82** | baseline | baseline |
-| f16 | vtq2\_1 | 908.2 | 73.83 | −6.5% | −1.3% |
-| f16 | vtq3\_1 | 884.8 | 72.58 | −8.9% | −3.0% |
-| **f16** | **vtq2\_2** | **963.7** | **74.03** | **−0.8%** | **−1.1%** |
-| f16 | vtq3\_2 | 962.4 | 74.13 | −0.9% | −0.9% |
-| f16 | q4\_0 | 648.9 | 66.70 | −33.2% | −10.8% |
-| f16 | q8\_0 | 652.3 | 60.28 | −32.8% | −19.4% |
-| ktq2\_1 | f16 | 950.4 | 73.19 | −2.2% | −2.2% |
-| ktq2\_1 | vtq2\_1 | 885.9 | 72.18 | −8.8% | −3.5% |
-| ktq2\_1 | vtq3\_1 | 857.9 | 71.12 | −11.7% | −4.9% |
-| **ktq2\_1** | **vtq2\_2** | **941.0** | **72.51** | **−3.1%** | **−3.1%** |
-| ktq2\_1 | vtq3\_2 | 941.4 | 72.37 | −3.1% | −3.3% |
-| ktq2\_1 | q4\_0 | 636.6 | 64.74 | −34.5% | −13.5% |
-| ktq2\_1 | q8\_0 | 646.6 | 62.74 | −33.4% | −16.2% |
-| ktq3\_1 | f16 | 938.9 | 72.44 | −3.4% | −3.2% |
-| ktq3\_1 | vtq2\_2 | 924.0 | 71.83 | −4.9% | −4.0% |
-| ktq3\_1 | vtq3\_1 | 848.2 | 70.25 | −12.7% | −6.1% |
-| ktq3\_1 | vtq3\_2 | 926.9 | 71.53 | −4.6% | −4.4% |
-| q8\_0 | q8\_0 | 943.4 | 70.71 | −2.9% | −5.5% |
-| q4\_0 | q4\_0 | 929.6 | 70.19 | −4.3% | −6.2% |
-| q8\_0 | vtq2\_1 | 856.2 | 70.45 | −11.9% | −5.8% |
+48-layer dense MoE, 35B params total / 3B active, head_dim=128 (D=128). Wikitext-2 PPL baseline f16/f16 = 5.967.
 
-Rows in **bold** are the Pareto-interesting ones: `f16/vtq2_2` is near-free on FA (−0.8% PP, −1.1% TG) and `ktq2_1/vtq2_2` is the lightest-with-K-quant config at −3.1% / −3.1%.
+| K | V | PP512 | TG128 | ΔPP | ΔTG | bpw avg | PPL |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **f16** | **f16** | **1018.04** | **76.77** | +0.0% | +0.0% | 16.00 | 5.967 |
+| f16 | vtq1\_1 | 951.08 | 75.24 | −6.6% | −2.0% | 8.75 | 7.818 |
+| f16 | vtq2\_1 | 952.06 | 75.66 | −6.5% | −1.4% | 9.25 | 6.378 |
+| f16 | vtq3\_1 | 919.02 | 74.85 | −9.7% | −2.5% | 10.00 | 6.030 |
+| f16 | vtq4\_1 | 877.75 | 74.72 | −13.8% | −2.7% | 10.75 | 6.725 |
+| **f16** | **vtq2\_2** | **1006.75** | **75.75** | −1.1% | −1.3% | 9.03 | 6.739 |
+| f16 | vtq3\_2 | 1006.22 | 75.74 | −1.2% | −1.3% | 9.53 | — |
+| f16 | vtq4\_2 | 1008.43 | 75.70 | −0.9% | −1.4% | 10.03 | 6.739 |
+| f16 | q4\_0 | 664.25 | 67.25 | −34.8% | −12.4% | 10.25 | — |
+| f16 | q8\_0 | 665.07 | 63.71 | −34.7% | −17.0% | — | — |
+| ktq1\_1 | vtq1\_1 | 940.72 | 74.30 | −7.6% | −3.2% | 2.00 | 7.816 |
+| ktq1\_1 | vtq4\_1 | 867.35 | 73.82 | −14.8% | −3.8% | 4.00 | 6.710 |
+| ktq1\_1 | vtq4\_2 | 997.12 | 74.66 | −2.1% | −2.7% | 3.28 | 6.723 |
+| ktq2\_1 | f16 | 997.05 | 75.50 | −2.1% | −1.7% | — | — |
+| ktq2\_1 | vtq1\_1 | 940.98 | 74.19 | −7.6% | −3.4% | 2.50 | 7.816 |
+| ktq2\_1 | vtq2\_1 | 931.85 | 74.43 | −8.5% | −3.0% | — | — |
+| ktq2\_1 | vtq3\_1 | 909.36 | 73.58 | −10.7% | −4.2% | — | — |
+| ktq2\_1 | vtq4\_1 | 863.99 | 73.73 | −15.1% | −4.0% | 4.50 | 6.710 |
+| **ktq2\_1** | **vtq2\_2** | **995.80** | **74.86** | **−2.2%** | **−2.5%** | **2.78** | — |
+| ktq2\_1 | vtq3\_2 | 992.94 | 74.79 | −2.5% | −2.6% | 3.28 | 6.723 |
+| ktq2\_1 | vtq4\_2 | 996.12 | 74.86 | −2.2% | −2.5% | 3.78 | 6.723 |
+| ktq2\_1 | q4\_0 | 668.88 | 67.00 | −34.3% | −12.7% | — | — |
+| ktq2\_1 | q8\_0 | 680.03 | 65.89 | −33.2% | −14.2% | — | — |
+| ktq3\_1 | f16 | 991.38 | 75.37 | −2.6% | −1.8% | — | — |
+| ktq3\_1 | vtq1\_1 | 940.31 | 74.20 | −7.6% | −3.3% | 3.00 | 7.816 |
+| ktq3\_1 | vtq2\_1 | 927.85 | 74.21 | −8.9% | −3.3% | — | — |
+| ktq3\_1 | vtq3\_1 | 903.82 | 73.80 | −11.2% | −3.9% | — | — |
+| ktq3\_1 | vtq4\_1 | 864.55 | 73.51 | −15.1% | −4.2% | 5.00 | 6.710 |
+| ktq3\_1 | vtq2\_2 | 992.41 | 74.83 | −2.5% | −2.5% | — | — |
+| ktq3\_1 | vtq3\_2 | 991.13 | 74.52 | −2.6% | −2.9% | — | — |
+| ktq3\_1 | vtq4\_2 | 994.29 | 74.86 | −2.3% | −2.5% | 4.28 | 6.723 |
+| ktq3\_1 | q4\_0 | 653.10 | 59.81 | −35.8% | −22.1% | — | — |
+| ktq3\_1 | q8\_0 | 651.67 | 66.79 | −36.0% | −13.0% | — | — |
+| ktq4\_1 | vtq1\_1 | 937.44 | 74.38 | −7.9% | −3.1% | 3.50 | 7.816 |
+| ktq4\_1 | vtq4\_1 | 863.46 | 73.53 | −15.2% | −4.2% | 5.50 | 6.710 |
+| ktq4\_1 | vtq4\_2 | 993.49 | 74.61 | −2.4% | −2.8% | 4.78 | 6.723 |
+| q8\_0 | f16 | 735.69 | 67.63 | −27.7% | −11.9% | — | — |
+| q8\_0 | vtq2\_1 | 902.87 | 72.71 | −11.3% | −5.3% | 5.50 | 6.361 |
+| q8\_0 | vtq3\_1 | 873.28 | 72.12 | −14.2% | −6.1% | — | — |
+| q8\_0 | vtq2\_2 | 747.96 | 63.36 | −26.5% | −17.5% | — | — |
+| q8\_0 | vtq3\_2 | 739.68 | 66.70 | −27.3% | −13.1% | — | — |
+| q8\_0 | q4\_0 | 681.96 | 69.60 | −33.0% | −9.3% | — | — |
+| q8\_0 | q8\_0 | 985.42 | 73.08 | −3.2% | −4.8% | — | — |
+| q4\_0 | f16 | 743.31 | 67.16 | −27.0% | −12.5% | — | — |
+| q4\_0 | vtq2\_1 | 897.98 | 72.59 | −11.8% | −5.4% | — | — |
+| q4\_0 | vtq3\_1 | 874.30 | 72.27 | −14.1% | −5.9% | — | — |
+| q4\_0 | vtq2\_2 | 745.13 | 64.45 | −26.8% | −16.0% | — | — |
+| q4\_0 | vtq3\_2 | 708.94 | 66.01 | −30.4% | −14.0% | — | — |
+| q4\_0 | q4\_0 | 984.79 | 72.61 | −3.3% | −5.4% | — | — |
+| q4\_0 | q8\_0 | 663.94 | 68.37 | −34.8% | −10.9% | — | — |
+
+Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free on FA (−1.1% PP, −1.3% TG) and `ktq2_1/vtq2_2` is the lightest-with-K-quant config at −2.2% / −2.5% throughput cost for ~80% KV savings.
 
 **Observations:**
-- **VTQ_2 (Trellis v2) is the cheapest V-cache on FA** — 0.8–1.1% slowdown vs f16, beats every VTQ_1 variant at the same or lower bpw. The deferred encoder + warp-parallel shift-register decoder keep the FA inner loop tight.
-- **`q8_0` / `q4_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG. Those legacy types fall out of the fastest FA path on CC 7.5. VTQ is smaller and faster.
-- **`ktq2_1 + f16 V` is the lowest-overhead single-side compression** — 2.2% PP and 2.2% TG for ~40% KV savings. Good starting point if you don't need V-cache compression.
-- **Asymmetric `ktq2_1 / vtq2_2` is the new Pareto winner** at 3.1% throughput cost for **~80% KV savings** (28.75 MiB vs 160 MiB total at ctx=8192). Replaces the old `ktq2_1 / vtq2_1` recommendation.
+- **VTQ_2 (Trellis v2) is the cheapest V-cache on FA** — 1.1–1.3% slowdown vs f16, beats every VTQ_1 variant at the same or lower bpw.
+- **`q4_0` / `q8_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG (legacy types fall out of fastest FA path on CC 7.5).
+- **Asymmetric `ktq2_1 / vtq2_2`** is the production winner at 2.2% PP / 2.5% TG cost for **~80% KV savings** (28.75 MiB vs 160 MiB at ctx=8192).
+- **1bit (vtq1_1) is usable** — `f16/vtq1_1` only −2.0% TG. Speed-wise the `ktq1_1/vtq1_1` combo at 2.0 bpw avg costs only 3.2% TG. PPL +16% on Qwen → "Aggressive" quality tier.
+- **VTQ4_2 is the highest-quality V** — `f16/vtq4_2` matches `f16/vtq2_2` PP at −0.9% (vs −1.1%). PPL 6.739 vs f16 baseline 6.725 (+0.2%).
 
 </details>
 
 <details>
-<summary><b>Gemma4-26B-A4B (IQ2_XXS)</b> — full 21-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
+<summary><b>Gemma4-26B-A4B (IQ2_XXS)</b> — full 50-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
 
-26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. FA-vec dispatch covers D=64/128/256/512 for all TQ types.
-
-After Phase 1 V_rows=8 D≥256 fix (`fattn-vec.cuh:89`, commit `584378082`). Halved block-header reload waste at D=512 layouts.
+26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. Full-attention layers use head_dim=512 (D=512), SWA layers head_dim=256. FA-vec dispatch covers D=64/128/256/512 for all TQ types. **V is rms-normed before KV write** (Gemma4-specific) — see Lever 4 in [optimization design](docs/plans/2026-04-25-gemma4-optimization-design.md).
 
 | K | V | PP512 | TG128 | ΔPP | ΔTG |
 |---|---|:---:|:---:|:---:|:---:|
-| **f16** | **f16** | **1365.97** | **84.72** | baseline | baseline |
+| **f16** | **f16** | **1365.97** | **84.72** | +0.0% | +0.0% |
+| f16 | vtq1\_1 | 1082.83 | 81.87 | −20.7% | −3.4% |
 | f16 | vtq2\_1 | 1024.38 | 80.54 | −25.0% | −4.9% |
 | f16 | vtq3\_1 | 913.67 | 79.06 | −33.1% | −6.7% |
-| **f16** | **vtq2\_2** | **1343.97** | **82.73** | **−1.6%** | **−2.4%** |
+| f16 | vtq4\_1 | 808.93 | 79.61 | −40.8% | −6.0% |
+| **f16** | **vtq2\_2** | **1343.97** | **82.73** | **−1.6%** | **−2.3%** |
 | f16 | vtq3\_2 | 1344.84 | 82.70 | −1.5% | −2.4% |
-| f16 | q4\_0 | 380.72 | 55.11 | −72.1% | −34.9% |
+| f16 | vtq4\_2 | 1356.80 | 83.55 | −0.7% | −1.4% |
+| f16 | q4\_0 | 380.72 | 55.11 | −72.1% | −35.0% |
 | f16 | q8\_0 | 393.75 | 52.65 | −71.2% | −37.9% |
+| ktq1\_1 | vtq1\_1 | 1058.42 | 78.03 | −22.5% | −7.9% |
+| ktq1\_1 | vtq4\_1 | 800.22 | 76.60 | −41.4% | −9.6% |
+| ktq1\_1 | vtq4\_2 | 1325.46 | 80.41 | −3.0% | −5.1% |
 | ktq2\_1 | f16 | 1321.62 | 81.78 | −3.2% | −3.5% |
+| ktq2\_1 | vtq1\_1 | 1061.76 | 78.65 | −22.3% | −7.2% |
 | ktq2\_1 | vtq2\_1 | 1005.42 | 78.08 | −26.4% | −7.8% |
-| ktq2\_1 | vtq3\_1 | 900.80 | 76.44 | −34.0% | −9.8% |
+| ktq2\_1 | vtq3\_1 | 900.80 | 76.44 | −34.1% | −9.8% |
+| ktq2\_1 | vtq4\_1 | 800.99 | 76.43 | −41.4% | −9.8% |
 | **ktq2\_1** | **vtq2\_2** | **1318.67** | **79.88** | **−3.5%** | **−5.7%** |
 | ktq2\_1 | vtq3\_2 | 1314.98 | 79.74 | −3.7% | −5.9% |
+| ktq2\_1 | vtq4\_2 | 1324.86 | 80.06 | −3.0% | −5.5% |
 | ktq2\_1 | q4\_0 | 367.10 | 55.30 | −73.1% | −34.7% |
 | ktq2\_1 | q8\_0 | 375.96 | 53.11 | −72.5% | −37.3% |
 | ktq3\_1 | f16 | 1320.73 | 81.92 | −3.3% | −3.3% |
-| ktq3\_1 | vtq2\_2 | 1319.96 | 79.94 | −3.4% | −5.6% |
+| ktq3\_1 | vtq1\_1 | 1059.86 | 78.37 | −22.4% | −7.5% |
+| ktq3\_1 | vtq2\_1 | 1007.49 | 78.06 | −26.2% | −7.9% |
 | ktq3\_1 | vtq3\_1 | 903.14 | 76.26 | −33.9% | −10.0% |
+| ktq3\_1 | vtq4\_1 | 800.67 | 76.11 | −41.4% | −10.2% |
+| ktq3\_1 | vtq2\_2 | 1319.96 | 79.94 | −3.4% | −5.6% |
 | ktq3\_1 | vtq3\_2 | 1316.41 | 79.74 | −3.6% | −5.9% |
-| q8\_0 | q8\_0 | 1305.33 | 76.00 | −4.4% | −10.3% |
-| q4\_0 | q4\_0 | 1300.30 | 75.18 | −4.8% | −11.3% |
+| ktq3\_1 | vtq4\_2 | 1324.48 | 80.16 | −3.0% | −5.4% |
+| ktq3\_1 | q4\_0 | 367.97 | 48.38 | −73.1% | −42.9% |
+| ktq3\_1 | q8\_0 | 366.66 | 47.10 | −73.2% | −44.4% |
+| ktq4\_1 | vtq1\_1 | 1057.68 | 78.61 | −22.6% | −7.2% |
+| ktq4\_1 | vtq4\_1 | 799.65 | 76.26 | −41.5% | −10.0% |
+| ktq4\_1 | vtq4\_2 | 1321.25 | 79.99 | −3.3% | −5.6% |
+| q8\_0 | f16 | 508.51 | 47.61 | −62.8% | −43.8% |
 | q8\_0 | vtq2\_1 | 930.84 | 74.16 | −31.9% | −12.5% |
+| q8\_0 | vtq3\_1 | 834.23 | 72.37 | −38.9% | −14.6% |
+| q8\_0 | vtq2\_2 | 522.73 | 46.21 | −61.7% | −45.5% |
+| q8\_0 | vtq3\_2 | 510.40 | 47.42 | −62.6% | −44.0% |
+| q8\_0 | q4\_0 | 403.15 | 53.80 | −70.5% | −36.5% |
+| q8\_0 | q8\_0 | 1305.33 | 76.00 | −4.4% | −10.3% |
+| q4\_0 | f16 | 499.38 | 56.74 | −63.4% | −33.0% |
+| q4\_0 | vtq2\_1 | 930.06 | 73.92 | −31.9% | −12.7% |
+| q4\_0 | vtq3\_1 | 834.29 | 72.53 | −38.9% | −14.4% |
+| q4\_0 | vtq2\_2 | 504.01 | 55.34 | −63.1% | −34.7% |
+| q4\_0 | vtq3\_2 | 505.58 | 53.06 | −63.0% | −37.4% |
+| q4\_0 | q4\_0 | 1300.30 | 75.18 | −4.8% | −11.3% |
+| q4\_0 | q8\_0 | 390.69 | 58.18 | −71.4% | −31.3% |
 
-Generates coherent reasoning output. Sample (greedy, `--log-verbose`):
+**Observations (vs Qwen3.6 sweep):**
+- **VTQ_2 family is the Pareto winner on Gemma4 too** — `f16/vtq4_2` only −0.7% PP / −1.4% TG (best non-baseline). `f16/vtq2_2` slightly behind at −1.6% / −2.3%.
+- **1bit on D=512 works well** — `f16/vtq1_1` only −3.4% TG (1.0625 bpw V). Phase 1 V_rows=8 D≥256 fix made this practical.
+- **VTQ_1 family suffers badly on D=512** — `f16/vtq2_1` is −25% PP and `f16/vtq4_1` is −41% PP, in stark contrast to Qwen's −6 to −14%. The codebook approach has a per-block fixed-cost overhead that scales linearly with D.
+- **Legacy `q4_0` / `q8_0` as V is catastrophic** at D=512 (PP −72%). Even worse paired with q-K (`q8_0/vtq2_2` = −62% PP, completely broken FA dispatch).
+- **`ktq*/vtq2_2/3_2/4_2` cluster** all within −5.5 to −5.9% TG of baseline at ~3.0–4.78 bpw avg — multiple Pareto points to choose from.
+- **TG improvements vs pre-fix** (commit `584378082` vs prior): VTQ-family configs gained +2 to +6% TG. Detailed delta in [docs/plans/2026-04-25-phase1-vrows-results.md](docs/plans/2026-04-25-phase1-vrows-results.md).
+
+**Sample reasoning output** (greedy, `--log-verbose`):
 - `<|channel>thought\nThe user is asking a simple factual question: "What is the capital of France?"...`
 
-**Observations (vs Qwen3.6 sweep, post V_rows=8 D≥256 fix):**
-- **VTQ_2 is the cheapest V-cache on Gemma4 too** — `f16/vtq2_2` is only 1.6% PP / 2.4% TG slowdown. Same Pareto position as on Qwen.
-- **Legacy `q4_0` / `q8_0` as V is still catastrophic** at D=512 — PP ~380 (−72%), TG ~55 (−35%). Gemma4's full-attention head dim is the worst case for those types (also benefited from V_rows fix; previously −76% / −61%).
-- **VTQ_1 family suffers more on D=512** than on Qwen's D=128 — `f16/vtq2_1` is −25.0% PP. Trellis-v2 (vtq2_2) wins decisively.
-- **`ktq2_1 / vtq2_2` Pareto winner**: −3.5% PP / −5.7% TG for ~80% KV savings (improved from −4.4% / −6.6% pre-fix).
-- **TG improvements vs pre-fix**: VTQ-family configs gained +2 to +6% TG. Best: `ktq2_1/vtq3_1` +6.3% TG. Detailed delta in [docs/plans/2026-04-25-phase1-vrows-results.md](docs/plans/2026-04-25-phase1-vrows-results.md).
-
-**Earlier "gibberish" reports** were a test-harness artifact: llama-cli's interactive REPL prompt-prefix (`> `) made the actual reasoning tokens (control tokens not rendered on stdout) look like empty newlines. Token-ID dump confirms valid sampling. Add `--log-verbose` and grep `next token` to verify locally.
+**Earlier "gibberish" reports** were a test-harness artifact — llama-cli's interactive REPL prompt-prefix made reasoning control tokens look like empty newlines. Token-ID dump confirms valid sampling.
 
 **Quants tested (both work):** [unsloth UD-IQ2_XXS](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF), [bartowski IQ2_XXS](https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF).
 
