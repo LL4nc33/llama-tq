@@ -381,6 +381,8 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 
 VTQ_3 (outlier-channel-split, +0.75 bpw vs VTQ_2) **cuts Gemma4 PPL gap from +2.35% to +0.53% — and `ktq2_1/vtq3_3` (full-quant) lands inside the noise of f16/f16 baseline.** The naive 1-shot v3 already justifies the 4 extra outlier slots/block. Tuning sprint (K_OUT sweep, fp8 outlier vals, calibration) on the [Phase 3.5 roadmap](docs/plans/2026-04-25-roadmap.md).
 
+> ⚠️ **Phase 3 results unverified (2026-04-25):** PPL identical across vtq2_2/3_2/4_2 (and across vtq2_3/3_3/4_3) is suspicious — investigation in progress (see [blog](docs/blog/2026-04-25-vtq3-ppl-anomalies.md)). One root-cause (encoder OOB write) was fixed in `b771f9267`, but identical-K behavior persists. Re-verification pending.
+
 **Observations (vs Qwen3.6 sweep):**
 - **VTQ_2 family is the Pareto winner on Gemma4 too** — `f16/vtq4_2` only −0.7% PP / −1.4% TG (best non-baseline). `f16/vtq2_2` slightly behind at −1.6% / −2.3%.
 - **1bit on D=512 works well** — `f16/vtq1_1` only −3.4% TG (1.0625 bpw V). Phase 1 V_rows=8 D≥256 fix made this practical.
