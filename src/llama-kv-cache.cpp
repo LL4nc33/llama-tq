@@ -143,7 +143,7 @@ llama_kv_cache::llama_kv_cache(
                                   type_v == GGML_TYPE_VTQ4_2 ||
                                   type_v == GGML_TYPE_VTQ2_3 || type_v == GGML_TYPE_VTQ3_3 ||
                                   type_v == GGML_TYPE_VTQ4_3);
-    const bool use_deferred_v = is_vtq2_type_v;
+    const bool use_deferred_v = is_vtq2_type_v && tq_deferred_v;
     (void) tq_deferred_v; // flag retained for backwards compat; always on for VTQ_2
 
     // create a context for each buffer type
