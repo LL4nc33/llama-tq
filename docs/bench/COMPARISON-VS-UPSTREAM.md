@@ -87,3 +87,40 @@ Smoke result: llama-tq is within 5–6% of upstream on a tiny model where the TQ
 ## 6. Headline Summary
 
 > **TurboQuant v5 (ktq2_1+vtq2_2) on Qwen3.6-35B-A3B costs −2.6% TG and +1.6% PPL versus upstream f16/f16 — buying ~5× KV-cache compression that makes 200K context viable on 24GB. The −14% PP regression on MoE is unrelated to TQ and lives elsewhere on the turboquant branch.**
+
+---
+
+## 7. Re-bench post-fattn-tq fix (2026-04-26)
+
+**Hypothesis:** Commit `3c2042ea4` ("perf(fa): extract TQ helpers to fattn-tq.cuh — fix register pressure on pure-f16 kernels") would recover the −14% PP regression on MoE 35B by removing TQ-specific helpers from the f16 kernel TUs (reducing register pressure / spills).
+
+**Setup:** Same hardware, same flags as Section 3. Sequential, GPUs verified idle between runs.
+
+| ID | Engine    | KV cache       | pp512 (t/s) BEFORE fix | pp512 (t/s) AFTER fix | Δ pp512 | tg128 BEFORE | tg128 AFTER | Δ tg128 |
+|----|-----------|----------------|-----------------------:|----------------------:|--------:|-------------:|------------:|--------:|
+| A  | upstream  | f16/f16        | 1182.32 ± 4.33         | 1181.07 ± 3.80        | −0.1%   | 74.15        | 73.94       | −0.3%   |
+| C  | llama-tq  | f16/f16        | 1012.87 ± 1.71         | 1010.30 ± 21.33       | −0.3%   | 73.24        | 73.28       | +0.1%   |
+| E  | llama-tq  | ktq2_1/vtq2_2  | 1008.15 ± 1.96         | 1014.13 ± 2.07        | +0.6%   | 72.21        | 72.27       | +0.1%   |
+
+### Verdict: fix did NOT recover the regression
+
+- llama-tq f16/f16 pp512 = **1010.3 t/s** post-fix vs upstream **1181.1 t/s** = **−14.5%** (was −14.3% before fix)
+- ktq2_1/vtq2_2 pp512 = 1014.1 t/s — within noise of pre-fix 1008.2
+- tg128 unchanged across the board
+
+The fattn-tq.cuh extraction was a clean refactor (fewer includes per TU, no functional change) but did not reduce register pressure enough to move the needle on this MoE workload. The −14% PP gap on Qwen3.6-35B-A3B remains attributable to the MoE codepath divergence (or another non-FA bottleneck) on the turboquant branch.
+
+### XQuant Phase 1 sanity (test-xktq-roundtrip)
+
+```
+FAIL scenario 1: identical inputs should reconstruct identically
+[scenario 1] identical inputs — KTQ vs XKTQ-paired MSE: 7.018e-03 (expect ~0, fp16 scale noise)
+```
+
+XKTQ-paired path diverges from solo KTQ even with identical K/V inputs (MSE 7e-03). This is a Phase 1 stub — paired packing is not yet a true superset of solo. Not a runtime crash, but the foundation is not numerically clean yet. Track in XQuant Phase 1 follow-up.
+
+### Next investigation directions for the −14% PP gap
+
+1. Isolate non-FA contribution: bench with `-fa 0` on llama-tq vs upstream — if gap persists, FA is exonerated.
+2. MoE routing path: diff `ggml_cuda_op_mul_mat_id` and surrounding TUs between turboquant and master.
+3. nsys trace one pp512 step on each engine; look for kernel time deltas >1ms in non-attention ops.
