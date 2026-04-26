@@ -8,7 +8,7 @@ Both production deployments (`localhost:8791` for 80B, port 8794 for 122B) curre
 
 ## Setup
 
-- test-rig, 2× RTX 2060 12 GB, asymmetric PCIe (x16/x4), 40 GB host RAM
+- test-box, 2× RTX 2060 12 GB, asymmetric PCIe (x16/x4), 40 GB host RAM
 - Build: `00afdd6c3` (turboquant)
 - llama-perplexity: `-c 512 --chunks 4 -b 1 -ub 1 -ngl 99 -ts 12,12 -fa on --fit-target 128`
 - Production expert-routing regex active (matches `localhost:8791` and `localhost:8794` deploys)
