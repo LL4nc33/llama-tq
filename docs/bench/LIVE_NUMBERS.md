@@ -1,6 +1,6 @@
-# Live Production Numbers
+# Live Numbers
 
-**Single source of truth for current production TG / quality numbers.**
+**Single source of truth for current TG / quality numbers.**
 Update only this file when a phase ships new results. README links here.
 
 **Last updated:** 2026-04-26 (Phase 4 deployed — adaptive split + OMP_active + prefetch)
@@ -15,7 +15,7 @@ gpu00.node — KVM guest VM
 - 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4)
 - Linux 6.8 / Ubuntu 24.04, transparent_hugepage=madvise
 
-## Production deploy stack (Phase 4 final)
+## Live deploy stack (Phase 4 final)
 
 All deploys use `--cache-type-k ktq2_1 --cache-type-v vtq2_2` (2.78 bpw KV) +
 `OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores`.
@@ -24,7 +24,7 @@ Adaptive expert-routing splits between short-ctx (≤8192, aggressive) and
 long-ctx (>8192, safe-up-to-200k). See
 [oidanice-distillery/scripts/deploy/](https://github.com/LL4nc33/oidanice-distillery/tree/main/scripts/deploy).
 
-## TG / quality matrix (current production)
+## TG / quality matrix (current deploy)
 
 Measured 2026-04-25/26, KV `ktq2_1 + vtq2_2`, OMP_active, prefetch enabled.
 
@@ -36,7 +36,7 @@ Measured 2026-04-25/26, KV `ktq2_1 + vtq2_2`, OMP_active, prefetch enabled.
 | **Qwen3-Next-80B-A3B** | 25 GB | **~36.5 (+18.5%)** | 32.62 | 415 → 463 | 5.0817 | TBD | `deploy-80b.sh` (adaptive) |
 | **Qwen3.5-122B-A10B** | 34 GB | **18.24 (+9.3%)** | 17.43 | 196 | 4.0379 | TBD | `deploy-122b.sh` (adaptive) |
 
-"+" % is vs Phase 3 baseline (vtq2_2 prod-default, no Phase 4 stack).
+"+" % is vs Phase 3 baseline (vtq2_2 default, no Phase 4 stack).
 
 ### Phase 4 win-stack on 80B (ctx ≤ 8192)
 
