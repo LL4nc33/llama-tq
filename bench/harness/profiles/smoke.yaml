@@ -1,0 +1,23 @@
+# Smoke profile — minimal end-to-end skeleton check.
+# Used by run_smoke.sh and CI sanity runs.
+# Target model for first pass: qwen3.5-0.8b-q8_0.gguf (smallest test model).
+name: smoke
+description: >
+  Skeleton smoke. niah_single_3 only at 4k, n=10. Exercises the
+  pred → score → summary pipeline. Not a quality signal.
+
+ruler:
+  tasks:
+    - niah_single_3
+  lengths:
+    - 4096
+  samples_per_length: 10
+  max_new_tokens: 32
+  temperature: 0.0
+
+longbench:
+  enabled: false
+
+inference:
+  cache_prompt: false
+  parallel: 1
