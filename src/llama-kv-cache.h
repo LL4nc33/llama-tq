@@ -188,6 +188,14 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 
+    // XQuant Phase 3 hook — return the dominant layer's K view for an XQuant
+    // subordinate layer, or nullptr if standalone. The graph builder will
+    // consume this when wiring sibling-tensor-aware FA-vec dispatch.
+    // Phase 3 (this commit): accessor only, no callers yet.
+    // Phase 3b: build_attn_mha will call this when xquant_enabled && K is XKTQ2_1.
+    ggml_tensor * get_dominant_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
+    int32_t       xq_dominant_layer(int32_t il) const;
+
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
@@ -413,6 +421,12 @@ public:
     // get views of the current state of the cache
     ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
+
+    // XQuant Phase 3 hooks (passthrough to underlying llama_kv_cache).
+    // Used by graph builder to construct paired K-views for subordinate layers.
+    // Returns nullptr / -1 when XQuant is disabled or il is standalone.
+    ggml_tensor * get_dominant_k(ggml_context * ctx, int32_t il) const;
+    int32_t       xq_dominant_layer(int32_t il) const;
 
     // store k_cur and v_cur in the cache based on the provided head location
     // note: the heads in k_cur and v_cur should be laid out contiguously in memory
