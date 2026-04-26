@@ -395,6 +395,7 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_KTQ2_1,
     GGML_TYPE_KTQ3_1,
     GGML_TYPE_KTQ4_1,
+    GGML_TYPE_XKTQ2_1,  // XQuant Phase 1 stub — pairing logic not yet wired (Phase 2)
     GGML_TYPE_VTQ1_1,
     GGML_TYPE_VTQ2_1,
     GGML_TYPE_VTQ3_1,
