@@ -1239,10 +1239,21 @@ common_init_result::common_init_result(common_params & params) :
         // coherent reasoning output identical to uniform vtq2_2. The earlier warning was
         // pessimistic — VTQ_2 family runs correctly on D=128/256/512.
 
-        const bool want_mixed =
+        const bool any_mixed_flag =
             !params.tq_v_profile_path.empty() ||
             !params.tq_v_strategy.empty()     ||
             !params.tq_v_override.empty();
+
+        // PR2 default-guard: per-layer mixed V-cache is OPT-IN. Without --tq-mixed-v
+        // the --tq-v-* flags are ignored so default behavior matches --cache-type-v
+        // exactly (e.g. "ktq2_1 + vtq2_2" stays uniform vtq2_2, no per-layer mixing).
+        if (any_mixed_flag && !params.tq_mixed_v) {
+            LOG_WRN("%s: --tq-v-* flags supplied but --tq-mixed-v is not set — ignoring "
+                    "per-layer V-cache mix (opt-in via --tq-mixed-v or LLAMA_ARG_TQ_MIXED_V=1)\n",
+                    __func__);
+        }
+
+        const bool want_mixed = any_mixed_flag && params.tq_mixed_v;
 
         if (want_mixed) {
             const int n_layer = (int) llama_model_n_layer(model);
