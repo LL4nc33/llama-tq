@@ -1,0 +1,59 @@
+# Full profile — release-gate run.
+# PLACEHOLDER skeleton. Not wired to run_gate.sh yet (vendor RULER + LongBench first).
+# See docs/plans/2026-04-26-ruler-harness-spec.md §4–5 for budget.
+name: full
+description: >
+  Release gate. RULER 13 tasks × 6 lengths × n=200, plus LongBench EN.
+  ~3.2 h on Qwen3.6-35B-A3B (gpu00). NEVER schedule in parallel with
+  another bench (see feedback_no_parallel_bench).
+
+ruler:
+  tasks:
+    - niah_single_1
+    - niah_single_2
+    - niah_single_3
+    - niah_multikey_1
+    - niah_multikey_2
+    - niah_multikey_3
+    - niah_multivalue
+    - niah_multiquery
+    - vt
+    - cwe
+    - fwe
+    - qa_1
+    - qa_2
+  lengths:
+    - 4096
+    - 8192
+    - 16384
+    - 32768
+    - 65536
+    - 131072
+  samples_per_length: 200
+  max_new_tokens: 128
+  temperature: 0.0
+
+longbench:
+  enabled: true
+  subset: en
+  tasks:
+    - narrativeqa
+    - qasper
+    - multifieldqa_en
+    - hotpotqa
+    - 2wikimqa
+    - musique
+    - gov_report
+    - qmsum
+    - multi_news
+    - trec
+    - triviaqa
+    - samsum
+    - lcc
+    - repobench-p
+  samples_per_task: 200
+
+inference:
+  cache_prompt: false  # do not weaken — masks TQ KV regressions
+  parallel: 1
+  cont_batching: false
