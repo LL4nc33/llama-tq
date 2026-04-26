@@ -8,10 +8,10 @@ Both production deployments (`localhost:8791` for 80B, port 8794 for 122B) curre
 
 ## Setup
 
-- test-rig, 2× RTX 2060 12 GB, asymmetric PCIe (x16/x4), 40 GB host RAM
+- test-box, 2× RTX 2060 12 GB, asymmetric PCIe (x16/x4), 40 GB host RAM
 - Build: `00afdd6c3` (turboquant)
 - llama-perplexity: `-c 512 --chunks 4 -b 1 -ub 1 -ngl 99 -ts 12,12 -fa on --fit-target 128`
-- Production expert-routing regex active (matches `localhost:8791` and `internal-host:8794` deploys)
+- Production expert-routing regex active (matches `localhost:8791` and `localhost:8794` deploys)
 - `-b 1 -ub 1` triggers the deferred-V-staging-buffer transition needed for vtq*_2/_3 quants
 
 ## 80B Results
@@ -48,7 +48,7 @@ On bigger models with more attention heads (122B has 32-head GQA(2)), the Viterb
 
 ## Action items
 
-1. **Update production deploys**: `localhost:8791` (80B) and `internal-host:8794` (122B) should switch from `--cache-type-v vtq2_1` to `--cache-type-v vtq2_2`.
+1. **Update production deploys**: `localhost:8791` (80B) and `localhost:8794` (122B) should switch from `--cache-type-v vtq2_1` to `--cache-type-v vtq2_2`.
 2. **TG-bench gate**: confirm vtq2_2 doesn't regress TG vs vtq2_1 on the same hardware. If it does, the +5% PPL win has to be weighed against the TG cost (likely small — both use the same FA-vec-vtq path with deferred-V).
 3. **Update README**: this blog argues `ktq2_1 + vtq2_2` should be the prod-default, replacing the v1 PolarQuant story.
 4. **Paper potential**: the 122B−80B−35B PPL sweep with prod expert-offload is the cleanest "asymmetric KV-cache quantization on real MoE" data published anywhere. Worth writing up.
