@@ -161,12 +161,17 @@ llama_kv_cache::llama_kv_cache(
     // safe ordering: ship tracking first, allocation flip later.
     xq_dominant_of_layer.assign(hparams.n_layer, -1);
     if (xquant_enabled && is_tq_type_k && type_k == GGML_TYPE_KTQ2_1) {
-        // start at il=5 (skip first 4 sink layers + 1 dominant slot for them)
-        // pair (il, il+1) where il is even and >= 4. Subordinate is il+1.
-        const uint32_t protect = tq_protect_layers > 0 ? tq_protect_layers : 4u;
-        for (uint32_t il = protect; il + 1 < hparams.n_layer; il += 2) {
-            // skip the trailing protected layers; conservative end at n_layer - protect
-            if (il + 1 + protect > hparams.n_layer) break;
+        // XQuant paper recommends *boundary protection* of the first/last few
+        // layers (sink + tail) regardless of user's tq_protect_layers setting,
+        // because adjacent-layer-similarity drops near sink/tail boundaries.
+        // We honour the larger of (user's tq_protect_layers, 4) as the XQuant
+        // boundary, so a user setting tq_protect_layers=0 (= no boundary q8
+        // promotion) still gets safe XQuant pairing.
+        const uint32_t xq_boundary = std::max(tq_protect_layers, 4u);
+        // pair (il, il+1) starting after the front boundary; subordinate is il+1
+        // and must also stay outside the rear boundary (last xq_boundary layers).
+        for (uint32_t il = xq_boundary; il + 1 < hparams.n_layer; il += 2) {
+            if (il + 1 + xq_boundary > hparams.n_layer) break;
             // honour layer filter — recurrent / non-attention layers don't pair
             if (!hparams.has_kv(il) || !hparams.has_kv(il+1)) continue;
             if (filter && (!filter(il) || !filter(il+1))) continue;
@@ -174,8 +179,9 @@ llama_kv_cache::llama_kv_cache(
         }
         uint32_t n_pairs = 0;
         for (auto v : xq_dominant_of_layer) if (v >= 0) n_pairs++;
-        LLAMA_LOG_INFO("%s: xquant pairing: %u subordinate layers (Phase 4 tracking, dispatch pending Phase 3)\n",
-            __func__, n_pairs);
+        LLAMA_LOG_INFO("%s: xquant pairing: %u subordinate layers, boundary=%u "
+            "(Phase 4 tracking, dispatch pending Phase 3)\n",
+            __func__, n_pairs, xq_boundary);
     }
 
     // create a context for each buffer type
