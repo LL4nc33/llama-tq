@@ -49,6 +49,9 @@ struct llama_cparams {
     // Empty = uniform type_v (backward compatible). Otherwise size == n_layer.
     std::vector<ggml_type> tq_v_layers;
 
+    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
+    bool xquant_enabled;
+
     enum llama_pooling_type pooling_type;
 
     ggml_backend_sched_eval_callback cb_eval;

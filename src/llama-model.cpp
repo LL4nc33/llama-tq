@@ -8766,7 +8766,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 params.tq_deferred_v,
                                 nullptr,
                                 nullptr,
-                                cparams.tq_v_layers);
+                                cparams.tq_v_layers,
+                                params.xquant_enabled);
                     }
                 }
             }
