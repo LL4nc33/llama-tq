@@ -177,9 +177,15 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 
 ---
 
+## Live performance numbers
+
+**Single source of truth:** [`docs/bench/PROD_NUMBERS.md`](docs/bench/PROD_NUMBERS.md) — current production TG, PPL, HellaSwag for all five deploy targets. That file is updated each phase; the per-model deep-dives below stay structurally stable.
+
+**Phase 4 (2026-04-26)** added an adaptive layer-split + `OMP_WAIT_POLICY=active` + `__builtin_prefetch` in `mul_mat_id` to the production stack. Net **+18.5% TG on 80B** (30.80 → ~36.5 t/s at ctx ≤ 8192), **+9.3% on 122B** (16.69 → 18.24 t/s). Long-context configs (>8k) fall back to the safe split that fits ctx=200000. New: Qwen3.6-27B dense single-GPU deploy, 5.1× faster than the old Qwen3.5-27B-Q4 offload path.
+
 ## Large-MoE deployments
 
-These are the four models that drive the fork's existence. All measured on the same box: Ryzen 7 3700X (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX), 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB, PCIe asymmetric (GPU0 x16 / GPU1 x4).
+These are the four MoE models that drive the fork's existence. All measured on the same box: Ryzen 7 3700X host (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX) — gpu00 is a KVM guest VM with 12 vCPUs, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4).
 
 ![Large-MoE TG: 35B / 80B / 122B on 2x RTX 2060](docs/img/large_moe_tg.png)
 
