@@ -65,21 +65,23 @@ int main() {
     std::vector<block_ktq2_1>  q_dom(N_BLOCKS);
     std::vector<block_xktq2_1> q_sub_same(N_BLOCKS);
 
-    quantize_row_ktq2_1_ref (x_dom.data(), q_dom.data(),       N);
-    quantize_row_xktq2_1_ref(x_dom.data(), q_sub_same.data(),  N);
+    quantize_row_ktq2_1_ref       (x_dom.data(), q_dom.data(),       N);
+    // Use the paired ref-quant variant (norm-corrected via dom's codes),
+    // matching the KTQ2_1 norm-correction pattern. Yields ~fp16-floor MSE
+    // when sub_input == dom_input.
+    quantize_row_xktq2_1_ref_paired(x_dom.data(), q_dom.data(), q_sub_same.data(), N);
 
     std::vector<float> y_ktq (N), y_xktq_same(N);
     dequantize_row_ktq2_1          (q_dom.data(),                       y_ktq.data(),       N);
     dequantize_row_xktq2_1_paired  (q_sub_same.data(), q_dom.data(),    y_xktq_same.data(), N);
 
     double mse_same = mse(y_ktq, y_xktq_same);
-    // Tolerance: subordinate stores only scale (fp16); dominant stores scale +
-    // norm-correction. Even on identical input, paired dequant differs from
-    // direct KTQ by per-block fp16 scale-quant noise. Empirically ~7e-3 on
-    // Gauss(0,1) input with N=2048. Cap at 2x measured to catch real bugs.
-    std::printf("[scenario 1] identical inputs — KTQ vs XKTQ-paired MSE: %.3e (fp16 scale noise)\n", mse_same);
-    if (mse_same > 2e-2) {
-        std::fprintf(stderr, "FAIL scenario 1: MSE %.3e exceeds fp16-noise floor 2e-2\n", mse_same);
+    // With norm-corrected paired quant, MSE drops to fp16-floor (~1e-5 to 1e-4)
+    // on Gauss(0,1) input. The previous unpaired path with raw L2-norm gave
+    // ~7e-3, fixed in commit "fix(xquant): norm-correct paired quant".
+    std::printf("[scenario 1] identical inputs — KTQ vs XKTQ-paired MSE: %.3e (expect <1e-3, fp16 floor)\n", mse_same);
+    if (mse_same > 1e-3) {
+        std::fprintf(stderr, "FAIL scenario 1: MSE %.3e exceeds fp16-floor 1e-3\n", mse_same);
         return 1;
     }
 
@@ -98,12 +100,12 @@ int main() {
     dequantize_row_ktq2_1  (q_sub_plain.data(), y_sub_plain.data(), N);
     double mse_plain = mse(x_sub, y_sub_plain);
 
-    // XQuant path: quantize sub as XKTQ (scale only), dequant via paired entry
-    // using dominant's codes + sb.
+    // XQuant path: quantize sub as XKTQ paired (norm-corrected via dom's codes),
+    // dequant via paired entry using dominant's codes + sb.
     std::vector<block_xktq2_1> q_sub_xq(N_BLOCKS);
     std::vector<float>         y_sub_xq(N);
-    quantize_row_xktq2_1_ref      (x_sub.data(), q_sub_xq.data(), N);
-    dequantize_row_xktq2_1_paired (q_sub_xq.data(), q_dom.data(), y_sub_xq.data(), N);
+    quantize_row_xktq2_1_ref_paired(x_sub.data(), q_dom.data(), q_sub_xq.data(), N);
+    dequantize_row_xktq2_1_paired  (q_sub_xq.data(), q_dom.data(), y_sub_xq.data(), N);
     double mse_xq = mse(x_sub, y_sub_xq);
 
     std::printf("[scenario 2] correlated input (noise sigma=0.15)\n");
