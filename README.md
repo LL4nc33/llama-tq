@@ -281,7 +281,7 @@ Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 
 | `ktq2_1 / vtq2_1` (old prod) | 3.0 | 386.5 | 30.6 | 5.2213 | **+2.69%** |
 | **`ktq2_1 / vtq2_2`** (new prod) ⭐ | **2.78** | **402.6** | **30.9** | **5.0817** | **−0.06%** |
 
-Physics ceiling: 40 GB/s DDR4 / ~0.75 GB per-token CPU traffic → ~53 t/s hard limit. Current ~31 t/s = 58% efficiency. Quick wins documented in `docs/plans/2026-04-24-80b-low-hanging-perf.md` (thread pinning, hugepages) target +10-15%.
+Physics ceiling: 40 GB/s DDR4 / ~0.75 GB per-token CPU traffic → ~53 t/s hard limit. Phase-4 stack lifted current to ~36.5 t/s (69% of ceiling) via OMP_active + adaptive layer-split + prefetch.
 
 #### 80B-TQ1_0 — full-VRAM unicorn tier (2026-04-26)
 
@@ -430,7 +430,7 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 <details>
 <summary><b>Gemma4-26B-A4B (IQ2_XXS)</b> — full 50-config K × V matrix, dual-GPU <code>-ts 12,12</code></summary>
 
-26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. Full-attention layers use head_dim=512 (D=512), SWA layers head_dim=256. FA-vec dispatch covers D=64/128/256/512 for all TQ types. **V is rms-normed before KV write** (Gemma4-specific) — see Lever 4 in [optimization design](docs/plans/2026-04-25-gemma4-optimization-design.md).
+26B MoE with 4B active, 30 layers, hybrid attention (iSWA), reasoning model with `<|channel>thought` format. Full-attention layers use head_dim=512 (D=512), SWA layers head_dim=256. FA-vec dispatch covers D=64/128/256/512 for all TQ types. **V is rms-normed before KV write** (Gemma4-specific).
 
 | K | V | PP512 | TG128 | ΔPP | ΔTG |
 |---|---|:---:|:---:|:---:|:---:|
@@ -528,7 +528,7 @@ Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free o
 - **VTQ_1 family suffers badly on D=512** — `f16/vtq2_1` is −25% PP and `f16/vtq4_1` is −41% PP, in stark contrast to Qwen's −6 to −14%. The codebook approach has a per-block fixed-cost overhead that scales linearly with D.
 - **Legacy `q4_0` / `q8_0` as V is catastrophic** at D=512 (PP −72%). Even worse paired with q-K (`q8_0/vtq2_2` = −62% PP, completely broken FA dispatch).
 - **`ktq*/vtq2_2/3_2/4_2` cluster** all within −5.5 to −5.9% TG of baseline at ~3.0–4.78 bpw avg — multiple Pareto points to choose from.
-- **TG improvements vs pre-fix** (commit `584378082` vs prior): VTQ-family configs gained +2 to +6% TG. Detailed delta in [docs/plans/2026-04-25-phase1-vrows-results.md](docs/plans/2026-04-25-phase1-vrows-results.md).
+- **TG improvements vs pre-fix** (commit `584378082` vs prior): VTQ-family configs gained +2 to +6% TG via Phase 1 v-rows fix.
 
 **Lever 1 — SWA-mix: per-layer V-cache override** (Phase 6 tooling, 2026-04-25):
 
@@ -573,7 +573,7 @@ For llama-server use the existing `--tq-v-override` flag.
 
 ## Perplexity (wikitext-2)
 
-PPL is sensitive to weight quant. Historical numbers use 512 ctx / 3 chunks; the newer 2048 ctx / 5 chunks set below is from the 2026-04-24 matrix sweep and is the one the leaderboard above uses.
+PPL is sensitive to weight quant. Numbers below use the **2026-04-24 matrix sweep methodology**: 2048 ctx, 5 chunks unless stated otherwise. This is the methodology the score table at the top of the README uses.
 
 ### Qwen3.6-35B-A3B (UD-IQ2\_XXS) — 2048 ctx, 5 chunks (preferred methodology)
 
@@ -588,19 +588,6 @@ Representative row from the full 5×8 K × V matrix. All KTQ bitrates produce th
 | ktq2\_1 | vtq3\_1 | 6.7582 | +0.49% |
 | ktq2\_1 | vtq2\_1 | 7.0140 | +4.30% |
 | ktq2\_1 | vtq1\_1 | 7.8157 | +16.17% (1-bit floor) |
-
-Full pivot + discussion: [docs/plans/2026-04-24-ktq-vtq2-combos.md](docs/plans/2026-04-24-ktq-vtq2-combos.md).
-
-### Qwen3.6-35B-A3B (UD-IQ2\_XXS) — 512 ctx, 3 chunks (historical)
-
-| K | V | KV bpw | PPL | vs f16/f16 |
-|---|---|:---:|:---:|:---:|
-| f16 | f16 | 16.0 | **5.967** | — |
-| q8\_0 | q8\_0 | 8.5 | 6.006 | +0.65% |
-| q4\_0 | q4\_0 | 4.5 | 6.001 | +0.57% |
-| f16 | vtq3\_1 | 10.0 | 6.030 | **+1.05%** |
-| q8\_0 | vtq2\_1 | 5.5 | 6.361 | +6.6% |
-| f16 | vtq2\_1 | 9.3 | 6.378 | +6.9% |
 
 ### Qwen3.6-35B-A3B (Q4\_K\_M)
 
@@ -736,19 +723,21 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 ## Roadmap
 
 **Shipped**
-- KTQ1\_1 / 2\_1 / 3\_1 / 4\_1
-- VTQ1\_1 / 2\_1 / 3\_1 / 4\_1
+- KTQ1\_1 / 2\_1 / 3\_1 / 4\_1 (PolarQuant K-cache, 2.5–5.5 bpw)
+- VTQ1\_1 / 2\_1 / 3\_1 / 4\_1 (v1, codebook lookup)
+- VTQ2\_2 / 3\_2 / 4\_2 (v2 Trellis, D=64/128/256/512 all verified live) — production default since 2026-04-25
+- VTQ2\_3 / 3\_3 / 4\_3 (v3 Trellis + outlier-channel split, research tier)
 - Asymmetric KTQ × VTQ dispatch through FA
 - Deferred K/V (auto-gated by type)
 - Attention-sink protection (first 4 tokens in f16)
 - MMA-KTQ asymmetric dispatch — KTQ K + f16 V takes the tensor-core MMA path via bulk K→f16 split-dequant. Reference 35B IQ2\_XS: PP512 **875** (vs f16 861), PP2048 **868** (vs 857), TG128 67 (vs 71). 9.5× jump over the pre-fix 92 t/s.
+- Phase 4 perf stack: OMP_active, adaptive layer-split, prefetch in mul_mat_id, P2P opt-in (+18.5% TG on 80B, +9.3% on 122B vs prior baseline)
 - Anthropic `/v1/messages` with prompt caching
 
 **Active research**
-- VTQ2\_2 / 3\_2 / 4\_2 Trellis v2 — shipped, all D=64/128/256/512 verified live
-- **Phase 3 — VTQ_3 with outlier-channel split** (in progress, 8 commits 2026-04-25, build pending). Path to sub-2% PPL at 3.0/4.0/5.0 bpw V. See `docs/plans/2026-04-25-vtq3-design.md`.
+- **Phase 5 — XQuant cross-layer KV reuse** (code-complete, dormant on hybrid SSM models). Pair adjacent KTQ2_1 layers; subordinate stores only scale, codes shared from sibling. Activates with `--xquant`. Greifs nicht auf Qwen3.X-A3B/Qwen3.6-27B (alternating Mamba/attention layers); useful für pure-transformer dense models (Llama-3, Mistral, Gemma-2 family). Reference: arXiv:2510.11236.
 - Correction Overlay Buffer (Trick 4) — designed, not implemented. Top-N lossless error patch.
-- **Phase 7 — imatrix-aware KTQ calibration** (proposed). Use importance matrix to bias the K-quant Lloyd-Max codebook. See `docs/plans/2026-04-25-ktq3-research.md`.
+- **Phase 7 — imatrix-aware KTQ calibration** (proposed). Use importance matrix to bias the K-quant Lloyd-Max codebook.
 - `mmvq` IQ2\_XS tuning on sm\_75 — 28% of kernel time on current 35B config
 
 **Discarded after measurement**
