@@ -198,12 +198,14 @@ The 26B and 35B fit fully on GPU. The 80B and 122B spill 20 / 29 layers to CPU R
 
 Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (test box, 2× RTX 2060), `-fa 1 -ts 12,12` ctx=2048 for bench, ctx=32k for KV-buffer measurement. Upstream binary: `7f5ee5496` (ggerganov/llama.cpp master, March 2026). llama-tq binary: `1a1d49ef5` (turboquant).
 
-| Variant | pp512 t/s | tg128 t/s | tg1024 t/s | PPL (8ch) | KV-bpw | KV @ ctx=32k |
+**Reading the table:** ↑ higher is better (throughput), ↓ lower is better (PPL = quality cost, KV memory = footprint).
+
+| Variant | pp512 t/s ↑ | tg128 t/s ↑ | tg1024 t/s ↑ | PPL (8ch) ↓ | KV-bpw ↓ | KV @ ctx=32k ↓ |
 |---|---:|---:|---:|---:|---:|---:|
 | **upstream** f16/f16 | 934 | 57.76 | 57.30 | 7.0810 | 32.0 | **640 MiB** |
 | **llama-tq** f16/f16 | 1009 | 76.58 | 75.09 | 7.0863 | 32.0 | 640 MiB |
 | **llama-tq** `ktq2_1+vtq2_2` ⭐ | 1010 | 75.40 | 75.18 | 7.1814 | **2.78** | **115 MiB** |
-| **Δ tq vs upstream** (f16 / quant) | +8% / +8% | **+33% / +31%** | **+31% / +31%** | +0.07% / +1.34% | — / −91% | — / **−82%** |
+| **Δ tq vs upstream** (f16 / quant) | **+8% / +8%** ↑ | **+33% / +31%** ↑ | **+31% / +31%** ↑ | +0.07% / +1.34% ↑ (worse) | — / **−91%** ↓ (better) | — / **−82%** ↓ (better) |
 
 **Key wins llama-tq:**
 - **+33% TG** (decode) on identical KV — Phase-1-to-4 stack (FA quick wins, sparse-V dequant, P2P opt-in, OMP_active, layer-split, prefetch)
