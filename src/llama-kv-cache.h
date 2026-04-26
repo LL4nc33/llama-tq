@@ -118,7 +118,8 @@ public:
                          bool   tq_deferred_v,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
-        const std::vector<ggml_type> & type_v_layers = {});
+        const std::vector<ggml_type> & type_v_layers = {},
+                         bool   xquant_enabled = false);
 
     ~llama_kv_cache() = default;
 
@@ -272,6 +273,12 @@ private:
 
     // TurboQuant deferred K quantization
     tq_deferred_state deferred_state = TQ_DEFERRED_OFF;
+
+    // XQuant cross-layer KV — runtime opt-in (Phase 4 tracking, Phase 3 dispatch
+    // not yet wired). When true, xq_dominant_of_layer[il] gives the layer that
+    // owns the codes for layer il's subordinate K-cache; -1 means standalone.
+    bool xquant_enabled = false;
+    std::vector<int32_t> xq_dominant_of_layer;
 
     // user-selected cache types (for type_k()/type_v() accessors when boundary protection is active)
     ggml_type user_type_k = GGML_TYPE_F16;
