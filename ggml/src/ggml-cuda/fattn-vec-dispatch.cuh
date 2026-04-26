@@ -47,8 +47,35 @@
 // Each returns true iff a matching (D, type_K, type_V) was dispatched.
 bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+// XQuant Phase 3c — XKTQ2_1 (cross-layer paired K) dispatch. Reads sibling
+// dominant-K block from dst->src[5] (set via ggml_flash_attn_ext_set_sibling_k).
+// Currently dormant (kv-cache `xquant_dispatch_ready=false` gate stops this
+// path from being reached at runtime); when the gate flips, this dispatcher
+// triggers a clear ABORT pointing at Phase 3d (kernel-side sibling plumbing).
+bool try_dispatch_vec_xktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 // E14 split-decode path — see fattn-vec-dispatch-vtq2-split.cu.
 bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
+// XQuant Phase 3c — paired vec_dot typedef.
+//
+// Standard vec_dot_KQ_t has 4 args (K_c, Q_v, Q_q8, Q_ds). The paired form
+// adds a 5th — `K_dom` — which points to the sibling dominant-layer K-block
+// holding the shared 2-bit codes + RHT sign bits. The subordinate XKTQ2_1
+// block referenced by `K_c` carries only its own per-block scale `d`.
+//
+// Why a parallel typedef instead of extending vec_dot_KQ_t in place:
+// extending the existing typedef would force every non-paired vec_dot
+// (f16, q4_0, q8_0, ktq2_1, ...) to either ignore the new arg (silent
+// reg-pressure ABI churn) or re-declare with default-args (function
+// pointers don't take defaults). Parallel typedef = zero touch on existing
+// types, zero risk to working KTQ/VTQ paths. PAIRED dispatch is selected
+// at compile time from the K-type tag, never at runtime.
+typedef float (*vec_dot_KQ_paired_t)(
+    const char * __restrict__ K_c,
+    const void * __restrict__ Q_v,
+    const int  * __restrict__ Q_q8,
+    const void * __restrict__ Q_ds,
+    const char * __restrict__ K_dom);

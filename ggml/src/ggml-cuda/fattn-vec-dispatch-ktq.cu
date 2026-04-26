@@ -129,3 +129,46 @@ bool try_dispatch_vec_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     GGML_UNUSED(Q); GGML_UNUSED(K); GGML_UNUSED(V);
     return false;
 }
+
+// XQuant Phase 3c — XKTQ2_1 (paired subordinate) dispatch slice.
+//
+// Returns true iff K->type is a paired XKTQ subordinate type. The dominant
+// sibling K-block is read from dst->src[5] (set by build_attn_mha via
+// ggml_flash_attn_ext_set_sibling_k); the kv-cache resolves the dominant
+// layer via xq_dominant_of_layer + get_dominant_k().
+//
+// PHASE 3c gate (current state):
+//   • Infrastructure landed: paired typedef (vec_dot_KQ_paired_t),
+//     paired vec_dot template (vec_dot_fattn_vec_KQ_xktq2_1_paired),
+//     paired dispatcher (get_vec_dot_KQ_paired<>), this CASE entry.
+//   • Phase 3d (future): plumb K_dom into flash_attn_ext_vec kernel
+//     (extra kernel arg + branched call site at line ~304 of fattn-vec.cuh).
+//     Deferred to keep this commit compile-only — extending the kernel
+//     signature touches launch_fattn and would risk reg-pressure regressions
+//     on f16/q4_0/q8_0 hot paths (Iron-Law: fork only improves).
+//
+// Runtime: the kv-cache `xquant_dispatch_ready=false` constexpr stops any
+// XKTQ2_1 K-tensor from reaching FA. If that gate is flipped before Phase 3d
+// lands, this function trips a clear ABORT pointing at the missing piece.
+bool try_dispatch_vec_xktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    ggml_tensor * K = dst->src[1];
+
+    if (K->type != GGML_TYPE_XKTQ2_1) {
+        return false;  // Not an xquant subordinate → leave to other dispatchers.
+    }
+
+    // From here on we KNOW the caller wants a paired XKTQ path; missing
+    // sibling tensor or unwired kernel are hard errors.
+    GGML_ASSERT(dst->src[5] != nullptr &&
+                "XKTQ2_1 K without sibling K (src[5]); did the kv-cache "
+                "forget to call ggml_flash_attn_ext_set_sibling_k?");
+    GGML_ASSERT(dst->src[5]->type == GGML_TYPE_KTQ2_1 &&
+                "XKTQ2_1 sibling K must be GGML_TYPE_KTQ2_1");
+
+    GGML_UNUSED(ctx);
+    GGML_ABORT("XQuant Phase 3c: dispatch reached for XKTQ2_1 but Phase 3d "
+               "(kernel-side K_dom plumbing in flash_attn_ext_vec) is not "
+               "yet wired. Either keep the kv-cache `xquant_dispatch_ready` "
+               "gate at false, or land Phase 3d before flipping it.");
+    return true;  // unreachable, satisfies signature
+}
