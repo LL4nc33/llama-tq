@@ -5834,6 +5834,76 @@ void dequantize_row_ktq2_1(const block_ktq2_1 * GGML_RESTRICT x, float * GGML_RE
     }
 }
 
+// ---- XQuant Phase 1 (CPU PoC) ---------------------------------------------
+// XKTQ2_1: subordinate K-cache variant. Stores only the per-block L2 scale `d`
+// (with optional eta relaxation). Codes and RHT sign bits live in the sibling
+// block_ktq2_1 from layer (l-1). See ggml-common.h for layout discussion.
+//
+// `quantize_row_xktq2_1_ref` computes only the scale of the input vector — it
+// does NOT produce codes. The `eta` parameter is hard-coded to 0 here (unrelaxed);
+// per-bit-width eta tables come in a later phase. Calibration tool will tune eta.
+//
+// `dequantize_row_xktq2_1_paired` is the real dequant entry point: it reads codes
+// and sb from a sibling block_ktq2_1 row, applies the subordinate's own scale.
+//
+// `dequantize_row_xktq2_1` is the stub registered in type_traits to satisfy the
+// single-tensor `to_float` interface — it emits a warning and zero-fills, since
+// the standard interface cannot supply the sibling row. Real call sites must use
+// the `_paired` variant.
+
+void quantize_row_xktq2_1_ref(const float * GGML_RESTRICT x, block_xktq2_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_KTQ == 0);
+    const int nb = k / QK_KTQ;
+
+    // eta = 0 in Phase 1 (no calibration table yet). When eta>0 lands, scale
+    // becomes d_hat = (1 - 2*eta) * norm; for now d_hat = norm.
+    const float eta = 0.0f;
+    const float scale_factor = 1.0f - 2.0f * eta;
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x + i * QK_KTQ;
+        float norm = 0.0f;
+        for (int j = 0; j < QK_KTQ; j++) norm += xi[j] * xi[j];
+        norm = sqrtf(norm);
+        y[i].d = GGML_FP32_TO_FP16(norm * scale_factor);
+        memset(y[i].pad, 0, sizeof(y[i].pad));
+    }
+}
+
+void dequantize_row_xktq2_1_paired(const block_xktq2_1 * GGML_RESTRICT x_sub,
+                                   const block_ktq2_1  * GGML_RESTRICT x_dom,
+                                   float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_KTQ == 0);
+    const int nb = k / QK_KTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_KTQ);
+
+    for (int i = 0; i < nb; i++) {
+        float * yb = y + i * QK_KTQ;
+        const float norm = GGML_FP16_TO_FP32(x_sub[i].d);
+        if (norm < 1e-30f) { memset(yb, 0, QK_KTQ * sizeof(float)); continue; }
+
+        // Codes + sb come from the sibling (dominant) block at the same block_index.
+        float rotated_hat[QK_KTQ];
+        for (int j = 0; j < QK_KTQ; j++) {
+            int idx = (x_dom[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            rotated_hat[j] = PQ_CODEBOOK_2BIT[idx] * cb_scale;
+        }
+        float result[QK_KTQ];
+        kktq_rht_inverse_sb(rotated_hat, result, QK_KTQ, x_dom[i].sb);
+        for (int j = 0; j < QK_KTQ; j++) yb[j] = result[j] * norm;
+    }
+}
+
+void dequantize_row_xktq2_1(const block_xktq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    // Stub for the single-tensor type_traits interface. The real dequant requires
+    // the sibling KTQ2_1 row and is dispatched via dequantize_row_xktq2_1_paired
+    // from FA / pairing-aware call sites (Phase 2+). Here we zero-fill so callers
+    // that accidentally hit this path produce predictable (wrong) output rather
+    // than reading uninitialized memory.
+    (void)x;
+    memset(y, 0, k * sizeof(float));
+}
+
 void dequantize_row_ktq3_1(const block_ktq3_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_KTQ == 0);
     const int nb = k / QK_KTQ;
