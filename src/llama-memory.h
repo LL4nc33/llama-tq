@@ -32,6 +32,9 @@ struct llama_memory_params {
 
     // TurboQuant deferred V quantization
     bool tq_deferred_v;
+
+    // XQuant cross-layer KV reuse (Phase 5b)
+    bool xquant_enabled;
 };
 
 enum llama_memory_status {

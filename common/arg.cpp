@@ -2072,6 +2072,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
     add_opt(common_arg(
+        {"--xquant"},
+        string_format(
+            "TurboQuant XQuant Phase 5b: cross-layer KV reuse — pair adjacent KTQ2_1\n"
+            "layers, subordinate stores only scale (codes shared from sibling). Saves\n"
+            "~50%% K-cache for paired layers. Requires --cache-type-k ktq2_1.\n"
+            "(default: %s)",
+            params.xquant_enabled ? "enabled" : "disabled"
+        ),
+        [](common_params & params) {
+            params.xquant_enabled = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_XQUANT"));
+    add_opt(common_arg(
         {"--tq-profile-heads"}, "N",
         string_format(
             "TurboQuant Trick 2 PR1: profile the first N decode calls and dump per-head V-cache\n"

@@ -369,6 +369,7 @@ extern "C" {
         bool tq_deferred_k;        // defer K quantization until prefill->decode transition
         bool tq_deferred_v;        // defer V quantization until prefill->decode transition
         uint32_t tq_profile_heads; // Trick 2 PR1: if > 0, profile first N decode calls and dump per-head V variance/kurtosis
+        bool xquant_enabled;       // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers for ~50% K-cache savings
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted

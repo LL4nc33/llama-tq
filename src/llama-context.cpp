@@ -176,6 +176,7 @@ llama_context::llama_context(
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
     cparams.tq_profile_heads = params.tq_profile_heads;
+    cparams.xquant_enabled   = params.xquant_enabled;
 
     // Trick 2 PR2: per-layer mixed precision V-cache
     if (params.type_v_layers && params.type_v_layers_count > 0) {
@@ -299,6 +300,7 @@ llama_context::llama_context(
             /*.tq_protect_sinks    =*/ params.tq_protect_sinks,
             /*.tq_deferred_k       =*/ params.tq_deferred_k,
             /*.tq_deferred_v       =*/ params.tq_deferred_v,
+            /*.xquant_enabled      =*/ params.xquant_enabled,
         };
 
         memory.reset(model.create_memory(params_mem, cparams));
@@ -3126,6 +3128,7 @@ llama_context_params llama_context_default_params() {
         /*.tq_deferred_k               =*/ false,
         /*.tq_deferred_v               =*/ false,
         /*.tq_profile_heads            =*/ 0,
+        /*.xquant_enabled              =*/ false,
         /*.abort_callback              =*/ nullptr,
         /*.abort_callback_data         =*/ nullptr,
         /*.embeddings                  =*/ false,

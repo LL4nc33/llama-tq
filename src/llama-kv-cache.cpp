@@ -160,19 +160,10 @@ llama_kv_cache::llama_kv_cache(
     // read out-of-bounds bytes from the 8-byte XKTQ2_1 block, so this is the
     // safe ordering: ship tracking first, allocation flip later.
     xq_dominant_of_layer.assign(hparams.n_layer, -1);
-    // Phase 3c (CUDA dispatch reading src[5] sibling K) is not landed yet.
-    // The Phase 4 pair-pass below is gated behind a hard-disable so a user
-    // setting xquant_enabled=true (no CLI exposure yet, just the API param)
-    // doesn't silently get incorrect results: the graph would propagate
-    // sibling-K but the backend would decode against subordinate's empty
-    // XKTQ block. Once Phase 3c lands, drop the `xquant_dispatch_ready` gate.
-    constexpr bool xquant_dispatch_ready = false;
-    if (xquant_enabled && !xquant_dispatch_ready) {
-        LLAMA_LOG_WARN("%s: xquant_enabled=true ignored — Phase 3c CUDA "
-            "dispatch not yet implemented, falling back to standalone KTQ2_1.\n",
-            __func__);
-    }
-    if (xquant_enabled && xquant_dispatch_ready && is_tq_type_k && type_k == GGML_TYPE_KTQ2_1) {
+    // Phase 3c (CUDA dispatcher) and Phase 3d (paired kernel + launcher) are
+    // landed (commits 0e91a2365 + f4d5c7efb). The pair-pass is now active.
+    constexpr bool xquant_dispatch_ready = true;
+    if (xquant_enabled && is_tq_type_k && type_k == GGML_TYPE_KTQ2_1) {
         // XQuant paper recommends *boundary protection* of the first/last few
         // layers (sink + tail) regardless of user's tq_protect_layers setting,
         // because adjacent-layer-similarity drops near sink/tail boundaries.
@@ -374,6 +365,15 @@ llama_kv_cache::llama_kv_cache(
                         __func__, il, ggml_type_name(eff_type_k), ggml_type_name(eff_type_v));
                 }
             }
+        }
+
+        // Phase 4b: XQuant subordinate layers store only the per-block scale —
+        // codes are read from the dominant layer's KTQ2_1 block at FA time.
+        // Flip the storage type AFTER all boundary protection checks so a
+        // boundary layer (forced to q8_0 above) is never paired.
+        if (xquant_enabled && eff_type_k == GGML_TYPE_KTQ2_1
+            && il < xq_dominant_of_layer.size() && xq_dominant_of_layer[il] >= 0) {
+            eff_type_k = GGML_TYPE_XKTQ2_1;
         }
 
         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, eff_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
