@@ -2102,7 +2102,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.tq_deferred_v = true;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_DEFERRED_V"));
-    // Trick 2 PR2: per-layer mixed precision V-cache
+    // Trick 2 PR2: per-layer mixed precision V-cache (OPT-IN gate)
+    add_opt(common_arg(
+        {"--tq-mixed-v"},
+        "Trick 2 PR2: enable per-layer mixed-precision V-cache (opt-in gate).\n"
+        "Without this flag, --tq-v-profile / --tq-v-strategy / --tq-v-override are ignored\n"
+        "and --cache-type-v is used uniformly across all layers (default: off).",
+        [](common_params & params) {
+            params.tq_mixed_v = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_MIXED_V"));
     add_opt(common_arg(
         {"--tq-v-profile"}, "FNAME",
         "Trick 2 PR2: load per-head variance profile JSON (from --tq-profile-heads run)\n"

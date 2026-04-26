@@ -557,6 +557,10 @@ struct common_params {
 
     // Trick 2 PR2: per-layer mixed precision V-cache
     // When tq_v_layers is empty, cache_type_v is used uniformly (backward compatible).
+    // OPT-IN: tq_mixed_v must be true (via --tq-mixed-v or LLAMA_ARG_TQ_MIXED_V=1) for any
+    // of the --tq-v-* flags below to take effect. Default-off keeps "ktq2_1 + vtq2_2"
+    // contract predictable: exactly those types, no per-layer mixing.
+    bool tq_mixed_v = false;                     // --tq-mixed-v (opt-in gate for per-layer V-cache mixing)
     std::vector<ggml_type> tq_v_layers;          // resolved per-layer V-cache types (populated in arg.cpp)
     std::string tq_v_profile_path;               // --tq-v-profile <path>
     std::string tq_v_strategy;                   // --tq-v-strategy top-n:N | ratio:X | kurt:Y | mixed | auto | manual
