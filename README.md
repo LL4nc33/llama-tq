@@ -186,7 +186,7 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 
 ## Large-MoE deployments
 
-These are the four MoE models that drive the fork's existence. All measured on the same box: Ryzen 7 3700X host (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX) — gpu00 is a KVM guest VM with 12 vCPUs, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4).
+These are the four MoE models that drive the fork's existence. All measured on the same box: Ryzen 7 3700X host (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX) — test box is a KVM guest VM with 12 vCPUs, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4).
 
 ![Large-MoE TG: 35B / 80B / 122B on 2x RTX 2060](docs/img/large_moe_tg.png)
 
@@ -196,7 +196,7 @@ The 26B and 35B fit fully on GPU. The 80B and 122B spill 20 / 29 layers to CPU R
 
 ## vs llama.cpp upstream — apples-to-apples (2026-04-27)
 
-Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (gpu00, 2× RTX 2060), `-fa 1 -ts 12,12` ctx=2048 for bench, ctx=32k for KV-buffer measurement. Upstream binary: `7f5ee5496` (ggerganov/llama.cpp master, March 2026). llama-tq binary: `1a1d49ef5` (turboquant).
+Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (test box, 2× RTX 2060), `-fa 1 -ts 12,12` ctx=2048 for bench, ctx=32k for KV-buffer measurement. Upstream binary: `7f5ee5496` (ggerganov/llama.cpp master, March 2026). llama-tq binary: `1a1d49ef5` (turboquant).
 
 | Variant | pp512 t/s | tg128 t/s | tg1024 t/s | PPL (8ch) | KV-bpw | KV @ ctx=32k |
 |---|---:|---:|---:|---:|---:|---:|
@@ -212,7 +212,7 @@ Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (gpu00, 2× RTX 2060), `-
 
 Same hybrid SSM model, just better infrastructure underneath.
 
-> **Caveat:** the upstream March-2026 binary on gpu00 cannot load Qwen3-Next (80B-A3B) or Qwen3.5 (122B-A10B) — those archs landed in upstream after the binary was built. A fresh upstream build for the giant-model A/B is on the morning of 2026-04-27 sweep list.
+> **Caveat:** the upstream March-2026 binary on test box cannot load Qwen3-Next (80B-A3B) or Qwen3.5 (122B-A10B) — those archs landed in upstream after the binary was built. A fresh upstream build for the giant-model A/B is on the morning of 2026-04-27 sweep list.
 
 ### Gemma4-26B-A4B — fast quality model
 

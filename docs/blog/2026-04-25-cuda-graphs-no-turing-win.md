@@ -5,7 +5,7 @@ Stand: 2026-04-25 20:11 CEST. A/B benchmark of `GGML_CUDA_FORCE_GRAPHS=1` on RTX
 ## Setup
 
 - Model: Qwen3.5-2B Q4_K_M, fa=1, ngl=99, ktq2_1 + vtq2_2
-- Hardware: gpu00, single RTX 2060 (CC 7.5, Turing)
+- Hardware: test-box, single RTX 2060 (CC 7.5, Turing)
 - Build: `1ebd59e8c` (FORCE_GRAPHS env var added)
 - Test: tg128, 3 reps each
 
