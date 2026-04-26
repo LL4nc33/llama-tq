@@ -403,6 +403,81 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq2_1(
     }
 }
 
+// XQuant Phase 3c — paired vec_dot for XKTQ2_1 subordinate.
+//
+// The subordinate `K_c` block (block_xktq2_1) holds only its own per-block
+// scale `d`. The 2-bit codes `qs[]` and RHT sign bits `sb[]` come from the
+// sibling dominant block_ktq2_1 at the SAME block index ib (passed via
+// `K_dom`). Mathematically identical to vec_dot_fattn_vec_KQ_ktq2_1 except
+// the per-block norm reads from the subordinate.
+//
+// PHASE 3c gate: this template is instantiated and dispatchable, but the
+// caller-side wiring of `K_dom` into the FA-vec kernel is Phase 3d. The
+// dispatcher in fattn-vec-dispatch-ktq.cu currently aborts before ever
+// reaching this code; the kv-cache `xquant_dispatch_ready=false` gate
+// stops the abort from firing in any current build.
+template <int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_xktq2_1_paired(
+    const char * __restrict__ K_c,
+    const void * __restrict__ Q_v,
+    const int  * __restrict__ Q_q8,
+    const void * __restrict__ Q_ds_v,
+    const char * __restrict__ K_dom_c) {
+    const block_xktq2_1 * K_sub = (const block_xktq2_1 *) K_c;
+    const block_ktq2_1  * K_dom = (const block_ktq2_1  *) K_dom_c;
+    const int lane = threadIdx.x;
+
+    if constexpr (nthreads == WARP_SIZE) {
+        // Hadamard-domain dot — same shape as ktq2_1 path; only the per-block
+        // norm comes from the subordinate. RHT signs (sb) are layer-shared
+        // because Philox seed = block_index, so sourcing sb from K_dom is sound.
+        const float * Q_f32 = (const float *) Q_v;
+        GGML_UNUSED(Q_q8);
+        GGML_UNUSED(Q_ds_v);
+        float accum = 0.0f;
+        constexpr int nblocks = D / QK_KTQ;
+
+        #pragma unroll
+        for (int bi = 0; bi < nblocks; ++bi) {
+            const float norm = (float)K_sub[bi].d;     // subordinate's own scale
+            const int sb  = (K_dom[bi].sb[lane / 8] >> (lane % 8)) & 1;
+            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_rot    = ktq_cuda_fwht_warp(Q_signed);
+            const int idx  = (K_dom[bi].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
+            accum += PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE * Q_rot * norm;
+        }
+        return accum;  // caller does warp_reduce_sum
+    } else {
+        // Serial fallback (D == 64). Reuses the verified paired block dequant.
+        GGML_UNUSED(Q_v);
+        const int lane_q = threadIdx.x % nthreads;
+        float sum = 0.0f;
+
+        #pragma unroll
+        for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+            const int k_KQ     = k_KQ_0 + lane_q;
+            const int my_ib    = k_KQ / (QK_KTQ / 4);
+            const int iqs      = k_KQ % (QK_KTQ / 4);
+            const int elem_off = iqs * 4;
+
+            const int q8_val = Q_q8[k_KQ_0 / nthreads];
+            const int8_t * q8 = (const int8_t *) &q8_val;
+            float block_sum = 0.0f;
+
+            float buf[32];
+            ktq_fattn_dequant_block_xktq2_1_paired(K_sub, K_dom, my_ib, buf);
+            #pragma unroll
+            for (int l = 0; l < 4; ++l) {
+                block_sum += buf[elem_off + l] * (float)q8[l];
+            }
+
+            const float2 Q_ds = ((const float2 *) Q_ds_v)[k_KQ_0 / nthreads];
+            sum += block_sum * Q_ds.x;
+        }
+        return sum;
+    }
+}
+
 template <int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq3_1(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
@@ -912,6 +987,19 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_vtq4_3<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
+        return nullptr;
+    }
+}
+
+// XQuant Phase 3c — paired vec-dot dispatcher. Currently only XKTQ2_1 is
+// defined as a paired subordinate type; future xquant levels (XKTQ3_1,
+// XKTQ4_1) would extend this branch list.
+template <ggml_type type_K, int D, int nthreads>
+constexpr __device__ vec_dot_KQ_paired_t get_vec_dot_KQ_paired() {
+    if constexpr (type_K == GGML_TYPE_XKTQ2_1) {
+        return vec_dot_fattn_vec_KQ_xktq2_1_paired<D, nthreads>;
+    } else {
+        static_assert(type_K == -1, "get_vec_dot_KQ_paired: only XKTQ types supported");
         return nullptr;
     }
 }

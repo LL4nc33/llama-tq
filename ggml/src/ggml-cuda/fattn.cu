@@ -223,6 +223,10 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     // returns true (the matching K/V type families are disjoint).
     if (try_dispatch_vec_f16(ctx, dst)) return;
     if (try_dispatch_vec_ktq(ctx, dst)) return;
+    // XQuant Phase 3c — XKTQ2_1 (paired subordinate K) dispatch. Currently
+    // gated dormant by kv-cache `xquant_dispatch_ready=false`; if reached at
+    // runtime the helper aborts with a clear Phase 3d pointer.
+    if (try_dispatch_vec_xktq(ctx, dst)) return;
     if (try_dispatch_vec_vtq1(ctx, dst)) return;
     // E14 split-decode: intercepts VTQ_2 family at ncols=1 (decode) and runs
     // bulk dequant + F16 FA. Only active when FATTN_VTQ2_SPLIT_ENABLE is
