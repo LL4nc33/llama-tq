@@ -1,5 +1,6 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
+#include "fattn-tq.cuh"  // get_vec_dot_KQ / get_dequantize_V dispatchers + KTQ/VTQ helpers
 
 static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
     return 128;

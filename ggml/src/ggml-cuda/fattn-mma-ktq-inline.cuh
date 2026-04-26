@@ -2,6 +2,7 @@
 #include "cp-async.cuh"
 #include "mma.cuh"
 #include "fattn-common.cuh"
+#include "fattn-tq.cuh"  // PQ_CUDA_CB_*, ktq_cuda_fwht_warp, block_ktq*_1
 
 using namespace ggml_cuda_mma;
 
