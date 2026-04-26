@@ -25,6 +25,7 @@
 
 #include "common.cuh"
 #include "fattn-common.cuh"
+#include "fattn-tq.cuh"  // get_vec_dot_KQ + KTQ/VTQ vec-dot helpers
 
 #include <type_traits>
 
