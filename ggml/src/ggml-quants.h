@@ -39,6 +39,7 @@ GGML_API void quantize_row_ktq2_1_ref(const float * GGML_RESTRICT x, block_ktq2_
 GGML_API void quantize_row_ktq3_1_ref(const float * GGML_RESTRICT x, block_ktq3_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_ktq4_1_ref(const float * GGML_RESTRICT x, block_ktq4_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_xktq2_1_ref(const float * GGML_RESTRICT x, block_xktq2_1 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_xktq2_1_ref_paired(const float * GGML_RESTRICT x_sub, const block_ktq2_1 * GGML_RESTRICT x_dom, block_xktq2_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq1_1_ref(const float * GGML_RESTRICT x, block_vtq1_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq2_1_ref(const float * GGML_RESTRICT x, block_vtq2_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq3_1_ref(const float * GGML_RESTRICT x, block_vtq3_1 * GGML_RESTRICT y, int64_t k);
