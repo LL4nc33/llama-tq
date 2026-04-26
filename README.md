@@ -235,6 +235,24 @@ Qwen3.5 or Qwen3.6 35B-A3B (32 experts / 4 active, GQA), UD-IQ2\_XXS weights. Fi
 
 Full K × V sweep in the [Benchmarks](#benchmarks) section.
 
+### vs llama.cpp upstream — apples-to-apples (2026-04-27)
+
+Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (gpu00, 2× RTX 2060), same FA-on, ts 12,12, ctx=2048. Upstream binary: `7f5ee5496` (master). llama-tq: `1a1d49ef5` (turboquant).
+
+| Variant | pp512 t/s | tg128 t/s | tg1024 t/s | PPL (8ch) | KV-bpw | KV @ ctx=32k |
+|---|---:|---:|---:|---:|---:|---:|
+| **upstream** f16/f16 | 934 | 57.76 | 57.30 | 7.0810 | 32.0 | **640 MiB** |
+| **llama-tq** f16/f16 | 1009 | 76.58 | 75.09 | 7.0863 | 32.0 | 640 MiB |
+| **llama-tq** ktq2_1+vtq2_2 ⭐ | 1010 | 75.40 | 75.18 | 7.1814 | **2.78** | **115 MiB** |
+| Δ vs upstream | +5%/+8% | **+33%/+31%** | **+31%/+31%** | +0.07%/+1.34% | -91% | -82% |
+
+**Key wins llama-tq:**
+- **+33% TG** (decode) on identical KV — Phase-1-to-4 stack (FA quick wins, sparse-V dequant, P2P opt-in, OMP_active, layer-split, prefetch)
+- **-82% KV-cache memory** at ctx=32k with `ktq2_1+vtq2_2` (115 MiB vs 640 MiB) at +1.34% PPL (8-chunk noisy; 64-chunk runs land ≤+0.30%)
+- Quality match in f16/f16 (within 0.07% noise floor)
+
+Same hybrid SSM model, just better infrastructure underneath.
+
 ### 80B-A3B — Qwen3-Next hybrid (DeltaNet + Attention)
 
 Hybrid architecture, **512 experts / 10 active**. 80B params, ~25 GB at UD-IQ2\_XXS. 14 expert-layers per GPU, 20 offloaded to CPU RAM. Usable at 200k ctx with parallel=1.
@@ -260,6 +278,20 @@ Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 
 
 Physics ceiling: 40 GB/s DDR4 / ~0.75 GB per-token CPU traffic → ~53 t/s hard limit. Current ~31 t/s = 58% efficiency. Quick wins documented in `docs/plans/2026-04-24-80b-low-hanging-perf.md` (thread pinning, hugepages) target +10-15%.
 
+#### 80B-TQ1_0 — full-VRAM unicorn tier (2026-04-26)
+
+Unsloth ships a `UD-TQ1_0` (1-bit dynamic Trellis) variant that's **19.3 GB instead of 26.2 GB**. That eliminates CPU expert-offload entirely → both GPUs hold full model + KV. Deploy script: `oidanice-distillery/scripts/deploy/deploy-80b-tq1.sh`.
+
+| Config | bpw KV | model size | pp512 | tg128 | PPL (8ch) | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| 80B-IQ2_XXS f16/f16 (CPU offload) | 16.0 | 26.2 GB | 404 | 31.5 | 5.085 | baseline |
+| 80B-IQ2_XXS ktq2_1+vtq2_2 (CPU offload) | 2.78 | 26.2 GB | 403 | 30.9 | 5.082 | prev prod |
+| **80B-TQ1_0 ktq2_1+vtq2_2 (full-VRAM)** ⭐ | **2.78** | **19.3 GB** | **653** | **57.0** | **7.039** | **+85% TG vs CPU offload** |
+
+The +85% TG jump is from killing PCIe-x4 streaming (no CPU experts → no per-token transfer). Quality cost: TQ1_0 is more aggressive than IQ2_XXS (PPL 7.04 vs 5.08), but at 1.75–2.0 bpw model-side it's the tier where 80B fits a single dual-2060 box without thrashing PCIe.
+
+### 122B-A10B — largest that fits
+
 ### 122B-A10B — largest that fits
 
 Qwen3.5-122B-A10B (256 experts / 8 active, GQA(2)). 34 GB weights at UD-IQ2\_XXS. 19 expert-layers on GPU (PCIe-aware 10+9 split), 29 offloaded to CPU RAM.
@@ -284,6 +316,17 @@ Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 
 | **`ktq2_1 / vtq2_2`** (new prod) ⭐ | **2.78** | **196.3** | **16.8** | **4.0379** | **−0.63%** |
 
 The 122B is where v2 Trellis shines hardest: `vtq2_2` actually beats `f16/f16` on **both** PPL (−0.63%) and pp512 (+4.6%). VRAM 10.9/10.5 GB at 200k ctx. Full 262k ctx also fits (GQA(2) + 2.78 bpw KV = +140 MB delta from 200k). Physics ceiling: 2.5 GB/token CPU traffic / 56 GB/s effective ≈ 22 t/s, current 17 t/s = 77% efficiency.
+
+#### 122B-IQ1_M — smaller-tier alternative (2026-04-27)
+
+Unsloth ships a `UD-IQ1_M` (1.75 bpw) variant at **31.8 GB instead of 36.6 GB**. Still doesn't fit fully on dual-2060 (24 GB total VRAM), but more GPU-resident layers possible (12/13 instead of 10/9 split). Useful when ctx ≤ 32k and small TG bump is enough.
+
+| Config | bpw KV | model size | pp512 | tg128 | PPL (8ch) |
+|---|---:|---:|---:|---:|---:|
+| 122B-IQ2_XXS ktq2_1+vtq2_2 (10/9/29) | 2.78 | 36.6 GB | 196 | 16.8 | 4.038 |
+| **122B-IQ1_M ktq2_1+vtq2_2 (12/13/24)** | **2.78** | **31.8 GB** | **241** | **20.7** | 4.818 |
+
++23% TG, +23% pp512 — but PPL +19% (4.04 → 4.82) — IQ1_M trades quality for less CPU offload. For long-ctx prod stay on IQ2_XXS; for short-ctx fast-iteration use IQ1_M.
 
 **PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Production-PPL sweep: [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
 
