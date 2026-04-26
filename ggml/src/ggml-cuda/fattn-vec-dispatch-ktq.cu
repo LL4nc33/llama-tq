@@ -130,45 +130,62 @@ bool try_dispatch_vec_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     return false;
 }
 
-// XQuant Phase 3c — XKTQ2_1 (paired subordinate) dispatch slice.
+// XQuant Phase 3d — XKTQ2_1 (paired subordinate) dispatch slice.
 //
 // Returns true iff K->type is a paired XKTQ subordinate type. The dominant
 // sibling K-block is read from dst->src[5] (set by build_attn_mha via
 // ggml_flash_attn_ext_set_sibling_k); the kv-cache resolves the dominant
 // layer via xq_dominant_of_layer + get_dominant_k().
 //
-// PHASE 3c gate (current state):
-//   • Infrastructure landed: paired typedef (vec_dot_KQ_paired_t),
+// PHASE 3d wiring (current state):
+//   • Infrastructure (Phase 3c): paired typedef (vec_dot_KQ_paired_t),
 //     paired vec_dot template (vec_dot_fattn_vec_KQ_xktq2_1_paired),
-//     paired dispatcher (get_vec_dot_KQ_paired<>), this CASE entry.
-//   • Phase 3d (future): plumb K_dom into flash_attn_ext_vec kernel
-//     (extra kernel arg + branched call site at line ~304 of fattn-vec.cuh).
-//     Deferred to keep this commit compile-only — extending the kernel
-//     signature touches launch_fattn and would risk reg-pressure regressions
-//     on f16/q4_0/q8_0 hot paths (Iron-Law: fork only improves).
+//     paired vec-dot dispatcher (get_vec_dot_KQ_paired<>).
+//   • Kernel-side (Phase 3d): separate paired kernel flash_attn_ext_vec_paired
+//     with its own kernel-pointer typedef (fattn_kernel_paired_t) and its own
+//     launcher (launch_fattn_paired). The original flash_attn_ext_vec kernel,
+//     fattn_kernel_t typedef, and launch_fattn() are byte-identical to before
+//     this commit — Iron-Law: existing types provably untouched.
+//   • Sibling K is read from dst->src[5]->data inside launch_fattn_paired.
 //
-// Runtime: the kv-cache `xquant_dispatch_ready=false` constexpr stops any
-// XKTQ2_1 K-tensor from reaching FA. If that gate is flipped before Phase 3d
-// lands, this function trips a clear ABORT pointing at the missing piece.
+// Runtime: the kv-cache `xquant_dispatch_ready=false` constexpr still gates
+// any XKTQ2_1 K-tensor from reaching FA. Lance flips that gate after the
+// bench gate passes. If the gate is flipped without bench-gate, this code
+// path is now functional (no abort) — that's the correct behavior.
 bool try_dispatch_vec_xktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    ggml_tensor * Q = dst->src[0];
     ggml_tensor * K = dst->src[1];
+    ggml_tensor * V = dst->src[2];
 
     if (K->type != GGML_TYPE_XKTQ2_1) {
         return false;  // Not an xquant subordinate → leave to other dispatchers.
     }
 
     // From here on we KNOW the caller wants a paired XKTQ path; missing
-    // sibling tensor or unwired kernel are hard errors.
+    // sibling tensor is a hard error.
     GGML_ASSERT(dst->src[5] != nullptr &&
                 "XKTQ2_1 K without sibling K (src[5]); did the kv-cache "
                 "forget to call ggml_flash_attn_ext_set_sibling_k?");
     GGML_ASSERT(dst->src[5]->type == GGML_TYPE_KTQ2_1 &&
                 "XKTQ2_1 sibling K must be GGML_TYPE_KTQ2_1");
 
-    GGML_UNUSED(ctx);
-    GGML_ABORT("XQuant Phase 3c: dispatch reached for XKTQ2_1 but Phase 3d "
-               "(kernel-side K_dom plumbing in flash_attn_ext_vec) is not "
-               "yet wired. Either keep the kv-cache `xquant_dispatch_ready` "
-               "gate at false, or land Phase 3d before flipping it.");
-    return true;  // unreachable, satisfies signature
+    // Paired CASE expansion. Currently only XKTQ2_1 is defined; future
+    // xquant levels (XKTQ3_1, XKTQ4_1) extend this list.
+    //
+    // V-side: paired path supports the same V-types that ktq2_1 supports —
+    // typically KTQ2_1 (symmetric paired), F16, Q8_0. We expand the common
+    // configurations explicitly to keep instantiation count small.
+    FATTN_VEC_CASES_PAIRED_ALL_D_WITH_512_RET(GGML_TYPE_XKTQ2_1, GGML_TYPE_KTQ2_1)
+    FATTN_VEC_CASES_PAIRED_ALL_D_WITH_512_RET(GGML_TYPE_XKTQ2_1, GGML_TYPE_F16)
+    FATTN_VEC_CASES_PAIRED_ALL_D_WITH_512_RET(GGML_TYPE_XKTQ2_1, GGML_TYPE_Q8_0)
+
+    GGML_UNUSED(ctx); GGML_UNUSED(dst);
+    GGML_UNUSED(Q); GGML_UNUSED(K); GGML_UNUSED(V);
+    // Should not reach here for valid XKTQ2_1 setups — if we do, the (D, V)
+    // combination is not instantiated. Surface a clear error.
+    GGML_ABORT("XQuant Phase 3d: XKTQ2_1 paired dispatch reached but no "
+               "matching (D=%lld, V=%s) paired template instantiation exists. "
+               "Add the (D, type_V) pair to the FATTN_VEC_CASES_PAIRED_* list.",
+               (long long) Q->ne[0], ggml_type_name(V->type));
+    return false;
 }

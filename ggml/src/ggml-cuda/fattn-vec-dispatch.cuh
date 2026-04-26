@@ -43,6 +43,30 @@
     FATTN_VEC_CASES_ALL_D_RET(type_K, type_V)              \
     FATTN_VEC_CASE_RET(512, type_K, type_V)
 
+// XQuant Phase 3d — paired CASE macro. Mirrors FATTN_VEC_CASE_RET but routes
+// to the paired kernel wrapper, which receives the sibling dominant-K block
+// pointer (`K_dom`) read from dst->src[5]. Used only inside try_dispatch_vec_xktq.
+//
+// Note: K_dom validity is asserted by the caller before this macro fires.
+#define FATTN_VEC_CASE_PAIRED_RET(D, type_K, type_V)                                              \
+    {                                                                                             \
+        const bool type_V_okay = V->type == (type_V) || (V->type == GGML_TYPE_F32 && (type_V) == GGML_TYPE_F16); \
+        if (Q->ne[0] == (D) && K->type == (type_K) && type_V_okay) {                              \
+            ggml_cuda_flash_attn_ext_vec_case_paired<D, type_K, type_V>(ctx, dst);                \
+            return true;                                                                          \
+        }                                                                                         \
+    }
+
+#define FATTN_VEC_CASES_PAIRED_ALL_D_RET(type_K, type_V) \
+    FATTN_VEC_CASE_PAIRED_RET( 64, type_K, type_V)       \
+    FATTN_VEC_CASE_PAIRED_RET(128, type_K, type_V)       \
+    FATTN_VEC_CASE_PAIRED_RET(256, type_K, type_V)
+
+// D=512 only enabled via WITH_512 macro (Gemma4 path) — kept symmetric with non-paired.
+#define FATTN_VEC_CASES_PAIRED_ALL_D_WITH_512_RET(type_K, type_V) \
+    FATTN_VEC_CASES_PAIRED_ALL_D_RET(type_K, type_V)              \
+    FATTN_VEC_CASE_PAIRED_RET(512, type_K, type_V)
+
 // Helpers — implemented in fattn-vec-dispatch-*.cu TUs.
 // Each returns true iff a matching (D, type_K, type_V) was dispatched.
 bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
@@ -59,23 +83,21 @@ bool try_dispatch_vec_vtq3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 // E14 split-decode path — see fattn-vec-dispatch-vtq2-split.cu.
 bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
-// XQuant Phase 3c — paired vec_dot typedef.
+// XQuant Phase 3c — paired vec_dot typedef is now defined in fattn-tq.cuh
+// (transitively included via fattn-common.cuh → fattn-tq.cuh) so that
+// template-instance TUs which include only fattn-vec.cuh (not this header)
+// can still see it. Iron-Law: existing `vec_dot_KQ_t` typedef in
+// fattn-common.cuh is unchanged.
+
+// XQuant Phase 3d — paired flash-attention kernel function pointer.
 //
-// Standard vec_dot_KQ_t has 4 args (K_c, Q_v, Q_q8, Q_ds). The paired form
-// adds a 5th — `K_dom` — which points to the sibling dominant-layer K-block
-// holding the shared 2-bit codes + RHT sign bits. The subordinate XKTQ2_1
-// block referenced by `K_c` carries only its own per-block scale `d`.
+// The actual typedef (`fattn_kernel_paired_fwd_t`) lives in fattn-common.cuh
+// alongside `launch_fattn_paired` so the launcher's signature self-contains
+// — there is no need to forward-include this dispatch header from common.
 //
-// Why a parallel typedef instead of extending vec_dot_KQ_t in place:
-// extending the existing typedef would force every non-paired vec_dot
-// (f16, q4_0, q8_0, ktq2_1, ...) to either ignore the new arg (silent
-// reg-pressure ABI churn) or re-declare with default-args (function
-// pointers don't take defaults). Parallel typedef = zero touch on existing
-// types, zero risk to working KTQ/VTQ paths. PAIRED dispatch is selected
-// at compile time from the K-type tag, never at runtime.
-typedef float (*vec_dot_KQ_paired_t)(
-    const char * __restrict__ K_c,
-    const void * __restrict__ Q_v,
-    const int  * __restrict__ Q_q8,
-    const void * __restrict__ Q_ds,
-    const char * __restrict__ K_dom);
+// IRON-LAW NOTE: that typedef is SEPARATE from `fattn_kernel_t` in
+// fattn-common.cuh. The shared `fattn_kernel_t` typedef is used by mma-f16,
+// mma-ktq, tile, wmma-f16, vec, and vec-vtq2; extending it with a `K_dom`
+// parameter would force every existing kernel signature to either accept and
+// ignore the extra arg (silent ABI churn / reg-pressure) or be re-declared.
+// Parallel typedef = zero touch on stable backends.

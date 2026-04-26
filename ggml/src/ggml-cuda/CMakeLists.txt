@@ -141,7 +141,13 @@ if (CUDAToolkit_FOUND)
             template-instances/fattn-vec-instance-q8_0-ktq2_1.cu
             template-instances/fattn-vec-instance-q8_0-ktq3_1.cu
             template-instances/fattn-vec-instance-q8_0-ktq4_1.cu
-            template-instances/fattn-vec-instance-f16-vtq3_2.cu)
+            template-instances/fattn-vec-instance-f16-vtq3_2.cu
+            # XQuant Phase 3d — paired-vec template instances for XKTQ2_1.
+            # Cross-layer KV reuse path; gated at runtime by
+            # llama-kv-cache.cpp xquant_dispatch_ready=false until bench-gate.
+            template-instances/fattn-vec-instance-paired-xktq2_1-ktq2_1.cu
+            template-instances/fattn-vec-instance-paired-xktq2_1-f16.cu
+            template-instances/fattn-vec-instance-paired-xktq2_1-q8_0.cu)
     endif()
 
     ggml_add_backend_library(ggml-cuda
