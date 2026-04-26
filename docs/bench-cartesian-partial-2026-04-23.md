@@ -1,4 +1,4 @@
-Read from remote host example.local: Connection reset by peer
+Read from remote host test box: Connection reset by peer
 client_loop: send disconnect: Broken pipe
 s: 2, pp2048 + tg512
 
