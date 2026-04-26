@@ -50,6 +50,7 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 - [Quick Start](#quick-start)
 - [V-cache families](#v-cache-families)
 - [Large-MoE deployments](#large-moe-deployments)
+- [vs llama.cpp upstream](#vs-llamacpp-upstream--apples-to-apples-2026-04-27)  ← apples-to-apples on 35B-A3B
 - [Benchmarks](#benchmarks)
 - [Perplexity (wikitext-2)](#perplexity-wikitext-2)
 - [KV memory savings](#kv-memory-savings)
@@ -193,6 +194,26 @@ The 26B and 35B fit fully on GPU. The 80B and 122B spill 20 / 29 layers to CPU R
 
 **Production default (all four models):** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` at 2.78 bpw avg. Selected on 2026-04-25 after measuring vtq2_2 vs vtq2_1 on both giants — `vtq2_2` wins or ties on PPL, pp512, and tg128 across the board.
 
+## vs llama.cpp upstream — apples-to-apples (2026-04-27)
+
+Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (gpu00, 2× RTX 2060), `-fa 1 -ts 12,12` ctx=2048 for bench, ctx=32k for KV-buffer measurement. Upstream binary: `7f5ee5496` (ggerganov/llama.cpp master, March 2026). llama-tq binary: `1a1d49ef5` (turboquant).
+
+| Variant | pp512 t/s | tg128 t/s | tg1024 t/s | PPL (8ch) | KV-bpw | KV @ ctx=32k |
+|---|---:|---:|---:|---:|---:|---:|
+| **upstream** f16/f16 | 934 | 57.76 | 57.30 | 7.0810 | 32.0 | **640 MiB** |
+| **llama-tq** f16/f16 | 1009 | 76.58 | 75.09 | 7.0863 | 32.0 | 640 MiB |
+| **llama-tq** `ktq2_1+vtq2_2` ⭐ | 1010 | 75.40 | 75.18 | 7.1814 | **2.78** | **115 MiB** |
+| **Δ tq vs upstream** (f16 / quant) | +8% / +8% | **+33% / +31%** | **+31% / +31%** | +0.07% / +1.34% | — / −91% | — / **−82%** |
+
+**Key wins llama-tq:**
+- **+33% TG** (decode) on identical KV — Phase-1-to-4 stack (FA quick wins, sparse-V dequant, P2P opt-in, OMP_active, layer-split, prefetch)
+- **−82% KV-cache memory** at ctx=32k with `ktq2_1+vtq2_2` (115 MiB vs 640 MiB) at +1.34% PPL on a noisy 8-chunk sample — full 64-chunk runs land at +0.15-0.30% (see [Perplexity](#perplexity-wikitext-2))
+- Quality match in f16/f16 (within 0.07% noise floor — same numerics, just faster)
+
+Same hybrid SSM model, just better infrastructure underneath.
+
+> **Caveat:** the upstream March-2026 binary on gpu00 cannot load Qwen3-Next (80B-A3B) or Qwen3.5 (122B-A10B) — those archs landed in upstream after the binary was built. A fresh upstream build for the giant-model A/B is on the morning of 2026-04-27 sweep list.
+
 ### Gemma4-26B-A4B — fast quality model
 
 Gemma4 reasoning architecture, **256 experts / 8 active**, head_dim=512 (full-attn) + head_dim=256 (SWA). 9 GB weights at bartowski IQ2_XXS. Fits fully on GPU. Daily driver for short-context tasks where Gemma's reasoning style is preferred.
@@ -235,24 +256,6 @@ Qwen3.5 or Qwen3.6 35B-A3B (32 experts / 4 active, GQA), UD-IQ2\_XXS weights. Fi
 
 Full K × V sweep in the [Benchmarks](#benchmarks) section.
 
-### vs llama.cpp upstream — apples-to-apples (2026-04-27)
-
-Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (gpu00, 2× RTX 2060), same FA-on, ts 12,12, ctx=2048. Upstream binary: `7f5ee5496` (master). llama-tq: `1a1d49ef5` (turboquant).
-
-| Variant | pp512 t/s | tg128 t/s | tg1024 t/s | PPL (8ch) | KV-bpw | KV @ ctx=32k |
-|---|---:|---:|---:|---:|---:|---:|
-| **upstream** f16/f16 | 934 | 57.76 | 57.30 | 7.0810 | 32.0 | **640 MiB** |
-| **llama-tq** f16/f16 | 1009 | 76.58 | 75.09 | 7.0863 | 32.0 | 640 MiB |
-| **llama-tq** ktq2_1+vtq2_2 ⭐ | 1010 | 75.40 | 75.18 | 7.1814 | **2.78** | **115 MiB** |
-| Δ vs upstream | +5%/+8% | **+33%/+31%** | **+31%/+31%** | +0.07%/+1.34% | -91% | -82% |
-
-**Key wins llama-tq:**
-- **+33% TG** (decode) on identical KV — Phase-1-to-4 stack (FA quick wins, sparse-V dequant, P2P opt-in, OMP_active, layer-split, prefetch)
-- **-82% KV-cache memory** at ctx=32k with `ktq2_1+vtq2_2` (115 MiB vs 640 MiB) at +1.34% PPL (8-chunk noisy; 64-chunk runs land ≤+0.30%)
-- Quality match in f16/f16 (within 0.07% noise floor)
-
-Same hybrid SSM model, just better infrastructure underneath.
-
 ### 80B-A3B — Qwen3-Next hybrid (DeltaNet + Attention)
 
 Hybrid architecture, **512 experts / 10 active**. 80B params, ~25 GB at UD-IQ2\_XXS. 14 expert-layers per GPU, 20 offloaded to CPU RAM. Usable at 200k ctx with parallel=1.
@@ -289,8 +292,6 @@ Unsloth ships a `UD-TQ1_0` (1-bit dynamic Trellis) variant that's **19.3 GB inst
 | **80B-TQ1_0 ktq2_1+vtq2_2 (full-VRAM)** ⭐ | **2.78** | **19.3 GB** | **653** | **57.0** | **7.039** | **+85% TG vs CPU offload** |
 
 The +85% TG jump is from killing PCIe-x4 streaming (no CPU experts → no per-token transfer). Quality cost: TQ1_0 is more aggressive than IQ2_XXS (PPL 7.04 vs 5.08), but at 1.75–2.0 bpw model-side it's the tier where 80B fits a single dual-2060 box without thrashing PCIe.
-
-### 122B-A10B — largest that fits
 
 ### 122B-A10B — largest that fits
 
