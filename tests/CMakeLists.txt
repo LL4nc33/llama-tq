@@ -259,6 +259,7 @@ if (NOT GGML_BACKEND_DL)
     llama_build_and_test(test-vtq2-cached-roundtrip.cpp)
     llama_build_and_test(test-vtq3-roundtrip.cpp)
     llama_build_and_test(test-vtq2-encoding-diff.cpp)
+    llama_build_and_test(test-xktq-roundtrip.cpp)
 endif()
 
 # libmtmd

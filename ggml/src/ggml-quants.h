@@ -38,6 +38,7 @@ GGML_API void quantize_row_ktq1_1_ref(const float * GGML_RESTRICT x, block_ktq1_
 GGML_API void quantize_row_ktq2_1_ref(const float * GGML_RESTRICT x, block_ktq2_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_ktq3_1_ref(const float * GGML_RESTRICT x, block_ktq3_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_ktq4_1_ref(const float * GGML_RESTRICT x, block_ktq4_1 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_xktq2_1_ref(const float * GGML_RESTRICT x, block_xktq2_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq1_1_ref(const float * GGML_RESTRICT x, block_vtq1_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq2_1_ref(const float * GGML_RESTRICT x, block_vtq2_1 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq3_1_ref(const float * GGML_RESTRICT x, block_vtq3_1 * GGML_RESTRICT y, int64_t k);
@@ -81,6 +82,13 @@ GGML_API void dequantize_row_ktq1_1(const block_ktq1_1 * GGML_RESTRICT x, float 
 GGML_API void dequantize_row_ktq2_1(const block_ktq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_ktq3_1(const block_ktq3_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_ktq4_1(const block_ktq4_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+// XQuant subordinate dequant — needs sibling layer's block_ktq2_1 row for codes + sb.
+// Standard `to_float` signature (single tensor) cannot express this — registered with
+// a stub that zero-fills + warns; real path is the explicit two-arg helper below.
+GGML_API void dequantize_row_xktq2_1(const block_xktq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_xktq2_1_paired(const block_xktq2_1 * GGML_RESTRICT x_sub,
+                                            const block_ktq2_1  * GGML_RESTRICT x_dom,
+                                            float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq1_1(const block_vtq1_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq2_1(const block_vtq2_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq3_1(const block_vtq3_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);

@@ -337,6 +337,23 @@ typedef struct {
 } block_ktq4_1;
 static_assert(sizeof(block_ktq4_1) == sizeof(ggml_half) + QK_KTQ/2 + QK_KTQ/8, "wrong ktq4_1 block size/padding");
 
+// XKTQ2_1 — XQuant K-cache subordinate variant (paired with sibling KTQ2_1).
+// Stores only the per-block L2 scale (with optional eta relaxation pre-applied).
+// Quantized codes (`qs`) and RHT sign bits (`sb`) live in the sibling block_ktq2_1
+// of layer (l-1). At dequant time the subordinate fetches sibling.qs + sibling.sb
+// and applies its own `d_hat` instead of sibling's norm. RHT is layer-independent
+// (Philox seed depends on block_index only) so sharing sb is mathematically sound.
+//
+// Layout intentionally pads to 8 bytes for alignment (matches block_ktq2_1.qs base offset).
+// Effective storage: 16 bits / 32 elements = 0.5 bpw of metadata vs 3.5 bpw for ktq2_1.
+//
+// NOTE: Phase 1 only — pairing logic, CUDA dequant, and FA dispatch land in later phases.
+typedef struct {
+    ggml_half d;         // own L2 norm scale (with eta relaxation pre-applied at quant time)
+    uint8_t   pad[6];    // reserved; alignment + room for future per-block eta/flags
+} block_xktq2_1;
+static_assert(sizeof(block_xktq2_1) == 8, "wrong xktq2_1 block size/padding");
+
 // VTQ (V-cache TurboQuant) block structures.
 // V is rotated once at graph level (self_v_rot), so per-block storage drops
 // the RHT sign bits; dequant is a single codebook lookup · scale. This keeps

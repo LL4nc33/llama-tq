@@ -936,6 +936,18 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_ktq4_1,
         .from_float_ref           = (ggml_from_float_t) quantize_row_ktq4_1_ref,
     },
+    [GGML_TYPE_XKTQ2_1] = {
+        // XQuant subordinate K-cache type. Codes shared from sibling KTQ2_1 layer.
+        // The registered to_float is a stub — real dequant uses the paired helper.
+        // Phase 1: foundation only (CPU round-trip). Phases 2-5: pairing logic,
+        // CUDA kernels, FA dispatch, calibration tool.
+        .type_name                = "xktq2_1",
+        .blck_size                = QK_KTQ,
+        .type_size                = sizeof(block_xktq2_1),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_xktq2_1,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_xktq2_1_ref,
+    },
     [GGML_TYPE_KTQ1_1] = {
         .type_name                = "ktq1_1",
         .blck_size                = QK_KTQ,

@@ -504,6 +504,14 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "ktq4_1") {
         return GGML_TYPE_KTQ4_1;
     }
+    if (s == "xktq2_1") {
+        // XQuant Phase 1 stub: type registered but pairing logic not yet wired.
+        // Selecting it stand-alone is not yet useful — real use requires sibling
+        // KTQ2_1 layer aliasing (Phase 2). Returned here so the type resolves
+        // for round-trip / smoke tests; runtime layer setup will reject it
+        // until pairing lands.
+        return GGML_TYPE_XKTQ2_1;
+    }
     if (s == "vtq1_1") {
         return GGML_TYPE_VTQ1_1;
     }
