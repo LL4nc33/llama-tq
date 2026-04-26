@@ -15,7 +15,7 @@ export const MODEL_ID_QUANTIZATION_SEPARATOR = ':';
  * Case-insensitive to handle both uppercase and lowercase inputs.
  */
 export const MODEL_QUANTIZATION_SEGMENT_RE =
-	/^(I?Q\d+(_[A-Z0-9]+)*|F\d+|BF\d+|MXFP\d+(_[A-Z0-9]+)*)$/i;
+	/^(I?Q\d+(_[A-Z0-9]+)*|TQ\d+(_[A-Z0-9]+)*|F\d+|BF\d+|MXFP\d+(_[A-Z0-9]+)*)$/i;
 
 /**
  * Matches prefix for custom quantization types, e.g. `UD-Q8_K_XL`.
