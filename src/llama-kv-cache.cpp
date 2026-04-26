@@ -104,10 +104,12 @@ llama_kv_cache::llama_kv_cache(
                      bool   tq_deferred_v,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
-    const std::vector<ggml_type> & type_v_layers) :
+    const std::vector<ggml_type> & type_v_layers,
+                     bool   xquant_enabled) :
     model(model), hparams(model.hparams), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa),
     tq_protect_layers(tq_protect_layers), tq_protect_sinks(tq_protect_sinks),
+    xquant_enabled(xquant_enabled),
     user_type_k(type_k), user_type_v(type_v), user_type_v_layers(type_v_layers), swa_type(swa_type) {
 
     GGML_ASSERT(kv_size % n_pad == 0);
@@ -145,6 +147,36 @@ llama_kv_cache::llama_kv_cache(
                                   type_v == GGML_TYPE_VTQ4_3);
     const bool use_deferred_v = is_vtq2_type_v;
     (void) tq_deferred_v; // flag retained for backwards compat; always on for VTQ_2
+
+    // XQuant pairing pass — populate xq_dominant_of_layer mapping.
+    // Convention: subordinate layers are odd indices (l = 2k+1) starting at l=5
+    // (after sink/boundary protection), with dominant = l-1. The pair-pass runs
+    // BEFORE allocation so subordinate layers can later use eff_type_k=XKTQ2_1.
+    //
+    // Phase 4 (this commit): only the mapping is populated; allocation still
+    // uses the user-selected K type (no storage savings yet). Phase 3
+    // (FA-dispatch sibling injection) wires the mapping into the graph and
+    // unlocks the actual storage shrink. Without Phase 3 the FA kernel would
+    // read out-of-bounds bytes from the 8-byte XKTQ2_1 block, so this is the
+    // safe ordering: ship tracking first, allocation flip later.
+    xq_dominant_of_layer.assign(hparams.n_layer, -1);
+    if (xquant_enabled && is_tq_type_k && type_k == GGML_TYPE_KTQ2_1) {
+        // start at il=5 (skip first 4 sink layers + 1 dominant slot for them)
+        // pair (il, il+1) where il is even and >= 4. Subordinate is il+1.
+        const uint32_t protect = tq_protect_layers > 0 ? tq_protect_layers : 4u;
+        for (uint32_t il = protect; il + 1 < hparams.n_layer; il += 2) {
+            // skip the trailing protected layers; conservative end at n_layer - protect
+            if (il + 1 + protect > hparams.n_layer) break;
+            // honour layer filter — recurrent / non-attention layers don't pair
+            if (!hparams.has_kv(il) || !hparams.has_kv(il+1)) continue;
+            if (filter && (!filter(il) || !filter(il+1))) continue;
+            xq_dominant_of_layer[il+1] = (int32_t) il;
+        }
+        uint32_t n_pairs = 0;
+        for (auto v : xq_dominant_of_layer) if (v >= 0) n_pairs++;
+        LLAMA_LOG_INFO("%s: xquant pairing: %u subordinate layers (Phase 4 tracking, dispatch pending Phase 3)\n",
+            __func__, n_pairs);
+    }
 
     // create a context for each buffer type
     // extra tensors per layer when deferred is active: staging + staging_stream views
