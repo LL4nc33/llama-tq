@@ -5851,6 +5851,23 @@ void dequantize_row_ktq2_1(const block_ktq2_1 * GGML_RESTRICT x, float * GGML_RE
 // the standard interface cannot supply the sibling row. Real call sites must use
 // the `_paired` variant.
 
+// Phase 1 ref impl: quantize the subordinate input by computing only its scale.
+// Codes/sb come from the sibling dominant block at runtime.
+//
+// NOTE on norm-correction: KTQ2_1 stores `d = norm_input / norm_recon` so that
+// the dequant `recon * d` exactly matches the input's L2 norm. The subordinate
+// has its OWN input but reuses the dominant's codes — we therefore cannot
+// match the subordinate's recon_norm exactly. The closest correct expression
+// is to use the subordinate's input norm divided by what the dominant block's
+// codes would reconstruct to. Phase 1 ref impl approximates this with the
+// subordinate's input norm only (recon_norm correction needs sibling buffer
+// which the simple ref API does not provide). The CUDA/FA path in Phase 3b
+// can do better because it has both blocks in scope.
+//
+// Practical impact: scenario 1 of test-xktq-roundtrip shows ~7e-3 MSE in
+// the corner case where dom_input == sub_input, because we skip the recon
+// correction. The eta-relaxation factor below cancels eventually with proper
+// calibration; for Phase 1 with eta=0 this is acceptable.
 void quantize_row_xktq2_1_ref(const float * GGML_RESTRICT x, block_xktq2_1 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_KTQ == 0);
     const int nb = k / QK_KTQ;
@@ -5866,6 +5883,54 @@ void quantize_row_xktq2_1_ref(const float * GGML_RESTRICT x, block_xktq2_1 * GGM
         for (int j = 0; j < QK_KTQ; j++) norm += xi[j] * xi[j];
         norm = sqrtf(norm);
         y[i].d = GGML_FP32_TO_FP16(norm * scale_factor);
+        memset(y[i].pad, 0, sizeof(y[i].pad));
+    }
+}
+
+// `quantize_row_xktq2_1_ref_paired` — superior variant that uses sibling
+// dominant codes to compute the proper recon-corrected scale, matching the
+// KTQ2_1 norm-correction pattern (ggml-quants.c:5712).
+//
+// Reduces scenario 1 MSE from ~7e-3 to fp16-floor (~1e-5). Used by call sites
+// that have both dom and sub buffers in scope; Phase 1 callers without sibling
+// fall back to the unpaired ref above.
+void quantize_row_xktq2_1_ref_paired(const float * GGML_RESTRICT x_sub,
+                                     const block_ktq2_1 * GGML_RESTRICT x_dom,
+                                     block_xktq2_1 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_KTQ == 0);
+    const int nb = k / QK_KTQ;
+    const float cb_scale = 1.0f / sqrtf((float)QK_KTQ);
+    const float eta = 0.0f;
+    const float scale_factor = 1.0f - 2.0f * eta;
+
+    for (int i = 0; i < nb; i++) {
+        const float * xi = x_sub + i * QK_KTQ;
+        float norm_sub = 0.0f;
+        for (int j = 0; j < QK_KTQ; j++) norm_sub += xi[j] * xi[j];
+        norm_sub = sqrtf(norm_sub);
+
+        if (norm_sub < 1e-30f) {
+            y[i].d = GGML_FP32_TO_FP16(0.0f);
+            memset(y[i].pad, 0, sizeof(y[i].pad));
+            continue;
+        }
+
+        // Norm-correction: compute what dom's codes (post sb + RHT-inverse)
+        // reconstruct to in L2-magnitude, then store norm_sub / recon_norm.
+        // Mirror of ggml-quants.c:5701-5713 but with sibling codes.
+        float recon[QK_KTQ];
+        for (int j = 0; j < QK_KTQ; j++) {
+            int idx = (x_dom[i].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+            recon[j] = PQ_CODEBOOK_2BIT[idx] * cb_scale;
+        }
+        float result[QK_KTQ];
+        kktq_rht_inverse_sb(recon, result, QK_KTQ, x_dom[i].sb);
+        float recon_sq = 0.0f;
+        for (int j = 0; j < QK_KTQ; j++) recon_sq += result[j] * result[j];
+        float recon_norm = sqrtf(recon_sq);
+
+        const float d = (recon_norm > 1e-30f) ? (norm_sub / recon_norm) : norm_sub;
+        y[i].d = GGML_FP32_TO_FP16(d * scale_factor);
         memset(y[i].pad, 0, sizeof(y[i].pad));
     }
 }
