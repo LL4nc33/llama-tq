@@ -164,6 +164,39 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq2_1(const bloc
     }
 }
 
+// XQuant Phase 2 — paired dequant for XKTQ2_1 subordinate block.
+// Reads quantized codes (qs) and RHT sign bits (sb) from sibling block_ktq2_1
+// at the SAME block index ib (dominant layer at l-1), but applies the
+// subordinate's own per-block scale (x_sub[ib].d). RHT is layer-independent
+// (Philox seed = block_index), so sharing sb is mathematically sound.
+//
+// Compared to ktq_fattn_dequant_block_ktq2_1, the only difference is the
+// `norm` source — codes/sb come from x_dom rather than x. Same warp register
+// footprint, same FWHT cost. Used by FA-vec when iSWA pairing maps a
+// subordinate K layer to a dominant sibling.
+static __device__ __forceinline__ void ktq_fattn_dequant_block_xktq2_1_paired(
+        const block_xktq2_1 * __restrict__ x_sub,
+        const block_ktq2_1  * __restrict__ x_dom,
+        const int64_t ib, float * __restrict__ buf) {
+    const float norm = (float)x_sub[ib].d;
+    if (norm < 1e-30f) {
+        #pragma unroll
+        for (int j = 0; j < 32; ++j) buf[j] = 0.0f;
+        return;
+    }
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int idx = (x_dom[ib].qs[j / 4] >> (2 * (j % 4))) & 0x3;
+        buf[j] = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
+    }
+    ktq_cuda_fwht_32_serial(buf);
+    #pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        const int sb = (x_dom[ib].sb[j / 8] >> (j % 8)) & 1;
+        buf[j] *= (1.0f - 2.0f * sb) * norm;
+    }
+}
+
 static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq3_1(const block_ktq3_1 * __restrict__ x, const int64_t ib, float * __restrict__ buf) {
     const float norm = (float)x[ib].d;
     if (norm < 1e-30f) {
