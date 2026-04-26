@@ -165,6 +165,9 @@ export class ModelsService {
 			modelStr = modelPath;
 		}
 
+		// 2b. Strip filename extensions (e.g. `model.gguf`, `model.safetensors`).
+		modelStr = modelStr.replace(/\.(gguf|safetensors|bin|pt|onnx)$/i, '');
+
 		// 3. Handle dot-separated quantization (e.g. `model-name.Q4_K_M`)
 		const dotIdx = modelStr.lastIndexOf('.');
 
