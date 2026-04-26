@@ -2367,6 +2367,15 @@ extern "C" {
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
 
+    // XQuant Phase 3b — attach a sibling K tensor (dominant layer's cache_k)
+    // for cross-layer KV reuse. K must be GGML_TYPE_XKTQ2_1; the sibling
+    // provides codes + sb while K provides only per-block scales. Backend
+    // dispatchers consume src[5] when K->type indicates an XQuant subordinate.
+    // Pass NULL to detach.
+    GGML_API void ggml_flash_attn_ext_set_sibling_k(
+            struct ggml_tensor * a,
+            struct ggml_tensor * sibling_k);
+
     // TODO: needs to be adapted to ggml_flash_attn_ext
     GGML_API struct ggml_tensor * ggml_flash_attn_back(
            struct ggml_context * ctx,

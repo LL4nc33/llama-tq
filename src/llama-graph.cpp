@@ -1859,7 +1859,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * sinks,
          ggml_tensor * v_mla,
                float   kq_scale,
-                 int   il) const {
+                 int   il,
+         ggml_tensor * sibling_k) const {
     const bool v_trans = v->nb[1] > v->nb[2];
 
     // split the batch into streams if needed
@@ -1896,6 +1897,12 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
         ggml_flash_attn_ext_add_sinks(cur, sinks);
         ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
+        // XQuant Phase 3b — attach the dominant layer's K when this layer is
+        // an XQuant subordinate. Backend dispatchers consume src[5] when
+        // K's type indicates an XKTQ block; otherwise they ignore it.
+        if (sibling_k) {
+            ggml_flash_attn_ext_set_sibling_k(cur, sibling_k);
+        }
 
         if (v_mla) {
 #if 0
@@ -2137,8 +2144,11 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_tensor * q = q_cur;
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+    // XQuant Phase 3b: fetch dominant K view for subordinate layers.
+    // Returns nullptr when xquant_enabled=false or il is standalone.
+    ggml_tensor * sibling_k = mctx_cur->get_dominant_k(ctx0, il);
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il, sibling_k);
     cb(cur, "kqv_out", il);
 
     if (inp->self_v_rot) {
