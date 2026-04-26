@@ -9,7 +9,7 @@ Earlier today I measured 80B PPL with `-ngl 35 -ts 12,12 -c 512` (auto-fit parti
 ## Setup
 
 - Model: `Qwen3-Next-80B-A3B-Instruct-UD-IQ2_XXS.gguf` (26 GB)
-- Hardware: gpu00 (2× RTX 2060 12 GB, asymmetric PCIe x16/x4, 40 GB host RAM)
+- Hardware: test-box (2× RTX 2060 12 GB, asymmetric PCIe x16/x4, 40 GB host RAM)
 - Build: `00afdd6c3` (turboquant)
 - llama-perplexity: `-c 512 --chunks 4 -b 1 -ub 1 -ngl 99 -ts 12,12 -fa on --fit-target 128 --no-warmup`
 - Expert-offload regex: 14 GPU0 + 14 GPU1 + 20 CPU layers (matches docs/plans/2026-04-24-80b-low-hanging-perf.md baseline)
@@ -28,7 +28,7 @@ stderr ±0.40 at chunks=4 is large in absolute terms but tight enough to rank th
 
 ## What this changes
 
-The production deployment on `gpu00:8791` runs `ktq2_1 + vtq2_1` (PolarQuant V-cache, 3.0 bpw). The measured PPL hit is **+2.69%**.
+The production deployment on `test-box:8791` runs `ktq2_1 + vtq2_1` (PolarQuant V-cache, 3.0 bpw). The measured PPL hit is **+2.69%**.
 
 Switching to `ktq2_1 + vtq2_2` (Trellis V-cache, 2.78 bpw) yields PPL **−0.06%** — *better* than f16 baseline within stderr, while saving 0.22 bpw. This is a clear quality+memory upgrade for production with no downside.
 

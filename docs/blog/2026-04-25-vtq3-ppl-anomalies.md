@@ -3,7 +3,7 @@
 **Date:** 2026-04-25
 **Branch:** turboquant
 **Build:** fbdb4a484
-**Sweep:** `/home/claude/sweep-gemma4-ppl-20260425-1346/` (gpu00)
+**Sweep:** `~/sweep-gemma4-ppl-20260425-1346/` (test-box)
 **Model:** gemma-4-26B-A4B-bartowski-IQ2_XXS (Gemma4-26B IT, D_v=512, IT-finetuned)
 
 ## TL;DR
@@ -22,7 +22,7 @@ Three anomalies investigated. **Two are real bugs**, one is expected behavior:
 
 ### Reproduktion
 
-Sweep auf gpu00, gleiche Eingabe, chunks=4:
+Sweep auf test-box, gleiche Eingabe, chunks=4:
 
 | Config | PPL | bit-identisch? |
 |---|---:|---|
@@ -169,4 +169,4 @@ Keine Action — dokumentiert. Optional: Sweep-Skript ergänzen mit "VTQ_1 famil
 - `ggml/src/ggml-cuda/trellis-encode.cuh:340-510` — `k_vtq_greedy_encode_set_rows` (FAST_ENC, hardcoded `1<<3`)
 - `ggml/src/ggml-cuda/set-rows.cu:505-581` — VTQ_2/_3 encoder dispatch
 - `ggml/src/ggml-cuda/fattn-common.cuh:898-1054` — Decoder (uses block layout, OK)
-- Sweep logs: `claude@gpu00.node:/home/claude/sweep-gemma4-ppl-20260425-1346/`
+- Sweep logs: `claude@test box:~/sweep-gemma4-ppl-20260425-1346/`

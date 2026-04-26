@@ -1,7 +1,7 @@
 # llama-tq vs upstream llama.cpp — A/B Benchmark
 
 Date: 2026-04-26
-Hardware: gpu00 — 2× RTX 2060 12GB (CC 7.5), CUDA, FA on
+Hardware: test-box — 2× RTX 2060 12GB (CC 7.5), CUDA, FA on
 Methodology: `llama-bench -p 512 -n 128 -ngl 99 -fa 1 -r 3` (sequential, GPU verified clean between runs)
 
 ---

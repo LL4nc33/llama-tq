@@ -100,7 +100,7 @@ Gate for the "Trick 17" research series is now open. The plan:
    vtq4_2, low-variance get vtq2_2, average stays at 3 bpw)
 2. **Trick 4** — correction overlay buffer (top-N quant errors patched
    lossless)
-3. **Deploy gpu00:8791** — update production stack with the fixed
+3. **Deploy test-box:8791** — update production stack with the fixed
    flags
 
 Plus one question worth debating: whether to break the perplexity

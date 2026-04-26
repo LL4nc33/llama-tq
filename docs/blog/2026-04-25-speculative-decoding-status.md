@@ -9,9 +9,9 @@
 
 - Speculative decoding is **fully integrated** in the llama-tq fork. No code work is required.
 - All upstream paths (`-md`, `-cd`, `-ngld`, `--draft-max`, `-ctkd`, `-ctvd`, etc.) are present and route through the fork's KTQ/VTQ-aware `kv_cache_type_from_str()` parser.
-- A vocab-compatible draft candidate exists on gpu00: `/home/lance/models/qwen3-0.6b-q8_0.gguf` (610 MB, Q8_0).
+- A vocab-compatible draft candidate exists on test-box: `~/models/qwen3-0.6b-q8_0.gguf` (610 MB, Q8_0).
 - Per the architect spec (`docs/plans/2026-04-23-speculative-decoding-spec.md`), **the recommended action is to NOT spend implementation time** on draft-model spec decode for our Qwen3.5/3.6-35B-A3B target. Phase-0 (measure-first) is the prescribed mitigation.
-- Phase-0 was **not run in this session** because: (a) other agents (PPL, FA-dispatch) are using both GPUs on gpu00; (b) the prod service `gpu00:8791` is down; (c) the spec doc rates expected outcome as net regression on A3B MoE workloads.
+- Phase-0 was **not run in this session** because: (a) other agents (PPL, FA-dispatch) are using both GPUs on test-box; (b) the prod service `test-box:8791` is down; (c) the spec doc rates expected outcome as net regression on A3B MoE workloads.
 
 ## What was verified
 
@@ -54,13 +54,13 @@ Per the spec doc, the following lines in `tools/server/server-context.cpp` carry
 
 ### 4. Vocab-compat draft candidate identified
 
-`/home/lance/models/qwen3-0.6b-q8_0.gguf` is the smallest available Qwen3-family GGUF on gpu00. Per spec doc §"Draft-Model Candidates", Qwen3.5/3.6 share a 151,936-token BPE vocab across model sizes; `common_speculative_are_compatible()` (size delta ≤128 + token-text equality from ID 5) should pass for the Qwen3.5-35B-A3B-IQ2_XS or Qwen3.6-35B-A3B-UD-IQ2_XXS targets. **Not yet runtime-verified** — first run on gpu00 will print the compatibility result.
+`~/models/qwen3-0.6b-q8_0.gguf` is the smallest available Qwen3-family GGUF on test-box. Per spec doc §"Draft-Model Candidates", Qwen3.5/3.6 share a 151,936-token BPE vocab across model sizes; `common_speculative_are_compatible()` (size delta ≤128 + token-text equality from ID 5) should pass for the Qwen3.5-35B-A3B-IQ2_XS or Qwen3.6-35B-A3B-UD-IQ2_XXS targets. **Not yet runtime-verified** — first run on test-box will print the compatibility result.
 
 ## Why no benchmark this session
 
 **Hard constraints:**
 1. Both GPU 0 and GPU 1 currently host `llama-perplexity` (PID 33223, 8.1 GB across the pair) for another agent's PPL measurement task. Loading a 35B + 0.6B draft would either OOM or evict that work.
-2. The prod gpu00:8791 service is down. Bringing it back up with a different config than production is fine on port 8799, but still claims VRAM the PPL agent is using.
+2. The prod test-box:8791 service is down. Bringing it back up with a different config than production is fine on port 8799, but still claims VRAM the PPL agent is using.
 3. Per the spec doc's published-benchmark evidence (thc1006/qwen3.6-speculative-decoding-rtx3090, 2026-04-19, post-PR#19493), **on this exact model class — Qwen3.6-35B-A3B + Qwen3-0.x/1.7B draft — even at 100% accept-rate the result is a 10.8% regression**, not a speedup. Pathology is MoE expert-saturation: per-token draft verification dispatches a fresh 8-of-256 expert union, and bandwidth cost dominates verification savings on hardware <RTX 3090. Our 2× RTX 2060 (12 GB, ~336 GB/s, asymmetric x16/x4 PCIe) is strictly worse than that benchmark's hardware.
 
 **Therefore:** running the Phase-0 measurement now would (a) compete with active GPU work for a result the spec already predicts will fail the gate, and (b) not save any meaningful effort downstream — the spec is already the work product it would feed into.
@@ -75,12 +75,12 @@ If a future Phase-0 produces unexpected NaN/garbage output (rather than just a s
 
 ## Recommended next steps (when GPUs are free)
 
-If/when both PPL and FA-dispatch agents finish and gpu00 has free GPUs:
+If/when both PPL and FA-dispatch agents finish and test-box has free GPUs:
 
 ```bash
-ssh claude@gpu00.node "cd ~/llama-tq && ./build/bin/llama-server \
-  -m /home/lance/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
-  -md /home/lance/models/qwen3-0.6b-q8_0.gguf \
+ssh claude@test box "cd ~/llama-tq && ./build/bin/llama-server \
+  -m ~/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
+  -md ~/models/qwen3-0.6b-q8_0.gguf \
   -ngl 99 -ngld all \
   -cd 8192 \
   --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
@@ -98,7 +98,7 @@ For a *positive*-leaning side-test: try `--spec-type ngram-mod` (no draft model,
 - Spec: `docs/plans/2026-04-23-speculative-decoding-spec.md`
 - This blog: `docs/blog/2026-04-25-speculative-decoding-status.md`
 - Source verification: `common/arg.cpp:382-409, 411-440, 3586-3760`; `ggml/src/ggml-cuda/fattn.cu:227,260,320-407`
-- Draft model: `gpu00:/home/lance/models/qwen3-0.6b-q8_0.gguf` (610 MB Q8_0, vocab-compat candidate)
+- Draft model: `test-box:~/models/qwen3-0.6b-q8_0.gguf` (610 MB Q8_0, vocab-compat candidate)
 
 ## Bottom line
 

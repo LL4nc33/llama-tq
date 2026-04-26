@@ -4,14 +4,14 @@ Stand: 2026-04-25 21:25 CEST. Production-aligned PPL on Qwen3-Next-80B-A3B and Q
 
 ## Why this is a big deal
 
-Both production deployments (`gpu00:8791` for 80B, port 8794 for 122B) currently run with `--cache-type-v vtq2_1` — the v1 PolarQuant V-cache. We have measured today that switching to `vtq2_2` (the v2 Trellis-coded V-cache) **gives a free quality upgrade** on both models, while saving 0.22 bpw.
+Both production deployments (`test-box:8791` for 80B, port 8794 for 122B) currently run with `--cache-type-v vtq2_1` — the v1 PolarQuant V-cache. We have measured today that switching to `vtq2_2` (the v2 Trellis-coded V-cache) **gives a free quality upgrade** on both models, while saving 0.22 bpw.
 
 ## Setup
 
-- gpu00, 2× RTX 2060 12 GB, asymmetric PCIe (x16/x4), 40 GB host RAM
+- test-box, 2× RTX 2060 12 GB, asymmetric PCIe (x16/x4), 40 GB host RAM
 - Build: `00afdd6c3` (turboquant)
 - llama-perplexity: `-c 512 --chunks 4 -b 1 -ub 1 -ngl 99 -ts 12,12 -fa on --fit-target 128`
-- Production expert-routing regex active (matches `gpu00:8791` and `gpu00:8794` deploys)
+- Production expert-routing regex active (matches `test-box:8791` and `test-box:8794` deploys)
 - `-b 1 -ub 1` triggers the deferred-V-staging-buffer transition needed for vtq*_2/_3 quants
 
 ## 80B Results
@@ -48,7 +48,7 @@ On bigger models with more attention heads (122B has 32-head GQA(2)), the Viterb
 
 ## Action items
 
-1. **Update production deploys**: `gpu00:8791` (80B) and `gpu00:8794` (122B) should switch from `--cache-type-v vtq2_1` to `--cache-type-v vtq2_2`.
+1. **Update production deploys**: `test-box:8791` (80B) and `test-box:8794` (122B) should switch from `--cache-type-v vtq2_1` to `--cache-type-v vtq2_2`.
 2. **TG-bench gate**: confirm vtq2_2 doesn't regress TG vs vtq2_1 on the same hardware. If it does, the +5% PPL win has to be weighed against the TG cost (likely small — both use the same FA-vec-vtq path with deferred-V).
 3. **Update README**: this blog argues `ktq2_1 + vtq2_2` should be the prod-default, replacing the v1 PolarQuant story.
 4. **Paper potential**: the 122B−80B−35B PPL sweep with prod expert-offload is the cleanest "asymmetric KV-cache quantization on real MoE" data published anywhere. Worth writing up.

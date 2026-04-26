@@ -1,11 +1,11 @@
 # VTQ_2 K-Collision Bug — confirmed reproduction after encoder fix
 
-Stand: 2026-04-25 16:38 CEST. Live-tested auf gpu00 mit aktuellem turboquant HEAD `976082f4c` (DEBUG-commits reverted, encoder OOB-fix `b771f9267` in place).
+Stand: 2026-04-25 16:38 CEST. Live-tested auf test-box mit aktuellem turboquant HEAD `976082f4c` (DEBUG-commits reverted, encoder OOB-fix `b771f9267` in place).
 
 ## Setup
 
 - Model: Gemma4-26B-A4B-bartowski-IQ2_XXS (IT-finetuned, raw-wikitext gives high absolute PPL)
-- Hardware: gpu00, 2× RTX 2060 (12 GB each), `-ngl 99 -ts 12,12 -fa 1`
+- Hardware: test-box, 2× RTX 2060 (12 GB each), `-ngl 99 -ts 12,12 -fa 1`
 - Wikitext-2-raw, `-c 512 -b 512 --chunks 4 --no-warmup`
 
 ## Reproduction

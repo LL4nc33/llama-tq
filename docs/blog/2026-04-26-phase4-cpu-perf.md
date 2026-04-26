@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-26
 **Branch:** turboquant
-**Hardware:** gpu00.node — KVM guest (12 vCPUs from Ryzen 7 3700X), 40 GB DDR4-3200, 2× RTX 2060 12 GB on asymmetric PCIe x16/x4
+**Hardware:** test box — KVM guest (12 vCPUs from Ryzen 7 3700X), 40 GB DDR4-3200, 2× RTX 2060 12 GB on asymmetric PCIe x16/x4
 **Models:** Qwen3-Next-80B-A3B IQ2_XXS, Qwen3.5-122B-A10B IQ2_XXS, both with `ktq2_1` + `vtq2_2` KV-cache (Phase 3 production-default)
 
 ## TL;DR
@@ -19,7 +19,7 @@ Phase 4 stacked four orthogonal optimizations and re-tuned the layer-split. On 8
 
 ## 1. The OMP win — KVM-specific, not bare-metal
 
-We started by checking `/proc/cpuinfo` and discovered gpu00 is a KVM guest VM (`systemd-detect-virt = kvm`). The Linux kernel inside the guest sees one virtual L3 cache shared by all 12 vCPUs — real CCX topology of the underlying Ryzen 7 3700X is hidden by the hypervisor.
+We started by checking `/proc/cpuinfo` and discovered test-box is a KVM guest VM (`systemd-detect-virt = kvm`). The Linux kernel inside the guest sees one virtual L3 cache shared by all 12 vCPUs — real CCX topology of the underlying Ryzen 7 3700X is hidden by the hypervisor.
 
 This kills the obvious Zen2 win (CCX-pinning via `pthread_setaffinity_np`) at the guest level. But it surfaces a different one: with default `OMP_WAIT_POLICY=passive`, libgomp `sched_yield`s during compute waits, and the hypervisor steals the vCPU. Active spinning keeps the vCPU on the run-queue.
 

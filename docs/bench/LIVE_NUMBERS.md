@@ -9,7 +9,7 @@ Update only this file when a phase ships new results. README links here.
 
 ## Hardware
 
-gpu00.node — KVM guest VM
+test box — KVM guest VM
 - 12 vCPUs from Ryzen 7 3700X host (Zen 2, 8C/16T host, 2 CCDs × 2 CCXs)
 - 40 GB DDR4-3200 (~40 GB/s real)
 - 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4)

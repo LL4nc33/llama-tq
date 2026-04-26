@@ -5,7 +5,7 @@ Stand: 2026-04-25 20:32 CEST. Real PPL with deferred-V active (`-b 1 -ub 1`).
 ## Setup
 
 - Model: Qwen3.6-35B-A3B-UD-IQ2_XXS
-- gpu00, 2× RTX 2060 12 GB, fa=on, ngl=99
+- test-box, 2× RTX 2060 12 GB, fa=on, ngl=99
 - wikitext-2 raw, ctx=512, chunks=2 (~25min/run on 35B with single-token decode)
 - Build: `70257a65e` (turboquant)
 

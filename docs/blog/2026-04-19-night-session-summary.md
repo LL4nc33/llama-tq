@@ -16,7 +16,7 @@ Three milestones in one night:
 ### 23:00–00:30 — Build instability debugging
 
 - fattn-vec template expansion blew 32 GB RAM budget
-- gpu00 went into swap-death, ssh timeout for 40min
+- test-box went into swap-death, ssh timeout for 40min
 - VM restart revealed ptxas zombie process holding 10 GB
 - Reduced VTQ_2 dispatch matrix (72 TUs → 0) per bypass-is-active state
 - Build completed at `-j2` with RAM guard triggering at 1.2 GB avail

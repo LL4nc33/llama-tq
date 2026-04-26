@@ -4,7 +4,7 @@ Stand: 2026-04-25 20:25 CEST. wikitext-2 chunks=4 ctx=512 fa=on.
 
 ## Measured
 
-Qwen3.6-35B-A3B-UD-IQ2_XXS, gpu00 (2× RTX 2060), llama-perplexity:
+Qwen3.6-35B-A3B-UD-IQ2_XXS, test-box (2× RTX 2060), llama-perplexity:
 
 | K cache | V cache | bpw avg | PPL | Δ vs f16/f16 |
 |---|---|---:|---:|---:|
