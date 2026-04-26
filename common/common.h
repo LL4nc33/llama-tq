@@ -554,6 +554,7 @@ struct common_params {
     bool tq_deferred_k = false;     // defer K quantization until prefill->decode transition
     bool tq_deferred_v = false;     // defer V quantization until prefill->decode transition
     uint32_t tq_profile_heads = 0;  // Trick 2 PR1: profile first N decode calls — dump per-head V variance/kurtosis as JSON
+    bool xquant_enabled = false;    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
 
     // Trick 2 PR2: per-layer mixed precision V-cache
     // When tq_v_layers is empty, cache_type_v is used uniformly (backward compatible).
