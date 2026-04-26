@@ -1,0 +1,22 @@
+{
+  "model_tag": "qwen35-0.8b-q8",
+  "model_path": "qwen3.5-0.8b-q8_0.gguf",
+  "captured_at": null,
+  "captured_sha": null,
+  "ruler": {
+    "ruler_4k_avg": null,
+    "ruler_16k_avg": null,
+    "ruler_64k_avg": null,
+    "ruler_cwe_64k": null,
+    "per_task": {}
+  },
+  "longbench": {
+    "longbench_en_avg": null,
+    "per_task": {}
+  },
+  "perplexity": {
+    "wikitext_ppl": null,
+    "hellaswag_200": null
+  },
+  "notes": "Placeholder. Real numbers populated when the first smoke run completes against the smallest test model. Replace nulls in-place — do not delete the structure."
+}
