@@ -179,9 +179,9 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 
 ## Live performance numbers
 
-**Single source of truth:** [`docs/bench/PROD_NUMBERS.md`](docs/bench/PROD_NUMBERS.md) — current production TG, PPL, HellaSwag for all five deploy targets. That file is updated each phase; the per-model deep-dives below stay structurally stable.
+**Single source of truth:** [`docs/bench/LIVE_NUMBERS.md`](docs/bench/LIVE_NUMBERS.md) — current TG, PPL, HellaSwag for all five deploy targets. That file is updated each phase; the per-model deep-dives below stay structurally stable.
 
-**Phase 4 (2026-04-26)** added an adaptive layer-split + `OMP_WAIT_POLICY=active` + `__builtin_prefetch` in `mul_mat_id` to the production stack. Net **+18.5% TG on 80B** (30.80 → ~36.5 t/s at ctx ≤ 8192), **+9.3% on 122B** (16.69 → 18.24 t/s). Long-context configs (>8k) fall back to the safe split that fits ctx=200000. New: Qwen3.6-27B dense single-GPU deploy, 5.1× faster than the old Qwen3.5-27B-Q4 offload path.
+**Phase 4 (2026-04-26)** added an adaptive layer-split + `OMP_WAIT_POLICY=active` + `__builtin_prefetch` in `mul_mat_id` to the deploy stack. Net **+18.5% TG on 80B** (30.80 → ~36.5 t/s at ctx ≤ 8192), **+9.3% on 122B** (16.69 → 18.24 t/s). Long-context configs (>8k) fall back to the safe split that fits ctx=200000. New: Qwen3.6-27B dense single-GPU deploy, 5.1× faster than the old Qwen3.5-27B-Q4 offload path.
 
 ## Large-MoE deployments
 
