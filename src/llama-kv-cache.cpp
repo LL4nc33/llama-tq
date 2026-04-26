@@ -1513,6 +1513,27 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
             ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
 }
 
+// XQuant Phase 3 — accessors for sibling K view.
+//
+// `xq_dominant_layer(il)` returns the dominant layer index for a subordinate
+// layer, or -1 if il is standalone. Cheap O(1) lookup into the pre-built map.
+//
+// `get_dominant_k(...)` returns a get_k-style view of the dominant layer's
+// K-cache, ready to be consumed by an FA-paired dispatch. Returns nullptr if
+// XQuant is disabled or il is not a subordinate. This is wired but unused
+// until the FA-graph builder switches to a paired call site (Phase 3b).
+int32_t llama_kv_cache::xq_dominant_layer(int32_t il) const {
+    if (!xquant_enabled) return -1;
+    if (il < 0 || (size_t) il >= xq_dominant_of_layer.size()) return -1;
+    return xq_dominant_of_layer[il];
+}
+
+ggml_tensor * llama_kv_cache::get_dominant_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
+    const int32_t il_dom = xq_dominant_layer(il);
+    if (il_dom < 0) return nullptr;
+    return get_k(ctx, il_dom, n_kv, sinfo);
+}
+
 ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
     GGML_UNUSED(sinfo);
 
@@ -2897,6 +2918,14 @@ ggml_tensor * llama_kv_cache_context::get_k(ggml_context * ctx, int32_t il) cons
 
 ggml_tensor * llama_kv_cache_context::get_v(ggml_context * ctx, int32_t il) const {
     return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);
+}
+
+ggml_tensor * llama_kv_cache_context::get_dominant_k(ggml_context * ctx, int32_t il) const {
+    return kv->get_dominant_k(ctx, il, n_kv, sinfos[i_cur]);
+}
+
+int32_t llama_kv_cache_context::xq_dominant_layer(int32_t il) const {
+    return kv->xq_dominant_layer(il);
 }
 
 ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
