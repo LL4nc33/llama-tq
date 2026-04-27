@@ -94,6 +94,7 @@ cmake --build build -j$(nproc) --target llama-server
 | Tier | K | V | Avg bpw | VRAM saved | PPL cost | Who it's for |
 |---|---|---|:---:|:---:|:---:|---|
 | ⭐ **Lossless** (recommended) | `ktq2_1` | `vtq2_2` | 2.78 | **83%** | **+0.15%** | Most users. Fits ~330k single-ctx (or ~470k with `-ub 128`, or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. |
+| 🪜 **Multi-tenant** (parallel slots) | `ktq2_1` | `vtq2_2` | 2.78 | **83%** | **+0.15%** | Multi-user / agent fleets. `gpt-oss-20b F16` (12.85 GB MXFP4-native) fits 24 GB with **4 concurrent 65k slots** (262k total) at 61 t/s per slot. |
 | **Aggressive** | `ktq2_1` | `vtq3_1` | 4.0 | 77% | +0.49% | Trade ~0.5% PPL for a different bpw point if v2 isn't built. |
 | **Conservative** | `q8_0` | `vtq3_1` | 6.25 | 61% | +1.05% | Falls back to the standard `q8_0` K-quant — no KTQ kernels needed. |
 | **Research** | `q8_0` | `vtq4_2` | 6.03 | 62% | +0.44% | Highest-quality Trellis V-cache, larger blocks. |
@@ -102,6 +103,11 @@ cmake --build build -j$(nproc) --target llama-server
 # ⭐ Recommended (lossless, 83% smaller KV)
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 \
     --cache-type-k ktq2_1 --cache-type-v vtq2_2
+
+# 🪜 Multi-tenant: 4 concurrent 65k slots on a 20B MoE
+./build/bin/llama-server -m gpt-oss-20b-F16.gguf -fa on -ngl 99 -ts 12,12 \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
+    -c 262144 --parallel 4
 
 # Aggressive (smaller PPL trade, no v2 kernels needed)
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 \
