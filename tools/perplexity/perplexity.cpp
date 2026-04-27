@@ -2,6 +2,9 @@
 #include "common.h"
 #include "log.h"
 #include "llama.h"
+#include "router-profile.h"
+
+#include <memory>
 
 #include <algorithm>
 #include <array>
@@ -2042,6 +2045,26 @@ int main(int argc, char ** argv) {
 
     llama_backend_init();
     llama_numa_init(params.numa);
+
+    // Phase 6a: router confidence profiler. Hook the eval-callback before
+    // common_init_from_params so it propagates into the backend scheduler.
+    std::unique_ptr<router_profile_data> router_prof;
+    if (!params.router_stats_path.empty()) {
+        router_prof.reset(new router_profile_data(
+            params.router_stats_path,
+            params.router_stats_tau,
+            params.router_stats_max_tokens));
+        if (router_prof->fp) {
+            params.cb_eval           = router_profile_cb_eval;
+            params.cb_eval_user_data = router_prof.get();
+            params.warmup            = false;
+            LOG_INF("%s: router-stats logging enabled → %s (tau=%.2f, max_tokens=%d)\n",
+                    __func__, params.router_stats_path.c_str(),
+                    (double) params.router_stats_tau, params.router_stats_max_tokens);
+        } else {
+            router_prof.reset();
+        }
+    }
 
     // load the model and apply lora adapter, if any
     auto llama_init = common_init_from_params(params);

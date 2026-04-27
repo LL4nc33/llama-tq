@@ -2097,6 +2097,37 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROFILE_HEADS"));
     add_opt(common_arg(
+        {"--log-router-stats"}, "PATH",
+        "Phase 6a: dump post-softmax MoE router probabilities (ffn_moe_probs-N tensors)\n"
+        "to a binary file at PATH for offline analysis with tools/profile-router.py.\n"
+        "Only effective with llama-perplexity (single-stream deterministic batching).",
+        [](common_params & params, const std::string & value) {
+            params.router_stats_path = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}).set_env("LLAMA_ARG_LOG_ROUTER_STATS"));
+    add_opt(common_arg(
+        {"--router-stats-tau"}, "F",
+        string_format(
+            "Phase 6a: cumulative-mass threshold recorded in the dump header for downstream\n"
+            "analysis. Does not gate routing — only stored as metadata. (default: %.2f)",
+            (double) params.router_stats_tau
+        ),
+        [](common_params & params, const std::string & value) {
+            params.router_stats_tau = std::stof(value);
+        }
+    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}).set_env("LLAMA_ARG_ROUTER_STATS_TAU"));
+    add_opt(common_arg(
+        {"--router-stats-max-tokens"}, "N",
+        string_format(
+            "Phase 6a: cap the number of (token, layer) records dumped to bound file size.\n"
+            "(default: %d)",
+            params.router_stats_max_tokens
+        ),
+        [](common_params & params, int value) {
+            params.router_stats_max_tokens = value > 0 ? value : 4096;
+        }
+    ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}).set_env("LLAMA_ARG_ROUTER_STATS_MAX_TOKENS"));
+    add_opt(common_arg(
         {"--tq-deferred-k"},
         "defer K quantization until prefill->decode transition for better quality\n"
         "(NOTE: as of phase2, this is AUTO-ENABLED whenever --cache-type-k is a\n"
