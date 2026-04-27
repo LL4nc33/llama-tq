@@ -13,8 +13,14 @@
 // them as a fixed-width binary stream for offline analysis (tools/profile-router.py).
 //
 // Hooked into the model graph via ggml_backend_sched_eval_callback. Filters on
-// tensor names matching `^ffn_moe_probs-(\d+)$` (set in src/llama-graph.cpp:1327
-// via cb() → ggml_format_name in src/llama-context.cpp:2417).
+// tensor names matching `^ffn_moe_logits-(\d+)$` (pre-gating logits, set at
+// src/llama-graph.cpp:1300 via cb() → ggml_format_name in src/llama-context.cpp:2417).
+//
+// Why logits and not probs: Qwen3-Next uses LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT
+// which sets probs=logits and applies softmax only AFTER top-k selection on the
+// k=8 weights (graph-builder line 1391-1396). So the only tensor that always
+// holds the full pre-gating distribution is ffn_moe_logits. The Python analyzer
+// applies softmax host-side, making it gating-op-agnostic.
 //
 // Binary record layout (little-endian, fixed-width):
 //
