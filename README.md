@@ -230,13 +230,32 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 
 ## Large-MoE deployments
 
-These are the four MoE models that drive the fork's existence. All measured on the same box: Ryzen 7 3700X host (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX) — test box is a KVM guest VM with 12 vCPUs, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4).
+These are the five MoE models we deploy. All measured on the same box: Ryzen 7 3700X host (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX) — test box is a KVM guest VM with 12 vCPUs, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4).
 
 ![Large-MoE TG: 35B / 80B / 122B on 2x RTX 2060](docs/img/large_moe_tg.png)
 
-The 26B and 35B fit fully on GPU. The 80B and 122B spill 20 / 29 layers to CPU RAM — TG becomes CPU-memory-bandwidth-bound, so the numbers are read against a physics ceiling (DDR4-3200 @ ~40 GB/s real / per-token CPU traffic).
+The 20B/26B/35B/80B-TQ1_0 fit fully on GPU. The 80B-IQ2 and 122B spill 20/29 layers to CPU RAM — TG becomes CPU-memory-bandwidth-bound, so the numbers are read against a physics ceiling (DDR4-3200 @ ~40 GB/s real / per-token CPU traffic).
 
-**Production default (all four models):** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` at 2.78 bpw avg. Selected on 2026-04-25 after measuring vtq2_2 vs vtq2_1 on both giants — `vtq2_2` wins or ties on PPL, pp512, and tg128 across the board.
+**Production default (all five models):** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` at 2.78 bpw avg. Selected on 2026-04-25 after measuring vtq2_2 vs vtq2_1 on both giants — `vtq2_2` wins or ties on PPL, pp512, and tg128 across the board. Verified on gpt-oss-20b (head_dim=64) on 2026-04-27.
+
+### gpt-oss-20b — small-MoE F16 native (2026-04-27)
+
+OpenAI's `gpt-oss-20b` ships in **native MXFP4** for expert FFN tensors, so the F16 GGUF (12.85 GB) is barely larger than Q2_K (10.7 GB). Fits fully on a single dual-2060 box with **8 GB VRAM headroom** at ctx=65k. **head_dim=64** (the smallest in our matrix); originally hit the upstream `head_dim % blck_size` check (false-positive for VTQ_2 since it quantizes along the sequence axis, not along D) — fixed in commit `c818f6c84`.
+
+```bash
+./build/bin/llama-server -m gpt-oss-20b-F16.gguf \
+    --host 0.0.0.0 --port 8791 -c 65536 -ngl 99 -ts 12,12 -fa on \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
+    --parallel 1 --jinja --reasoning off
+```
+
+| Config | bpw KV | pp t/s ↑ | tg t/s ↑ | VRAM (ctx=65k) |
+|---|---:|---:|---:|---:|
+| `f16 / f16` | 16.0 | 92 | 62.4 | ~14 GB |
+| `ktq2_1 / vtq2_1` | 3.0 | 110 | 61.2 | ~14 GB |
+| **`ktq2_1 / vtq2_2`** ⭐ | **2.78** | **114** | **61.1** | **~16 GB** |
+
+VTQ_2 wins PP without measurable TG cost. With 8 GB VRAM free at ctx=65k there's plenty of room for ctx>200k or `--parallel 4` slots.
 
 ### Gemma4-26B-A4B — fast quality model
 
