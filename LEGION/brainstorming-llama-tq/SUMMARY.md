@@ -1,5 +1,25 @@
 # Phase 6 Brainstorm Summary — 2026-04-27
 
+## ⚠️ STATUS UPDATE 2026-04-27 14:55
+
+**Phase 6 (adaptive top-k) ABORTED.** Profiler ran on Qwen3.6-35B and Qwen3-Next-80B,
+both miss the decision gate by ~30×: mean_k = 145.7 / 172.2 (gate < 5).
+
+Root cause: Qwen3 uses `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT` — softmax
+only on post-top-k weights, not on full 256/512-expert distribution. The
+distribution is intentionally near-uniform; threshold-based k-reduction is
+meaningless.
+
+See `phase6-05-real-data-findings.md` for full analysis + pivot recommendations
+(expert-locality L3 prefetch is the most-promising follow-up using the same
+profiler infrastructure).
+
+The Phase 6a profiler infrastructure ships as a reusable tool. Spec marked
+ABORTED. Original brainstorm content below preserved for context.
+
+---
+
+
 ## Kontext
 
 Phase 6 = Adaptive top-k MoE routing. Ziel: +30-50% TG auf CPU-offload Deploys (80B/122B) durch Reduktion gelesener Expert-Weights pro Token, gesteuert über Router-Confidence-Threshold.
