@@ -1,4 +1,4 @@
-model,model_quant,k_cache,v_cache,avg_bpw,pp512,tg128,ppl,ppl_baseline
+model,model_quant,k_cache,v_cache,avg_bpw,pp512,tg128,ppl,ppl_baseline,tag
 Qwen3.5-35B-A3B,IQ2_XS,f16,f16,16.0,731,58.8,6.598,6.598
 Qwen3.5-35B-A3B,IQ2_XS,q8_0,vtq2_1,5.5,684,57.5,7.072,6.598
 Qwen3.5-35B-A3B,IQ2_XS,q4_0,vtq2_1,3.5,682,57.4,7.115,6.598
