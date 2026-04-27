@@ -554,6 +554,13 @@ struct common_params {
     bool tq_deferred_k = false;     // defer K quantization until prefill->decode transition
     bool tq_deferred_v = false;     // defer V quantization until prefill->decode transition
     uint32_t tq_profile_heads = 0;  // Trick 2 PR1: profile first N decode calls — dump per-head V variance/kurtosis as JSON
+
+    // Phase 6a: router confidence profiler.
+    // When router_stats_path is non-empty, llama-perplexity attaches an eval-callback
+    // that dumps post-softmax MoE router probabilities (ffn_moe_probs-N tensors).
+    std::string router_stats_path;
+    float       router_stats_tau        = 0.85f;
+    int         router_stats_max_tokens = 4096;
     bool xquant_enabled = false;    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
 
     // Trick 2 PR2: per-layer mixed precision V-cache
