@@ -1,8 +1,16 @@
 # Phase 6 — Adaptive top-k MoE routing
 
 **Date:** 2026-04-27
-**Status:** Spec, not implemented
-**Goal:** +30-50% TG on CPU-offload MoE deployments by reading fewer expert weights per token when router confidence is high.
+**Status:** ABORTED 2026-04-27 (Phase 6a profiler ran, decision gate failed)
+**Verdict:** Adaptive top-k via cumulative softmax mass is **not viable** on Qwen3 MoE family. Pivot to expert-locality prefetch recommended. See `LEGION/brainstorming-llama-tq/phase6-05-real-data-findings.md`.
+
+**Original goal:** +30-50% TG on CPU-offload MoE deployments by reading fewer expert weights per token when router confidence is high.
+
+**Why aborted:** Qwen3.6-35B-A3B mean_k @ τ=0.85 = 145.7 (gate threshold < 5). Qwen3-Next-80B-A3B mean_k = 172.2. Both miss by ~30×. Root cause: Qwen3 uses `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT` — softmax runs only on the post-top-k weights, not on the full 256/512-expert distribution. The full distribution is intentionally near-uniform; cumulative-mass thresholds are meaningless on it.
+
+What we ship:
+- `common/router-profile.{h,cpp}` + `tools/profile-router.py` — reusable profiler infrastructure for expert-hotness, prefetch hints, profile-guided gating bias.
+- This document (kept as a record of what was learned).
 
 ---
 
