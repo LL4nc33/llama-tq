@@ -2538,6 +2538,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_N_CPU_MOE_DRAFT"));
+    add_opt(common_arg(
+        {"--moe-pin-experts"},
+        "register MoE expert weight pages as pinned host memory (cudaHostRegister) "
+        "to enable async PCIe DMA. Linux+CUDA only. Best-effort: warns and continues "
+        "if registration fails.",
+        [](common_params & params) {
+            params.moe_pin_experts = true;
+        }
+    ).set_env("LLAMA_ARG_MOE_PIN_EXPERTS"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",
