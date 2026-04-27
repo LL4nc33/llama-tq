@@ -90,6 +90,8 @@ add_library(${TARGET} STATIC
     sampling.h
     speculative.cpp
     speculative.h
+    expert-hotness.cpp
+    expert-hotness.h
     router-profile.cpp
     router-profile.h
     tq-profile.cpp
