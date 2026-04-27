@@ -98,8 +98,15 @@ def main() -> int:
     ap.add_argument("--gate-mean-k", type=float, default=5.0, help="abort if mean_k >= this (default: 5.0)")
     args = ap.parse_args()
 
-    probs, layer_idx, header = parse_dump(args.dump)
+    logits, layer_idx, header = parse_dump(args.dump)
     n_expert = header["n_expert"]
+
+    # The dump contains pre-gating router logits (ffn_moe_logits-N).
+    # We apply softmax here so the analyzer is gating-op-agnostic — works for
+    # SOFTMAX, SIGMOID and SOFTMAX_WEIGHT (Qwen3-Next) routers identically.
+    logits = logits - logits.max(axis=-1, keepdims=True)  # numerical stability
+    exps = np.exp(logits)
+    probs = exps / exps.sum(axis=-1, keepdims=True)
 
     sorted_desc = np.sort(probs, axis=-1)[:, ::-1]
     k_tau = compute_k_tau(sorted_desc, args.tau)
