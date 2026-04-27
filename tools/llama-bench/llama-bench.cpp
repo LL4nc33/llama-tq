@@ -20,6 +20,7 @@
 #include <unordered_set>
 
 #include "common.h"
+#include "expert-hotness.h"
 #include "download.h"
 #include "ggml.h"
 #include "llama.h"
@@ -2219,6 +2220,17 @@ int main(int argc, char ** argv) {
     ggml_backend_load_all();
 
     cmd_params params = parse_cmd_params(argc, argv);
+
+    // Phase 6f: load expert-hotness from env var (llama-bench has its own arg
+    // parser that doesn't include common-arg flags, so env var is the only path).
+    static expert_hotness g_bench_hotness;
+    if (const char * eh_path = std::getenv("LLAMA_ARG_EXPERT_HOTNESS"); eh_path && *eh_path) {
+        if (expert_hotness_load(eh_path, g_bench_hotness) && g_bench_hotness.valid()) {
+            expert_hotness_install_cpu(g_bench_hotness);
+            fprintf(stderr, "llama-bench: expert hotness loaded from %s (%d layers)\n",
+                    eh_path, g_bench_hotness.n_layers());
+        }
+    }
 
     auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (!cpu_dev) {
