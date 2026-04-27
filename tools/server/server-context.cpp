@@ -5,6 +5,7 @@
 #include "server-queue.h"
 
 #include "common.h"
+#include "expert-hotness.h"
 #include "llama.h"
 #include "log.h"
 #include "sampling.h"
@@ -638,6 +639,16 @@ private:
         SRV_INF("loading model '%s'\n", params.model.path.c_str());
 
         params_base = params;
+
+        // Phase 6f: install expert-hotness profile into CPU backend before model load.
+        // The hotness instance is owned at process scope (static) so its data stays
+        // valid across slot lifetimes.
+        static expert_hotness g_hotness;
+        if (!params_base.expert_hotness_path.empty()) {
+            if (expert_hotness_load(params_base.expert_hotness_path, g_hotness) && g_hotness.valid()) {
+                expert_hotness_install_cpu(g_hotness);
+            }
+        }
 
         llama_init = common_init_from_params(params_base);
 
