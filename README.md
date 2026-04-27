@@ -352,16 +352,21 @@ Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 
 
 The 122B is where v2 Trellis shines hardest: `vtq2_2` actually beats `f16/f16` on **both** PPL (−0.63%) and pp512 (+4.6%). VRAM 10.9/10.5 GB at 200k ctx. Full 262k ctx also fits (GQA(2) + 2.78 bpw KV = +140 MB delta from 200k). Physics ceiling: 2.5 GB/token CPU traffic / 56 GB/s effective ≈ 22 t/s, current 17 t/s = 77% efficiency.
 
-#### 122B-IQ1_M — smaller-tier alternative (2026-04-27)
+#### 122B-IQ1_M — smaller-tier alternative (tested 2026-04-27, not recommended)
 
-Unsloth ships a `UD-IQ1_M` (1.75 bpw) variant at **31.8 GB instead of 36.6 GB**. Still doesn't fit fully on dual-2060 (24 GB total VRAM), but more GPU-resident layers possible (12/13 instead of 10/9 split). Useful when ctx ≤ 32k and small TG bump is enough.
+Unsloth ships a `UD-IQ1_M` (1.75 bpw) variant at **31.8 GB instead of 36.6 GB**. Tested live with split 13/13/22 expert-blocks (26 GPU / 22 CPU), ktq2_1+vtq2_2, ctx=16k.
 
-| Config | bpw KV | model size | pp512 | tg128 | PPL (8ch) |
-|---|---:|---:|---:|---:|---:|
-| 122B-IQ2_XXS ktq2_1+vtq2_2 (10/9/29) | 2.78 | 36.6 GB | 196 | 16.8 | 4.038 |
-| **122B-IQ1_M ktq2_1+vtq2_2 (12/13/24)** | **2.78** | **31.8 GB** | **241** | **20.7** | 4.818 |
+| Config | bpw KV | model size | pp t/s | tg t/s | ctx max | PPL (4ch) |
+|---|---:|---:|---:|---:|---:|---:|
+| 122B-IQ2_XXS ktq2_1+vtq2_2 (10/9/29) | 2.78 | 36.6 GB | **196** | 16.8 | **200k** | 4.038 |
+| 122B-IQ1_M ktq2_1+vtq2_2 (13/13/22) | 2.78 | 31.8 GB | 26 | 17.3 | 16k | n/a |
 
-+23% TG, +23% pp512 — but PPL +19% (4.04 → 4.82) — IQ1_M trades quality for less CPU offload. For long-ctx prod stay on IQ2_XXS; for short-ctx fast-iteration use IQ1_M.
+**Verdict: not worth deploying.** Real measurement on test box (live curl, not bench-tool):
+- TG roughly **flat** vs IQ2_XXS (17.3 vs 16.8 = +3%) — the layer-count gain is eaten by the hybrid SSM compute path's overhead
+- PP **collapses** −87% (26 vs 196 t/s) — fatal for long prompts
+- `ctx=16k` is the practical ceiling because Qwen3.5-A10B is hybrid SSM (`full_attention_interval=4`) and the recurrent-state compute buffer eats the layer-budget headroom
+
+For 122B, **stay on IQ2_XXS at long ctx**. The TQ1_0 trick that made 80B fly (full-VRAM, no PCIe streaming) doesn't translate here — even at 1.75 bpw the model exceeds 24 GB VRAM, so we still pay the offload cost without the FA quality of the IQ2 path.
 
 **PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Production-PPL sweep: [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
 
