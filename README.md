@@ -4,7 +4,7 @@
 [![Upstream](https://img.shields.io/badge/upstream-llama.cpp-blue)](https://github.com/ggml-org/llama.cpp)
 [![Hardware](https://img.shields.io/badge/tested-2x%20RTX%202060%20(CC%207.5)-orange)](#hardware-notes)
 
-**llama.cpp fork that cuts KV-cache VRAM by 83% without quality loss. Run longer contexts on the same GPU.**
+**llama.cpp fork that cuts KV-cache VRAM by 82% at +0.15% PPL. Run longer contexts on the same GPU.**
 
 **For users:** drop in two flags, get a 35B MoE running at **~450k single context** (or 2× 200k parallel slots) on 24 GB total VRAM. With default `-ub 512` you'd hit ~330k; lowering to `-ub 128` shrinks the per-GPU compute buffer by ~4× and unlocks the extra 120k. Same answer quality, longer chats, no new hardware. **For developers:** asymmetric KTQ K-cache × VTQ V-cache with split dequant paths inside Flash Attention, plus a Trellis-coded V family that is bit-exact against f16 at the measurement granularity used.
 
