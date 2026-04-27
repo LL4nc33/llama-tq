@@ -12,15 +12,17 @@
 // Captures post-softmax MoE router probabilities per (token, layer) and dumps
 // them as a fixed-width binary stream for offline analysis (tools/profile-router.py).
 //
-// Hooked into the model graph via ggml_backend_sched_eval_callback. Filters on
-// tensor names matching `^ffn_moe_logits-(\d+)$` (pre-gating logits, set at
-// src/llama-graph.cpp:1300 via cb() → ggml_format_name in src/llama-context.cpp:2417).
+// Hooks two MoE-graph tensors via ggml_backend_sched_eval_callback:
+//   - ffn_moe_logits-<il>  (F32 [n_expert, n_tokens])     — pre-gating logits
+//   - ffn_moe_topk-<il>    (I32 [n_expert_used, n_tokens]) — selected expert IDs
 //
 // Why logits and not probs: Qwen3-Next uses LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT
 // which sets probs=logits and applies softmax only AFTER top-k selection on the
-// k=8 weights (graph-builder line 1391-1396). So the only tensor that always
-// holds the full pre-gating distribution is ffn_moe_logits. The Python analyzer
-// applies softmax host-side, making it gating-op-agnostic.
+// k=8 weights. So the only tensor that always holds the full pre-gating
+// distribution is ffn_moe_logits. The Python analyzer applies softmax host-side,
+// making it gating-op-agnostic.
+//
+// The topk tensor is the input to expert hotness analysis (Phase 6f).
 //
 // Binary record layout (little-endian, fixed-width):
 //
@@ -32,25 +34,30 @@
 //       float    tau;          // configured threshold
 //       char     pad[12];
 //
-//   per-record:
-//       uint32_t token_idx;    // monotonic, per-callback firing
-//       uint16_t layer_idx;    // parsed from "ffn_moe_probs-<N>"
-//       uint16_t n_expert;     // sanity, should match header
-//       float    probs[n_expert];
+//   per-record (one of two types, distinguished by tag):
+//       uint32_t token_idx;    // monotonic counter across all records
+//       uint16_t layer_idx;    // parsed from tensor name
+//       uint8_t  tag;          // 'L' = logits, 'K' = topk
+//       uint8_t  count;        // n_expert (logits) or n_expert_used (topk)
+//       float    payload[count]    // logits  (tag='L')
+//       int32_t  payload[count]    // topk    (tag='K')
 //
 // Multi-token batches: each ubatch slot of the probs tensor produces one record
 // with a distinct token_idx. token_idx is the absolute counter across all
 // callbacks for the run (not the position in the prompt).
 
 struct router_profile_data {
-    std::FILE *           fp           = nullptr;
-    std::regex            filter;
-    int                   n_expert     = 0;
-    int                   max_tokens   = 4096;     // per-layer cap (not global)
-    float                 tau          = 0.85f;
+    std::FILE *           fp             = nullptr;
+    std::regex            filter_logits;            // ^ffn_moe_logits-(\d+)$
+    std::regex            filter_topk;              // ^ffn_moe_topk-(\d+)$
+    int                   n_expert       = 0;       // sanity-check across layers
+    int                   n_expert_used  = 0;       // top-k size (recorded once)
+    int                   max_tokens     = 256;     // per-layer cap (not global)
+    float                 tau            = 0.85f;
     std::vector<uint8_t>  scratch;     // host-side staging buffer
-    int64_t               token_idx    = 0;        // global monotonic counter (records written)
-    std::vector<int64_t>  per_layer_count;         // per-layer cap tracker (lazy-grown)
+    int64_t               token_idx      = 0;       // global monotonic counter
+    std::vector<int64_t>  per_layer_count;          // per-layer cap tracker (lazy-grown, logits)
+    std::vector<int64_t>  per_layer_count_topk;     // per-layer cap tracker (topk)
     bool                  header_written = false;
 
     router_profile_data();
