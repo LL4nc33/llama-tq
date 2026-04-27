@@ -561,6 +561,10 @@ struct common_params {
     std::string router_stats_path;
     float       router_stats_tau        = 0.85f;
     int         router_stats_max_tokens = 256;     // per-layer cap
+
+    // Phase 6f: expert-hotness profile path (JSON from tools/profile-router.py --mode hotness).
+    // When set, runtime issues __builtin_prefetch on hot expert weight blocks before each MoE layer.
+    std::string expert_hotness_path;
     bool xquant_enabled = false;    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
 
     // Trick 2 PR2: per-layer mixed precision V-cache
