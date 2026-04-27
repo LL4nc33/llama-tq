@@ -2128,6 +2128,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_PERPLEXITY}).set_env("LLAMA_ARG_ROUTER_STATS_MAX_TOKENS"));
     add_opt(common_arg(
+        {"--expert-hotness"}, "PATH",
+        "Phase 6f: load per-layer expert-hotness profile (JSON from\n"
+        "tools/profile-router.py --mode hotness). Runtime issues __builtin_prefetch\n"
+        "on hot expert weight blocks before each MoE layer to prime CPU L3 cache.\n"
+        "Effective on CPU-offloaded MoE layers (deploy-80b.sh / deploy-122b.sh).",
+        [](common_params & params, const std::string & value) {
+            params.expert_hotness_path = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_EXPERT_HOTNESS"));
+    add_opt(common_arg(
         {"--tq-deferred-k"},
         "defer K quantization until prefill->decode transition for better quality\n"
         "(NOTE: as of phase2, this is AUTO-ENABLED whenever --cache-type-k is a\n"
