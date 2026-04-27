@@ -560,7 +560,7 @@ struct common_params {
     // that dumps post-softmax MoE router probabilities (ffn_moe_probs-N tensors).
     std::string router_stats_path;
     float       router_stats_tau        = 0.85f;
-    int         router_stats_max_tokens = 4096;
+    int         router_stats_max_tokens = 256;     // per-layer cap
     bool xquant_enabled = false;    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
 
     // Trick 2 PR2: per-layer mixed precision V-cache
