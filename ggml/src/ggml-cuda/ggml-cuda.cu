@@ -27,6 +27,7 @@
 #include "ggml-cuda/im2col.cuh"
 #include "ggml-cuda/mmf.cuh"
 #include "ggml-cuda/mmq.cuh"
+#include "ggml-cuda/moe-pin.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
 #include "ggml-cuda/norm.cuh"
@@ -5280,6 +5281,12 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    if (strcmp(name, "ggml_cuda_pin_host_range") == 0) {
+        return (void *)ggml_cuda_pin_host_range;
+    }
+    if (strcmp(name, "ggml_cuda_unpin_all") == 0) {
+        return (void *)ggml_cuda_unpin_all;
     }
     return nullptr;
 }
