@@ -3,6 +3,7 @@
 #include "log.h"
 #include "llama.h"
 #include "router-profile.h"
+#include "expert-hotness.h"
 
 #include <memory>
 
@@ -2063,6 +2064,14 @@ int main(int argc, char ** argv) {
                     (double) params.router_stats_tau, params.router_stats_max_tokens);
         } else {
             router_prof.reset();
+        }
+    }
+
+    // Phase 6f: load expert-hotness profile (if provided) and install into CPU backend.
+    expert_hotness hotness;
+    if (!params.expert_hotness_path.empty()) {
+        if (expert_hotness_load(params.expert_hotness_path, hotness) && hotness.valid()) {
+            expert_hotness_install_cpu(hotness);
         }
     }
 

@@ -37,6 +37,17 @@ extern "C" {
     GGML_BACKEND_API void    ggml_numa_init(enum ggml_numa_strategy numa); // call once for better performance on NUMA systems
     GGML_BACKEND_API bool    ggml_is_numa(void); // true if init detected that system has >1 NUMA node
 
+    // Phase 6f: per-layer hot-expert prefetch table.
+    // `hot_per_layer[il]` is an array of `n_per_layer[il]` int32_t expert IDs.
+    // The CPU MUL_MAT_ID forward parses tensor name "blk.<il>.ffn_*_exps" to find il
+    // and issues __builtin_prefetch on the listed expert weight blocks before dispatch.
+    // Pass NULL hot_per_layer to disable. Pointers must remain valid for the lifetime
+    // of compute (typical: process lifetime).
+    GGML_BACKEND_API void ggml_cpu_set_expert_hotness(
+        const int32_t * const * hot_per_layer,  // [n_layers] vectors of expert ids, may be NULL
+        const int             * n_per_layer,    // [n_layers] sizes, may be NULL
+        int                     n_layers);
+
     GGML_BACKEND_API struct ggml_tensor * ggml_new_i32(struct ggml_context * ctx, int32_t value);
     GGML_BACKEND_API struct ggml_tensor * ggml_new_f32(struct ggml_context * ctx, float value);
 
