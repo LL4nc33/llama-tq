@@ -1470,6 +1470,67 @@ UseGgmlGemm2:;
     }
 }
 
+// ============================================================================
+// Phase 6f: per-layer hot-expert prefetch (llama-tq fork)
+// Process-global table set via ggml_cpu_set_expert_hotness(). The CPU
+// MUL_MAT_ID forward parses tensor names "blk.<N>.ffn_*_exps" to find <N>,
+// then issues __builtin_prefetch on hot expert weight blocks.
+// ============================================================================
+
+static const int32_t * const * g_expert_hot_per_layer = NULL;
+static const int             * g_expert_hot_n         = NULL;
+static int                     g_expert_hot_layers    = 0;
+
+void ggml_cpu_set_expert_hotness(
+        const int32_t * const * hot_per_layer,
+        const int             * n_per_layer,
+        int                     n_layers) {
+    g_expert_hot_per_layer = hot_per_layer;
+    g_expert_hot_n         = n_per_layer;
+    g_expert_hot_layers    = (hot_per_layer && n_per_layer) ? n_layers : 0;
+}
+
+// Parse "blk.<N>.ffn_..." → N, or -1 if not parseable.
+static inline int ggml_extract_blk_idx(const char * name) {
+    if (!name) return -1;
+    if (name[0] != 'b' || name[1] != 'l' || name[2] != 'k' || name[3] != '.') return -1;
+    int n = 0;
+    const char * p = name + 4;
+    if (*p < '0' || *p > '9') return -1;
+    while (*p >= '0' && *p <= '9') {
+        n = n*10 + (*p - '0');
+        ++p;
+    }
+    return n;
+}
+
+// Issue __builtin_prefetch on hot expert weight blocks for the given layer.
+// Each expert is `nb02` bytes; we touch each 64-byte cacheline with T0 hint.
+// Called from ith==0 only to avoid redundant memory traffic.
+static inline void ggml_prefetch_hot_experts(
+        const struct ggml_tensor * src0,
+        size_t nb02,
+        int layer_idx) {
+    if (layer_idx < 0 || layer_idx >= g_expert_hot_layers) return;
+    const int32_t * ids = g_expert_hot_per_layer[layer_idx];
+    const int       n   = g_expert_hot_n[layer_idx];
+    if (!ids || n <= 0) return;
+
+    const int n_as = (int) src0->ne[2];
+    const char * base = (const char *) src0->data;
+    if (!base) return;
+
+    for (int i = 0; i < n; ++i) {
+        const int32_t eid = ids[i];
+        if (eid < 0 || eid >= n_as) continue;
+        const char * p = base + (size_t) eid * nb02;
+        const char * end = p + nb02;
+        for (const char * q = p; q < end; q += 64) {
+            __builtin_prefetch(q, 0, 3);
+        }
+    }
+}
+
 // ggml_compute_forward_mul_mat_id
 
 #define MMID_MATRIX_ROW(row_id, i1) matrix_rows[(row_id)*ids->ne[0]*ids->ne[1] + (i1)]
@@ -1662,6 +1723,13 @@ static void ggml_compute_forward_mul_mat_id(
     }
 
     ggml_barrier(params->threadpool);
+
+    // Phase 6f: prime CPU L3 with hot expert weight blocks before per-expert dispatch.
+    // Only ith==0 issues prefetches; other threads benefit via shared L3.
+    if (ith == 0 && g_expert_hot_layers > 0) {
+        const int layer_idx = ggml_extract_blk_idx(src0->name);
+        ggml_prefetch_hot_experts(src0, nb02, layer_idx);
+    }
 
     for (int cur_a = 0; cur_a < n_as; ++cur_a) {
         const int64_t cne1 = matrix_row_counts[cur_a];
