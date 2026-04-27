@@ -11,7 +11,7 @@
 router_profile_data::router_profile_data() = default;
 
 router_profile_data::router_profile_data(const std::string & out_path, float tau_, int max_tokens_)
-    : filter("^ffn_moe_probs-([0-9]+)$", std::regex::optimize),
+    : filter("^ffn_moe_logits-([0-9]+)$", std::regex::optimize),
       max_tokens(max_tokens_ > 0 ? max_tokens_ : 256),
       tau(tau_) {
     fp = std::fopen(out_path.c_str(), "wb");
