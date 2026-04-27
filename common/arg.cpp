@@ -2426,6 +2426,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_MMAP"));
     add_opt(common_arg(
+        {"--mmap-huge"},
+        string_format("use 2MB huge pages for mmap (Linux only, requires HugeTLB pool or transparent huge pages). reduces TLB pressure on large models. (default: %s)", params.mmap_huge ? "enabled" : "disabled"),
+        [](common_params & params) {
+            params.mmap_huge = true;
+        }
+    ).set_env("LLAMA_ARG_MMAP_HUGE"));
+    add_opt(common_arg(
         {"-dio", "--direct-io"},
         {"-ndio", "--no-direct-io"},
         string_format("use DirectIO if available. (default: %s)", params.use_direct_io ? "enabled" : "disabled"),

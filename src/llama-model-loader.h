@@ -76,6 +76,7 @@ struct llama_model_loader {
     size_t   n_bytes    = 0;
 
     bool use_mmap = false;
+    bool mmap_huge = false;
     bool use_direct_io = false;
     bool check_tensors;
     bool no_alloc;
@@ -127,6 +128,7 @@ struct llama_model_loader {
         std::vector<std::string> & splits, // optional, only need if the split does not follow naming scheme
         FILE * file,
         bool use_mmap,
+        bool mmap_huge,
         bool use_direct_io,
         bool check_tensors,
         bool no_alloc,

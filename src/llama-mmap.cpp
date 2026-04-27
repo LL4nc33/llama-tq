@@ -435,7 +435,7 @@ struct llama_mmap::impl {
 #ifdef _POSIX_MAPPED_FILES
     std::vector<std::pair<size_t, size_t>> mapped_fragments;
 
-    impl(struct llama_file * file, size_t prefetch, bool numa) {
+    impl(struct llama_file * file, size_t prefetch, bool numa, bool huge) {
         size = file->size();
         int fd = file->file_id();
         int flags = MAP_SHARED;
@@ -446,25 +446,64 @@ struct llama_mmap::impl {
                     strerror(errno));
         }
         if (prefetch) { flags |= MAP_POPULATE; }
+#else
+        // huge pages only meaningful on Linux; warn and ignore elsewhere
+        if (huge) {
+            LLAMA_LOG_WARN("warning: --mmap-huge requested but only supported on Linux; ignoring\n");
+            huge = false;
+        }
 #endif
-        addr = mmap(NULL, file->size(), PROT_READ, flags, fd, 0);
+
+        // Honor legacy env var as a fallback to enable THP-mode huge pages.
+        bool huge_thp_only = false;
+#ifdef __linux__
+        if (!huge) {
+            if (const char * env = std::getenv("LLAMA_MMAP_HUGEPAGES")) {
+                if (env[0] == '1') {
+                    huge_thp_only = true;
+                }
+            }
+        }
+#endif
+
+        addr = MAP_FAILED;
+#if defined(__linux__) && defined(MAP_HUGETLB)
+        if (huge) {
+            int huge_flags = flags | MAP_HUGETLB;
+#ifdef MAP_HUGE_2MB
+            huge_flags |= MAP_HUGE_2MB;
+#endif
+            addr = mmap(NULL, file->size(), PROT_READ, huge_flags, fd, 0);
+            if (addr == MAP_FAILED) {
+                LLAMA_LOG_WARN("mmap: MAP_HUGETLB|MAP_HUGE_2MB failed (%s); falling back to MADV_HUGEPAGE (THP)\n",
+                        strerror(errno));
+                // Fallback: HugeTLB pool not available -> retry without huge flags,
+                // then advise THP.
+                huge_thp_only = true;
+            } else {
+                LLAMA_LOG_INFO("mmap: huge pages enabled (2MB HugeTLB) for %.2f GiB mapping\n",
+                        file->size() / (1024.0 * 1024.0 * 1024.0));
+            }
+        }
+#else
+        (void) huge;
+#endif
+
         if (addr == MAP_FAILED) {
-            throw std::runtime_error(format("mmap failed: %s", strerror(errno)));
+            addr = mmap(NULL, file->size(), PROT_READ, flags, fd, 0);
+            if (addr == MAP_FAILED) {
+                throw std::runtime_error(format("mmap failed: %s", strerror(errno)));
+            }
         }
 
 #ifdef __linux__
-        // Opt-in transparent hugepages for the model mapping. Reduces TLB pressure
-        // for sparse MoE expert routing on CPU-offloaded layers.
-        // Enable with LLAMA_MMAP_HUGEPAGES=1.
-        if (const char * env = std::getenv("LLAMA_MMAP_HUGEPAGES")) {
-            if (env[0] == '1') {
-                if (madvise(addr, file->size(), MADV_HUGEPAGE)) {
-                    LLAMA_LOG_WARN("warning: madvise(.., MADV_HUGEPAGE) failed: %s\n",
-                            strerror(errno));
-                } else {
-                    LLAMA_LOG_INFO("mmap: MADV_HUGEPAGE enabled for %.2f GiB mapping\n",
-                            file->size() / (1024.0 * 1024.0 * 1024.0));
-                }
+        if (huge_thp_only) {
+            if (madvise(addr, file->size(), MADV_HUGEPAGE)) {
+                LLAMA_LOG_WARN("warning: madvise(.., MADV_HUGEPAGE) failed: %s\n",
+                        strerror(errno));
+            } else {
+                LLAMA_LOG_INFO("mmap: MADV_HUGEPAGE (THP) enabled for %.2f GiB mapping\n",
+                        file->size() / (1024.0 * 1024.0 * 1024.0));
             }
         }
 #endif
@@ -543,8 +582,11 @@ struct llama_mmap::impl {
 #elif defined(_WIN32)
     HANDLE hMapping = nullptr;
 
-    impl(struct llama_file * file, size_t prefetch, bool numa) {
+    impl(struct llama_file * file, size_t prefetch, bool numa, bool huge) {
         GGML_UNUSED(numa);
+        if (huge) {
+            LLAMA_LOG_WARN("warning: --mmap-huge requested but only supported on Linux; ignoring\n");
+        }
 
         size = file->size();
 
@@ -607,10 +649,11 @@ struct llama_mmap::impl {
         }
     }
 #else
-    impl(struct llama_file * file, size_t prefetch, bool numa) {
+    impl(struct llama_file * file, size_t prefetch, bool numa, bool huge) {
         GGML_UNUSED(file);
         GGML_UNUSED(prefetch);
         GGML_UNUSED(numa);
+        GGML_UNUSED(huge);
 
         throw std::runtime_error("mmap not supported");
     }
@@ -627,7 +670,7 @@ struct llama_mmap::impl {
     size_t size;
 };
 
-llama_mmap::llama_mmap(struct llama_file * file, size_t prefetch, bool numa) : pimpl(std::make_unique<impl>(file, prefetch, numa)) {}
+llama_mmap::llama_mmap(struct llama_file * file, size_t prefetch, bool numa, bool huge) : pimpl(std::make_unique<impl>(file, prefetch, numa, huge)) {}
 llama_mmap::~llama_mmap() = default;
 
 size_t llama_mmap::size() const { return pimpl->size; }

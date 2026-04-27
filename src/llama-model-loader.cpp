@@ -515,6 +515,7 @@ llama_model_loader::llama_model_loader(
         std::vector<std::string> & splits,
         FILE * file,
         bool use_mmap,
+        bool mmap_huge,
         bool use_direct_io,
         bool check_tensors,
         bool no_alloc,
@@ -813,6 +814,7 @@ llama_model_loader::llama_model_loader(
     }
 
     this->use_mmap = use_mmap;
+    this->mmap_huge = mmap_huge;
     this->use_direct_io = use_direct_io;
     this->check_tensors = check_tensors;
     this->no_alloc = no_alloc;
@@ -1339,7 +1341,7 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch ? -1 : 0, is_numa);
+            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch ? -1 : 0, is_numa, mmap_huge);
             mmaps_used.emplace_back(mapping->size(), 0);
             if (mlock_mmaps) {
                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
