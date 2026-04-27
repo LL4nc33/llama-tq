@@ -1,81 +1,81 @@
 # VTQ_1_3 — Research + Rejection
 
-Stand: 2026-04-25. Phase 3.5 der post-Gemma4 Roadmap. Analog zur KTQ_3 Untersuchung wird hier evaluiert, ob ein 1-bit Pendant zur VTQ_3-Familie (`vtq1_3`) die Pareto-Lücke zwischen `vtq1_1` (1.06 bpw, PPL +16%) und `vtq2_3` (3.00 bpw, +tail-protection) füllen kann.
+Date: 2026-04-25. Phase 3.5 of the post-Gemma4 roadmap. Analogous to the KTQ_3 investigation, the question here is whether a 1-bit counterpart to the VTQ_3 family (`vtq1_3`) can fill the Pareto gap between `vtq1_1` (1.06 bpw, PPL +16%) and `vtq2_3` (3.00 bpw, with tail protection).
 
-**Result: rejected.** Der Outlier-Split funktioniert in der VTQ_1-Familie nicht, weil die Block-Größe zu klein ist und der relevante PQ-Code-Pfad keinen Trellis-Header hat, an dem sich der Outlier-Overhead amortisieren ließe.
+**Result: rejected.** The outlier split does not work in the VTQ_1 family because the block size is too small and the relevant PQ code path has no Trellis header against which the outlier overhead could amortize.
 
 ---
 
-## 1. Familien-Architektur — was unterscheidet `_1` von `_3`?
+## 1. Family architecture — what differs `_1` vs `_3`?
 
-### VTQ_1-Familie (`vtq{1..4}_1`) — PolarQuant
-- Block-Größe `QK_VTQ = 32` (siehe `ggml/src/ggml-common.h:348`)
-- Pfad: `set_rows_cuda_pq` in `ggml/src/ggml-cuda/set-rows.cu:466`
-- Layout: `{ ggml_half d; uint8_t qs[QK_VTQ * b / 8]; }` — kein Trellis-Header, nur Scale + Codebook-Indizes
-- bpw = `b + 0.5` (1.5 / 2.5 / 3.5 / 4.5 bpw für b=1..4)
+### VTQ_1 family (`vtq{1..4}_1`) — PolarQuant
+- Block size `QK_VTQ = 32` (see `ggml/src/ggml-common.h:348`)
+- Path: `set_rows_cuda_pq` in `ggml/src/ggml-cuda/set-rows.cu:466`
+- Layout: `{ ggml_half d; uint8_t qs[QK_VTQ * b / 8]; }` — no Trellis header, just scale + codebook indices
+- bpw = `b + 0.5` (1.5 / 2.5 / 3.5 / 4.5 bpw for b=1..4)
 
-### VTQ_3-Familie (`vtq{2,3,4}_3`) — Trellis + Outlier-Channel-Split
-- Block-Größe `QK_VTQ_TRELLIS = 128`
-- Pfad: `vtq_cuda_encode_set_rows` (Trellis-Encoder)
+### VTQ_3 family (`vtq{2,3,4}_3`) — Trellis + Outlier-Channel-Split
+- Block size `QK_VTQ_TRELLIS = 128`
+- Path: `vtq_cuda_encode_set_rows` (Trellis encoder)
 - Layout: `{ d, start_state, outlier_pos[4], outlier_val[4], qs[128 * b / 8] }`
-  - Header `(d + start_state)` = 4 B, Outlier-Block = 12 B, Datenblock skaliert mit `b`
-- bpw = `(4 + 12 + 16·b) / 128 * 8 = (16 + 16b) / 128` ≈ `b + 1.0` für b=2,3,4 → 3.0 / 4.0 / 5.0 bpw
+  - Header `(d + start_state)` = 4 B, outlier block = 12 B, data block scales with `b`
+- bpw = `(4 + 12 + 16·b) / 128 * 8 = (16 + 16b) / 128` ≈ `b + 1.0` for b=2,3,4 → 3.0 / 4.0 / 5.0 bpw
 
-Der Outlier-Overhead beträgt in der VTQ_3-Familie **konstant 12 B / 128 samples = 0.75 bpw**, unabhängig von `b`. Das ist tragbar bei b=2,3,4 weil Trellis-Header (4 B) und Datenblock (16·b B) ohnehin amortisieren.
+The outlier overhead in the VTQ_3 family is **a constant 12 B / 128 samples = 0.75 bpw**, independent of `b`. That's tolerable at b=2,3,4 because Trellis header (4 B) and data block (16·b B) amortize anyway.
 
 ---
 
-## 2. Was würde `vtq1_3` kosten?
+## 2. What would `vtq1_3` cost?
 
-Wir müssten den Outlier-Mechanismus in den **PolarQuant-Pfad** (block_size 32) integrieren — der Roadmap-Hinweis war explizit, dass VTQ_1 nicht trellisbasiert ist und kein `start_state`-Feld kennt.
+We would need to integrate the outlier mechanism into the **PolarQuant path** (block_size 32) — the roadmap note was explicit that VTQ_1 is not Trellis-based and has no `start_state` field.
 
-Mögliche Layouts bei `QK_VTQ = 32`, `b = 1` und Outlier-Anzahl K:
+Possible layouts at `QK_VTQ = 32`, `b = 1`, and outlier count K:
 
-| K outliers | Layout | Größe | bpw | Vergleich |
+| K outliers | Layout | Size | bpw | Comparison |
 |---:|---|---:|---:|---|
-| 0 | `{d, qs[4]}` | 6 B | **1.50** | = `vtq1_1` (das ist es bereits) |
-| 1 | `{d, qs[4], pos[1], val[1]}` | 9 B | **2.25** | = `vtq2_2` (3.0 bpw avg in Code), aber 1 outlier dünn |
-| 2 | `{d, qs[4], pos[2], val[2]}` | 12 B | **3.00** | = `vtq2_3`, dominiert durch existierenden Type |
-| 4 | `{d, qs[4], pos[4], val[4]}` | 18 B | **4.50** | > `vtq3_3` (4.0 bpw), schlechter |
+| 0 | `{d, qs[4]}` | 6 B | **1.50** | = `vtq1_1` (already exists) |
+| 1 | `{d, qs[4], pos[1], val[1]}` | 9 B | **2.25** | ≈ `vtq2_2` (3.0 bpw avg in code), but 1 outlier is sparse |
+| 2 | `{d, qs[4], pos[2], val[2]}` | 12 B | **3.00** | = `vtq2_3`, dominated by existing type |
+| 4 | `{d, qs[4], pos[4], val[4]}` | 18 B | **4.50** | > `vtq3_3` (4.0 bpw), worse |
 
-Roadmap-Annahme war "1.81 bpw" — das hätte vorausgesetzt, dass Outlier-Overhead über 128 samples amortisiert (wie bei VTQ_3). Bei `QK_VTQ = 32` ist der Overhead 4× so dicht. Die zentrale Pareto-Lücken-Begründung kollabiert.
+The roadmap assumed "1.81 bpw" — that would have required outlier overhead to amortize over 128 samples (as it does for VTQ_3). At `QK_VTQ = 32` the overhead is 4× as dense. The central Pareto-gap rationale collapses.
 
 ---
 
-## 3. Drei Alternativen — alle verworfen
+## 3. Three alternatives — all rejected
 
-### 3.1 Mit 1 outlier (~2.25 bpw)
-Pareto-dominiert von `vtq2_2` (Trellis, 2.25 bpw, ~6× bessere rel-MSE wegen 2-bit + Trellis-Korrelation). Ein einzelner Outlier-Slot pro 32 samples kann den 1-bit-Codebook-Tail-Collapse nicht zuverlässig fangen — Wahrscheinlichkeit, dass der "echte" Maximum-|x|-Sample erfasst wird, ist etwa Top-1/32, aber 1-bit-Codebook scheitert typischerweise bei den top-3-bis-4 Samples.
+### 3.1 With 1 outlier (~2.25 bpw)
+Pareto-dominated by `vtq2_2` (Trellis, 2.25 bpw, ~6× better rel-MSE thanks to 2-bit + Trellis correlation). A single outlier slot per 32 samples cannot reliably catch the 1-bit-codebook tail-collapse — the probability that the "real" max-|x| sample is captured is roughly Top-1/32, but 1-bit codebooks typically fail on the top-3-to-4 samples.
 
-### 3.2 Mit 4 outliers @ QK_VTQ=32 (4.50 bpw)
-4 von 32 Samples = 12.5% sind keine Outlier mehr, das ist ein kompletter Codebook-Switch. Bei 4.50 bpw ist `vtq3_3` (4.00 bpw, Trellis + 4 outlier) strikt überlegen.
+### 3.2 With 4 outliers @ QK_VTQ=32 (4.50 bpw)
+4 of 32 samples = 12.5% are no longer outliers, which is a complete codebook switch. At 4.50 bpw `vtq3_3` (4.00 bpw, Trellis + 4 outliers) is strictly superior.
 
-### 3.3 Neuen Block-Typ `QK_VTQ_PQ_LARGE = 128` für `vtq1_3`
+### 3.3 New block type `QK_VTQ_PQ_LARGE = 128` for `vtq1_3`
 - Layout: `{ d (2B), qs[16], pos[4], val[8] }` = 30 B / 128 = **1.875 bpw** ✓ (matches roadmap target)
-- Aber: 1-bit PolarQuant über 128 samples mit nur **einer** scale `d`. Standard PolarQuant-Annahme (RHT-rotated → near-Gaussian) hält über 32 lanes; bei 128 lanes wird die per-block-Varianz signifikant. Die scale `d` müsste größer werden um Tail nicht zu clippen → mehr Mid-range-Quantisierungsfehler.
-- Encoder + Decoder + FA-Dispatch + KV-Cache-Sizing + Bench-Harness sind **kein** drop-in von VTQ_1. Es wäre eine eigene Familie, kein "_3"-Variant.
-- Zusätzlich: ohne Trellis ist 1-bit "_3" konzeptuell schwach — der größte Gewinn der `_3`-Familie auf VTQ_2/_3/_4 kam aus der Kombination Trellis-Korrelation + Tail-Handling. 1-bit Trellis wäre quasi greedy (zu wenig Info-per-Step).
+- But: 1-bit PolarQuant over 128 samples with only **one** scale `d`. The standard PolarQuant assumption (RHT-rotated → near-Gaussian) holds over 32 lanes; at 128 lanes per-block variance becomes significant. The scale `d` would need to grow to avoid clipping the tail → more mid-range quantization error.
+- Encoder + decoder + FA dispatch + KV-cache sizing + bench harness are **not** a drop-in extension of VTQ_1. It would be its own family, not a "_3" variant.
+- Plus: without Trellis, 1-bit "_3" is conceptually weak — the biggest win of the `_3` family on VTQ_2/3/4 came from the combination of Trellis correlation + tail handling. 1-bit Trellis would essentially be greedy (too little info per step).
 
 ---
 
-## 4. Was tatsächlich helfen würde
+## 4. What would actually help
 
-Der eigentliche Grund warum `vtq1_1` auf D=512 schwächelt ist nicht "fehlende Outlier-Slots", sondern **single-scale per block** + **kein Trellis-Kontext**. Die richtige Antwort ist eine der folgenden, alle außerhalb von Phase 3.5:
+The real reason `vtq1_1` struggles on D=512 is not "missing outlier slots" but **single-scale per block** + **no Trellis context**. The right answer is one of the following, all outside Phase 3.5:
 
-1. **Phase 7 (imatrix-aware calibration)** — model-specific Lloyd-Max-Codebook-Refit. Würde `vtq1_1` direkt verbessern bei +0 bpw cost.
-2. **Phase 5 (per-head adaptive bpw)** — high-variance heads bekommen `vtq2_3`, low-variance heads `vtq1_1`. Erreicht den gleichen "fülle die Pareto-Lücke"-Effekt auf System-Ebene.
-3. **VTQ_1 D=512 dedicated kernel** (im "Nicht-Pareto" tracker bereits) — das Problem ist das Kernel-Layout, nicht die Block-Encoding.
+1. **Phase 7 (imatrix-aware calibration)** — model-specific Lloyd-Max codebook refit. Would directly improve `vtq1_1` at +0 bpw cost.
+2. **Phase 5 (per-head adaptive bpw)** — high-variance heads get `vtq2_3`, low-variance heads `vtq1_1`. Achieves the same "fill the Pareto gap" effect at the system level.
+3. **VTQ_1 D=512 dedicated kernel** (already in the "non-Pareto" tracker) — the problem is the kernel layout, not the block encoding.
 
 ---
 
 ## 5. Decision
 
-**vtq1_3 wird nicht implementiert.** Phase 3.5 in der Roadmap auf "rejected, see this research doc" gesetzt.
+**vtq1_3 will not be implemented.** Phase 3.5 in the roadmap is set to "rejected, see this research doc".
 
-Begründung kompakt:
-- PolarQuant-Familie hat `QK_VTQ = 32` — Outlier-Overhead amortisiert nicht (analog zu KTQ_3 bei `QK_KTQ = 32`)
-- Mit ehrlichen 4 outliers landet das Layout bei 4.5 bpw (worse than `vtq3_3`)
-- Alternative mit größerem Block (1.875 bpw) verlässt die VTQ_1-Familie und ist 1-bit-PolarQuant über 128 samples — eigene Forschungsfrage, keine Phase-3.5-Erweiterung
-- Pareto-Lücke 1.06 → 3.00 bpw wird besser von Phase 5 (adaptive bpw) und Phase 7 (calibration) adressiert
+Rationale in short:
+- PolarQuant family has `QK_VTQ = 32` — outlier overhead does not amortize (analogous to KTQ_3 at `QK_KTQ = 32`)
+- With an honest 4 outliers the layout lands at 4.5 bpw (worse than `vtq3_3`)
+- The larger-block alternative (1.875 bpw) leaves the VTQ_1 family and becomes 1-bit PolarQuant over 128 samples — its own research question, not a Phase 3.5 extension
+- The 1.06 → 3.00 bpw Pareto gap is better addressed by Phase 5 (adaptive bpw) and Phase 7 (calibration)
 
-Pattern matches KTQ_3-Rejection (`docs/plans/2026-04-25-ktq3-research.md`): kleine Block-Größen + Outlier-Overhead funktioniert nicht. Die "_3"-Generation ist auf Trellis-Block-Größen beschränkt.
+Pattern matches the KTQ_3 rejection (`docs/plans/2026-04-25-ktq3-research.md`): small block sizes + outlier overhead does not work. The "_3" generation is restricted to Trellis block sizes.
