@@ -671,6 +671,22 @@ llama_model::~llama_model() {
     for (auto * lora : loras) {
         delete lora;
     }
+
+    // Unpin any host ranges registered via --moe-pin-experts. Safe no-op if
+    // CUDA backend wasn't loaded or no ranges were pinned for this model.
+    // NOTE: ggml_cuda_unpin_all() is process-wide; calling it on every model
+    // destroy is benign but means a multi-model process unpins all on first
+    // teardown. For Phase A (single-model server) this is acceptable.
+    if (params.moe_pin_experts) {
+        ggml_backend_reg_t cuda_reg = ggml_backend_reg_by_name("CUDA");
+        if (cuda_reg != nullptr) {
+            using unpin_fn_t = void (*)(void);
+            auto unpin_fn = (unpin_fn_t) ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_unpin_all");
+            if (unpin_fn != nullptr) {
+                unpin_fn();
+            }
+        }
+    }
 }
 
 void llama_model::load_stats(llama_model_loader & ml) {
@@ -8250,6 +8266,55 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    // Optional: pin MoE expert weight pages as CUDA host memory for async
+    // PCIe DMA. Best-effort — registration failures are logged and ignored.
+    // See: docs/plans/2026-04-28-two-tier-expert-cache.md (Phase A, Option C).
+    if (params.moe_pin_experts) {
+        ggml_backend_reg_t cuda_reg = ggml_backend_reg_by_name("CUDA");
+        if (cuda_reg == nullptr) {
+            LLAMA_LOG_WARN("%s: --moe-pin-experts requested but CUDA backend not available — skipping\n", __func__);
+        } else {
+            using pin_fn_t = int (*)(void *, size_t);
+            auto pin_fn = (pin_fn_t) ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_pin_host_range");
+            if (pin_fn == nullptr) {
+                LLAMA_LOG_WARN("%s: --moe-pin-experts requested but CUDA backend does not expose ggml_cuda_pin_host_range — skipping\n", __func__);
+            } else {
+                size_t total_bytes = 0;
+                size_t total_count = 0;
+                size_t fail_count  = 0;
+                for (const auto & nt : tensors_by_name) {
+                    const std::string & tname = nt.first;
+                    ggml_tensor *       cur   = nt.second;
+                    if (cur == nullptr || cur->buffer == nullptr || cur->data == nullptr) {
+                        continue;
+                    }
+                    // Match `*ffn_(gate|up|down)_exps.weight` (covers all MoE exp weights).
+                    const bool is_exps =
+                        (tname.find("ffn_gate_exps.weight") != std::string::npos) ||
+                        (tname.find("ffn_up_exps.weight")   != std::string::npos) ||
+                        (tname.find("ffn_down_exps.weight") != std::string::npos);
+                    if (!is_exps) {
+                        continue;
+                    }
+                    if (!ggml_backend_buffer_is_host(cur->buffer)) {
+                        continue;  // already on GPU — nothing to pin
+                    }
+                    const size_t nbytes = ggml_nbytes(cur);
+                    if (pin_fn(cur->data, nbytes) == 0) {
+                        total_bytes += nbytes;
+                        total_count += 1;
+                    } else {
+                        fail_count += 1;
+                    }
+                }
+                LLAMA_LOG_INFO("%s: --moe-pin-experts: pinned %zu MoE expert tensors (%.2f MiB total)%s\n",
+                               __func__, total_count,
+                               (double) total_bytes / (1024.0 * 1024.0),
+                               fail_count ? " — some registrations failed (see warnings above)" : "");
+            }
+        }
+    }
+
     return true;
 }
 
@@ -9327,6 +9392,7 @@ llama_model_params llama_model_default_params() {
         /*.use_extra_bufts             =*/ true,
         /*.no_host                     =*/ false,
         /*.no_alloc                    =*/ false,
+        /*.moe_pin_experts             =*/ false,
     };
 
     return result;
