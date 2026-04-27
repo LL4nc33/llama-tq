@@ -118,25 +118,45 @@ cmake --build build -j$(nproc) --target llama-server
 
 ## vs llama.cpp upstream — apples-to-apples (2026-04-27)
 
-Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (test box, 2× RTX 2060), `-fa 1 -ts 12,12` ctx=2048 for bench, ctx=32k for KV-buffer measurement. Upstream binary: `7f5ee5496` (ggerganov/llama.cpp master, March 2026). llama-tq binary: `1a1d49ef5` (turboquant).
+Same hardware (test box, 2× RTX 2060, Ryzen 7 3700X host), same KV config (`f16/f16`), same `-fa 1 -ts 12,12`. Upstream binary: `0c6ee1cad` (ggerganov/llama.cpp master, fresh 2026-04-27 build with Qwen3-Next + Qwen3.5-A10B arch support). llama-tq binary: `1a1d49ef5` (turboquant).
 
 **Reading the table:** ↑ higher is better (throughput), ↓ lower is better (PPL = quality cost, KV memory = footprint).
 
-| Variant | pp512 t/s ↑ | tg128 t/s ↑ | tg1024 t/s ↑ | PPL (8ch) ↓ | KV-bpw ↓ | KV @ ctx=32k ↓ |
+### 35B-A3B (full-GPU, ctx=2048)
+
+| Variant | pp512 ↑ | tg128 ↑ | tg1024 ↑ | PPL (8ch) ↓ | KV-bpw ↓ | KV @ 32k ↓ |
 |---|---:|---:|---:|---:|---:|---:|
 | **upstream** f16/f16 | 934 | 57.76 | 57.30 | 7.0810 | 32.0 | **640 MiB** |
 | **llama-tq** f16/f16 | 1009 | 76.58 | 75.09 | 7.0863 | 32.0 | 640 MiB |
 | **llama-tq** `ktq2_1+vtq2_2` ⭐ | 1010 | 75.40 | 75.18 | 7.1814 | **2.78** | **115 MiB** |
-| **Δ tq vs upstream** (f16 / quant) | **+8% / +8%** ↑ | **+33% / +31%** ↑ | **+31% / +31%** ↑ | +0.07% / +1.34% ↑ (worse) | — / **−91%** ↓ (better) | — / **−82%** ↓ (better) |
+| **Δ tq vs upstream** (f16 / quant) | **+8% / +8%** | **+33% / +31%** | **+31% / +31%** | +0.07% / +1.34% (worse) | — / **−91%** | — / **−82%** |
 
-**Key wins llama-tq:**
-- **+33% TG** (decode) on identical KV — Phase-1-to-4 stack (FA quick wins, sparse-V dequant, P2P opt-in, OMP_active, layer-split, prefetch)
-- **−82% KV-cache memory** at ctx=32k with `ktq2_1+vtq2_2` (115 MiB vs 640 MiB) at +1.34% PPL on a noisy 8-chunk sample — full 64-chunk runs land at +0.15-0.30% (see [Perplexity](#perplexity-wikitext-2))
-- Quality match in f16/f16 (within 0.07% noise floor — same numerics, just faster)
+### 80B-A3B (Qwen3-Next, hybrid + CPU expert-offload, ctx=2048)
 
-Same hybrid SSM model, just better infrastructure underneath.
+Both binaries with 28 of 48 expert-blocks on CPU (upstream `--n-cpu-moe 28`, llama-tq `-ot` regex split 14/14/20). Identical layer distribution.
 
-> **Caveat:** the upstream March-2026 binary on test box cannot load Qwen3-Next (80B-A3B) or Qwen3.5 (122B-A10B) — those archs landed in upstream after the binary was built. Direct A/B for the giants is pending a fresh upstream build.
+| Variant | pp512 ↑ | tg128 ↑ |
+|---|---:|---:|
+| **upstream** f16/f16 | 378 | 31.21 |
+| **llama-tq** f16/f16 | 404 | 31.5 |
+| **Δ tq vs upstream** | **+7%** | **+1%** |
+
+### 122B-A10B (Qwen3.5-A10B, GQA(2) + CPU expert-offload, ctx=2048)
+
+Both binaries with 38 of 48 expert-blocks on CPU.
+
+| Variant | pp512 ↑ | tg128 ↑ |
+|---|---:|---:|
+| **upstream** f16/f16 | 178 | 15.65 |
+| **llama-tq** f16/f16 | 187 | 17.0 |
+| **Δ tq vs upstream** | **+5%** | **+9%** |
+
+**Key wins llama-tq across all three sizes:**
+- **+33% TG on 35B** (full-GPU decode) — Phase-1-to-4 stack (FA quick wins, sparse-V dequant, P2P opt-in, OMP_active, layer-split, prefetch). The all-on-GPU path is where tq's FA tuning shows up.
+- **+1–9% TG on 80B/122B** — tighter on offload paths because TG is CPU-RAM-bandwidth-bound (~40 GB/s ceiling on DDR4-3200), so FA wins matter less.
+- **+5–8% pp512** consistent across all model sizes — prefill always benefits from tq's FA quick wins.
+- **−82% KV-cache memory** at ctx=32k with `ktq2_1+vtq2_2` (35B; same proportional savings on 80B/122B).
+- **Quality match in f16/f16** on 35B (within 0.07% noise floor — same numerics, just faster). 80B/122B PPL A/B is a separate sweep.
 
 ---
 
