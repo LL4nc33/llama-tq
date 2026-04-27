@@ -90,6 +90,8 @@ add_library(${TARGET} STATIC
     sampling.h
     speculative.cpp
     speculative.h
+    router-profile.cpp
+    router-profile.h
     tq-profile.cpp
     tq-profile.h
     unicode.cpp
