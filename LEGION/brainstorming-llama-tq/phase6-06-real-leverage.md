@@ -39,6 +39,29 @@ Cross-layer prefetch hint: **dead.** Each layer has its own private hot set.
 
 ## Three Viable Levers
 
+## Updated 2026-04-27 — Bigger Calibration Run
+
+After implementing Phase 6f-1 (top-k expert IDs in profiler), re-ran on
+Qwen3.6-35B-A3B over 256 tokens × 40 layers (10240 records):
+
+- **Mean top-20 dispatch share: 61.1%** (was 45.5% on 64-token sample)
+- Per-layer min: 28.9% (layer 1, near-uniform early layer)
+- Per-layer max: **83.6% (layer 20)** — extreme concentration
+- Mid-layers (layers 8-21) consistently >70% top-20 share
+
+This is **stronger than the original Lever A projection.** Bandwidth math
+revisited:
+
+- Top-20 hit rate ~0.61 (mean) → effective BW = 0.61 × 600 + 0.39 × 40 = **~382 GB/s**
+- vs current 40 GB/s = **9.5× ceiling**
+- Mid-layer hit rate ~0.80 → effective BW = **~488 GB/s** for the busiest layers
+
+**Confidence in +30-50% TG win has increased.** Profile-collected
+`expert-hotness.json` for 35B persisted at `/tmp/expert-hotness-35b.json`
+on dev box.
+
+---
+
 ### Lever A: Per-layer hot-expert L3 pinning (recommended)
 
 **What:** For each MoE layer, identify the top-20 hot experts offline. At
