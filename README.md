@@ -240,22 +240,23 @@ The 20B/26B/35B/80B-TQ1_0 fit fully on GPU. The 80B-IQ2 and 122B spill 20/29 lay
 
 ### gpt-oss-20b — small-MoE F16 native (2026-04-27)
 
-OpenAI's `gpt-oss-20b` ships in **native MXFP4** for expert FFN tensors, so the F16 GGUF (12.85 GB) is barely larger than Q2_K (10.7 GB). Fits fully on a single dual-2060 box with **8 GB VRAM headroom** at ctx=65k. **head_dim=64** (the smallest in our matrix); originally hit the upstream `head_dim % blck_size` check (false-positive for VTQ_2 since it quantizes along the sequence axis, not along D) — fixed in commit `c818f6c84`.
+OpenAI's `gpt-oss-20b` ships in **native MXFP4** for expert FFN tensors, so the F16 GGUF (12.85 GB) is barely larger than Q2_K (10.7 GB). 24 layers, 8 KV heads, **head_dim=64** (the smallest in our matrix). Fits fully on a single dual-2060 box at the model's full **262k native context** with **4 parallel slots** (4× 65k). Originally hit the upstream `head_dim % blck_size` check (false-positive for VTQ_2 since it quantizes along the sequence axis, not along D) — fixed in commit `c818f6c84`.
 
 ```bash
 ./build/bin/llama-server -m gpt-oss-20b-F16.gguf \
-    --host 0.0.0.0 --port 8791 -c 65536 -ngl 99 -ts 12,12 -fa on \
+    --host 0.0.0.0 --port 8791 -c 262144 -ngl 99 -ts 12,12 -fa on \
     --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
-    --parallel 1 --jinja --reasoning off
+    --parallel 4 --jinja --reasoning off
 ```
 
-| Config | bpw KV | pp t/s ↑ | tg t/s ↑ | VRAM (ctx=65k) |
-|---|---:|---:|---:|---:|
-| `f16 / f16` | 16.0 | 92 | 62.4 | ~14 GB |
-| `ktq2_1 / vtq2_1` | 3.0 | 110 | 61.2 | ~14 GB |
-| **`ktq2_1 / vtq2_2`** ⭐ | **2.78** | **114** | **61.1** | **~16 GB** |
+| Config | bpw KV | pp t/s ↑ | tg t/s ↑ | VRAM | ctx total / per-slot |
+|---|---:|---:|---:|---:|---:|
+| `f16 / f16` parallel=1 | 16.0 | 92 | 62.4 | ~14 GB | 65k / 65k |
+| `ktq2_1 / vtq2_1` parallel=1 | 3.0 | 110 | 61.2 | ~14 GB | 65k / 65k |
+| `ktq2_1 / vtq2_2` parallel=1 | 2.78 | 114 | 61.1 | ~16 GB | 65k / 65k |
+| **`ktq2_1 / vtq2_2`** parallel=4 ⭐ | **2.78** | **113** | **61.3** | **21.5 GB** | **262k / 65k** |
 
-VTQ_2 wins PP without measurable TG cost. With 8 GB VRAM free at ctx=65k there's plenty of room for ctx>200k or `--parallel 4` slots.
+The full 262k native context window with **four concurrent 65k slots** at f16-equivalent quality and ~61 t/s per slot — the entire `gpt-oss-20b` parallel server fits in 24 GB total VRAM with 2.1 GB to spare.
 
 ### Gemma4-26B-A4B — fast quality model
 
