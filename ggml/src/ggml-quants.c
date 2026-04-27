@@ -5556,6 +5556,168 @@ static void kktq_fwht(float * data, int n) {
     for (int i = 0; i < n; i++) data[i] *= scale;
 }
 
+#if defined(__AVX2__)
+// AVX2 FWHT-32 + sign-flip + scale fused kernel.
+//
+// Layout: 32 floats live in 4 YMM registers (a,b,c,d), 8 lanes each.
+// 5 stages of butterflies (log2(32)=5):
+//   stage 0..2: within-YMM butterflies (stride 1, 2, 4)
+//   stage 3:    cross-YMM (a<->b, c<->d)
+//   stage 4:    cross-pair ((a,b) <-> (c,d))
+// Then: multiply by 1/sqrt(32), apply per-element sign from sb[4].
+//
+// Replaces the scalar 5-stage loop (~160 add/sub) with ~24 vector add/sub +
+// 3 within-YMM permutes + 3 blends = ~30 vector ops on 4 YMMs.
+//
+// Bit-exact equivalent to the scalar path: FWHT is a pure add/sub network
+// (no fused-multiply, no reordering of fp adds within a butterfly), so any
+// IEEE-754 compliant SIMD impl produces the identical bit pattern.
+static inline void kktq_fwht32_sb_avx2(const float * GGML_RESTRICT y,
+                                       float * GGML_RESTRICT x,
+                                       const uint8_t * GGML_RESTRICT sb) {
+    __m256 a = _mm256_loadu_ps(y +  0);
+    __m256 b = _mm256_loadu_ps(y +  8);
+    __m256 c = _mm256_loadu_ps(y + 16);
+    __m256 d = _mm256_loadu_ps(y + 24);
+
+    // ---- Stage 0: stride 1 (within YMM, swap adjacent pairs) ----
+    // shuffle imm 0xB1 = _MM_SHUFFLE(2,3,0,1) → [a1,a0,a3,a2,a5,a4,a7,a6]
+    {
+        __m256 ta = _mm256_shuffle_ps(a, a, 0xB1);
+        __m256 tb = _mm256_shuffle_ps(b, b, 0xB1);
+        __m256 tc = _mm256_shuffle_ps(c, c, 0xB1);
+        __m256 td = _mm256_shuffle_ps(d, d, 0xB1);
+        // We want even-lane = u+v, odd-lane = u-v (where u=lane[2k], v=lane[2k+1])
+        // sum (a + ta) = [a0+a1, a1+a0, a2+a3, ...] → even lanes correct (u+v)
+        // dif (a - ta) = [a0-a1, a1-a0, a2-a3, ...] → even lanes give u-v
+        // Need: result = blend(sum, dif): even from sum, odd from dif → wrong direction.
+        // Actually: even lane of sum is u+v ✓; odd lane of dif (a-ta)[2k+1] = a[2k+1]-a[2k] = v-u = -(u-v) ✗
+        // Instead: even lane from sum, odd lane from -dif. Easier: swap dif input order.
+        // dif2 = ta - a → even lane = a[2k+1]-a[2k] = v-u (wrong for even u+v),
+        //                 odd lane = a[2k]-a[2k+1] = u-v ✓
+        // So: blend even from sum, odd from (ta-a)
+        __m256 sum_a = _mm256_add_ps(a, ta);
+        __m256 sum_b = _mm256_add_ps(b, tb);
+        __m256 sum_c = _mm256_add_ps(c, tc);
+        __m256 sum_d = _mm256_add_ps(d, td);
+        __m256 dif_a = _mm256_sub_ps(ta, a);
+        __m256 dif_b = _mm256_sub_ps(tb, b);
+        __m256 dif_c = _mm256_sub_ps(tc, c);
+        __m256 dif_d = _mm256_sub_ps(td, d);
+        // 0xAA = 0b10101010 → odd lanes (1,3,5,7) from dif, even from sum
+        a = _mm256_blend_ps(sum_a, dif_a, 0xAA);
+        b = _mm256_blend_ps(sum_b, dif_b, 0xAA);
+        c = _mm256_blend_ps(sum_c, dif_c, 0xAA);
+        d = _mm256_blend_ps(sum_d, dif_d, 0xAA);
+    }
+
+    // ---- Stage 1: stride 2 (swap pairs of pairs within YMM) ----
+    // shuffle imm 0x4E = _MM_SHUFFLE(1,0,3,2) → [a2,a3,a0,a1,a6,a7,a4,a5]
+    // Now u=lane[4k..4k+1], v=lane[4k+2..4k+3]; want u_i+v_i in low half, u_i-v_i in high half.
+    {
+        __m256 ta = _mm256_shuffle_ps(a, a, 0x4E);
+        __m256 tb = _mm256_shuffle_ps(b, b, 0x4E);
+        __m256 tc = _mm256_shuffle_ps(c, c, 0x4E);
+        __m256 td = _mm256_shuffle_ps(d, d, 0x4E);
+        // Lane 0,1 of sum (a+ta) = a[0]+a[2], a[1]+a[3] = u+v ✓
+        // Lane 2,3 of dif (ta-a) = a[0]-a[2], a[1]-a[3] = u-v ✓ (since ta[2,3]=a[0,1], a[2,3]=a[2,3])
+        __m256 sum_a = _mm256_add_ps(a, ta);
+        __m256 sum_b = _mm256_add_ps(b, tb);
+        __m256 sum_c = _mm256_add_ps(c, tc);
+        __m256 sum_d = _mm256_add_ps(d, td);
+        __m256 dif_a = _mm256_sub_ps(ta, a);
+        __m256 dif_b = _mm256_sub_ps(tb, b);
+        __m256 dif_c = _mm256_sub_ps(tc, c);
+        __m256 dif_d = _mm256_sub_ps(td, d);
+        // 0xCC = 0b11001100 → lanes 2,3,6,7 from dif (high pair of each 4-group)
+        a = _mm256_blend_ps(sum_a, dif_a, 0xCC);
+        b = _mm256_blend_ps(sum_b, dif_b, 0xCC);
+        c = _mm256_blend_ps(sum_c, dif_c, 0xCC);
+        d = _mm256_blend_ps(sum_d, dif_d, 0xCC);
+    }
+
+    // ---- Stage 2: stride 4 (swap halves of each YMM) ----
+    {
+        __m256 ta = _mm256_permute2f128_ps(a, a, 0x01);
+        __m256 tb = _mm256_permute2f128_ps(b, b, 0x01);
+        __m256 tc = _mm256_permute2f128_ps(c, c, 0x01);
+        __m256 td = _mm256_permute2f128_ps(d, d, 0x01);
+        // Lane 0..3 of sum = u+v; lane 4..7 of dif (ta-a) = a[0..3]-a[4..7] = u-v ✓
+        __m256 sum_a = _mm256_add_ps(a, ta);
+        __m256 sum_b = _mm256_add_ps(b, tb);
+        __m256 sum_c = _mm256_add_ps(c, tc);
+        __m256 sum_d = _mm256_add_ps(d, td);
+        __m256 dif_a = _mm256_sub_ps(ta, a);
+        __m256 dif_b = _mm256_sub_ps(tb, b);
+        __m256 dif_c = _mm256_sub_ps(tc, c);
+        __m256 dif_d = _mm256_sub_ps(td, d);
+        // 0xF0 = 0b11110000 → upper half (lanes 4..7) from dif
+        a = _mm256_blend_ps(sum_a, dif_a, 0xF0);
+        b = _mm256_blend_ps(sum_b, dif_b, 0xF0);
+        c = _mm256_blend_ps(sum_c, dif_c, 0xF0);
+        d = _mm256_blend_ps(sum_d, dif_d, 0xF0);
+    }
+
+    // ---- Stage 3: stride 8 (cross-YMM, a<->b, c<->d) ----
+    {
+        __m256 na = _mm256_add_ps(a, b);
+        __m256 nb = _mm256_sub_ps(a, b);
+        __m256 nc = _mm256_add_ps(c, d);
+        __m256 nd = _mm256_sub_ps(c, d);
+        a = na; b = nb; c = nc; d = nd;
+    }
+
+    // ---- Stage 4: stride 16 ((a,b) <-> (c,d)) ----
+    {
+        __m256 fa = _mm256_add_ps(a, c);
+        __m256 fc = _mm256_sub_ps(a, c);
+        __m256 fb = _mm256_add_ps(b, d);
+        __m256 fd = _mm256_sub_ps(b, d);
+        a = fa; b = fb; c = fc; d = fd;
+    }
+
+    // ---- Scale by 1/sqrt(32) ----
+    const __m256 scale = _mm256_set1_ps(0.17677669529663687f); // 1.0f / sqrtf(32.0f)
+    a = _mm256_mul_ps(a, scale);
+    b = _mm256_mul_ps(b, scale);
+    c = _mm256_mul_ps(c, scale);
+    d = _mm256_mul_ps(d, scale);
+
+    // ---- Apply sign bits from sb[4] ----
+    // Scalar path: sign = ((sb[i/8] >> (i%8)) & 1) ? +1 : -1.
+    // Build per-byte sign mask in fp32: for each of 4 bytes (8 lanes), expand
+    // bit b → (b ? 0x00000000 : 0x80000000) in the sign field, then XOR with value.
+    //
+    // Use a 256-bit broadcasted byte-bit-test. The trick: load byte b,
+    // broadcast to 8 lanes of 32-bit ints, AND with [1,2,4,8,16,32,64,128],
+    // compare-equal to that same mask → all-ones where bit set. Negate mask
+    // so all-ones means "bit clear" → use XOR with 0x80000000 sign flip there.
+    const __m256i bit_lut = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
+    const __m256i sign32  = _mm256_set1_epi32((int)0x80000000);
+
+    // Per-YMM sign mask: where bit==0 in sb, lane has 0x80000000 (flip), else 0.
+    #define KTQ_AVX2_SIGN(_byte, _vec) \
+        do { \
+            __m256i sb_v = _mm256_set1_epi32((int)(uint32_t)(_byte)); \
+            __m256i bit  = _mm256_and_si256(sb_v, bit_lut); \
+            __m256i is_set = _mm256_cmpeq_epi32(bit, bit_lut); /* all-ones if bit set */ \
+            __m256i flip   = _mm256_andnot_si256(is_set, sign32); /* sign-flip mask where bit=0 */ \
+            (_vec) = _mm256_xor_ps((_vec), _mm256_castsi256_ps(flip)); \
+        } while (0)
+
+    KTQ_AVX2_SIGN(sb[0], a);
+    KTQ_AVX2_SIGN(sb[1], b);
+    KTQ_AVX2_SIGN(sb[2], c);
+    KTQ_AVX2_SIGN(sb[3], d);
+    #undef KTQ_AVX2_SIGN
+
+    _mm256_storeu_ps(x +  0, a);
+    _mm256_storeu_ps(x +  8, b);
+    _mm256_storeu_ps(x + 16, c);
+    _mm256_storeu_ps(x + 24, d);
+}
+#endif // __AVX2__
+
 static void kktq_rht_forward(const float * x, float * y, int n, uint16_t seed) {
     float signs[QK_KTQ];
     tq_random_signs(seed, signs, n);
@@ -5572,6 +5734,14 @@ static void kktq_rht_inverse(const float * y, float * x, int n, uint16_t seed) {
 }
 
 static void kktq_rht_inverse_sb(const float * y, float * x, int n, const uint8_t * sb) {
+#if defined(__AVX2__)
+    // Fast path for the only block size used by KTQ (QK_KTQ=32).
+    // Bit-exact equivalent to the scalar code below.
+    if (n == 32) {
+        kktq_fwht32_sb_avx2(y, x, sb);
+        return;
+    }
+#endif
     for (int i = 0; i < n; i++) x[i] = y[i];
     kktq_fwht(x, n);
     for (int i = 0; i < n; i++) {
