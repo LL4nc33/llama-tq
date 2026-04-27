@@ -214,7 +214,7 @@ Same model (Qwen3.6-35B-A3B-UD-IQ2_XXS), same hardware (test box, 2× RTX 2060),
 
 Same hybrid SSM model, just better infrastructure underneath.
 
-> **Caveat:** the upstream March-2026 binary on test box cannot load Qwen3-Next (80B-A3B) or Qwen3.5 (122B-A10B) — those archs landed in upstream after the binary was built. A fresh upstream build for the giant-model A/B is on the morning of 2026-04-27 sweep list.
+> **Caveat:** the upstream March-2026 binary on test box cannot load Qwen3-Next (80B-A3B) or Qwen3.5 (122B-A10B) — those archs landed in upstream after the binary was built. Direct A/B for the giants is pending a fresh upstream build.
 
 ### Gemma4-26B-A4B — fast quality model
 
@@ -260,7 +260,24 @@ Full K × V sweep in the [Benchmarks](#benchmarks) section.
 
 ### 80B-A3B — Qwen3-Next hybrid (DeltaNet + Attention)
 
-Hybrid architecture, **512 experts / 10 active**. 80B params, ~25 GB at UD-IQ2\_XXS. 14 expert-layers per GPU, 20 offloaded to CPU RAM. Usable at 200k ctx with parallel=1.
+Hybrid architecture, **512 experts / 10 active**. Two deploy tiers:
+
+#### Tier 1 (current default) — TQ1_0 full-VRAM ⭐
+
+Unsloth's `UD-TQ1_0` (1-bit dynamic Trellis) is **19.3 GB instead of 26.2 GB**, so both GPUs hold full model + KV — no CPU expert-offload. Live since 2026-04-27 on test box. Deploy script: `oidanice-distillery/scripts/deploy/deploy-80b-tq1.sh`.
+
+```bash
+./build/bin/llama-server -m Qwen3-Next-80B-A3B-Instruct-UD-TQ1_0.gguf \
+    --host 0.0.0.0 --port 8791 -c 65536 -ngl 99 -ts 12,12 -fa on \
+    --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
+    --parallel 1 --jinja --reasoning off
+```
+
+Max ctx full-VRAM = 65k (KV ~1.86 GB, GPU1 has ~100 MB headroom idle). 80k+ OOM on FA compute buffer.
+
+#### Tier 2 (fallback for ctx > 65k) — IQ2_XXS with CPU expert-offload
+
+80B params, ~26 GB at UD-IQ2\_XXS. 14 expert-layers per GPU, 20 offloaded to CPU RAM. Usable at 200k ctx with parallel=1.
 
 ```bash
 ./build/bin/llama-server -m Qwen3-Next-80B-A3B-Instruct-UD-IQ2_XXS.gguf \
@@ -273,27 +290,20 @@ blk\.(2[89]|3[0-9]|4[0-7])\.ffn_(up|down|gate)_exps\.=CPU" \
     --jinja --reasoning off
 ```
 
-Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
+#### Comparison table
 
-| Config | bpw KV | pp512 | tg128 | PPL | Δ PPL vs f16 |
-|---|---:|---:|---:|---:|---:|
-| `f16 / f16` | 16.0 | 404.4 | 31.5 | 5.0846 | baseline |
-| `ktq2_1 / vtq2_1` (old prod) | 3.0 | 386.5 | 30.6 | 5.2213 | **+2.69%** |
-| **`ktq2_1 / vtq2_2`** (new prod) ⭐ | **2.78** | **402.6** | **30.9** | **5.0817** | **−0.06%** |
+Measured 2026-04-25 / -27 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
 
-Physics ceiling: 40 GB/s DDR4 / ~0.75 GB per-token CPU traffic → ~53 t/s hard limit. Phase-4 stack lifted current to ~36.5 t/s (69% of ceiling) via OMP_active + adaptive layer-split + prefetch.
+| Config | bpw KV | model size | pp512 | tg128 | PPL | Δ PPL | Notes |
+|---|---:|---:|---:|---:|---:|---:|---|
+| 80B-IQ2_XXS `f16/f16` (CPU offload) | 16.0 | 26.2 GB | 404 | 31.5 | 5.085 | baseline | reference |
+| 80B-IQ2_XXS `ktq2_1/vtq2_1` (old prod) | 3.0 | 26.2 GB | 386 | 30.6 | 5.221 | +2.69% | replaced 2026-04-25 |
+| 80B-IQ2_XXS `ktq2_1/vtq2_2` (long-ctx fallback) | 2.78 | 26.2 GB | 403 | 30.9 | 5.082 | **−0.06%** | for ctx > 65k |
+| **80B-TQ1_0 `ktq2_1/vtq2_2`** (current default) ⭐ | **2.78** | **19.3 GB** | **653** | **57.0** | 7.039 | weight-quant tier | **+85% TG vs offload** |
 
-#### 80B-TQ1_0 — full-VRAM unicorn tier (2026-04-26)
+The +85% TG jump on TQ1_0 is from killing PCIe-x4 expert streaming. Quality cost: TQ1_0 is more aggressive than IQ2_XXS at the *weight* level (PPL 7.04 vs 5.08), but for short-to-medium context it's the tier where 80B fits a dual-2060 box without thrashing PCIe.
 
-Unsloth ships a `UD-TQ1_0` (1-bit dynamic Trellis) variant that's **19.3 GB instead of 26.2 GB**. That eliminates CPU expert-offload entirely → both GPUs hold full model + KV. Deploy script: `oidanice-distillery/scripts/deploy/deploy-80b-tq1.sh`.
-
-| Config | bpw KV | model size | pp512 | tg128 | PPL (8ch) | Notes |
-|---|---:|---:|---:|---:|---:|---|
-| 80B-IQ2_XXS f16/f16 (CPU offload) | 16.0 | 26.2 GB | 404 | 31.5 | 5.085 | baseline |
-| 80B-IQ2_XXS ktq2_1+vtq2_2 (CPU offload) | 2.78 | 26.2 GB | 403 | 30.9 | 5.082 | prev prod |
-| **80B-TQ1_0 ktq2_1+vtq2_2 (full-VRAM)** ⭐ | **2.78** | **19.3 GB** | **653** | **57.0** | **7.039** | **+85% TG vs CPU offload** |
-
-The +85% TG jump is from killing PCIe-x4 streaming (no CPU experts → no per-token transfer). Quality cost: TQ1_0 is more aggressive than IQ2_XXS (PPL 7.04 vs 5.08), but at 1.75–2.0 bpw model-side it's the tier where 80B fits a single dual-2060 box without thrashing PCIe.
+Physics ceiling for IQ2_XXS offload tier: 40 GB/s DDR4 / ~0.75 GB per-token CPU traffic → ~53 t/s hard limit. Phase-4 stack lifted current to ~36.5 t/s (69% of ceiling) via OMP_active + adaptive layer-split + prefetch. TQ1_0 full-VRAM is bandwidth-unbound by comparison.
 
 ### 122B-A10B — largest that fits
 
@@ -573,7 +583,16 @@ For llama-server use the existing `--tq-v-override` flag.
 
 ## Perplexity (wikitext-2)
 
-PPL is sensitive to weight quant. Numbers below use the **2026-04-24 matrix sweep methodology**: 2048 ctx, 5 chunks unless stated otherwise. This is the methodology the score table at the top of the README uses.
+> **Why you'll see different PPL deltas across this README.** PPL is sensitive to (a) weight quant, (b) ctx length, (c) chunk count, (d) batch size (`-b 1 -ub 1` exercises deferred-V; larger batches measure f16 staging instead).
+>
+> Three measurement regimes appear:
+> - **64-chunk ctx=512** (matrix sweep, full attn-only PPL) — the headline `+0.15%` for `ktq2_1+vtq2_2` lives here. Used in TL;DR.
+> - **8-chunk ctx=512** (apples-to-apples vs upstream, noisier sample) — `+1.34%`. Used only in [vs upstream table](#vs-llamacpp-upstream--apples-to-apples-2026-04-27).
+> - **4-chunk ctx=512 `-b 1 -ub 1`** (prod-aligned, exercises VTQ_2 deferred path) — `+0.85%` on 35B, `−0.06%` on 80B, `−0.63%` on 122B. Used in per-model deploy tables.
+>
+> The numbers are not contradictory — they're different sample sizes / different decode paths. 64-chunk is the cleanest noise floor; 4-chunk `-b 1 -ub 1` is what the deployed config actually does.
+
+Numbers below use the **2026-04-24 matrix sweep methodology**: 2048 ctx, 5 chunks unless stated otherwise.
 
 ### Qwen3.6-35B-A3B (UD-IQ2\_XXS) — 2048 ctx, 5 chunks (preferred methodology)
 
@@ -612,7 +631,7 @@ From `docs/blog/2026-04-19-v-cache-validation.md`, `tests/trellis-phase1/results
 | **vtq3\_2** | 3.06 | 15.76 | **+1.05%** |
 | **vtq4\_2** | 4.06 | 15.67 | **+0.44%** |
 
-**Why 2-bit is stuck at ~7%:** 4-state codebook hits an entropy floor for Gaussian/Laplace V entries. Paths to sub-2% at 2 bits on the roadmap: outlier-channel split (v6 VTQ\_OUT, designed) + correction overlay buffer (Trick 4, designed). Neither shipped yet.
+**Why 2-bit is stuck at ~7%:** 4-state codebook hits an entropy floor for Gaussian/Laplace V entries. The outlier-channel-split sidecar (VTQ_3 family — `vtq2_3 / 3_3 / 4_3`) recovers most of this gap at +1 bpw avg and is shipped — see [V-cache v3](#v-cache-v3--trellis--outlier-channel-split-research-quality-tier).
 
 ### Decode throughput (tg256, 35B-A3B IQ2_XXS, measured 2026-04-24)
 
@@ -661,7 +680,7 @@ Measured on Qwen3.6-35B-A3B-UD-IQ2_XXS at ctx=8192 (10 attention layers out of 4
 | ktq4_1 / vtq4_1 | 27.5 / 22.5  | 5.5 / 4.5 |
 | vtq2_2 / vtq3_2 / vtq4_2 | 11.25 / 16.25 / 21.25 | 2.25 / 3.25 / 4.25 |
 
-**Smallest usable:** `ktq1_1 / vtq1_1` at **20 MiB total (13% of f16/f16, 8× smaller)** — but vtq1_1 costs +16% PPL, not practical. **Smallest PPL-sensible:** `ktq1_1 / vtq2_2` at 23.75 MiB (15%, 6.7× smaller). For large contexts the absolute savings matter more — at 200k ctx on the Qwen3.5-122B-A10B GQA(2) config, `ktq2_1 / vtq2_1` is ~450 MB total vs ~2.3 GB at f16/f16.
+**Smallest usable:** `ktq1_1 / vtq1_1` at **20 MiB total (13% of f16/f16, 8× smaller)** — but vtq1_1 costs +16% PPL, not practical. **Smallest PPL-sensible:** `ktq1_1 / vtq2_2` at 23.75 MiB (15%, 6.7× smaller). For large contexts the absolute savings matter more — at 200k ctx on the Qwen3.5-122B-A10B GQA(2) config, the production `ktq2_1 / vtq2_2` config is ~430 MB total vs ~2.3 GB at f16/f16.
 
 Measurement note: the 10-layer count is Qwen3.6-35B-A3B specific (48 blocks total, 10 with attention after the MoE filter). Different architectures allocate KV on different block counts; scale the per-layer numbers accordingly.
 
@@ -735,7 +754,7 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 - Anthropic `/v1/messages` with prompt caching
 
 **Active research**
-- **Phase 5 — XQuant cross-layer KV reuse** (code-complete, dormant on hybrid SSM models). Pair adjacent KTQ2_1 layers; subordinate stores only scale, codes shared from sibling. Activates with `--xquant`. Greifs nicht auf Qwen3.X-A3B/Qwen3.6-27B (alternating Mamba/attention layers); useful für pure-transformer dense models (Llama-3, Mistral, Gemma-2 family). Reference: arXiv:2510.11236.
+- **Phase 5 — XQuant cross-layer KV reuse** (code-complete, dormant on hybrid SSM models). Pair adjacent KTQ2_1 layers; subordinate stores only scale, codes shared from sibling. Activates with `--xquant`. Yields 0 pairs on Qwen3.X-A3B / Qwen3.6-27B (alternating Mamba/attention layers); intended for pure-transformer dense models (Llama-3, Mistral, Gemma-2 family). Reference: arXiv:2510.11236.
 - Correction Overlay Buffer (Trick 4) — designed, not implemented. Top-N lossless error patch.
 - **Phase 7 — imatrix-aware KTQ calibration** (proposed). Use importance matrix to bias the K-quant Lloyd-Max codebook.
 - `mmvq` IQ2\_XS tuning on sm\_75 — 28% of kernel time on current 35B config
@@ -759,14 +778,6 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 - **Sub-50 ms/token latency at long ctx matters.** VTQ V-cache adds per-token dequant overhead that grows with context length.
 - **Multi-node serving.** This fork makes zero changes to llama.cpp's split logic.
 - **Ampere+ (CC 8.0+).** Untested. The sm\_75-specific tuning is not going to be a good default there.
-
----
-
-## Cross-project numbers
-
-Other KV-quant forks exist (TheTom symmetric TurboQuant, buun TCQ trellis). They run on different hardware, weights, and metrics, so a side-by-side table would be misleading. Run them on the same model + hardware you care about.
-
-![Cross-project Pareto](docs/img/cross_project.png)
 
 ---
 
