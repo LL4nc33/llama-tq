@@ -49,3 +49,9 @@ bool expert_hotness_load(const std::string & path, expert_hotness & out);
 // Validate that the loaded profile is compatible with the given hparams.
 // Logs and returns false on mismatch (n_expert, layer count).
 bool expert_hotness_compatible(const expert_hotness & h, int n_expert, int n_layer);
+
+// Install the loaded hotness table into the CPU backend's prefetch state via
+// ggml_cpu_set_expert_hotness(). The `h` instance must remain alive for the
+// duration of compute (typically: process lifetime). Pass an empty/invalid
+// `h` to clear the table.
+void expert_hotness_install_cpu(const expert_hotness & h);
