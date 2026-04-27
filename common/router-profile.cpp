@@ -12,7 +12,7 @@ router_profile_data::router_profile_data() = default;
 
 router_profile_data::router_profile_data(const std::string & out_path, float tau_, int max_tokens_)
     : filter("^ffn_moe_probs-([0-9]+)$", std::regex::optimize),
-      max_tokens(max_tokens_ > 0 ? max_tokens_ : 4096),
+      max_tokens(max_tokens_ > 0 ? max_tokens_ : 256),
       tau(tau_) {
     fp = std::fopen(out_path.c_str(), "wb");
     if (!fp) {
@@ -31,21 +31,23 @@ router_profile_data::~router_profile_data() {
 router_profile_data::router_profile_data(router_profile_data && o) noexcept
     : fp(o.fp), filter(std::move(o.filter)), n_expert(o.n_expert),
       max_tokens(o.max_tokens), tau(o.tau), scratch(std::move(o.scratch)),
-      token_idx(o.token_idx), header_written(o.header_written) {
+      token_idx(o.token_idx), per_layer_count(std::move(o.per_layer_count)),
+      header_written(o.header_written) {
     o.fp = nullptr;
 }
 
 router_profile_data & router_profile_data::operator=(router_profile_data && o) noexcept {
     if (this != &o) {
         if (fp) std::fclose(fp);
-        fp             = o.fp;
-        filter         = std::move(o.filter);
-        n_expert       = o.n_expert;
-        max_tokens     = o.max_tokens;
-        tau            = o.tau;
-        scratch        = std::move(o.scratch);
-        token_idx      = o.token_idx;
-        header_written = o.header_written;
+        fp              = o.fp;
+        filter          = std::move(o.filter);
+        n_expert        = o.n_expert;
+        max_tokens      = o.max_tokens;
+        tau             = o.tau;
+        scratch         = std::move(o.scratch);
+        token_idx       = o.token_idx;
+        per_layer_count = std::move(o.per_layer_count);
+        header_written  = o.header_written;
         o.fp = nullptr;
     }
     return *this;
@@ -78,18 +80,20 @@ bool router_profile_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) 
         return std::regex_search(t->name, d->filter);
     }
 
-    // Past max_tokens? Stop accepting more records — but keep returning true
-    // so the graph keeps executing.
-    if (d->token_idx >= (int64_t) d->max_tokens) {
-        return true;
-    }
-
     // Re-check filter (defensive — ggml may invoke ask=false without prior ask=true).
     std::cmatch m;
     if (!std::regex_search(t->name, m, d->filter)) {
         return true;
     }
     const int layer_idx = std::atoi(m[1].first);
+
+    // Per-layer cap: stop dumping for this layer once it has hit max_tokens.
+    if ((int) d->per_layer_count.size() <= layer_idx) {
+        d->per_layer_count.resize(layer_idx + 1, 0);
+    }
+    if (d->per_layer_count[layer_idx] >= (int64_t) d->max_tokens) {
+        return true;
+    }
 
     // Expected shape: [n_expert, n_tokens] (F32). Some arches use F16 — handle both.
     if (t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_F16) {
@@ -129,7 +133,7 @@ bool router_profile_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) 
 
     const size_t row_stride = t->nb[1];
     for (int64_t tok = 0; tok < n_tokens; ++tok) {
-        if (d->token_idx >= (int64_t) d->max_tokens) {
+        if (d->per_layer_count[layer_idx] >= (int64_t) d->max_tokens) {
             break;
         }
         const uint8_t * row_ptr = src + tok * row_stride;
@@ -155,6 +159,7 @@ bool router_profile_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) 
         std::fwrite(row_data, sizeof(float), n_expert, d->fp);
 
         ++d->token_idx;
+        ++d->per_layer_count[layer_idx];
     }
 
     return true;

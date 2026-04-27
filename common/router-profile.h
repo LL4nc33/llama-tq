@@ -40,10 +40,11 @@ struct router_profile_data {
     std::FILE *           fp           = nullptr;
     std::regex            filter;
     int                   n_expert     = 0;
-    int                   max_tokens   = 4096;
+    int                   max_tokens   = 4096;     // per-layer cap (not global)
     float                 tau          = 0.85f;
     std::vector<uint8_t>  scratch;     // host-side staging buffer
-    int64_t               token_idx    = 0;
+    int64_t               token_idx    = 0;        // global monotonic counter (records written)
+    std::vector<int64_t>  per_layer_count;         // per-layer cap tracker (lazy-grown)
     bool                  header_written = false;
 
     router_profile_data();
