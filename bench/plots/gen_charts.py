@@ -27,6 +27,10 @@ OUT.mkdir(parents=True, exist_ok=True)
 df = pd.read_csv(HERE / "benchmarks.csv")
 other = pd.read_csv(HERE / "other_projects.csv")
 
+# Coerce numeric columns (some rows have non-numeric strings from log-derived rows)
+for col in ("avg_bpw", "pp512", "tg128", "ppl", "ppl_baseline"):
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
 # Derived columns
 df["ppl_delta_pct"] = (df["ppl"] - df["ppl_baseline"]) / df["ppl_baseline"] * 100.0
 df["config"] = df["k_cache"] + "/" + df["v_cache"]
@@ -640,17 +644,22 @@ def chart_cross_project_dual():
 
 
 def chart_large_moe_tg():
-    # TG tok/s across the three large-MoE deployments (35B / 80B / 122B),
-    # same box (Ryzen 7 5700G + 2x RTX 2060), same KV config
-    # (ktq2_1 / vtq2_1), 200k ctx. Each bar annotated with the physics
+    # TG tok/s across the four large-MoE deployments, same box
+    # (Ryzen 7 3700X host + 2x RTX 2060, KVM guest VM with 12 vCPUs),
+    # production KV config (ktq2_1 K + vtq2_2 V at 2.78 bpw), measured
+    # 2026-04-25 to 2026-04-27. Each bar annotated with the physics
     # ceiling (memory-bandwidth bound on CPU-offloaded traffic) and
-    # resulting efficiency.
+    # the resulting efficiency. The 80B-TQ1_0 tier eliminates CPU
+    # expert-offload entirely (full-VRAM) and is no longer
+    # bandwidth-bound — no ceiling drawn.
 
     rows = [
         # name, tg, ceiling, label
-        ("35B-A3B\n(no offload, 400k ctx)",     66.0, None, "all on GPU"),
-        ("80B-A3B\n(hybrid, 200k ctx)",         25.7, 53.0, "20/48 layers on CPU"),
-        ("122B-A10B\n(GQA(2), 200k ctx)",       14.06, 22.0, "29/48 layers on CPU"),
+        ("Gemma4-26B-A4B\n(no offload, 32k ctx)",       79.9, None, "all on GPU"),
+        ("Qwen3.6-35B-A3B\n(no offload, 400k ctx)",     74.9, None, "all on GPU"),
+        ("80B-TQ1_0\n(full-VRAM, 65k ctx) [BEST]",       57.0, None, "1-bit weights, no offload"),
+        ("80B-IQ2_XXS\n(hybrid, 200k ctx)",             30.9, 53.0, "20/48 layers on CPU"),
+        ("122B-A10B\n(GQA(2), 200k ctx)",               16.8, 22.0, "29/48 layers on CPU"),
     ]
 
     fig, ax = plt.subplots(figsize=(11, 5.5))
@@ -690,8 +699,8 @@ def chart_large_moe_tg():
     ax.set_xticklabels([r[0] for r in rows], fontsize=10)
     ax.set_ylabel("TG tok/s (higher is better)")
     ax.set_title(
-        "llama-tq: large-MoE TG on 2× RTX 2060 + Ryzen 7 5700G\n"
-        "(ktq2_1 K + vtq2_1 V, UD-IQ2_XXS weights, 200k–400k ctx)",
+        "llama-tq: large-MoE TG on 2× RTX 2060 + Ryzen 7 3700X\n"
+        "(ktq2_1 K + vtq2_2 V at 2.78 bpw, 32k–400k ctx, 2026-04-27)",
         fontsize=12, pad=12,
     )
     ax.grid(True, axis="y", ls=":", alpha=0.4, zorder=0)
@@ -707,7 +716,6 @@ def main():
     print(f"Output dir: {OUT}")
     chart_ppl_vs_bpw()
     chart_decode_throughput()
-    chart_cross_project_dual()
     chart_vtq2_variance()
     chart_large_moe_tg()
     print("done.")
