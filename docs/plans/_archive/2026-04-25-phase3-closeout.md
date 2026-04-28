@@ -103,8 +103,7 @@ default across the board.
 ## Phase 3 verdict
 
 VTQ family v2 wins. v3 in-tree as research tier. Production migration to
-`ktq2_1 + vtq2_2` complete on docs; deploy-side switch remains user-gated
-(scripts in `oidanice-distillery/scripts/deploy/`).
+`ktq2_1 + vtq2_2` complete on docs; deploy-side switch remains user-gated.
 
 ## Next phase
 
@@ -161,8 +160,9 @@ stays in tree (no harm), env-gated, no default-on.
 hardware_concurrency()=12 in our case. Taskset to 8 or 4 vCPUs starves the
 thread pool, doesn't help cache locality.
 
-**Win secured:** OMP env vars exported in `oidanice-distillery/scripts/deploy/_common.sh`
-(commit 29fc44e). All three `OMP_*` vars are env-overridable.
+**Win secured:** OMP env vars exported as deploy-side defaults
+(`OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores`).
+All three `OMP_*` vars are env-overridable.
 
 ### Phase 4 Tier A measurements expansion (2026-04-25 late)
 
