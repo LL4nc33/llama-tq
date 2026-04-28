@@ -478,6 +478,33 @@ static __global__ void mul_mat_vec_q(
     const block_q8_1 * y = ((const block_q8_1 *) vy) + sample_y*stride_sample_y + channel_y*stride_channel_y;
     const int kbx_offset = sample_x*stride_sample_x + channel_x*stride_channel_x + row0*stride_row_x;
 
+    // Stage IQ2_XXS / IQ2_XS grid into shared memory on Turing (sm_75): the
+    // const-mem cache cannot broadcast divergent gathers across a warp, so the
+    // per-thread `iq2{xxs,xs}_grid[idx]` reads degrade to L2-latency. Staging
+    // once per block lets all subsequent gathers hit shared memory.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
+    constexpr bool use_shmem_iq2xxs = (type == GGML_TYPE_IQ2_XXS);
+    constexpr bool use_shmem_iq2xs  = (type == GGML_TYPE_IQ2_XS);
+#else
+    constexpr bool use_shmem_iq2xxs = false;
+    constexpr bool use_shmem_iq2xs  = false;
+#endif
+    constexpr int s_grid_size = use_shmem_iq2xs ? 512 : (use_shmem_iq2xxs ? 256 : 1);
+    __shared__ uint64_t s_grid[s_grid_size];
+    if constexpr (use_shmem_iq2xxs) {
+#pragma unroll
+        for (int i = tid; i < 256; i += nwarps*warp_size) {
+            s_grid[i] = iq2xxs_grid[i];
+        }
+        __syncthreads();
+    } else if constexpr (use_shmem_iq2xs) {
+#pragma unroll
+        for (int i = tid; i < 512; i += nwarps*warp_size) {
+            s_grid[i] = iq2xs_grid[i];
+        }
+        __syncthreads();
+    }
+
     for (int kbx = tid / (qi/vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
         const int kby = kbx * (qk/QK8_1); // y block index that aligns with kbx
 
@@ -488,12 +515,28 @@ static __global__ void mul_mat_vec_q(
         for (int j = 0; j < ncols_dst; ++j) {
 #pragma unroll
             for (int i = 0; i < rows_per_cuda_block; ++i) {
-                tmp[j][i] += vec_dot_q_cuda(
-                    vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                if constexpr (use_shmem_iq2xxs) {
+                    tmp[j][i] += vec_dot_iq2_xxs_q8_1_shmem(
+                        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs, s_grid);
+                } else if constexpr (use_shmem_iq2xs) {
+                    tmp[j][i] += vec_dot_iq2_xs_q8_1_shmem(
+                        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs, s_grid);
+                } else {
+                    tmp[j][i] += vec_dot_q_cuda(
+                        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                }
                 if constexpr (has_fusion) {
                     if (use_gate) {
-                        tmp_gate[j][i] += vec_dot_q_cuda(
-                            vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        if constexpr (use_shmem_iq2xxs) {
+                            tmp_gate[j][i] += vec_dot_iq2_xxs_q8_1_shmem(
+                                vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs, s_grid);
+                        } else if constexpr (use_shmem_iq2xs) {
+                            tmp_gate[j][i] += vec_dot_iq2_xs_q8_1_shmem(
+                                vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs, s_grid);
+                        } else {
+                            tmp_gate[j][i] += vec_dot_q_cuda(
+                                vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+                        }
                     }
                 }
             }
