@@ -129,15 +129,14 @@ Phase 3 baseline:                 16.69 t/s
 + OMP+prefetch+11/12/25 split:    18.24  (+9.3%)
 ```
 
-Both deployed in `oidanice-distillery/scripts/deploy/`. The TurboQuant fork's KV-cache work (Phases 1-3, KTQ + VTQ trellis quantization) plus this Phase 4 CPU-side perf pass are now stable production.
+Both deployed via the standard llama-server flags described above. The TurboQuant fork's KV-cache work (Phases 1-3, KTQ + VTQ trellis quantization) plus this Phase 4 CPU-side perf pass are now stable production.
 
 ## Code references
 
 - `ggml/src/ggml-cpu/ggml-cpu.c` — `__builtin_prefetch` in `mul_mat_id` (commit `6e50fc701`)
 - `src/llama-mmap.cpp` — `MADV_HUGEPAGE` env-gated patch (commit `155557cc0`)
-- `oidanice-distillery/scripts/deploy/_common.sh` — OMP env defaults (commit `29fc44e`)
-- `oidanice-distillery/scripts/deploy/deploy-80b.sh` — adaptive 80B routing (commit `11b3543`)
-- `oidanice-distillery/scripts/deploy/deploy-122b.sh` — adaptive 122B routing (commit `2343389`)
+- Recommended deploy environment: `OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores`
+- Adaptive layer-split: short-ctx (≤8192) uses aggressive split, long-ctx falls back to safe defaults
 
 ## What's next (Phase 5 candidates)
 

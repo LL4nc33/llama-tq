@@ -138,8 +138,6 @@ cmake --build build -j$(nproc) --target llama-server llama-perplexity llama-benc
     --hellaswag --hellaswag-tasks 200 -f hellaswag_val_full.txt
 ```
 
-Full deploy scripts: [`oidanice-distillery/scripts/deploy/`](https://github.com/LL4nc33/oidanice-distillery/tree/main/scripts/deploy).
-
 GGUF model files: bartowski IQ2_XXS quants on HuggingFace work as-is.
 
 ---
