@@ -21,8 +21,7 @@ All deploys use `--cache-type-k ktq2_1 --cache-type-v vtq2_2` (2.78 bpw KV) +
 `OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores`.
 
 Adaptive expert-routing splits between short-ctx (≤8192, aggressive) and
-long-ctx (>8192, safe-up-to-200k). See
-[oidanice-distillery/scripts/deploy/](https://github.com/LL4nc33/oidanice-distillery/tree/main/scripts/deploy).
+long-ctx (>8192, safe-up-to-200k).
 
 ## TG / quality matrix (current deploy)
 

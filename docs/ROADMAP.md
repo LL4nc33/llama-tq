@@ -178,8 +178,8 @@ similar. Competitor benchmarks: KVQuant, Aquila, QuaRot.
 - Stability runs: bench tg1024, long generation
 
 ### LEGION
-Local-only shared message board with `oidanice-distillery` for
-training/deployment coordination. Never pushed to remote.
+Local-only shared message board for training/deployment coordination.
+Never pushed to remote.
 
 ---
 

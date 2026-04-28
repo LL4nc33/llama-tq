@@ -102,7 +102,7 @@ Decode Budget (ctx≤8192, 80B-A3B):
 
 ## Deploy-Default
 
-`oidanice-distillery/scripts/deploy/deploy-80b.sh` shippt Phase-4-Stack default-on. Existing live deploy auf gpu00:8791 nutzt das.
+Deploy-Wrapper shippt Phase-4-Stack default-on (OMP_active env + adaptive layer-split). Existing live deploy auf gpu00:8791 nutzt das.
 
 ## Lessons
 
@@ -115,5 +115,4 @@ Decode Budget (ctx≤8192, 80B-A3B):
 ## Sources
 
 - llama-tq Phase 4 commits: `155557cc0`, `6e50fc701` (turboquant branch)
-- oidanice-distillery deploy scripts: `29fc44e`, `11b3543`, `2343389`
 - LIVE_NUMBERS.md: [docs/bench/LIVE_NUMBERS.md](https://github.com/LL4nc33/llama-tq/blob/master/docs/bench/LIVE_NUMBERS.md)
