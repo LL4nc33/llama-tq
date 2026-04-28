@@ -314,7 +314,7 @@ Hybrid architecture, **512 experts / 10 active**. Two deploy tiers:
 
 #### Tier 1 (current default) — TQ1_0 full-VRAM ⭐
 
-Unsloth's `UD-TQ1_0` (1-bit dynamic Trellis) is **19.3 GB instead of 26.2 GB**, so both GPUs hold full model + KV — no CPU expert-offload. Live since 2026-04-27 on test box.
+Unsloth's `UD-TQ1_0` is **19.3 GB instead of 26.2 GB**, so both GPUs hold full model + KV — no CPU expert-offload. Live since 2026-04-27 on test box.
 
 ```bash
 ./build/bin/llama-server -m Qwen3-Next-80B-A3B-Instruct-UD-TQ1_0.gguf \
