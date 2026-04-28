@@ -141,7 +141,10 @@
 <ScrollArea class="h-[100vh]">
 	<Sidebar.Header class=" top-0 z-10 gap-4 bg-sidebar/50 p-4 pb-2 backdrop-blur-lg md:sticky">
 		<a href="#/" onclick={handleMobileSidebarItemClick}>
-			<h1 class="inline-flex items-center gap-1 px-2 text-xl font-semibold">llama.cpp</h1>
+			<h1 class="group inline-flex items-center gap-0 px-2 text-xl font-semibold cursor-default select-none">
+				<span>O</span><span class="inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out max-w-0 group-hover:max-w-[2em]">ida</span><span>N</span><span class="inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out max-w-0 group-hover:max-w-[2em]">ice</span>
+				<span class="text-primary/80">&thinsp;llama-tq</span>
+			</h1>
 		</a>
 
 		<ChatSidebarActions {handleMobileSidebarItemClick} bind:isSearchModeActive bind:searchQuery />
