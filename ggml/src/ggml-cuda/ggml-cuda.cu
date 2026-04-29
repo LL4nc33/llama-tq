@@ -2446,7 +2446,18 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
     if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
         static_assert(MMVQ_MAX_BATCH_SIZE == MMVF_MAX_BATCH_SIZE);
-        if (ne2 <= MMVQ_MAX_BATCH_SIZE) {
+        // GGML_CUDA_FORCE_MMQ_IQ2 — skip mmvq for IQ2_* on small batch and let MMQ run.
+        // Hypothesis: MMQ's int8 tile-dot has higher arithmetic intensity than mmvq's
+        // per-element dequant + fp16 fma; on Turing sm_75 the trade-off may favor MMQ
+        // for MoE mul_mat_id where active experts are small slices.
+        static const bool force_mmq_iq2 = []() {
+            const char * env = std::getenv("GGML_CUDA_FORCE_MMQ_IQ2");
+            return env != nullptr && env[0] != '\0' && env[0] != '0';
+        }();
+        const bool is_iq2_target =
+            src0->type == GGML_TYPE_IQ2_XXS || src0->type == GGML_TYPE_IQ2_XS ||
+            src0->type == GGML_TYPE_IQ2_S;
+        if (ne2 <= MMVQ_MAX_BATCH_SIZE && !(force_mmq_iq2 && is_iq2_target)) {
             if (ggml_is_quantized(src0->type) && !is_tq_weight_type) {
                 const int mmvq_mmid_max = get_mmvq_mmid_max_batch(src0->type, cc);
                 if (ne2 <= mmvq_mmid_max) {
