@@ -505,17 +505,15 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 break;
             case LLAMA_VOCAB_PRE_TYPE_TALKIE:
                 // Talkie 1930 (github.com/talkie-lm/talkie src/talkie/tokenizer.py).
-                // cl100k_base variant: punctuation alt allows '/' in addition to
-                // \r and \n in the trailing class. Same 7-alt structure as
-                // tiktoken cl100k_base, otherwise.
+                // cl100k_base variant: 7 alternations, only difference vs tiktoken
+                // cl100k is the trailing '/' allowed in the punctuation alt's \r\n
+                // class. Provide ONE concatenated alt so unicode.cpp can route to
+                // unicode_regex_split_custom_qwen2 (semantic equivalent for BPE
+                // merge boundaries) instead of falling back to std::regex's collapsed
+                // engine, which over-fragments ' world' → [' ', 'world'] because
+                // the nested Lu*/Ll+ alternation does not match lowercase-only runs.
                 regex_exprs = {
-                    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?",
-                    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?",
-                    "\\p{N}{1,3}",
-                    " ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*",
-                    "\\s*[\\r\\n]+",
-                    "\\s+(?!\\S)",
-                    "\\s+",
+                    "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             default:

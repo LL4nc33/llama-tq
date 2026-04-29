@@ -929,6 +929,17 @@ static std::vector<size_t> unicode_regex_split_custom(const std::string & text, 
     } else if (
            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
         bpe_offsets = unicode_regex_split_custom_qwen2(text, offsets);
+    } else if (
+            // Talkie's TALKIE_PAT_STR (talkie-lm/talkie/src/talkie/tokenizer.py).
+            // cl100k_base variant: same 7-alt structure as tiktoken cl100k, the only
+            // semantic difference is the trailing '/' allowed in the punctuation alt's
+            // \r\n class. For BPE-merge purposes that is irrelevant — the splitting
+            // boundaries between word-runs / digits / punctuation / whitespace align
+            // with qwen2's. Routing to qwen2's hand-coded splitter avoids the std::regex
+            // collapsed-stl fallback that was over-fragmenting ' world' into [' ', 'world']
+            // (nested Lu*/Ll+ alternation didn't match a lowercase-only run).
+            regex_expr == "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+") {
+        bpe_offsets = unicode_regex_split_custom_qwen2(text, offsets);
     } else if (regex_expr == "\\p{Han}+") {
         // K2's first pattern - handle all K2 patterns together
         bpe_offsets = unicode_regex_split_custom_kimi_k2(text, offsets);
