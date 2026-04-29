@@ -45,6 +45,15 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
     ggml_tensor * e_x = ggml_rms_norm(ctx0, inpL, hparams.f_norm_rms_eps);
     cb(e_x, "talkie_e_x", -1);
 
+    // Talkie's forward (model.py): x = self.embed(input_ids); x = F.rms_norm(x, ...);
+    //                               for block in blocks: x = block(e_x, x, cos_sin)
+    // The state passed into the FIRST block is the RMS-normed embedding, not raw.
+    // Without this assignment the first attention sees raw-embed-magnitude inputs
+    // through the attn-residual (inpSA = inpL = raw), which corrupts Q/K/V and
+    // propagates through all subsequent layers. Bug discovered by distillery
+    // by walking talkie.cpp side-by-side with talkie-lm/talkie src/talkie/model.py.
+    inpL = e_x;
+
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
 
