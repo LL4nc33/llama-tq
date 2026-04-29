@@ -2888,10 +2888,13 @@ class TalkieModel(TextModel):
         self.gguf_writer.add_rope_freq_base(rope_theta)
         max_seq = self.hparams.get("max_position_embeddings", 2048)
         self.gguf_writer.add_context_length(max_seq)
-        # Talkie's RMSNorm has no learnable scale, but eps is still a real
-        # constant required by llama-quantize and the forward pass. config.json
-        # does not expose rms_norm_eps; default to upstream Talkie's 1e-5.
-        self.gguf_writer.add_layer_norm_rms_eps(self.hparams.get("rms_norm_eps", 1e-5))
+        # Talkie's RMSNorm has no learnable scale. config.json does not expose
+        # rms_norm_eps. Talkie's model.py uses F.rms_norm(x, normalized_shape)
+        # without an explicit eps, which defaults to None → resolved per dtype
+        # by torch (float32: ~1.19e-7, bfloat16: somewhat larger). Use 1e-6 as
+        # a close approximation; pure-ones weights make the eps mostly cosmetic
+        # but a gross mismatch (e.g. 1e-3) would shift activations.
+        self.gguf_writer.add_layer_norm_rms_eps(self.hparams.get("rms_norm_eps", 1e-6))
 
     def modify_tensors(self, data_torch, name, bid):
         # Reject the original (non-folded) Talkie layout: HeadGain/ActGain/WeightGain
