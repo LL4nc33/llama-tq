@@ -18,7 +18,7 @@
 //   x = x + mlp(rms_norm(x))
 //   x = x + embed_skip_scale[il] * e_x      (e_x = rms_norm(embd), computed once)
 //
-// Note: qk_norm is folded into wq/wk in this layout (per Stage-2 spec); no
+// Note: qk_norm = RMSNorm on Q/K after RoPE (activation-side, not foldable); no
 // runtime Q/K RMSNorm is applied here.
 
 llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {
@@ -79,11 +79,14 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
                     ext_factor, attn_factor, beta_fast, beta_slow
                     );
 
-            cb(Qcur, "Qcur", il);
-            cb(Kcur, "Kcur", il);
-            cb(Vcur, "Vcur", il);
+            // qk_norm: RMSNorm on Q and K after RoPE (no learnable scale).
+            // Activation-side normalization, cannot be folded into weights.
+            Qcur = ggml_rms_norm(ctx0, Qcur, hparams.f_norm_rms_eps);
+            Kcur = ggml_rms_norm(ctx0, Kcur, hparams.f_norm_rms_eps);
 
-            // qk_norm is folded into wq/wk in the folded layout — no runtime RMSNorm on Q/K.
+            cb(Qcur, "Qcur_normed", il);
+            cb(Kcur, "Kcur_normed", il);
+            cb(Vcur, "Vcur", il);
 
             cur = build_attn(inp_attn,
                     model.layers[il].wo, nullptr,
