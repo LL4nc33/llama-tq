@@ -2138,6 +2138,11 @@ class TensorNameMap:
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM: (
             "model.layers.{bid}.shared_head.norm",
         ),
+
+        # Talkie: per-layer scalar weight applied to the embedding skip connection
+        MODEL_TENSOR.EMBED_SKIP_SCALE: (
+            "model.layers.{bid}.embed_skip_scale",
+        ),
     }
 
     # architecture-specific block mappings

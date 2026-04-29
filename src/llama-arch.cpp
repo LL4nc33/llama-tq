@@ -132,6 +132,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_LLAMA_EMBED,      "llama-embed"      },
     { LLM_ARCH_MAINCODER,        "maincoder"        },
     { LLM_ARCH_KIMI_LINEAR,      "kimi-linear"      },
+    { LLM_ARCH_TALKIE,           "talkie"           },
     { LLM_ARCH_UNKNOWN,          "(unknown)"        },
 };
 
@@ -545,6 +546,7 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_INDEXER_PROJ,                           "blk.%d.indexer.proj" },
     { LLM_TENSOR_INDEXER_ATTN_K,                         "blk.%d.indexer.attn_k" },
     { LLM_TENSOR_INDEXER_ATTN_Q_B,                       "blk.%d.indexer.attn_q_b" },
+    { LLM_TENSOR_EMBED_SKIP_SCALE,                       "blk.%d.embed_skip_scale" },
 };
 
 // declare information about the model weight tensors:
@@ -762,6 +764,8 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_NEXTN_HNORM,                {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,     {LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL}},
+    // Talkie
+    {LLM_TENSOR_EMBED_SKIP_SCALE,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     // Nemotron 3 Super
     {LLM_TENSOR_FFN_LATENT_DOWN,            {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_FFN_LATENT_UP,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
