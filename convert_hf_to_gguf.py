@@ -2804,6 +2804,81 @@ class TalkieModel(TextModel):
 
     model_arch = gguf.MODEL_ARCH.TALKIE
 
+    def set_vocab(self):
+        # Talkie ships a custom slow PreTrainedTokenizer (tokenization_talkie.py)
+        # that wraps tiktoken BPE. AutoTokenizer needs trust_remote_code, and
+        # save_pretrained does not produce a standard tokenizer.json/merges.txt.
+        # Read vocab.txt directly via load_tiktoken_bpe and emit a gpt2-style
+        # GGUF vocab with hardcoded special tokens (IT_SPECIAL_TOKENS).
+        from tiktoken.load import load_tiktoken_bpe
+
+        vocab_path = self.dir_model / "vocab.txt"
+        if not vocab_path.is_file():
+            raise FileNotFoundError(f"Talkie vocab.txt not found: {vocab_path}")
+
+        # tokenization_talkie.py: BASE_VOCAB_SIZE = 65536, ranks 0..65534 used
+        # (rank 65535 stripped by `v < BASE_VOCAB_SIZE - 1` filter), then 5
+        # special tokens at IDs 65535..65539.
+        BASE_VOCAB_SIZE = 65536
+        SPECIAL_TOKENS = {
+            65535: "<|endoftext|>",
+            65536: "<|end|>",
+            65537: "<|user|>",
+            65538: "<|assistant|>",
+            65539: "<|system|>",
+        }
+
+        mergeable_ranks = load_tiktoken_bpe(str(vocab_path))
+        mergeable_ranks = {k: v for k, v in mergeable_ranks.items()
+                           if v < BASE_VOCAB_SIZE - 1}
+
+        vocab_size = self.hparams["vocab_size"]
+        assert vocab_size == 65540, f"Expected Talkie vocab_size=65540, got {vocab_size}"
+
+        merges: list[str] = []
+        vocab: dict[str, int] = {}
+        for token_bytes, rank in mergeable_ranks.items():
+            vocab[QwenModel.token_bytes_to_string(token_bytes)] = rank
+            if len(token_bytes) == 1:
+                continue
+            merged = QwenModel.bpe(mergeable_ranks, token_bytes, max_rank=rank)
+            assert len(merged) == 2
+            merges.append(' '.join(map(QwenModel.token_bytes_to_string, merged)))
+
+        reverse_vocab: dict[int, str] = {id_: tok for tok, id_ in vocab.items()}
+        for sid, sname in SPECIAL_TOKENS.items():
+            reverse_vocab[sid] = sname
+
+        tokens: list[str] = []
+        toktypes: list[int] = []
+        for i in range(vocab_size):
+            if i not in reverse_vocab:
+                tokens.append(f"[PAD{i}]")
+                toktypes.append(gguf.TokenType.UNUSED)
+            elif i in SPECIAL_TOKENS:
+                tokens.append(reverse_vocab[i])
+                toktypes.append(gguf.TokenType.CONTROL)
+            else:
+                tokens.append(reverse_vocab[i])
+                toktypes.append(gguf.TokenType.NORMAL)
+
+        # Talkie's TALKIE_PAT_STR is a cl100k_base variant (extra '/' in
+        # punctuation alt). No registered pretokenizer hash for it yet — use
+        # "default" for now; quantize does not need the pre-tokenizer to be
+        # correct, and inference can be verified post-build (a missed match
+        # only affects tokenization edge cases at runtime).
+        self.gguf_writer.add_tokenizer_model("gpt2")
+        self.gguf_writer.add_tokenizer_pre("default")
+        self.gguf_writer.add_token_list(tokens)
+        self.gguf_writer.add_token_types(toktypes)
+
+        special_vocab = gguf.SpecialVocab(self.dir_model, load_merges=False)
+        special_vocab.merges = merges
+        # tokenizer_config.json: eos = pad = "<|endoftext|>", no BOS, no UNK
+        special_vocab._set_special_token("eos", 65535)
+        special_vocab._set_special_token("pad", 65535)
+        special_vocab.add_to_gguf(self.gguf_writer)
+
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
         # Talkie defaults; HF config.json should already provide these but we
