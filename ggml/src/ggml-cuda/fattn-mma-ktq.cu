@@ -10,58 +10,6 @@
 template <int DKQ, int DV, int ncols1, int ncols2>
 void ggml_cuda_flash_attn_ext_mma_ktq_inline_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
-static void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    ggml_tensor * K = dst->src[1];
-
-    to_fp16_nc_cuda_t to_fp16 = ggml_get_to_fp16_nc_cuda(K->type);
-    GGML_ASSERT(to_fp16 != nullptr);
-
-    const int64_t ne00 = K->ne[0];
-    const int64_t ne01 = K->ne[1];
-    const int64_t ne02 = K->ne[2];
-    const int64_t ne03 = K->ne[3];
-    const int64_t scratch_elems = ne00 * ne01 * ne02 * ne03;
-
-    // dequantize_block_ktq*_nc kernels expect strides in block units, not bytes
-    // (ibx0 = i03*s03 + i02*s02 + i01*s01 is used directly as a block index into
-    // vx, which is then offset by sizeof(block_ktq*_1) via `x[ib]`). Match the
-    // convention used by the inline path (fattn-mma-ktq-inline.cuh:1662) and by
-    // every other call site of ggml_get_to_fp16_nc_cuda (fattn-common.cuh:1705).
-    // Passing bytes would overshoot by a factor of sizeof(block_ktq*_1), causing
-    // OOB reads — benign for KTQ2_1 on some shapes, reliable crash for KTQ3_1/4_1.
-    const size_t ts = ggml_type_size(K->type);
-    GGML_ASSERT(K->nb[0] == ts);
-    const int64_t s01 = K->nb[1] / ts;
-    const int64_t s02 = K->nb[2] / ts;
-    const int64_t s03 = K->nb[3] / ts;
-
-    ggml_cuda_pool_alloc<half> k_scratch(ctx.pool(), scratch_elems);
-    to_fp16(K->data, k_scratch.get(), ne00, ne01, ne02, ne03, s01, s02, s03, ctx.stream());
-
-    const ggml_type saved_type = K->type;
-    void * const    saved_data = K->data;
-    const size_t    saved_nb0  = K->nb[0];
-    const size_t    saved_nb1  = K->nb[1];
-    const size_t    saved_nb2  = K->nb[2];
-    const size_t    saved_nb3  = K->nb[3];
-
-    K->type = GGML_TYPE_F16;
-    K->data = k_scratch.get();
-    K->nb[0] = sizeof(half);
-    K->nb[1] = K->nb[0] * ne00;
-    K->nb[2] = K->nb[1] * ne01;
-    K->nb[3] = K->nb[2] * ne02;
-
-    ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
-
-    K->type = saved_type;
-    K->data = saved_data;
-    K->nb[0] = saved_nb0;
-    K->nb[1] = saved_nb1;
-    K->nb[2] = saved_nb2;
-    K->nb[3] = saved_nb3;
-}
-
 void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
