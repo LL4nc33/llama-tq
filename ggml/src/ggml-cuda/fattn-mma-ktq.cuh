@@ -13,6 +13,6 @@
 // kernel handles the real compute.
 void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
-// Exposed from fattn.cu so the split-dequant wrapper can re-dispatch after
-// swapping K.
-void ggml_cuda_flash_attn_ext_mma_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+// Split-dequant fallback. Implemented in fattn.cu (intra-TU with mma_f16
+// to avoid RDC symbol demotion of the cross-TU dispatcher call).
+void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
