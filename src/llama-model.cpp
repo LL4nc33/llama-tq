@@ -3190,10 +3190,11 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
 
                     // output (RMSNorm.weight may be synthesized ones, but loadable)
                     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
-                    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
-                    if (output == NULL) {
-                        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
-                    }
+                    // Talkie has NO tied embeddings (model.py: self.lm_head is a separate
+                    // nn.Parameter from self.embed). lm_head MUST be present in the GGUF;
+                    // a fallback to tok_embd would silently corrupt logits (constant-bias
+                    // collapse symptom: every prompt outputs the same token at temp=0).
+                    output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, n_vocab}, 0);
 
                     for (int i = 0; i < n_layer; ++i) {
                         auto & layer = layers[i];
