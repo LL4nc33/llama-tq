@@ -2793,6 +2793,33 @@ class StableLMModel(TextModel):
                 raise ValueError(f"Unprocessed norms: {norms}")
 
 
+@ModelBase.register("TalkieForCausalLM")
+class TalkieModel(TextModel):
+    """Talkie 1930 — folded layout (HeadGain/ActGain/WeightGain folded into projections).
+
+    Only the per-layer ``embed_skip_scale`` scalar remains as a learnable structural
+    parameter (load-bearing, not foldable). All RMSNorm tensors in the GGUF are
+    synthesized ``ones`` since Talkie's RMSNorm has no learnable weight.
+    """
+
+    model_arch = gguf.MODEL_ARCH.TALKIE
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        # Talkie defaults; HF config.json should already provide these but we
+        # set explicit fallbacks here to be safe.
+        rope_theta = self.hparams.get("rope_theta", 1_000_000.0)
+        self.gguf_writer.add_rope_freq_base(rope_theta)
+        max_seq = self.hparams.get("max_position_embeddings", 2048)
+        self.gguf_writer.add_context_length(max_seq)
+
+    def modify_tensors(self, data_torch, name, bid):
+        # Pass-through: all tensor names map directly via tensor_mapping.py,
+        # including the new model.layers.{bid}.embed_skip_scale -> blk.{bid}.embed_skip_scale.
+        del bid  # unused
+        return [(self.map_tensor_name(name, try_suffixes=(".weight",)), data_torch)]
+
+
 @ModelBase.register(
     "LLaMAForCausalLM",
     "LlamaForCausalLM",
