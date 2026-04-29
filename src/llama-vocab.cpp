@@ -503,6 +503,21 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 };
                 byte_encode = false; // uses raw UTF-8, not GPT-2 byte encoding
                 break;
+            case LLAMA_VOCAB_PRE_TYPE_TALKIE:
+                // Talkie 1930 (github.com/talkie-lm/talkie src/talkie/tokenizer.py).
+                // cl100k_base variant: punctuation alt allows '/' in addition to
+                // \r and \n in the trailing class. Same 7-alt structure as
+                // tiktoken cl100k_base, otherwise.
+                regex_exprs = {
+                    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?",
+                    "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?",
+                    "\\p{N}{1,3}",
+                    " ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*",
+                    "\\s*[\\r\\n]+",
+                    "\\s+(?!\\S)",
+                    "\\s+",
+                };
+                break;
             default:
                 // default regex for BPE tokenization pre-processing
                 regex_exprs = {
@@ -2005,6 +2020,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     tokenizer_pre == "gemma4") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_GEMMA4;
                 escape_whitespaces = true;
+            } else if (
+                    tokenizer_pre == "talkie") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_TALKIE;
+                clean_spaces = false;
             } else if (
                     tokenizer_pre == "jina-v1-en" ||
                     tokenizer_pre == "jina-v2-code" ||

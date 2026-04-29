@@ -1290,6 +1290,9 @@ class TextModel(ModelBase):
         # NOTE: if you get an error here, you need to update the convert_hf_to_gguf_update.py script
         #       or pull the latest version of the model from Huggingface
         #       don't edit the hashes manually!
+        if chkhsh == "d38c649b96c10a14da033db05dc8c35530453092d1d54b58f7517f95eb56f33e":
+            # ref: https://github.com/talkie-lm/talkie (cl100k-style with extra '/')
+            res = "talkie"
         if chkhsh == "b6e8e1518dc4305be2fe39c313ed643381c4da5db34a98f6a04c093f8afbe99b":
             # ref: https://huggingface.co/THUDM/glm-4-9b-chat
             res = "chatglm-bpe"
@@ -2863,12 +2866,10 @@ class TalkieModel(TextModel):
                 toktypes.append(gguf.TokenType.NORMAL)
 
         # Talkie's TALKIE_PAT_STR is a cl100k_base variant (extra '/' in
-        # punctuation alt). No registered pretokenizer hash for it yet — use
-        # "default" for now; quantize does not need the pre-tokenizer to be
-        # correct, and inference can be verified post-build (a missed match
-        # only affects tokenization edge cases at runtime).
+        # punctuation alt). Registered as "talkie" pretokenizer in
+        # get_vocab_base_pre() and llama-vocab.cpp pre-tokenizer table.
         self.gguf_writer.add_tokenizer_model("gpt2")
-        self.gguf_writer.add_tokenizer_pre("default")
+        self.gguf_writer.add_tokenizer_pre("talkie")
         self.gguf_writer.add_token_list(tokens)
         self.gguf_writer.add_token_types(toktypes)
 
