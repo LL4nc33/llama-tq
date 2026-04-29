@@ -67,13 +67,21 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
             Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
             Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
 
-            Qcur = ggml_rope_ext(
+            // Talkie's apply_rotary_emb (model.py) uses an inverse rotation:
+            //   y1 = x1*cos + x2*sin
+            //   y2 = -x1*sin + x2*cos
+            // vs standard NEOX (y1 = x1*cos - x2*sin, y2 = x1*sin + x2*cos).
+            // The only difference is the sign of sin. ggml_rope_ext_back is the
+            // backward kernel which exactly applies sin_sign = -1.0 on top of the
+            // NEOX layout (pairs at (i, i+n_dims/2)), so it computes Talkie's
+            // forward rotation. Layout/freq math is otherwise identical.
+            Qcur = ggml_rope_ext_back(
                     ctx0, Qcur, inp_pos, nullptr,
                     n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
                     ext_factor, attn_factor, beta_fast, beta_slow
                     );
 
-            Kcur = ggml_rope_ext(
+            Kcur = ggml_rope_ext_back(
                     ctx0, Kcur, inp_pos, nullptr,
                     n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
                     ext_factor, attn_factor, beta_fast, beta_slow
