@@ -3215,8 +3215,11 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
 
-                        // Talkie-specific: per-layer scalar [1] on the RMSNorm(embd) skip
-                        layer.embed_skip_scale = create_tensor(tn(LLM_TENSOR_EMBED_SKIP_SCALE, "weight", i), {1}, 0);
+                        // Talkie-specific: per-layer scalar [1] on the RMSNorm(embd) skip.
+                        // No "weight" suffix — embed_skip_scale is a scalar, not a Linear.
+                        // GGUF write side (tensor_mapping.py:2144, constants.py:1344) emits
+                        // "blk.{bid}.embed_skip_scale" without suffix; load side must match.
+                        layer.embed_skip_scale = create_tensor(tn(LLM_TENSOR_EMBED_SKIP_SCALE, i), {1}, 0);
                     }
                 } break;
             case LLM_ARCH_LLADA:
