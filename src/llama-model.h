@@ -490,6 +490,9 @@ struct llama_layer {
     // gemma4 layer output scale
     struct ggml_tensor * out_scale = nullptr;
 
+    // talkie: per-layer scale on RMSNorm(embedding) skip-connection [1]
+    struct ggml_tensor * embed_skip_scale = nullptr;
+
     struct llama_layer_posnet posnet;
 
     struct llama_layer_convnext convnext;
