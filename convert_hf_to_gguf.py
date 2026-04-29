@@ -2814,8 +2814,20 @@ class TalkieModel(TextModel):
         self.gguf_writer.add_context_length(max_seq)
 
     def modify_tensors(self, data_torch, name, bid):
-        # Pass-through: all tensor names map directly via tensor_mapping.py,
-        # including the new model.layers.{bid}.embed_skip_scale -> blk.{bid}.embed_skip_scale.
+        # Reject the original (non-folded) Talkie layout: HeadGain/ActGain/WeightGain
+        # must be pre-folded into q_proj/o_proj/down_proj/lm_head before conversion.
+        # Only embed_skip is structural and remains as embed_skip_scale per layer.
+        forbidden = (
+            "head_gain", "attn_gain", "mlp_gain", "lm_head_gain",
+            ".head_g", ".a_g", ".w_g",
+        )
+        if any(tok in name for tok in forbidden) and "embed_skip" not in name:
+            raise ValueError(
+                f"Talkie tensor '{name}' belongs to the un-folded layout. "
+                "Convert from the folded HF repo (HeadGain/ActGain/WeightGain "
+                "pre-folded into q_proj/o_proj/down_proj/lm_head). Only "
+                "embed_skip_scale survives as a per-layer scalar."
+            )
         del bid  # unused
         return [(self.map_tensor_name(name, try_suffixes=(".weight",)), data_torch)]
 
