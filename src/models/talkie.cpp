@@ -186,14 +186,7 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
             return env != nullptr && env[0] != '\0' && env[0] != '0';
         }();
         if (!talkie_no_skip) {
-            // CUDA ggml_mul broadcasting a [1] scalar tensor over [D, n_tokens]
-            // produces gibberish on Talkie (verified: GGML_TALKIE_NO_SKIP=1
-            // returns coherent tokens, default produces \x1e byte-noise after
-            // ~20 layers of accumulation). Workaround: explicitly broadcast
-            // the scalar to e_x shape via ggml_repeat before mul. Mathematically
-            // identical to broadcasting mul, but avoids the buggy CUDA path.
-            ggml_tensor * scale_b = ggml_repeat(ctx0, model.layers[il].embed_skip_scale, e_x);
-            ggml_tensor * skip    = ggml_mul(ctx0, e_x, scale_b);
+            ggml_tensor * skip = ggml_mul(ctx0, e_x, model.layers[il].embed_skip_scale);
             cb(skip, "embed_skip", il);
             cur = ggml_add(ctx0, cur, skip);
         }
