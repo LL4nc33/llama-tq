@@ -171,12 +171,14 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
             LLM_NORM_RMS, -1);
 
     cb(cur, "result_norm", -1);
+    cb(cur, "talkie_final_hidden", -1);  // pre-lm_head, layer-39-final-hidden compare
     res->t_embd = cur;
 
     // lm_head (WeightGain folded in)
     cur = build_lora_mm(model.output, cur);
 
     cb(cur, "result_output", -1);
+    cb(cur, "talkie_final_logits", -1);  // post-lm_head, byte-vs-BPE distribution check
     res->t_logits = cur;
 
     ggml_build_forward_expand(gf, cur);
