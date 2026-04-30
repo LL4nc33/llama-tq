@@ -2888,13 +2888,16 @@ class TalkieModel(TextModel):
         self.gguf_writer.add_rope_freq_base(rope_theta)
         max_seq = self.hparams.get("max_position_embeddings", 2048)
         self.gguf_writer.add_context_length(max_seq)
-        # Talkie's RMSNorm has no learnable scale. config.json does not expose
-        # rms_norm_eps. Talkie's model.py uses F.rms_norm(x, normalized_shape)
-        # without an explicit eps, which defaults to None → resolved per dtype
-        # by torch (float32: ~1.19e-7, bfloat16: somewhat larger). Use 1e-6 as
-        # a close approximation; pure-ones weights make the eps mostly cosmetic
-        # but a gross mismatch (e.g. 1e-3) would shift activations.
-        self.gguf_writer.add_layer_norm_rms_eps(self.hparams.get("rms_norm_eps", 1e-6))
+        # Talkie's model.py: F.rms_norm(x, (D,)) with no explicit eps. PyTorch
+        # resolves None to torch.finfo(x.dtype).eps. For bf16 (Talkie's training
+        # dtype) that is approx 7.8125e-3 — three orders of magnitude larger
+        # than the f32 default (1.19e-7). At Talkie's L2-L3 cancellation cliff
+        # (pytorch ref: x_std ≈ 0.01) the eps dominates the rms denominator:
+        # sqrt(x²_mean + eps) with eps=1e-6 vs 7.8e-3 gives a 3x normalization
+        # ratio, which propagates through the rest of the layer stack. Match
+        # PyTorch's bf16 default so the rms_norm produces the same output even
+        # when activations collapse to near-zero magnitudes.
+        self.gguf_writer.add_layer_norm_rms_eps(self.hparams.get("rms_norm_eps", 7.8125e-3))
 
     def modify_tensors(self, data_torch, name, bid):
         # Reject the original (non-folded) Talkie layout: HeadGain/ActGain/WeightGain
