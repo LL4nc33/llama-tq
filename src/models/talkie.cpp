@@ -35,17 +35,6 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
     // inp_pos - contains the positions
     ggml_tensor * inp_pos = build_inp_pos();
 
-    // Talkie uses inverse rotation (sin sign-flipped vs NEOX). Equivalent to
-    // standard forward rope with negated positions: cos(-θ)=cos θ, sin(-θ)=-sin θ.
-    // Routes through the well-tested forward CUDA kernel (incl. fused
-    // ROPE+VIEW+SET_ROWS for KV-cache writes), which the rope_back kernel
-    // cannot do. Built once outside the layer loop.
-    // I32 → F32 → neg → I32 (ggml_neg requires F32/F16).
-    ggml_tensor * inp_pos_f32     = ggml_cast(ctx0, inp_pos, GGML_TYPE_F32);
-    ggml_tensor * inp_pos_neg_f32 = ggml_neg(ctx0, inp_pos_f32);
-    ggml_tensor * inp_pos_neg     = ggml_cast(ctx0, inp_pos_neg_f32, GGML_TYPE_I32);
-    cb(inp_pos_neg, "inp_pos_neg", -1);
-
     auto * inp_attn = build_attn_inp_kv();
 
     const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f/sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
@@ -111,19 +100,18 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
             //   y1 = x1*cos + x2*sin
             //   y2 = -x1*sin + x2*cos
             // vs standard NEOX (y1 = x1*cos - x2*sin, y2 = x1*sin + x2*cos).
-            // Only difference is sign of sin. Since cos(-θ)=cos θ and sin(-θ)=-sin θ,
-            // we can use the standard forward rope with negated positions to get
-            // identical math. This routes through the well-tested forward kernel
-            // (incl. CUDA fused ROPE+VIEW+SET_ROWS for KV-cache writes), which the
-            // rope_back kernel cannot do (asserts forward=true in fused path).
-            Qcur = ggml_rope_ext(
-                    ctx0, Qcur, inp_pos_neg, nullptr,
+            // The only difference is the sign of sin. ggml_rope_ext_back is the
+            // backward kernel which exactly applies sin_sign = -1.0 on top of the
+            // NEOX layout (pairs at (i, i+n_dims/2)), so it computes Talkie's
+            // forward rotation. Layout/freq math is otherwise identical.
+            Qcur = ggml_rope_ext_back(
+                    ctx0, Qcur, inp_pos, nullptr,
                     n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
                     ext_factor, attn_factor, beta_fast, beta_slow
                     );
 
-            Kcur = ggml_rope_ext(
-                    ctx0, Kcur, inp_pos_neg, nullptr,
+            Kcur = ggml_rope_ext_back(
+                    ctx0, Kcur, inp_pos, nullptr,
                     n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
                     ext_factor, attn_factor, beta_fast, beta_slow
                     );
