@@ -41,17 +41,23 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
-    // Talkie's model.py uses F.rms_norm(x, (D,)) without explicit eps. PyTorch
-    // resolves eps=None to torch.finfo(x.dtype).eps. For bfloat16 this is
-    // 7.8125e-3 (vs the llama.cpp default of 1e-6 stored in GGUF headers).
-    // At Talkie's L2 cancellation cliff (out_std=0.0102) this delta DOMINATES
-    // the rms_norm denominator: sqrt(0.0001+1e-6)≈0.01005 vs sqrt(0.0001+0.0078)
-    // ≈0.0890 — a ~9× normalization difference that propagates through L3-L39.
-    // We hardcode the bf16 default here so the fix applies to EXISTING GGUFs
-    // without re-conversion. (The GGUF header eps is also bumped via convert,
-    // but that only helps fresh conversions — distillery's 25 GB f16 GGUF
-    // would otherwise need a full rebuild.)
-    const float talkie_eps = 7.8125e-3f;
+    // Talkie's model.py uses F.rms_norm(x, (D,)) without explicit eps. The
+    // EARLIER assumption that PyTorch resolves eps=None to torch.finfo(bf16).eps
+    // (7.8125e-3) was WRONG — empirically verified by distillery via interactive
+    // PyTorch: F.rms_norm(x, (D,), eps=None) and eps=1e-6 produce identical
+    // first-value -0.906, while eps=7.8125e-3 produces -0.152 (8× too small).
+    // PyTorch's F.rms_norm uses a much smaller internal default (effectively
+    // ~1e-6 or smaller, NOT dtype-finfo-eps).
+    //
+    // The 8× under-scale at L0 (where embd raw_std ≈ 0.013, so eps=7.8e-3
+    // dominates the rms² ≈ 0.00017 term) cascaded through all 40 layers and
+    // produced byte-token gibberish. With eps=1e-6 (= llama.cpp default and
+    // PyTorch's actual behavior) the trajectory matches reference.
+    //
+    // Fix verified end-to-end: Q4_K_M GGUF + this build now produces vintage
+    // 1930s English on the canonical "If scientists discover life on other
+    // planets," prompt.
+    const float talkie_eps = 1e-6f;
 
     // Talkie: precompute RMSNorm(embedding) once, used as additive skip in every layer.
     ggml_tensor * e_x = ggml_rms_norm(ctx0, inpL, talkie_eps);
