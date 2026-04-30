@@ -3,6 +3,8 @@
 #include "log.h"
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 static std::string common_ggml_ne_string(const ggml_tensor * t) {
@@ -155,6 +157,21 @@ template <bool abort_on_nan> bool common_debug_cb_eval(struct ggml_tensor * t, b
     if (!ggml_is_quantized(t->type) && matches_filter) {
         uint8_t * data = is_host ? (uint8_t *) t->data : cb_data->data.data();
         common_debug_print_tensor<abort_on_nan>(data, t->type, t->ne, t->nb, 3);
+
+        // GGML_TALKIE_DUMP_DIR=<dir> writes matching tensors as raw .bin files.
+        // Used for binary diff against PyTorch reference (distillery's pyref dumps).
+        // File format: raw bytes in ggml column-major order, no header.
+        // Filename: <tensor_name>.bin (e.g. talkie_e_x.bin, l_out-0.bin).
+        static const char * dump_dir = std::getenv("GGML_TALKIE_DUMP_DIR");
+        if (dump_dir && dump_dir[0] != '\0') {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/%s.bin", dump_dir, t->name);
+            FILE * f = std::fopen(path, "wb");
+            if (f) {
+                std::fwrite(data, 1, ggml_nbytes(t), f);
+                std::fclose(f);
+            }
+        }
     }
 
     return true;
