@@ -41,8 +41,20 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
+    // Talkie's model.py uses F.rms_norm(x, (D,)) without explicit eps. PyTorch
+    // resolves eps=None to torch.finfo(x.dtype).eps. For bfloat16 this is
+    // 7.8125e-3 (vs the llama.cpp default of 1e-6 stored in GGUF headers).
+    // At Talkie's L2 cancellation cliff (out_std=0.0102) this delta DOMINATES
+    // the rms_norm denominator: sqrt(0.0001+1e-6)≈0.01005 vs sqrt(0.0001+0.0078)
+    // ≈0.0890 — a ~9× normalization difference that propagates through L3-L39.
+    // We hardcode the bf16 default here so the fix applies to EXISTING GGUFs
+    // without re-conversion. (The GGUF header eps is also bumped via convert,
+    // but that only helps fresh conversions — distillery's 25 GB f16 GGUF
+    // would otherwise need a full rebuild.)
+    const float talkie_eps = 7.8125e-3f;
+
     // Talkie: precompute RMSNorm(embedding) once, used as additive skip in every layer.
-    ggml_tensor * e_x = ggml_rms_norm(ctx0, inpL, hparams.f_norm_rms_eps);
+    ggml_tensor * e_x = ggml_rms_norm(ctx0, inpL, talkie_eps);
     cb(e_x, "talkie_e_x", -1);
 
     // Talkie's forward (model.py): x = self.embed(input_ids); x = F.rms_norm(x, ...);
@@ -57,10 +69,12 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
 
-        // pre-attn RMSNorm (weight is "ones" but kept multiplicative for generality)
-        cur = build_norm(inpL,
-                model.layers[il].attn_norm, NULL,
-                LLM_NORM_RMS, il);
+        // pre-attn RMSNorm — inlined with talkie_eps (bf16 default 7.8125e-3).
+        // attn_norm weight is "ones" (multiplicative no-op) but kept for generality.
+        cur = ggml_rms_norm(ctx0, inpL, talkie_eps);
+        if (model.layers[il].attn_norm) {
+            cur = ggml_mul(ctx0, cur, model.layers[il].attn_norm);
+        }
         cb(cur, "attn_norm", il);
 
         // self-attention
@@ -98,8 +112,8 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
 
             // qk_norm: RMSNorm on Q and K after RoPE (no learnable scale).
             // Activation-side normalization, cannot be folded into weights.
-            Qcur = ggml_rms_norm(ctx0, Qcur, hparams.f_norm_rms_eps);
-            Kcur = ggml_rms_norm(ctx0, Kcur, hparams.f_norm_rms_eps);
+            Qcur = ggml_rms_norm(ctx0, Qcur, talkie_eps);
+            Kcur = ggml_rms_norm(ctx0, Kcur, talkie_eps);
 
             cb(Qcur, "Qcur_normed", il);
             cb(Kcur, "Kcur_normed", il);
@@ -122,10 +136,11 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
         ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
         cb(ffn_inp, "ffn_inp", il);
 
-        // pre-ffn RMSNorm
-        cur = build_norm(ffn_inp,
-                model.layers[il].ffn_norm, NULL,
-                LLM_NORM_RMS, il);
+        // pre-ffn RMSNorm — inlined with talkie_eps.
+        cur = ggml_rms_norm(ctx0, ffn_inp, talkie_eps);
+        if (model.layers[il].ffn_norm) {
+            cur = ggml_mul(ctx0, cur, model.layers[il].ffn_norm);
+        }
         cb(cur, "ffn_norm", il);
 
         // SwiGLU FFN (Mistral-style)
@@ -166,9 +181,11 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
     }
     cur = inpL;
 
-    cur = build_norm(cur,
-            model.output_norm, NULL,
-            LLM_NORM_RMS, -1);
+    // Final RMSNorm — inlined with talkie_eps.
+    cur = ggml_rms_norm(ctx0, cur, talkie_eps);
+    if (model.output_norm) {
+        cur = ggml_mul(ctx0, cur, model.output_norm);
+    }
 
     cb(cur, "result_norm", -1);
     cb(cur, "talkie_final_hidden", -1);  // pre-lm_head, layer-39-final-hidden compare
