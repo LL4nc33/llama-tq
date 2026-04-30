@@ -143,9 +143,20 @@ llm_build_talkie::llm_build_talkie(const llama_model & model, const llm_graph_pa
 
         // Talkie embed_skip: cur = cur + embed_skip_scale[il] * e_x
         // embed_skip_scale is a [1] tensor that broadcasts over [D, n_tokens].
-        ggml_tensor * skip = ggml_mul(ctx0, e_x, model.layers[il].embed_skip_scale);
-        cb(skip, "embed_skip", il);
-        cur = ggml_add(ctx0, cur, skip);
+        //
+        // Debug toggle: GGML_TALKIE_NO_SKIP=1 zeroes the skip term to test
+        // whether embed_skip is dominating the residual stream and producing
+        // a constant-bias logits collapse. Co-tracked with distillery via
+        // LEGION 0205 mail.
+        static const bool talkie_no_skip = []() {
+            const char * env = std::getenv("GGML_TALKIE_NO_SKIP");
+            return env != nullptr && env[0] != '\0' && env[0] != '0';
+        }();
+        if (!talkie_no_skip) {
+            ggml_tensor * skip = ggml_mul(ctx0, e_x, model.layers[il].embed_skip_scale);
+            cb(skip, "embed_skip", il);
+            cur = ggml_add(ctx0, cur, skip);
+        }
         cb(cur, "l_out", il);
 
         cur = build_cvec(cur, il);
