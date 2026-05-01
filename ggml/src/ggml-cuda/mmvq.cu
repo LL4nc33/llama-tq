@@ -290,28 +290,6 @@ static constexpr __device__ int get_mmvq_mmid_max_batch_for_device() {
 
 static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_dst, mmvq_parameter_table_id table_id) {
     if (table_id == MMVQ_PARAMETERS_GENERIC) {
-        // NVIDIA Turing (sm_75) ncols_dst=1 whitelist for nwarps=8.
-        // Mirrors the RDNA3_0/RDNA4 whitelist below: simple-vec_dot quants benefit
-        // from 8 warps/block (256 threads) for higher SM occupancy.
-        // Complex vec_dot (Q3_K, IQ2_*, IQ3_*) skip due to register pressure.
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800
-        if (ncols_dst == 1) {
-            switch (type) {
-                case GGML_TYPE_Q4_0:
-                case GGML_TYPE_Q4_1:
-                case GGML_TYPE_Q5_0:
-                case GGML_TYPE_Q5_1:
-                case GGML_TYPE_Q8_0:
-                case GGML_TYPE_Q4_K:
-                case GGML_TYPE_Q6_K:
-                case GGML_TYPE_IQ4_NL:
-                case GGML_TYPE_IQ4_XS:
-                    return 8;
-                default:
-                    break;
-            }
-        }
-#endif
         switch (ncols_dst) {
             case 1:
             case 2:
