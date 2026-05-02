@@ -1,0 +1,5 @@
+config	bpw	pp512	tg128	tag
+ktq2_1+vtq4_1	5.0	1632.75	78.70	legacy-current-prod
+ktq2+vtq2	2.78	2006.80	79.59	v8-default
+ktq2+vtq3	3.56	2004.55	79.57	v8-quality
+ktq2+vtq4	5.0	-	-	v8-archival
