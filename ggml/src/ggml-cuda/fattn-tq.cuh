@@ -862,10 +862,13 @@ static __device__ __forceinline__ void dequantize_V_vtq4_2(const void * __restri
     dequantize_V_vtq_2<block_vtq4_2, 4, T, ne>(vx, dst, i0);
 }
 
-// VTQ_3 family — same trellis backbone as VTQ_2 plus VTQ_OUTLIER_K=4 fp16
+// VTQ_3 family — same trellis backbone as VTQ_2 plus OUTLIER_K fp16
 // outlier samples per block. After trellis decode, positions listed in
 // outlier_pos[] are overwritten with outlier_val[] (Phase 3 Step 4b).
-template <typename block_t, int K, typename T, int ne>
+//
+// OUTLIER_K parameterizes outlier count: defaults to VTQ_OUTLIER_K=4 for
+// vtq{2,3,4}_3; VTQ3_V8 (TurboQuant v8) uses VTQ_OUTLIER_K_V8=2.
+template <typename block_t, int K, typename T, int ne, int OUTLIER_K = VTQ_OUTLIER_K>
 static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_t * x = (const block_t *) vx;
     const int64_t ib = i0 / QK_VTQ_TRELLIS;
@@ -879,14 +882,14 @@ static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restric
     const float ds = cb_scale * d;
 
     // Load outlier sidecar once into registers for cheap per-sample compare.
-    const uint8_t op0 = x[ib].outlier_pos[0];
-    const uint8_t op1 = x[ib].outlier_pos[1];
-    const uint8_t op2 = x[ib].outlier_pos[2];
-    const uint8_t op3 = x[ib].outlier_pos[3];
-    const half ov0 = ((const half *) x[ib].outlier_val)[0];
-    const half ov1 = ((const half *) x[ib].outlier_val)[1];
-    const half ov2 = ((const half *) x[ib].outlier_val)[2];
-    const half ov3 = ((const half *) x[ib].outlier_val)[3];
+    // Static array of size OUTLIER_K — compiler hoists into registers.
+    int   op[OUTLIER_K];
+    float ov[OUTLIER_K];
+    #pragma unroll
+    for (int k = 0; k < OUTLIER_K; ++k) {
+        op[k] = (int) x[ib].outlier_pos[k];
+        ov[k] = __half2float(((const half *) x[ib].outlier_val)[k]);
+    }
 
     if (d == 0.0f) {
         #pragma unroll
@@ -905,11 +908,11 @@ static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restric
         const int pos = il + l;
         const uint32_t state = vtq_state_at<K>(s0, qs, pos + 1);
         float val = vtq_trellis_table_storage[state] * ds;
-        // Outlier patch — at most one of the four positions matches.
-        if      (pos == (int)op0) val = __half2float(ov0);
-        else if (pos == (int)op1) val = __half2float(ov1);
-        else if (pos == (int)op2) val = __half2float(ov2);
-        else if (pos == (int)op3) val = __half2float(ov3);
+        // Outlier patch — at most one of the OUTLIER_K positions matches.
+        #pragma unroll
+        for (int k = 0; k < OUTLIER_K; ++k) {
+            if (pos == op[k]) val = ov[k];
+        }
         if constexpr (std::is_same_v<T, half>) {
             ((half *) dst)[l] = __float2half(val);
         } else {
@@ -931,6 +934,12 @@ static __device__ __forceinline__ void dequantize_V_vtq3_3(const void * __restri
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq4_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     dequantize_V_vtq_3<block_vtq4_3, 4, T, ne>(vx, dst, i0);
+}
+
+// VTQ3_V8 (TurboQuant v8): trellis-3bit + 2 outliers (3.625 bpw, 58 B/block).
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq3_v8(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_3<block_vtq3_v8, 3, T, ne, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, dst, i0);
 }
 
 // ============================================================
@@ -1014,6 +1023,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_vtq3_3<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ4_3) {
         return dequantize_V_vtq4_3<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ3_V8) {
+        return dequantize_V_vtq3_v8<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
