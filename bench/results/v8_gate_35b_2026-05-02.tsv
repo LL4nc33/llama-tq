@@ -1,0 +1,5 @@
+config	ppl	status	wallclock_s	tag
+f16+f16	7.2044	ok	14	baseline-f16
+ktq2_1+vtq2_1	7.4816	ok	7	legacy-prod-current
+ktq2_1+vtq2_2	7.1807	ok	6	legacy-prod-2025-default
+ktq2+vtq3	7.2024	ok	69	v8-NEW-default
