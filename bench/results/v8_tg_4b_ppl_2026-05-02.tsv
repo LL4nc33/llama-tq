@@ -1,0 +1,9 @@
+config	bpw	ppl	drift_pct	wallclock_s	tag
+f16+f16	32.0	8.6946	0.00	10	baseline
+ktq2_1+vtq4_1	5.0	8.7117	0.20	4	legacy-current-prod-4B-best
+ktq2+vtq2	2.78	8.6643	-0.35	5	v8-default-aggressive-VRAM
+ktq2+vtq3	3.56	8.6643	-0.35	5	v8-quality-tier
+ktq3+vtq3	4.06	8.6643	-0.35	4	v8-research-tier
+ktq2+vtq4	5.0	8.7117	0.20	5	v8-archival-tier
+ktq2_1+vtq3_3	3.78	8.6643	-0.35	4	legacy-vtq3_3-best-PPL
+ktq4+vtq4	6.0	8.7117	0.20	5	v8-max-tier
