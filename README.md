@@ -91,10 +91,13 @@ cmake --build build -j$(nproc) --target llama-server
 
 ### Pick your tier
 
+> **TurboQuant v8 (2026-05-02):** short CLI aliases `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults. New `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers — essentially **lossless** on 35B-A3B (−0.03% PPL drift vs f16 baseline). Legacy long names (`ktq2_1`, `vtq2_2`, etc.) remain supported.
+
 | Tier | K | V | Avg bpw | VRAM saved | PPL cost | Who it's for |
 |---|---|---|:---:|:---:|:---:|---|
-| ⭐ **Lossless** (recommended) | `ktq2_1` | `vtq2_2` | 2.78 | **83%** | **+0.15%** | Most users. Fits ~330k single-ctx (or ~470k with `-ub 128`, or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. |
-| 🪜 **Multi-tenant** (parallel slots) | `ktq2_1` | `vtq2_2` | 2.78 | **83%** | **+0.15%** | Multi-user / agent fleets. `gpt-oss-20b F16` (12.85 GB MXFP4-native) fits 24 GB with **4 concurrent 65k slots** (262k total) at 61 t/s per slot. |
+| ⭐ **Lossless** (recommended) | `ktq2` | `vtq2` | 2.78 | **83%** | **+0.15%** | Most users. Fits ~330k single-ctx (or ~470k with `-ub 128`, or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. Alias of `ktq2_1`/`vtq2_2`. |
+| 🪜 **Multi-tenant** (parallel slots) | `ktq2` | `vtq2` | 2.78 | **83%** | **+0.15%** | Multi-user / agent fleets. `gpt-oss-20b F16` (12.85 GB MXFP4-native) fits 24 GB with **4 concurrent 65k slots** (262k total) at 61 t/s per slot. |
+| 🆕 **Quality v8** | `ktq2` | `vtq3` | 3.56 | 78% | **−0.03%** | Essentially f16-quality at 3.56 bpw. New `vtq3_v8` = trellis-3bit + 2 outliers (12% smaller than legacy `vtq3_3`). |
 | **Aggressive** | `ktq2_1` | `vtq3_1` | 4.0 | 77% | +0.49% | Trade ~0.5% PPL for a different bpw point if v2 isn't built. |
 | **Conservative** | `q8_0` | `vtq3_1` | 6.25 | 61% | +1.05% | Falls back to the standard `q8_0` K-quant — no KTQ kernels needed. |
 | **Research** | `q8_0` | `vtq4_2` | 6.03 | 62% | +0.44% | Highest-quality Trellis V-cache, larger blocks. |
