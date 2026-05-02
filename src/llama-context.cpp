@@ -3257,7 +3257,7 @@ llama_context * llama_init_from_model(
                                params.type_v == GGML_TYPE_VTQ2_2 || params.type_v == GGML_TYPE_VTQ3_2 ||
                                params.type_v == GGML_TYPE_VTQ4_2 || params.type_v == GGML_TYPE_VTQ_MIXED ||
                                params.type_v == GGML_TYPE_VTQ2_3 || params.type_v == GGML_TYPE_VTQ3_3 ||
-                               params.type_v == GGML_TYPE_VTQ4_3);
+                               params.type_v == GGML_TYPE_VTQ4_3 || params.type_v == GGML_TYPE_VTQ3_V8);
         if (!is_vtq_v) {
             const uint32_t blck_size = ggml_blck_size(params.type_v);
             for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {
