@@ -24,23 +24,23 @@
 
 ## Contents
 
-- [vs llama.cpp upstream](#vs-llamacpp-upstream--apples-to-apples-2026-05-02)  ← apples-to-apples on 35B-A3B
-- [Highlights](#highlights)
-- [Quick Start](#quick-start)
-- [KV-cache families](#kv-cache-families)
-- [Large-MoE deployments](#large-moe-deployments)
-- [Benchmarks](#benchmarks)
-- [Perplexity (wikitext-2)](#perplexity-wikitext-2)
-- [KV memory savings](#kv-memory-savings)
-- [How it works](#how-it-works)
-- [Client integration](#client-integration)  ← OpenAI, Anthropic, Ollama dialects native
-- [Build](#build)
-- [Roadmap](#roadmap)
-- [When *not* to use this fork](#when-not-to-use-this-fork)
+**Always visible:**
+- [Quick Start](#quick-start) — build + 2 flags + 5-tier table
+- [vs llama.cpp upstream](#vs-llamacpp-upstream--apples-to-apples-2026-05-02) — A/B 2026-05-02
+- [Client integration](#client-integration) — OpenAI / Anthropic / Ollama native
+
+**Collapsed (click to expand):**
+- Glossary, Quality-vs-throughput score, Full feature matrix
+- KV-cache families (KTQ, VTQ v1/v2/v3)
+- Live performance numbers, Large-MoE deployments (5 models)
+- Benchmarks (full 4×4 matrix, 50+ configs)
+- Perplexity (wikitext-2), KV memory savings
+- How it works, Build, Roadmap
 
 ---
 
-### Glossary (skim once, then come back)
+<details>
+<summary><b>Glossary</b> — skim if you need it</summary>
 
 | Term | What it means |
 |---|---|
@@ -54,7 +54,10 @@
 
 ![KV-cache bpw vs PPL Pareto frontier](docs/img/ppl_vs_bpw.png)
 
-### Quality-vs-throughput score (35B-A3B IQ2_XXS, wikitext-2 ctx=2048/5ch + tg256)
+</details>
+
+<details>
+<summary><b>Quality-vs-throughput score</b> — Pareto leaderboard (35B-A3B)</summary>
 
 Combined score: `ppl_delta_pct + 0.5 × tg_slowdown_pct`. Lower is better. f16/f16 is the reference.
 
@@ -70,11 +73,12 @@ Combined score: `ppl_delta_pct + 0.5 × tg_slowdown_pct`. Lower is better. f16/f
 
 From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/README.md) for iterating on new quant variants.
 
----
+</details>
 
-## Highlights
+<details>
+<summary><b>Full feature matrix</b> — what's shipped, what's experimental</summary>
 
-> **TL;DR:** K-cache and V-cache are quantized **independently**. You pick a K-type (`ktq1_1`…`ktq4_1` at 2.5–5.5 bpw) and a V-type (`vtq1_1`…`vtq4_1` at 1.5–4.5 bpw, or `vtq2_2`…`vtq4_2` Trellis at 2.25–4.25 bpw) — the FA kernel family covers every combination. Use a low-bpw V-type with a higher-bpw K-type for the cleanest quality-per-byte trade.
+> K-cache and V-cache are quantized **independently**. You pick a K-type (`ktq1_1`…`ktq4_1` at 2.5–5.5 bpw) and a V-type (`vtq1_1`…`vtq4_1` at 1.5–4.5 bpw, or `vtq2_2`…`vtq4_2` Trellis at 2.25–4.25 bpw) — the FA kernel family covers every combination. Use a low-bpw V-type with a higher-bpw K-type for the cleanest quality-per-byte trade.
 
 | Thing | Status |
 |-------|--------|
@@ -82,11 +86,13 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 | **VTQ V-cache v1** — DHD rotation + Laplace-fit codebook, 1/2/3/4-bit (1.5–4.5 bpw), codebook lookup in FA inner loop | shipped, 4 types |
 | **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.25 / 3.25 / 4.25 bpw — current default since 2026-04-25 | shipped, all D=64/128/256/512 verified |
 | **VTQ V-cache v3 (Trellis + outlier-channel-split)** — v2 backbone plus 4 fp16-outliers per block; +1 bpw avg, ~4× lower V-noise floor | shipped (research tier) |
-| **Asymmetric K/V dispatch** — K and V types chosen independently, single FA path. All three VTQ families (VTQ_1 / VTQ_2 / VTQ_3) cover all 11 K-types under `GGML_CUDA_FA_ALL_QUANTS`; default builds ship the full KTQ × VTQ matrix (44 K-K combos verified live, smoke-tested KTQ4_1 × VTQ3_2 etc.) | shipped, full matrix |
+| **Asymmetric K/V dispatch** — K and V types chosen independently, single FA path. All three VTQ families (VTQ_1 / VTQ_2 / VTQ_3) cover all 11 K-types under `GGML_CUDA_FA_ALL_QUANTS`; default builds ship the full KTQ × VTQ matrix (44 K-K combos verified live) | shipped, full matrix |
 | **Deferred K/V quantization** — f16 staging during prefill, bulk-convert at prefill→decode boundary; avoids repetition-loop pathology on K | auto-enabled for KTQ / VTQ\_2 |
 | **Anthropic-compatible `/v1/messages`** with prompt caching, tool-call early-stop, `--keep` shift protection | shipped |
 
-**Hardware target:** NVIDIA Turing (CC 7.5) — launch\_bounds and FA tuning are calibrated for sm\_75. **Runs on all CUDA GPUs from CC 6.1+** — Pascal (GTX 10-series), Turing (GTX 16 / RTX 20), Ampere (RTX 30), Ada (RTX 40) and Blackwell (RTX 50). On newer archs everything is functional but not yet arch-specifically tuned. Arch-specific contributions (FP8 Tensor Cores on Ada+, WGMMA on Hopper) welcome.
+**Hardware target:** NVIDIA Turing (CC 7.5) — launch\_bounds and FA tuning are calibrated for sm\_75. **Runs on all CUDA GPUs from CC 6.1+** — Pascal (GTX 10-series), Turing (GTX 16 / RTX 20), Ampere (RTX 30), Ada (RTX 40) and Blackwell (RTX 50). On newer archs everything is functional but not yet arch-specifically tuned.
+
+</details>
 
 ---
 
@@ -183,7 +189,8 @@ Same hardware (test box, 2× RTX 2060, Ryzen 7 3700X host), same `-fa 1 -ts 12,1
 
 ---
 
-## KV-cache families
+<details>
+<summary><b>KV-cache families</b> — KTQ (K-cache), VTQ v1/v2/v3 (V-cache)</summary>
 
 This fork ships **three V-cache families** and **one K-cache family**. All can be freely combined (asymmetric K/V is the reference deployment pattern). Current default since 2026-04-25: `--cache-type-k ktq2_1 --cache-type-v vtq2_2`.
 
@@ -243,15 +250,21 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 
 **Combining KTQ K with VTQ V:** asymmetric is the reference config. The 35B live deployment uses `ktq2_1 + vtq2_2` at **2.78 bpw avg** for a measured +0.27%–+0.47% PPL hit (well below noise floor). `vtq3_3` adds 1 bpw on V for a further marginal improvement.
 
+</details>
+
 ---
 
-## Live performance numbers
+<details>
+<summary><b>Live performance numbers</b> — single source of truth</summary>
 
 **Single source of truth:** [`docs/bench/LIVE_NUMBERS.md`](docs/bench/LIVE_NUMBERS.md) — current TG, PPL, HellaSwag for all five deploy targets. That file is updated each phase; the per-model deep-dives below stay structurally stable.
 
 **Phase 4 (2026-04-26)** added an adaptive layer-split + `OMP_WAIT_POLICY=active` + `__builtin_prefetch` in `mul_mat_id` to the deploy stack. Net **+18.5% TG on 80B** (30.80 → ~36.5 t/s at ctx ≤ 8192), **+9.3% on 122B** (16.69 → 18.24 t/s). Long-context configs (>8k) fall back to the safe split that fits ctx=200000. New: Qwen3.6-27B dense single-GPU deploy, 5.1× faster than the old Qwen3.5-27B-Q4 offload path.
 
-## Large-MoE deployments
+</details>
+
+<details>
+<summary><b>Large-MoE deployments</b> — gpt-oss-20b, Gemma4-26B, 35B-A3B, 80B-A3B, 122B-A10B</summary>
 
 These are the five MoE models we deploy. All measured on the same box: Ryzen 7 3700X host (Zen 2, 8C/16T, 2 CCDs × 2 CCXs, separate L3 per CCX) — test box is a KVM guest VM with 12 vCPUs, 40 GB DDR4-3200 (~40 GB/s real), 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4).
 
@@ -416,11 +429,14 @@ For 122B, **stay on IQ2_XXS at long ctx**. The TQ1_0 trick that made 80B fly (fu
 
 **PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Deploy PPL sweep: [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
 
+</details>
+
 ---
 
-## Benchmarks
+<details>
+<summary><b>Benchmarks</b> — 4-model summary, full K×V matrix, methodology</summary>
 
-All measurements: Ryzen 7 3700X + 2× RTX 2060 12 GB + DDR4-3200, Flash Attention on. Production sweep build `0639f7835` / 2026-04-25.
+All measurements: Ryzen 7 3700X + 2× RTX 2060 12 GB + DDR4-3200, Flash Attention on. Sweep build `0639f7835` / 2026-04-25.
 
 ### 4-Model summary (`ktq2_1 + vtq2_2` vs baseline)
 
@@ -654,7 +670,10 @@ For llama-server use the existing `--tq-v-override` flag.
 
 ---
 
-## Perplexity (wikitext-2)
+</details>
+
+<details>
+<summary><b>Perplexity (wikitext-2)</b> — quality measurements</summary>
 
 > **Why you'll see different TG numbers across this README for the same config.** TG measurements depend on the harness (`llama-bench` `tg128` vs `tg256` vs `tg1024`, vs live server-runtime t/s), the run count (`-r 2` vs default), and whether the run includes prefill warmup. Examples for `Qwen3.6-35B ktq2_1+vtq2_2` in this doc: 75.40 (apples-to-apples table, llama-bench `tg128`), 74.86 (full sweep matrix, `tg128`), 74.9 (per-model deploy table summary), 72.00 (decode throughput table, `tg256` with `-p 0 -r 2`). All are real measurements on the same box; the variation is harness/methodology, not a regression.
 >
@@ -730,7 +749,10 @@ From `llama-bench -fa 1 -ngl 99 -n 256 -p 0 -r 2`. Running on 2× RTX 2060 12 GB
 
 ---
 
-## KV memory savings
+</details>
+
+<details>
+<summary><b>KV memory savings</b> — full 5×8 K × V matrix</summary>
 
 Measured on Qwen3.6-35B-A3B-UD-IQ2_XXS at ctx=8192 (10 attention layers out of 48 have KV). Numbers are the actual allocated KV-cache size as reported by the runtime, not a theoretical bpw calculation.
 
@@ -761,7 +783,10 @@ Measurement note: the 10-layer count is Qwen3.6-35B-A3B specific (48 blocks tota
 
 ---
 
-## How it works
+</details>
+
+<details>
+<summary><b>How it works</b> — RHT, Lloyd-Max, Trellis, Hadamard-domain Q·K</summary>
 
 The trick is to use **different formats for K and V**, because they hit Flash Attention differently.
 
@@ -772,6 +797,8 @@ The trick is to use **different formats for K and V**, because they hit Flash At
 Full design notes (RHT math, register pressure on CC 7.5, encoder details) live in [`docs/turboquant.md`](docs/turboquant.md). Source: `ggml/src/ggml-trellis.{h,c}`.
 
 ---
+
+</details>
 
 ## Client integration
 
@@ -798,7 +825,8 @@ Quick-start: [docs/claude-code.md](docs/claude-code.md) for Claude Code over SSH
 
 ---
 
-## Build
+<details>
+<summary><b>Build</b> — CMake + CUDA</summary>
 
 ```bash
 cmake -B build -DGGML_CUDA=ON
@@ -816,7 +844,10 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 
 ---
 
-## Roadmap
+</details>
+
+<details>
+<summary><b>Roadmap</b> — shipped, active research, discarded</summary>
 
 **Shipped**
 - **v8 unified CLI aliases** (2026-05-02) — short names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to proven defaults. Legacy long names still supported.
@@ -851,6 +882,8 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 - Multi-node inference
 
 ---
+
+</details>
 
 ## When *not* to use this fork
 
