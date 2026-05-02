@@ -514,7 +514,7 @@ static ggml_type ggml_type_from_name(const std::string & s) {
         return GGML_TYPE_VTQ2_2;  // current prod default (trellis)
     }
     if (s == "vtq3") {
-        return GGML_TYPE_VTQ3_2;  // Phase 2 will redirect to vtq3_v8
+        return GGML_TYPE_VTQ3_V8;  // v8: trellis-3bit + 2 outliers (3.625 bpw)
     }
     if (s == "vtq4") {
         return GGML_TYPE_VTQ4_1;
@@ -568,6 +568,9 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     }
     if (s == "vtq4_3") {
         return GGML_TYPE_VTQ4_3;
+    }
+    if (s == "vtq3_v8") {
+        return GGML_TYPE_VTQ3_V8;
     }
 
     return GGML_TYPE_COUNT;

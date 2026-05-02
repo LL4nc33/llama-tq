@@ -445,7 +445,8 @@ extern "C" {
         GGML_TYPE_VTQ3_3  = 55, // V-cache: Trellis v2 + 4 fp16 outlier positions, 4.00 bpw
         GGML_TYPE_VTQ4_3  = 56, // V-cache: Trellis v2 + 4 fp16 outlier positions, 5.00 bpw
         GGML_TYPE_XKTQ2_1 = 57, // K-cache XQuant subordinate: own scale only, codes shared from sibling layer (~2.0 bpw metadata)
-        GGML_TYPE_COUNT   = 58,
+        GGML_TYPE_VTQ3_V8 = 58, // V-cache: Trellis 3-bit + 2 fp16 outliers (v8 redesign of vtq3_3, 3.625 bpw)
+        GGML_TYPE_COUNT   = 59,
     };
 
     // precision
