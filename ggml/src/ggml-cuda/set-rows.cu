@@ -579,6 +579,24 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
+    } else if (dst->type == GGML_TYPE_VTQ3_V8) {
+        // VTQ3_V8 (TurboQuant v8): trellis-3bit + 2 fp16 outliers (3.625 bpw).
+        // Encoder writes only the trellis backbone; outlier_pos/outlier_val
+        // are filled by ggml_trellis_outliers_pick on the CPU side during the
+        // prefill→decode handoff (same machinery as VTQ_3 family). Memset to
+        // zero so the FA dequant kernel sees a sane "patch sample 0 to 0"
+        // pattern until the picker overwrites them.
+        const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq3_v8);
+        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        vtq_cuda_encode_set_rows<idx_t, block_vtq3_v8, 3>(
+            src0_d, src1_d, (block_vtq3_v8*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
     } else {
         GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
     }

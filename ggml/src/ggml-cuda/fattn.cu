@@ -324,7 +324,8 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // VTQ types are V-cache only — always asymmetric K!=V
     const bool is_vtq_v = V->type == GGML_TYPE_VTQ1_1 || V->type == GGML_TYPE_VTQ2_1 || V->type == GGML_TYPE_VTQ3_1 || V->type == GGML_TYPE_VTQ4_1 ||
                           V->type == GGML_TYPE_VTQ2_2 || V->type == GGML_TYPE_VTQ3_2 || V->type == GGML_TYPE_VTQ4_2 ||
-                          V->type == GGML_TYPE_VTQ2_3 || V->type == GGML_TYPE_VTQ3_3 || V->type == GGML_TYPE_VTQ4_3;
+                          V->type == GGML_TYPE_VTQ2_3 || V->type == GGML_TYPE_VTQ3_3 || V->type == GGML_TYPE_VTQ4_3 ||
+                          V->type == GGML_TYPE_VTQ3_V8;
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
     // Exception for asymmetric KTQ K + f16 V (MMA-KTQ split/inline paths below)

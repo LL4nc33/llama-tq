@@ -97,7 +97,8 @@ static __global__ void flash_attn_ext_vec(
     constexpr bool is_vtq1_family = type_V == GGML_TYPE_VTQ1_1 || type_V == GGML_TYPE_VTQ2_1
                                  || type_V == GGML_TYPE_VTQ3_1 || type_V == GGML_TYPE_VTQ4_1;
     constexpr bool is_vtq2_family = type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2
-                                 || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3;
+                                 || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3
+                                 || type_V == GGML_TYPE_VTQ3_V8;
     constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne
                                     : ((is_vtq1_family || is_vtq2_family) && D >= 256 ? 8 : 4);
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
@@ -667,7 +668,8 @@ static __global__ void flash_attn_ext_vec_paired(
     constexpr bool is_vtq1_family = type_V == GGML_TYPE_VTQ1_1 || type_V == GGML_TYPE_VTQ2_1
                                  || type_V == GGML_TYPE_VTQ3_1 || type_V == GGML_TYPE_VTQ4_1;
     constexpr bool is_vtq2_family = type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2
-                                 || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3;
+                                 || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3
+                                 || type_V == GGML_TYPE_VTQ3_V8;
     constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne
                                     : ((is_vtq1_family || is_vtq2_family) && D >= 256 ? 8 : 4);
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
