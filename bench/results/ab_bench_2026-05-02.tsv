@@ -1,0 +1,9 @@
+build	k	v	pp512	tg128
+upstream	f16	f16	1232.30	85.79
+upstream	q8_0	q8_0	1214.55	83.50
+upstream	q4_0	q4_0	1213.63	82.42
+llama-tq	f16	f16	1195.70	87.77
+llama-tq	q8_0	q8_0	1182.60	84.08
+llama-tq	q4_0	q4_0	1179.95	83.30
+llama-tq	ktq2	vtq2	1178.15	85.71
+llama-tq	ktq2	vtq3	1176.53	85.60
