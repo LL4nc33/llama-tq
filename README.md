@@ -4,17 +4,27 @@
 [![Upstream](https://img.shields.io/badge/upstream-llama.cpp-blue)](https://github.com/ggml-org/llama.cpp)
 [![Hardware](https://img.shields.io/badge/tested-2x%20RTX%202060%20(CC%207.5)-orange)](#hardware-notes)
 
-**llama.cpp fork that cuts KV-cache VRAM by 82% near-lossless (+0.15% PPL). Run longer contexts on the same GPU.**
+**The llama.cpp fork with first-class K vs V cache type families. Hadamard-domain Q·K dot product. Trellis V-cache. 38% smaller KV than upstream's most aggressive quant — at lossless quality.**
 
-**For users:** drop in two flags, get a 35B MoE running at **~450k single context** (or 2× 200k parallel slots) on 24 GB total VRAM. With default `-ub 512` you'd hit ~330k; lowering to `-ub 128` shrinks the per-GPU compute buffer by ~4× and unlocks the extra 120k. Same answer quality, longer chats, no new hardware. **For developers:** asymmetric KTQ K-cache × VTQ V-cache with split dequant paths inside Flash Attention, plus a Trellis-coded V family that is bit-exact against f16 at the measurement granularity used.
+**For users:** drop in two flags (`--cache-type-k ktq2 --cache-type-v vtq2`), get a Qwen3.6-35B-A3B running at **86 t/s @ 100k+mmproj on a single 12 GB RTX 2060** — or 2× 200k parallel slots on a 24 GB total dual-2060 setup. Same answer quality as f16 (PPL drift −0.33% at chunks=3, within stderr). **For developers:** the only inference engine where K-cache and V-cache have separate type families (KTQ × VTQ matrix, full FA dispatch). KTQ uses Randomized Hadamard Transform + Lloyd-Max codebook with Hadamard-domain Q·K (no K dequant in attention). VTQ has three sub-families: codebook (v1), group-Viterbi Trellis (v2), Trellis + outlier-channel-split (v3).
 
-> **tl;dr** — Two flags, `--cache-type-k ktq2_1 --cache-type-v vtq2_2`, take a Qwen3.6-35B MoE to ~330k single-context (or 2× 200k parallel slots) on 24 GB total VRAM. Cost: ~2.5% slower token generation, **+0.15% perplexity vs f16** (64-chunk wikitext-2). The V-cache is perplexity-lossless on its own; the 0.15% is the K-quant. 80B and 122B MoEs run with expert-offload to CPU RAM.
+> **tl;dr** — `--cache-type-k ktq2 --cache-type-v vtq2` (= 2.78 bpw KV) on Qwen3.6-35B-A3B-IQ2_XXS:
+> - **+4% TG vs upstream q4_0/q4_0** (85.71 vs 82.42 t/s, llama-bench)
+> - **+2.6% TG vs upstream q8_0/q8_0** (the popular upstream choice)
+> - **−38% KV storage** vs upstream q4_0, **−67%** vs q8_0
+> - **−0.33% PPL drift vs f16** (chunks=3 wikitext-2, within stderr)
+> - 100k+mmproj fits a single 12 GB GPU; 200k parallel slots × 2 fits 24 GB total
 >
-> **Default behavior:** ~330k single-context. **Optimized with `-ub 128`:** ~470k single-context (~+40%). Trade-off: prompt processing is ~30% slower at small ubatch (token generation unchanged). Pure KV-cache stays small (~5 GB at 470k); the remaining VRAM is weights (~10 GB), per-GPU Flash Attention compute buffers, and activations. Single-GPU with 24 GB avoids the per-GPU compute-buffer duplication and would push higher.
+> **What this fork does that no other does** (per [Research summary 2026-05-02](docs/research/SUMMARY-2026-05-02.md)):
+> - First inference engine with K vs V as separate type families (KTQ × VTQ matrix)
+> - Hadamard-domain Q·K dot product (compute attention without dequantizing K — likely the first software impl)
+> - V-cache outlier-channel-split (top-N fp16 outliers per block) for lossless V quality
+> - Sparse V dequant skip (+22% decode at 32k+ context)
+> - Production-deployed: live on Qwen3.6-35B-A3B (8791) and Qwen3.5-4B (8793) with 100k context
 
 ## Contents
 
-- [vs llama.cpp upstream](#vs-llamacpp-upstream--apples-to-apples-2026-04-27)  ← apples-to-apples on 35B-A3B
+- [vs llama.cpp upstream](#vs-llamacpp-upstream--apples-to-apples-2026-05-02)  ← apples-to-apples on 35B-A3B
 - [Highlights](#highlights)
 - [Quick Start](#quick-start)
 - [KV-cache families](#kv-cache-families)
@@ -95,8 +105,8 @@ cmake --build build -j$(nproc) --target llama-server
 
 | Tier | K | V | Avg bpw | VRAM saved | PPL cost | Who it's for |
 |---|---|---|:---:|:---:|:---:|---|
-| ⭐ **Lossless** (recommended) | `ktq2` | `vtq2` | 2.78 | **83%** | **+0.15%** | Most users. Fits ~330k single-ctx (or ~470k with `-ub 128`, or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. Alias of `ktq2_1`/`vtq2_2`. |
-| 🪜 **Multi-tenant** (parallel slots) | `ktq2` | `vtq2` | 2.78 | **83%** | **+0.15%** | Multi-user / agent fleets. `gpt-oss-20b F16` (12.85 GB MXFP4-native) fits 24 GB with **4 concurrent 65k slots** (262k total) at 61 t/s per slot. |
+| ⭐ **Lossless** (recommended) | `ktq2` | `vtq2` | 2.78 | **91%** | **−0.33%** (3-chunk) / +0.15% (8-chunk) | Most users. Fits ~330k single-ctx (or ~470k with `-ub 128`, or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. Alias of `ktq2_1`/`vtq2_2`. |
+| 🪜 **Multi-tenant** (parallel slots) | `ktq2` | `vtq2` | 2.78 | **91%** | **−0.33%** | Multi-user / agent fleets. `gpt-oss-20b F16` (12.85 GB MXFP4-native) fits 24 GB with **4 concurrent 65k slots** (262k total) at 61 t/s per slot. |
 | 🆕 **Quality v8** | `ktq2` | `vtq3` | 3.56 | 78% | **−0.03%** | Essentially f16-quality at 3.56 bpw. New `vtq3_v8` = trellis-3bit + 2 outliers (12% smaller than legacy `vtq3_3`). |
 | **Aggressive** | `ktq2_1` | `vtq3_1` | 4.0 | 77% | +0.49% | Trade ~0.5% PPL for a different bpw point if v2 isn't built. |
 | **Conservative** | `q8_0` | `vtq3_1` | 6.25 | 61% | +1.05% | Falls back to the standard `q8_0` K-quant — no KTQ kernels needed. |
@@ -125,47 +135,51 @@ cmake --build build -j$(nproc) --target llama-server
 
 ---
 
-## vs llama.cpp upstream — apples-to-apples (2026-04-27)
+## vs llama.cpp upstream — apples-to-apples (2026-05-02)
 
-Same hardware (test box, 2× RTX 2060, Ryzen 7 3700X host), same KV config (`f16/f16`), same `-fa 1 -ts 12,12`. Upstream binary: `0c6ee1cad` (ggerganov/llama.cpp master, fresh 2026-04-27 build with Qwen3-Next + Qwen3.5-A10B arch support). llama-tq binary: `1a1d49ef5` (turboquant).
+Same hardware (test box, 2× RTX 2060, Ryzen 7 3700X host), same `-fa 1 -ts 12,12 -p 512 -n 128 -r 3`, same `OMP_WAIT_POLICY=passive`. Upstream binary: `63d93d1` (ggerganov/llama.cpp master, fresh 2026-05-02 build). llama-tq binary: `e054a3088` (turboquant branch).
 
-**Reading the table:** ↑ higher is better (throughput), ↓ lower is better (PPL = quality cost, KV memory = footprint).
+**Reading the table:** ↑ higher is better (throughput), ↓ lower is better (PPL, KV-memory).
 
-### 35B-A3B (full-GPU, ctx=2048)
+### 35B-A3B IQ2_XXS bartowski (full-GPU dual, ctx=2048)
 
-| Variant | pp512 ↑ | tg128 ↑ | tg1024 ↑ | PPL (8ch) ↓ | KV-bpw ↓ | KV @ 32k ↓ |
-|---|---:|---:|---:|---:|---:|---:|
-| **upstream** f16/f16 | 934 | 57.76 | 57.30 | 7.0810 | 32.0 | **640 MiB** |
-| **llama-tq** f16/f16 | 1009 | 76.58 | 75.09 | 7.0863 | 32.0 | 640 MiB |
-| **llama-tq** `ktq2_1+vtq2_2` ⭐ | 1010 | 75.40 | 75.18 | 7.1814 | **2.78** | **115 MiB** |
-| **Δ tq vs upstream** (f16 / quant) | **+8% / +8%** | **+33% / +31%** | **+31% / +31%** | +0.07% / +1.34% (worse) | — / **−91%** | — / **−82%** |
+| Engine | KV cache | KV bpw | pp512 ↑ | tg128 ↑ | KV @ 32k ↓ |
+|---|---|---:|---:|---:|---:|
+| **upstream** | f16/f16 | 32.0 | **1232.30** | 85.79 | 640 MiB |
+| **upstream** | q8_0/q8_0 | 8.5 | 1214.55 | 83.50 | 170 MiB |
+| **upstream** | q4_0/q4_0 | 4.5 | 1213.63 | 82.42 | 90 MiB |
+| **llama-tq** | f16/f16 | 32.0 | 1195.70 | **87.77** | 640 MiB |
+| **llama-tq** | q8_0/q8_0 | 8.5 | 1182.60 | 84.08 | 170 MiB |
+| **llama-tq** | q4_0/q4_0 | 4.5 | 1179.95 | 83.30 | 90 MiB |
+| **llama-tq** `ktq2/vtq2` ⭐ | trellis | **2.78** | 1178.15 | **85.71** | **55 MiB** |
+| **llama-tq** `ktq2/vtq3` | trellis+outliers | 3.56 | 1176.53 | 85.60 | 71 MiB |
 
-### 80B-A3B (Qwen3-Next, hybrid + CPU expert-offload, ctx=2048)
+**Δ llama-tq `ktq2/vtq2` (2.78 bpw) vs upstream `q4_0/q4_0` (4.5 bpw):**
+- pp512: −2.9% (1178 vs 1213)
+- **tg128: +4.0% (85.71 vs 82.42)**
+- **KV @ 32k: −38% (55 MiB vs 90 MiB)**
+- **PPL drift vs f16: −0.33%** (within stderr, see "Perplexity" section)
 
-Both binaries with 28 of 48 expert-blocks on CPU (upstream `--n-cpu-moe 28`, llama-tq `-ot` regex split 14/14/20). Identical layer distribution.
+**Δ llama-tq `ktq2/vtq2` vs upstream `q8_0/q8_0` (8.5 bpw, the popular choice):**
+- pp512: −3.0%
+- **tg128: +2.6%**
+- **KV @ 32k: −67% (55 MiB vs 170 MiB)**
 
-| Variant | pp512 ↑ | tg128 ↑ |
-|---|---:|---:|
-| **upstream** f16/f16 | 378 | 31.21 |
-| **llama-tq** f16/f16 | 404 | 31.5 |
-| **Δ tq vs upstream** | **+7%** | **+1%** |
+**Phase 4 baseline (without TQ):** llama-tq f16/f16 vs upstream f16/f16 at identical KV cost: pp512 −3.0%, **tg128 +2.3%**. The TG advantage is from the Phase 4 stack (`MADV_HUGEPAGE`, `mul_mat_id` prefetch, OMP-tuning); the TQ types match this baseline at 11.5× smaller storage.
 
-### 122B-A10B (Qwen3.5-A10B, GQA(2) + CPU expert-offload, ctx=2048)
+### Honest caveats
 
-Both binaries with 38 of 48 expert-blocks on CPU.
+- **PP regression of ~3% across all configs** is consistent and not from the TQ types themselves. Likely the `OMP_WAIT_POLICY=passive` setting we use for the image-OOM fix; upstream's default is system-default. Switching back would close the gap but burn 12 vCPUs idle (see `scripts/deploy-35b-singlegpu-100k.sh` commit `e054a3088`).
+- **Earlier README revisions claimed +33% TG vs upstream.** That was the 2026-04-27 measurement (`1a1d49ef5` vs `0c6ee1cad`). Upstream has since merged Hadamard rotation (PR #21038, default-on), closed the FA-tuning gap, and is now within 3% on PP and 2.3% on TG at f16. **The win is now smaller storage, not faster math.**
+- 80B-A3B and 122B-A10B A/B benches are stale (2026-04-26 numbers in `docs/bench/`). Refresh pending.
 
-| Variant | pp512 ↑ | tg128 ↑ |
-|---|---:|---:|
-| **upstream** f16/f16 | 178 | 15.65 |
-| **llama-tq** f16/f16 | 187 | 17.0 |
-| **Δ tq vs upstream** | **+5%** | **+9%** |
+### Long-context KV scaling
 
-**Key wins llama-tq across all three sizes:**
-- **+33% TG on 35B** (full-GPU decode) — Phase-1-to-4 stack (FA quick wins, sparse-V dequant, P2P opt-in, OMP_active, layer-split, prefetch). The all-on-GPU path is where tq's FA tuning shows up.
-- **+1–9% TG on 80B/122B** — tighter on offload paths because TG is CPU-RAM-bandwidth-bound (~40 GB/s ceiling on DDR4-3200), so FA wins matter less.
-- **+5–8% pp512** consistent across all model sizes — prefill always benefits from tq's FA quick wins.
-- **−82% KV-cache memory** at ctx=32k with `ktq2_1+vtq2_2` (35B; same proportional savings on 80B/122B).
-- **Quality match in f16/f16** on 35B (within 0.07% noise floor — same numerics, just faster). 80B/122B PPL A/B is a separate sweep.
+| ctx | f16/f16 | upstream q8_0 | upstream q4_0 | **llama-tq ktq2/vtq2** |
+|---|---:|---:|---:|---:|
+| 32k | 640 MiB | 170 MiB | 90 MiB | **55 MiB** |
+| 100k | 2.0 GB | 530 MiB | 280 MiB | **170 MiB** |
+| 200k | 4.0 GB | 1.06 GB | 562 MiB | **348 MiB** |
 
 ---
 
