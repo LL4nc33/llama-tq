@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # Single-GPU0 deploy: Qwen3.6-35B-A3B-IQ2_XXS bartowski + mmproj + 100k ctx (v8)
 #
-# TurboQuant v8 Triple-Goal Winner (2026-05-02 PPL+Speed Sweep):
-#   ktq2 (K) + vtq3 (V, = vtq3_v8 NEW) — 3.56 bpw avg KV
-#   PPL: -0.03% vs f16/f16 (essentially lossless)
-#   TG: 86.61 t/s @ 100k+mmproj (gemessen, +21% vs old prod)
-#   PP: 1196 t/s
-#   VRAM: ~750 MB für KV @ 100k auf 35B-A3B
+# TurboQuant v8 Sweet Spot (2026-05-02 Triple-Goal Sweep):
+#   ktq2 (K) + vtq2 (V, = vtq2_2 trellis) — 2.78 bpw avg KV
+#   PPL: 7.1807 (-0.33% vs f16/f16)
+#   TG: 86.37 t/s @ ctx=2048 measured (+0.66% vs current prod 85.80)
+#   PP: 1195.31 t/s (+7.5% vs current prod 1111.59)
+#   VRAM: ~360 MB für KV @ 100k auf 35B-A3B
 #
-# Replaces legacy deploy-35b-singlegpu-100k.sh which used ktq2_1/vtq2_1
-# (3.0 bpw, +3.85% PPL drift, 85.66 TG t/s).
+# Replaces legacy ktq2_1/vtq2_1 (3.0 bpw, +3.85% PPL drift, 85.80 TG).
 #
-# v8 Improvements vs legacy:
-#   Accuracy: -3.88pp PPL drift improvement (lossless)
-#   Speed:    +1.1% TG, +8.1% PP
-#   VRAM:     +0.56 bpw (acceptable cost for lossless quality)
+# v8 Sweet Spot Improvements vs legacy:
+#   Accuracy: -4.18pp PPL drift improvement (was +3.85%, now -0.33%)
+#   Speed:    +0.66% TG, +7.5% PP
+#   VRAM:     -7% bpw (3.0 → 2.78)
 
 set -euo pipefail
 
@@ -33,11 +32,11 @@ if pgrep -f "llama-server.*--port $PORT" > /dev/null; then
   sleep 5
 fi
 
-echo "=== TurboQuant v8 Deploy: ktq2/vtq3+100k+mmproj ==="
+echo "=== TurboQuant v8 Sweet-Spot Deploy: ktq2/vtq2+100k+mmproj ==="
 echo "Model: $MODEL"
 echo "Mmproj: $MMPROJ"
 echo "Single-GPU0, parallel 1, ctx 100k"
-echo "v8 quality tier: vtq3_v8 (3.625 bpw trellis-3bit + 2 outliers)"
+echo "v8 Sweet Spot: 2.78 bpw avg, PPL -0.33%, TG 86.37 t/s"
 echo
 
 CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores \
@@ -47,7 +46,7 @@ CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cor
   --host 0.0.0.0 --port "$PORT" \
   --jinja --flash-attn on \
   -c 100000 -ngl 99 --no-mmap --parallel 1 \
-  --cache-type-k ktq2 --cache-type-v vtq3 \
+  --cache-type-k ktq2 --cache-type-v vtq2 \
   --cache-reuse 25000 \
   --predict 16384 -ub 64 --reasoning off \
   --moe-pin-experts --backend-sampling \
