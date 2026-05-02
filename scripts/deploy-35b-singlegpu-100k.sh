@@ -13,6 +13,11 @@
 #   Required because VRAM headroom (134 MB) is too tight for image-encoder
 #   compute buffers (~250 MB needed for full-size images)
 #
+# CPU-spinning fix (2026-05-02 08:38):
+#   OMP_WAIT_POLICY=passive: was 'active' (constant 1200% CPU spinning idle).
+#   With mmproj on CPU, active-spinning was burning all 12 vCPUs even idle.
+#   Passive lets threads sleep when idle, GPU-bound prefill barely loses speed.
+#
 # Reasoning: KTQ+VTQ kombiniert hatte auf 0.8B +287% PPL drift,
 # aber auf 35B-A3B (64 attention layers) ist die drift nur +3.85%
 # und damit besser als jede stock-q5_1/q4_1 K + VTQ V Kombination.
@@ -40,7 +45,7 @@ echo "Mmproj: $MMPROJ"
 echo "Single-GPU0, parallel 1, ctx 100k"
 echo
 
-CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores \
+CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=passive OMP_PROC_BIND=close OMP_PLACES=cores \
   nohup "$LLAMA_BIN" \
   -m "$MODEL" \
   --mmproj "$MMPROJ" \
