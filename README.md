@@ -386,6 +386,41 @@ The +85% TG jump on TQ1_0 is from killing PCIe-x4 expert streaming. Quality cost
 
 Physics ceiling for IQ2_XXS offload tier: 40 GB/s DDR4 / ~0.75 GB per-token CPU traffic → ~53 t/s hard limit. Phase-4 stack lifted current to ~36.5 t/s (69% of ceiling) via OMP_active + adaptive layer-split + prefetch. TQ1_0 full-VRAM is bandwidth-unbound by comparison.
 
+<details>
+<summary><b>80B-TQ1_0 full KTQ × VTQ matrix</b> (2026-05-02, full-GPU dual, ts 18,7)</summary>
+
+Full 4×4 KTQ × VTQ sweep + 3 baselines on Qwen3-Next-80B-A3B-UD-TQ1_0 (`ts 18,7 --fit-target 128 OMP_active`). 19 configs, llama-bench `-p 512 -n 128 -r 3`. **Note: gap to deploy 57.0 t/s comes from `--moe-pin-experts` which llama-bench doesn't expose.**
+
+| K | V | pp512 | tg128 | Notes |
+|---|---|---:|---:|---|
+| f16 | f16 | 688.21 | **56.64** | reference baseline |
+| q8_0 | q8_0 | 674.72 | 54.09 | |
+| q4_0 | q4_0 | 683.12 | 53.42 | |
+| ktq1 | vtq1 | 641.42 | 54.57 | extreme bpw, lower PP |
+| ktq1 | vtq2 | 679.87 | 54.72 | |
+| ktq1 | vtq3 | 683.57 | 55.20 | |
+| ktq1 | vtq4 | 609.68 | 54.31 | |
+| ktq2 | vtq1 | 645.09 | 54.70 | |
+| **ktq2** | **vtq2** ⭐ | **680.17** | **55.16** | current default |
+| ktq2 | vtq3 | 681.20 | 55.05 | v8 quality tier |
+| ktq2 | vtq4 | 601.95 | 54.38 | |
+| ktq3 | vtq1 | 646.30 | 54.49 | |
+| **ktq3** | **vtq2** 🏆 | **681.64** | **55.65** | **best KV-quant TG** |
+| ktq3 | vtq3 | 681.46 | 54.63 | |
+| ktq3 | vtq4 | 609.68 | 53.55 | |
+| ktq4 | vtq1 | 646.16 | 54.44 | |
+| ktq4 | vtq2 | 680.80 | 55.47 | |
+| ktq4 | vtq3 | 681.59 | 55.04 | |
+| ktq4 | vtq4 | 609.29 | 53.97 | |
+
+**Pattern observations:**
+- TG range 53.42–56.64, all KV-quants within 1.5 t/s of f16 baseline
+- vtq1 family has consistent −40 pp512 vs vtq2/3 (codebook lookup overhead)
+- vtq4 family has consistent −70 pp512 (larger blocks)
+- `ktq3/vtq2` slightly beats `ktq2/vtq2` on TG (+0.5 t/s, +0.5 bpw cost)
+
+</details>
+
 ### 122B-A10B — largest that fits
 
 Qwen3.5-122B-A10B (256 experts / 8 active, GQA(2)). 34 GB weights at UD-IQ2\_XXS. 19 expert-layers on GPU (PCIe-aware 10+9 split), 29 offloaded to CPU RAM.
