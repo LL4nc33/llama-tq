@@ -20,7 +20,7 @@
 > - Hadamard-domain Q·K dot product (compute attention without dequantizing K — likely the first software impl)
 > - V-cache outlier-channel-split (top-N fp16 outliers per block) for lossless V quality
 > - Sparse V dequant skip (+22% decode at 32k+ context)
-> - Production-deployed: live on Qwen3.6-35B-A3B (8791) and Qwen3.5-4B (8793) with 100k context
+> - Currently running 100k+ context on a 12 GB single-GPU; talks to any OpenAI-compatible or Anthropic-compatible client (see [Client integration](#client-integration))
 
 ## Contents
 
@@ -33,7 +33,7 @@
 - [Perplexity (wikitext-2)](#perplexity-wikitext-2)
 - [KV memory savings](#kv-memory-savings)
 - [How it works](#how-it-works)
-- [Claude Code integration](#claude-code-integration)
+- [Client integration](#client-integration)  ← OpenAI, Anthropic, Ollama dialects native
 - [Build](#build)
 - [Roadmap](#roadmap)
 - [When *not* to use this fork](#when-not-to-use-this-fork)
@@ -61,7 +61,7 @@ Combined score: `ppl_delta_pct + 0.5 × tg_slowdown_pct`. Lower is better. f16/f
 | Score | K / V | Note |
 |:---:|---|---|
 |  0.00 | f16 / f16 | reference |
-| **0.82** | **ktq2_1 / vtq2_2** | 🏆 production-default since 2026-04-25 |
+| **0.82** | **ktq2_1 / vtq2_2** | 🏆 current default since 2026-04-25 |
 |  1.69 | ktq4_1 / vtq4_1 | |
 |  2.40 | ktq2_1 / vtq3_1 | older v1 prod (replaced) |
 |  2.47 | ktq3_1 / vtq3_1 | |
@@ -80,7 +80,7 @@ From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/READ
 |-------|--------|
 | **KTQ K-cache** — RHT + Lloyd-Max, 1/2/3/4-bit (2.5–5.5 bpw), Q·K computed in Hadamard domain (no K dequant) | shipped, 4 types |
 | **VTQ V-cache v1** — DHD rotation + Laplace-fit codebook, 1/2/3/4-bit (1.5–4.5 bpw), codebook lookup in FA inner loop | shipped, 4 types |
-| **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.25 / 3.25 / 4.25 bpw — production default since 2026-04-25 | shipped, all D=64/128/256/512 verified |
+| **VTQ V-cache v2 (Trellis)** — group-Viterbi encoder + shift-register decoder at 2.25 / 3.25 / 4.25 bpw — current default since 2026-04-25 | shipped, all D=64/128/256/512 verified |
 | **VTQ V-cache v3 (Trellis + outlier-channel-split)** — v2 backbone plus 4 fp16-outliers per block; +1 bpw avg, ~4× lower V-noise floor | shipped (research tier) |
 | **Asymmetric K/V dispatch** — K and V types chosen independently, single FA path. All three VTQ families (VTQ_1 / VTQ_2 / VTQ_3) cover all 11 K-types under `GGML_CUDA_FA_ALL_QUANTS`; default builds ship the full KTQ × VTQ matrix (44 K-K combos verified live, smoke-tested KTQ4_1 × VTQ3_2 etc.) | shipped, full matrix |
 | **Deferred K/V quantization** — f16 staging during prefill, bulk-convert at prefill→decode boundary; avoids repetition-loop pathology on K | auto-enabled for KTQ / VTQ\_2 |
@@ -185,7 +185,7 @@ Same hardware (test box, 2× RTX 2060, Ryzen 7 3700X host), same `-fa 1 -ts 12,1
 
 ## KV-cache families
 
-This fork ships **three V-cache families** and **one K-cache family**. All can be freely combined (asymmetric K/V is the reference deployment pattern). Production-default since 2026-04-25: `--cache-type-k ktq2_1 --cache-type-v vtq2_2`.
+This fork ships **three V-cache families** and **one K-cache family**. All can be freely combined (asymmetric K/V is the reference deployment pattern). Current default since 2026-04-25: `--cache-type-k ktq2_1 --cache-type-v vtq2_2`.
 
 ### V-cache v1 — VTQ (PolarQuant, shipped first)
 
@@ -200,7 +200,7 @@ Fixed D·H·D rotation (sign-diagonal · FWHT · sign-diagonal) applied once at 
 
 **Status:** retained for stability and as a fallback. On Qwen3-Next-80B with `-b 1 -ub 1` the v1 path can crash via the fused Gated Delta Net interaction — tracked separately. v1 still works in batched mode and on all other tested models.
 
-### V-cache v2 — Trellis (current production default)
+### V-cache v2 — Trellis (current default)
 
 Group-level Viterbi trellis with shared state and shared scale. 16-state shift-register, 16-bit open-start state, inverse-Gaussian CDF code table. The Viterbi path optimizes globally over the block, which adapts implicitly to the running model's V-distribution — at the same average bpw, every V-element gets to leverage local statistics.
 
@@ -237,11 +237,11 @@ Per-block Randomized Hadamard Transform (FWHT + per-block sign flip) + Lloyd-Max
 | `ktq3_1` | 3 | 4.5 | 18 B |
 | `ktq4_1` | 4 | 5.5 | 22 B |
 
-**Production default:** `ktq2_1` at 3.5 bpw. Measured PPL hit on 35B-A3B with f16 V: **+0.27%** vs f16/f16 — inside the perplexity stderr.
+**Current default:** `ktq2_1` at 3.5 bpw. Measured PPL hit on 35B-A3B with f16 V: **+0.27%** vs f16/f16 — inside the perplexity stderr.
 
 **Why deferred K:** KTQ K-cache suffers a repetition-loop pathology when quantized per-token during prefill — attention re-reads the just-quantized rows, RHT round-trip noise accumulates, and the model loops (`"Es war einfach. Es war einfach. Es war einfach."`). f16 staging during prefill + bulk-convert at prefill→decode avoids this. Auto-enabled for any KTQ type.
 
-**Combining KTQ K with VTQ V:** asymmetric is the reference config. The 35B production deployment uses `ktq2_1 + vtq2_2` at **2.78 bpw avg** for a measured +0.27%–+0.47% PPL hit (well below noise floor). `vtq3_3` adds 1 bpw on V for a further marginal improvement.
+**Combining KTQ K with VTQ V:** asymmetric is the reference config. The 35B live deployment uses `ktq2_1 + vtq2_2` at **2.78 bpw avg** for a measured +0.27%–+0.47% PPL hit (well below noise floor). `vtq3_3` adds 1 bpw on V for a further marginal improvement.
 
 ---
 
@@ -259,7 +259,7 @@ These are the five MoE models we deploy. All measured on the same box: Ryzen 7 3
 
 The 20B/26B/35B/80B-TQ1_0 fit fully on GPU. The 80B-IQ2 and 122B spill 20/29 layers to CPU RAM — TG becomes CPU-memory-bandwidth-bound, so the numbers are read against a physics ceiling (DDR4-3200 @ ~40 GB/s real / per-token CPU traffic).
 
-**Production default (all five models):** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` at 2.78 bpw avg. Selected on 2026-04-25 after measuring vtq2_2 vs vtq2_1 on both giants — `vtq2_2` wins or ties on PPL, pp512, and tg128 across the board. Verified on gpt-oss-20b (head_dim=64) on 2026-04-27.
+**Current default (all five models):** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` at 2.78 bpw avg. Selected on 2026-04-25 after measuring vtq2_2 vs vtq2_1 on both giants — `vtq2_2` wins or ties on PPL, pp512, and tg128 across the board. Verified on gpt-oss-20b (head_dim=64) on 2026-04-27.
 
 ### gpt-oss-20b — small-MoE F16 native (2026-04-27)
 
@@ -360,7 +360,7 @@ blk\.(2[89]|3[0-9]|4[0-7])\.ffn_(up|down|gate)_exps\.=CPU" \
 
 #### Comparison table
 
-Measured 2026-04-25 / -27 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
+Measured 2026-04-25 / -27 (llama-bench, 2 reps; PPL via deploy-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
 
 | Config | bpw KV | model size | pp512 | tg128 | PPL | Δ PPL | Notes |
 |---|---:|---:|---:|---:|---:|---:|---|
@@ -388,7 +388,7 @@ blk\.(19|[2-4][0-9])\.ffn_(up|down|gate)_exps\.=CPU" \
     --jinja --reasoning off
 ```
 
-Measured 2026-04-25 (llama-bench, 2 reps; PPL via prod-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
+Measured 2026-04-25 (llama-bench, 2 reps; PPL via deploy-aligned `-c 512 --chunks 4 -b 1 -ub 1`):
 
 | Config | bpw KV | pp512 | tg128 | PPL | Δ PPL vs f16 |
 |---|---:|---:|---:|---:|---:|
@@ -414,7 +414,7 @@ Unsloth ships a `UD-IQ1_M` (1.75 bpw) variant at **31.8 GB instead of 36.6 GB**.
 
 For 122B, **stay on IQ2_XXS at long ctx**. The TQ1_0 trick that made 80B fly (full-VRAM, no PCIe streaming) doesn't translate here — even at 1.75 bpw the model exceeds 24 GB VRAM, so we still pay the offload cost without the FA quality of the IQ2 path.
 
-**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Production-PPL sweep: [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
+**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Deploy PPL sweep: [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
 
 ---
 
@@ -422,9 +422,9 @@ For 122B, **stay on IQ2_XXS at long ctx**. The TQ1_0 trick that made 80B fly (fu
 
 All measurements: Ryzen 7 3700X + 2× RTX 2060 12 GB + DDR4-3200, Flash Attention on. Production sweep build `0639f7835` / 2026-04-25.
 
-### 4-Model production summary (`ktq2_1 + vtq2_2` vs baseline)
+### 4-Model summary (`ktq2_1 + vtq2_2` vs baseline)
 
-The production-default config (`ktq2_1` K + `vtq2_2` V at 2.78 bpw avg) compared to f16/f16 baseline across all four target models. PPL measured with prod-aligned methodology where possible (`-c 512 --chunks 4 -b 1 -ub 1`).
+The current default config (`ktq2_1` K + `vtq2_2` V at 2.78 bpw avg) compared to f16/f16 baseline across all four target models. PPL measured with deploy-aligned methodology where possible (`-c 512 --chunks 4 -b 1 -ub 1`).
 
 | Model | bpw KV | pp512 | tg128 | PPL | Δ PPL | KV mem savings |
 |---|---:|---:|---:|---:|---:|---:|
@@ -497,12 +497,12 @@ The production-default config (`ktq2_1` K + `vtq2_2` V at 2.78 bpw avg) compared
 | q4\_0 | q4\_0 | 984.79 | 72.61 | −3.3% | −5.4% | — | — |
 | q4\_0 | q8\_0 | 663.94 | 68.37 | −34.8% | −10.9% | — | — |
 
-Rows in **bold** are the production recommendations: `f16/vtq2_2` is near-free on FA (−1.1% PP, −1.3% TG) and `ktq2_1/vtq2_2` is the lightest-with-K-quant config at −2.2% / −2.5% throughput cost for ~80% KV savings.
+Rows in **bold** are the deploy recommendations: `f16/vtq2_2` is near-free on FA (−1.1% PP, −1.3% TG) and `ktq2_1/vtq2_2` is the lightest-with-K-quant config at −2.2% / −2.5% throughput cost for ~80% KV savings.
 
 **Observations:**
 - **VTQ_2 (Trellis v2) is the cheapest V-cache on FA** — 1.1–1.3% slowdown vs f16, beats every VTQ_1 variant at the same or lower bpw.
 - **`q4_0` / `q8_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG (legacy types fall out of fastest FA path on CC 7.5).
-- **Asymmetric `ktq2_1 / vtq2_2`** is the production winner at 2.2% PP / 2.5% TG cost for **~80% KV savings** (28.75 MiB vs 160 MiB at ctx=8192).
+- **Asymmetric `ktq2_1 / vtq2_2`** is the deploy winner at 2.2% PP / 2.5% TG cost for **~80% KV savings** (28.75 MiB vs 160 MiB at ctx=8192).
 - **1bit (vtq1_1) is usable** — `f16/vtq1_1` only −2.0% TG. Speed-wise the `ktq1_1/vtq1_1` combo at 2.0 bpw avg costs only 3.2% TG. PPL +16.5% on Qwen (6.95 vs 5.97) → "Aggressive" quality tier.
 - **VTQ_2 V-cache is literally PPL-lossless** — 64-chunk PPL on Qwen3.6: `f16/f16` = `f16/vtq2_2` = `f16/vtq3_2` = `f16/vtq4_2` = **7.062**. The Trellis-quantized V cache reproduces the f16 attention output bit-perfectly at this measurement granularity.
 - **KTQ K-quant costs ~+0.15% PPL** — `ktq2_1/vtq2_2` = `ktq2_1/vtq3_2` = **7.073** (+0.15% vs f16/f16 baseline 7.062, 64-chunk). All Trellis V variants give identical PPL once K is quantized.
@@ -663,7 +663,7 @@ For llama-server use the existing `--tq-v-override` flag.
 > Three measurement regimes appear:
 > - **64-chunk ctx=512** (matrix sweep, full attn-only PPL) — the headline `+0.15%` for `ktq2_1+vtq2_2` lives here. Used in TL;DR.
 > - **8-chunk ctx=512** (apples-to-apples vs upstream, noisier sample) — `+1.34%`. Used only in [vs upstream table](#vs-llamacpp-upstream--apples-to-apples-2026-04-27).
-> - **4-chunk ctx=512 `-b 1 -ub 1`** (prod-aligned, exercises VTQ_2 deferred path) — `+0.85%` on 35B, `−0.06%` on 80B, `−0.63%` on 122B. Used in per-model deploy tables.
+> - **4-chunk ctx=512 `-b 1 -ub 1`** (deploy-aligned, exercises VTQ_2 deferred path) — `+0.85%` on 35B, `−0.06%` on 80B, `−0.63%` on 122B. Used in per-model deploy tables.
 >
 > The numbers are not contradictory — they're different sample sizes / different decode paths. 64-chunk is the cleanest noise floor; 4-chunk `-b 1 -ub 1` is what the deployed config actually does.
 
@@ -755,7 +755,7 @@ Measured on Qwen3.6-35B-A3B-UD-IQ2_XXS at ctx=8192 (10 attention layers out of 4
 | ktq4_1 / vtq4_1 | 27.5 / 22.5  | 5.5 / 4.5 |
 | vtq2_2 / vtq3_2 / vtq4_2 | 11.25 / 16.25 / 21.25 | 2.25 / 3.25 / 4.25 |
 
-**Smallest usable:** `ktq1_1 / vtq1_1` at **20 MiB total (13% of f16/f16, 8× smaller)** — but vtq1_1 costs +16% PPL, not practical. **Smallest PPL-sensible:** `ktq1_1 / vtq2_2` at 23.75 MiB (15%, 6.7× smaller). For large contexts the absolute savings matter more — at 200k ctx on the Qwen3.5-122B-A10B GQA(2) config, the production `ktq2_1 / vtq2_2` config is ~430 MB total vs ~2.3 GB at f16/f16.
+**Smallest usable:** `ktq1_1 / vtq1_1` at **20 MiB total (13% of f16/f16, 8× smaller)** — but vtq1_1 costs +16% PPL, not practical. **Smallest PPL-sensible:** `ktq1_1 / vtq2_2` at 23.75 MiB (15%, 6.7× smaller). For large contexts the absolute savings matter more — at 200k ctx on the Qwen3.5-122B-A10B GQA(2) config, the deploy `ktq2_1 / vtq2_2` config is ~430 MB total vs ~2.3 GB at f16/f16.
 
 Measurement note: the 10-layer count is Qwen3.6-35B-A3B specific (48 blocks total, 10 with attention after the MoE filter). Different architectures allocate KV on different block counts; scale the per-layer numbers accordingly.
 
@@ -773,26 +773,28 @@ Full design notes (RHT math, register pressure on CC 7.5, encoder details) live 
 
 ---
 
-## Claude Code integration
+## Client integration
 
-The server exposes `/v1/messages` (Anthropic-compatible), so Claude Code can talk to it directly:
+The server speaks **three API dialects natively** — no proxy needed:
 
-```bash
-./scripts/onllama-launch-claude.sh --server http://localhost:8080
-```
+| Dialect | Endpoints | Works with |
+|---|---|---|
+| **OpenAI** | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/v1/audio/transcriptions`, `/v1/responses`, `/v1/rerank` | Open WebUI, LibreChat, AnythingLLM, Cline, Roo Code, Aider, Continue.dev, Lobe Chat, big-AGI, GPTel, Bolt.diy, openai-sdk, LiteLLM |
+| **Anthropic** | `/v1/messages`, `/v1/messages/count_tokens` (with prompt caching) | Claude Code, anthropic-sdk |
+| **Ollama** | `/api/chat`, `/api/tags`, `/api/show` | Ollama clients |
 
-Server-side features wired in:
+Most clients work plug-and-play — point them at `http://your-server:8080` (set as `OPENAI_API_BASE` or `ANTHROPIC_BASE_URL`), pass any string as the API key, and run. For tool-calling, start the server with `--jinja`. Cursor and Claude Desktop need a proxy (LiteLLM / claude-code-proxy) because they hardcode the upstream API URL.
 
-- **Tool-call early-stop** — `</tool_call>` stop sequence on `/v1/messages` with `tools:[]`, saves 1–15 s per agent turn.
-- **`--keep 8192`** — pins the first 8k prompt tokens across context shifts, protecting the Claude Code system prompt (~15–25k) from silent discard.
-- **`--cache-reuse 256`** — KV-shift-based prompt-prefix reuse across turns. Second-turn latency ~60 s → ~5–10 s on 35B.
-- **Anthropic prompt caching** — `cache_control:{type:"ephemeral"}` markers on `system`, `messages.content`, `tools` are parsed and persisted to `<slot_save_path>/anthropic-cache/` with 5m/1h TTL and refresh-on-hit. Enable via `--slot-save-path PATH`.
-  - **Hybrid/recurrent models:** a companion `.ckpt` is written alongside each blob and re-injected into `slot.prompt.checkpoints` on restore. Response fields are always correct; wall-time speedup is limited on models whose memory can't be truncated at arbitrary positions (Qwen3-Next etc.).
+Server-side features for agent-style clients (Claude Code, Cline, Roo, Aider with tools):
+
+- **Tool-call early-stop** on `/v1/messages` — saves 1–15 s per agent turn.
+- **`--keep 8192`** pins the first 8k prompt tokens across context shifts (system prompts).
+- **`--cache-reuse 256`** — KV-shift-based prompt-prefix reuse. Second-turn latency ~60 s → ~5–10 s on 35B.
+- **Anthropic prompt caching** — `cache_control:{type:"ephemeral"}` parsed and persisted with 5m/1h TTL. Enable via `--slot-save-path PATH`. Hybrid/recurrent models (Qwen3-Next etc.) get a companion `.ckpt`.
 - **Full Anthropic `usage` shape** — `cache_read_input_tokens`, `cache_creation_input_tokens`, `cache_creation.ephemeral_5m/1h_input_tokens` all emitted.
-- **TCP\_NODELAY on SSE** — removes ~40 ms Nagle stalls per chunk on streaming.
-- **gzip** (opt-in, `LLAMA_SERVER_ZLIB=ON`) — 4–6× on tool-call JSON, non-streaming only.
+- **TCP\_NODELAY on SSE** + opt-in `gzip` (`LLAMA_SERVER_ZLIB=ON`) on tool-call JSON.
 
-Full setup incl. SSH tunnel: [docs/claude-code.md](docs/claude-code.md).
+Quick-start: [docs/claude-code.md](docs/claude-code.md) for Claude Code over SSH tunnel.
 
 ---
 
@@ -817,9 +819,11 @@ sm\_75 (Turing / RTX 2060) is the only calibration target. FA `launch_bounds` an
 ## Roadmap
 
 **Shipped**
+- **v8 unified CLI aliases** (2026-05-02) — short names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to proven defaults. Legacy long names still supported.
+- **`vtq3` (= `vtq3_v8`, enum 58)** — new 3.625-bpw trellis-3bit + 2 outliers — **−0.03% PPL drift on 35B-A3B** (essentially f16-quality, 12% smaller than legacy `vtq3_3`).
 - KTQ1\_1 / 2\_1 / 3\_1 / 4\_1 (PolarQuant K-cache, 2.5–5.5 bpw)
 - VTQ1\_1 / 2\_1 / 3\_1 / 4\_1 (v1, codebook lookup)
-- VTQ2\_2 / 3\_2 / 4\_2 (v2 Trellis, D=64/128/256/512 all verified live) — production default since 2026-04-25
+- VTQ2\_2 / 3\_2 / 4\_2 (v2 Trellis, D=64/128/256/512 all verified live) — current default since 2026-04-25
 - VTQ2\_3 / 3\_3 / 4\_3 (v3 Trellis + outlier-channel split, research tier)
 - Asymmetric KTQ × VTQ dispatch through FA
 - Deferred K/V (auto-gated by type)
