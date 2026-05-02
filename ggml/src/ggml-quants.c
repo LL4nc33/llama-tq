@@ -6790,3 +6790,38 @@ void dequantize_row_vtq4_3(const block_vtq4_3 * GGML_RESTRICT x, float * GGML_RE
                                     VTQ_OUTLIER_K, yi);
     }
 }
+
+// --- VTQ3_V8 (TurboQuant v8): Trellis 3-bit + 2 outliers ---
+// Spec: docs/plans/v8-algorithm-spec.md. Same backbone as vtq3_3 but only
+// 2 outliers instead of 4 → 58 B / 128 samples = 3.625 bpw structural
+// (vs vtq3_3 4.0 bpw). Tradeoff: -12% storage, +0.5-0.7% PPL drift estimate.
+
+void quantize_row_vtq3_v8_ref(const float * GGML_RESTRICT x, block_vtq3_v8 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    float x_masked[QK_VTQ_TRELLIS];
+    float out_val_fp32[VTQ_OUTLIER_K_V8];
+    for (int i = 0; i < nb; i++) {
+        ggml_trellis_outliers_pick(x + i * QK_VTQ_TRELLIS, VTQ_OUTLIER_K_V8,
+                                   y[i].outlier_pos, out_val_fp32, x_masked);
+        for (int j = 0; j < VTQ_OUTLIER_K_V8; j++) {
+            y[i].outlier_val[j] = GGML_FP32_TO_FP16(out_val_fp32[j]);
+        }
+        float d;
+        ggml_trellis_encode_group(x_masked, 3, &y[i].start_state, &d, y[i].qs);
+        y[i].d = GGML_FP32_TO_FP16(d);
+    }
+}
+
+void dequantize_row_vtq3_v8(const block_vtq3_v8 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_VTQ_TRELLIS == 0);
+    const int nb = k / QK_VTQ_TRELLIS;
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        float * yi = y + i * QK_VTQ_TRELLIS;
+        ggml_trellis_decode_group(x[i].start_state, 3, d, x[i].qs, yi);
+        ggml_trellis_outliers_apply(x[i].outlier_pos,
+                                    (const ggml_fp16_t *) x[i].outlier_val,
+                                    VTQ_OUTLIER_K_V8, yi);
+    }
+}

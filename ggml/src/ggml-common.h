@@ -480,6 +480,25 @@ typedef struct {
 } block_vtq4_3;
 static_assert(sizeof(block_vtq4_3) == 80, "wrong vtq4_3 block size");  // 5.00 bpw
 
+// --- VTQ3_V8: TurboQuant v8 redesign of vtq3_3 with 2 outliers instead of 4 ---
+// Spec: docs/plans/v8-algorithm-spec.md (section a). Same trellis backbone as
+// VTQ_2 + 2 fp16 outliers (downsized from vtq3_3's 4) for 12% smaller block.
+// Tradeoff: -12% storage vs vtq3_3 at expected +0.5-0.7% PPL drift (sweep TBD).
+//
+// Layout: 2 B header (d) + 2 B start_state + 48 B trellis emit + 2 B outlier_pos + 4 B outlier_val
+// Block size: 58 B per 128 samples → 3.625 bpw structural.
+
+#define VTQ_OUTLIER_K_V8 2  // outliers per trellis block in v8 vtq3
+
+typedef struct {
+    ggml_half d;
+    uint16_t  start_state;
+    uint8_t   qs[QK_VTQ_TRELLIS * 3 / 8];        // 48 B
+    uint8_t   outlier_pos[VTQ_OUTLIER_K_V8];     // 2 B
+    ggml_half outlier_val[VTQ_OUTLIER_K_V8];     // 4 B
+} block_vtq3_v8;
+static_assert(sizeof(block_vtq3_v8) == 58, "wrong vtq3_v8 block size");  // 3.625 bpw
+
 // --- VTQ Correction Overlay (Trick 4) ---
 // Per-trellis-block top-N error sidecar. Stored in a separate tensor,
 // parallel to block_vtq{2,3,4}_2 (whose struct layout is frozen by GGUF
