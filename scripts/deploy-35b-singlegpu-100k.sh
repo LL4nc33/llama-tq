@@ -7,6 +7,12 @@
 #   TG: 71.81 t/s @ 100k+mmproj (gemessen)
 #   VRAM: 11699/11833 MiB (134 MB headroom)
 #
+# Image-OOM fix (2026-05-02 08:08):
+#   --no-mmproj-offload: mmproj weights run on CPU (~857 MB freed on GPU0)
+#   --image-max-tokens 1024: cap image tokens to prevent 1472x1472 OOM crashes
+#   Required because VRAM headroom (134 MB) is too tight for image-encoder
+#   compute buffers (~250 MB needed for full-size images)
+#
 # Reasoning: KTQ+VTQ kombiniert hatte auf 0.8B +287% PPL drift,
 # aber auf 35B-A3B (64 attention layers) ist die drift nur +3.85%
 # und damit besser als jede stock-q5_1/q4_1 K + VTQ V Kombination.
@@ -38,6 +44,8 @@ CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cor
   nohup "$LLAMA_BIN" \
   -m "$MODEL" \
   --mmproj "$MMPROJ" \
+  --no-mmproj-offload \
+  --image-max-tokens 1024 \
   --host 0.0.0.0 --port "$PORT" \
   --jinja --flash-attn on \
   -c 100000 -ngl 99 --no-mmap --parallel 1 \
