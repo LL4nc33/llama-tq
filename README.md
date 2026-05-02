@@ -841,7 +841,7 @@ The server speaks **three API dialects natively** — no proxy needed:
 
 | Dialect | Endpoints | Works with |
 |---|---|---|
-| **OpenAI** | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/v1/audio/transcriptions`, `/v1/responses`, `/v1/rerank` | Open WebUI, LibreChat, AnythingLLM, Cline, Roo Code, OpenCode, Aider, Continue.dev, Hermes Agent, Lobe Chat, big-AGI, GPTel, Bolt.diy, openai-sdk, LiteLLM |
+| **OpenAI** | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`, `/v1/audio/transcriptions`, `/v1/responses`, `/v1/rerank` | Open WebUI, LibreChat, AnythingLLM, Cline, Roo Code, OpenCode, Aider, Continue.dev, Hermes Agent, Lobe Chat, big-AGI, GPTel, Bolt.diy, openai-sdk |
 | **Anthropic** | `/v1/messages`, `/v1/messages/count_tokens` (with prompt caching) | Claude Code, anthropic-sdk |
 | **Ollama** | `/api/chat`, `/api/tags`, `/api/show` | Ollama clients |
 
