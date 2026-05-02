@@ -4904,7 +4904,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                        // TODO(phase3): set-rows currently writes only the trellis backbone via the
                        // VTQ_2 encoder; outlier_pos/outlier_val are picked CPU-side via
                        // ggml_trellis_outliers_pick before the prefill→decode handoff.
-                       op->type == GGML_TYPE_VTQ2_3 || op->type == GGML_TYPE_VTQ3_3 || op->type == GGML_TYPE_VTQ4_3) &&
+                       op->type == GGML_TYPE_VTQ2_3 || op->type == GGML_TYPE_VTQ3_3 || op->type == GGML_TYPE_VTQ4_3 ||
+                       // VTQ3_V8 (TurboQuant v8): trellis-3bit + 2 outliers (3.625 bpw).
+                       op->type == GGML_TYPE_VTQ3_V8) &&
                        op->src[0]->type == GGML_TYPE_F32 &&
                        (op->src[1]->type == GGML_TYPE_I64 || op->src[1]->type == GGML_TYPE_I32);
             } break;
