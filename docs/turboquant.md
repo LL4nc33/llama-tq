@@ -1,6 +1,9 @@
 # TurboQuant — KTQ/VTQ KV Cache Quantization for CUDA
 
-Status: 2026-04-28. Three V-cache families (v1, v2 Trellis, v3 Trellis+outlier-split) and one K-cache family (KTQ), freely composable. Production default since 2026-04-25: `--cache-type-k ktq2_1 --cache-type-v vtq2_2`.
+Status: 2026-05-02. **v8 unified type aliases shipped.** Short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults; new `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers — essentially **lossless** on 35B-A3B (-0.03% PPL drift vs f16). Three V-cache families (v1, v2 Trellis, v3 Trellis+outlier-split) and one K-cache family (KTQ), freely composable.
+
+**Production-recommended (35B-A3B):** `--cache-type-k ktq2 --cache-type-v vtq3` (v8 quality tier, lossless).
+**Legacy default since 2026-04-25:** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` (= `ktq2/vtq2` in v8).
 
 ## Overview
 
