@@ -39,7 +39,7 @@ CUDA_VISIBLE_DEVICES=0,1 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=c
   -c 200000 -ngl 99 -ts 16,8 --no-mmap --parallel 1 \
   --cache-type-k ktq2 --cache-type-v vtq4 \
   --cache-reuse 25000 \
-  --predict 16384 -ub 128 --reasoning off \
+  --predict 16384 -ub 512 --reasoning off \
   --moe-pin-experts --backend-sampling \
   --slot-save-path "$SLOTS" \
   --anthropic-cache 1 \
