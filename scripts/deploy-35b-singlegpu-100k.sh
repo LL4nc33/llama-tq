@@ -54,7 +54,7 @@ CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=passive OMP_PROC_BIND=close OMP_PLACES=co
   --host 0.0.0.0 --port "$PORT" \
   --jinja --flash-attn on \
   -c 100000 -ngl 99 --no-mmap --parallel 1 \
-  --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+  --cache-type-k ktq2_1 --cache-type-v vtq2_2 \
   --cache-reuse 25000 \
   --predict 16384 -ub 64 --reasoning off \
   --moe-pin-experts --backend-sampling \
