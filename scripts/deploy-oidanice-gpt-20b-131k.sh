@@ -33,7 +33,7 @@ CUDA_VISIBLE_DEVICES=0,1 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=c
   -m "$MODEL" \
   --host 0.0.0.0 --port "$PORT" \
   --jinja --flash-attn on \
-  -c 256000 -ngl 99 -ts 16,8 --no-mmap --parallel 2 \
+  -c 262144 -ngl 99 -ts 16,8 --no-mmap --parallel 2 \
   --cache-type-k ktq2 --cache-type-v vtq4 \
   --cache-reuse 25000 \
   --predict 16384 -ub 512 --reasoning off \
