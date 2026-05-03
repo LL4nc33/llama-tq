@@ -43,7 +43,7 @@ CUDA_VISIBLE_DEVICES=0,1 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=c
   --anthropic-cache-ttl-default 300 \
   --anthropic-cache-max-gb 16 \
   --temp 0.7 --top-p 0.95 --top-k 40 --min-p 0.05 --repeat-penalty 1.15 \
-  --override-kv general.name=str:OidaNice-GPT-20B \
+  --alias OidaNice-GPT-20B --override-kv general.name=str:OidaNice-GPT-20B \
   > /tmp/llama-server-oidanice-20b.log 2>&1 &
 
 PID=$!
