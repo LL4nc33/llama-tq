@@ -2,7 +2,7 @@
 # Dual-GPU deploy: OidaNice-GPT-34B-F16 + mmproj + 200k ctx, parallel 1
 #
 # Model: OidaNice-GPT-34B-F16.gguf (FrankenMoE 35B-A3B base, F16 experts)
-# Layout: ts 12,12 (split layers across GPU0 + GPU1)
+# Layout: ts 16,8 (split layers across GPU0 + GPU1)
 # Ctx: 200k (was 100k on single-GPU; doubled with dual-GPU VRAM)
 
 set -euo pipefail
@@ -25,7 +25,7 @@ fi
 echo "=== Dual-GPU Deploy: OidaNice-GPT-34B-F16 + 200k ctx ==="
 echo "Model: $MODEL"
 echo "Mmproj: $MMPROJ"
-echo "Dual-GPU (ts 12,12), parallel 1, ctx 200k"
+echo "Dual-GPU (ts 16,8), parallel 1, ctx 200k"
 echo
 
 CUDA_VISIBLE_DEVICES=0,1 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores \
@@ -36,7 +36,7 @@ CUDA_VISIBLE_DEVICES=0,1 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=c
   --image-max-tokens 1024 \
   --host 0.0.0.0 --port "$PORT" \
   --jinja --flash-attn on \
-  -c 200000 -ngl 99 -ts 12,12 --no-mmap --parallel 1 \
+  -c 200000 -ngl 99 -ts 16,8 --no-mmap --parallel 1 \
   --cache-type-k ktq2 --cache-type-v vtq4 \
   --cache-reuse 25000 \
   --predict 16384 -ub 64 --reasoning off \
