@@ -4,7 +4,7 @@
 [![Upstream](https://img.shields.io/badge/upstream-llama.cpp-blue)](https://github.com/ggml-org/llama.cpp)
 [![Hardware](https://img.shields.io/badge/tested-2x%20RTX%202060%20(CC%207.5)-orange)](#hardware-notes)
 
-**The llama.cpp fork with first-class K vs V cache type families. Hadamard-domain Q·K dot product. Trellis V-cache. 38% smaller KV than upstream's most aggressive quant — at lossless quality.**
+**The llama.cpp fork with independent K and V cache type families. Hadamard-domain Q·K dot product. Trellis V-cache. 38% smaller KV than upstream's most aggressive quant — at lossless quality.**
 
 **For users:** drop in two flags (`--cache-type-k ktq2 --cache-type-v vtq2`), get a Qwen3.6-35B-A3B running at **86 t/s @ 100k+mmproj on a single 12 GB RTX 2060** — or 2× 200k parallel slots on a 24 GB total dual-2060 setup. Same answer quality as f16 (PPL drift −0.33% at chunks=3, within stderr). **For developers:** the only inference engine where K-cache and V-cache have separate type families (KTQ × VTQ matrix, full FA dispatch). KTQ uses Randomized Hadamard Transform + Lloyd-Max codebook with Hadamard-domain Q·K (no K dequant in attention). VTQ has three sub-families: codebook (v1), group-Viterbi Trellis (v2), Trellis + outlier-channel-split (v3).
 
@@ -66,9 +66,9 @@ Combined score: `ppl_delta_pct + 0.5 × tg_slowdown_pct`. Lower is better. f16/f
 |  0.00 | f16 / f16 | reference |
 | **0.82** | **ktq2_1 / vtq2_2** | 🏆 current default since 2026-04-25 |
 |  1.69 | ktq4_1 / vtq4_1 | |
-|  2.40 | ktq2_1 / vtq3_1 | older v1 prod (replaced) |
+|  2.40 | ktq2_1 / vtq3_1 | legacy v1 (replaced) |
 |  2.47 | ktq3_1 / vtq3_1 | |
-|  5.50 | ktq2_1 / vtq2_1 | older v1 prod (replaced) |
+|  5.50 | ktq2_1 / vtq2_1 | legacy v1 (replaced) |
 | 17.66 | ktq1_1 / vtq1_1 | 1-bit floor, unusable |
 
 From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/README.md) for iterating on new quant variants.
@@ -378,7 +378,7 @@ Measured 2026-04-25 / -27 (llama-bench, 2 reps; PPL via deploy-aligned `-c 512 -
 | Config | bpw KV | model size | pp512 | tg128 | PPL | Δ PPL | Notes |
 |---|---:|---:|---:|---:|---:|---:|---|
 | 80B-IQ2_XXS `f16/f16` (CPU offload) | 16.0 | 26.2 GB | 404 | 31.5 | 5.085 | baseline | reference |
-| 80B-IQ2_XXS `ktq2_1/vtq2_1` (old prod) | 3.0 | 26.2 GB | 386 | 30.6 | 5.221 | +2.69% | replaced 2026-04-25 |
+| 80B-IQ2_XXS `ktq2_1/vtq2_1` (legacy) | 3.0 | 26.2 GB | 386 | 30.6 | 5.221 | +2.69% | replaced 2026-04-25 |
 | 80B-IQ2_XXS `ktq2_1/vtq2_2` (long-ctx fallback) | 2.78 | 26.2 GB | 403 | 30.9 | 5.082 | **−0.06%** | for ctx > 65k |
 | **80B-TQ1_0 `ktq2_1/vtq2_2`** (current default) ⭐ | **2.78** | **19.3 GB** | **653** | **57.0** | 7.039 | weight-quant tier | **+85% TG vs offload** |
 
@@ -441,8 +441,8 @@ Measured 2026-04-25 (llama-bench, 2 reps; PPL via deploy-aligned `-c 512 --chunk
 | Config | bpw KV | pp512 | tg128 | PPL | Δ PPL vs f16 |
 |---|---:|---:|---:|---:|---:|
 | `f16 / f16` | 16.0 | 187.6 | 17.0 | 4.0634 | baseline |
-| `ktq2_1 / vtq2_1` (old prod) | 3.0 | 189.5 | 16.8 | 4.2338 | **+4.19%** |
-| **`ktq2_1 / vtq2_2`** (new prod) ⭐ | **2.78** | **196.3** | **16.8** | **4.0379** | **−0.63%** |
+| `ktq2_1 / vtq2_1` (legacy) | 3.0 | 189.5 | 16.8 | 4.2338 | **+4.19%** |
+| **`ktq2_1 / vtq2_2`** (current default) ⭐ | **2.78** | **196.3** | **16.8** | **4.0379** | **−0.63%** |
 
 The 122B is where v2 Trellis shines hardest: `vtq2_2` actually beats `f16/f16` on **both** PPL (−0.63%) and pp512 (+4.6%). VRAM 10.9/10.5 GB at 200k ctx. Full 262k ctx also fits (GQA(2) + 2.78 bpw KV = +140 MB delta from 200k). Physics ceiling: 2.5 GB/token CPU traffic / 56 GB/s effective ≈ 22 t/s, current 17 t/s = 77% efficiency.
 
@@ -462,7 +462,7 @@ Unsloth ships a `UD-IQ1_M` (1.75 bpw) variant at **31.8 GB instead of 36.6 GB**.
 
 For 122B, **stay on IQ2_XXS at long ctx**. The TQ1_0 trick that made 80B fly (full-VRAM, no PCIe streaming) doesn't translate here — even at 1.75 bpw the model exceeds 24 GB VRAM, so we still pay the offload cost without the FA quality of the IQ2 path.
 
-**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Deploy PPL sweep: [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
+**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Deploy PPL sweep (legacy notes): [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
 
 </details>
 
