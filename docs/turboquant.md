@@ -2,7 +2,7 @@
 
 Status: 2026-05-02. **v8 unified type aliases shipped.** Short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults; new `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers — essentially **lossless** on 35B-A3B (-0.03% PPL drift vs f16). Three V-cache families (v1, v2 Trellis, v3 Trellis+outlier-split) and one K-cache family (KTQ), freely composable.
 
-**Production-recommended (35B-A3B):** `--cache-type-k ktq2 --cache-type-v vtq3` (v8 quality tier, lossless).
+**Recommended (35B-A3B):** `--cache-type-k ktq2 --cache-type-v vtq3` (v8 quality tier, lossless).
 **Legacy default since 2026-04-25:** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` (= `ktq2/vtq2` in v8).
 
 ## Overview
@@ -57,7 +57,7 @@ Per-block RHT (FWHT + per-block sign) + Lloyd-Max codebook. Block stores normali
 | Type   | enum | Index bits | bpw | Block | Notes |
 |--------|:---:|:---:|:---:|:---:|---|
 | `ktq1_1` | 45 | 1 | 2.5 | 10 B | extreme K compression |
-| `ktq2_1` | 42 | 2 | 3.5 | 14 B | **production default** |
+| `ktq2_1` | 42 | 2 | 3.5 | 14 B | **current default** |
 | `ktq3_1` | 43 | 3 | 4.5 | 18 B | balanced |
 | `ktq4_1` | 44 | 4 | 5.5 | 22 B | best KTQ quality |
 
@@ -109,7 +109,7 @@ PPL impact on 35B-A3B at 3.78 bpw avg (`ktq2_1 + vtq3_3`): +0.47% vs f16/f16 —
 
 | Tier              | K        | V        | Avg bpw | PPL cost | Notes |
 |-------------------|----------|----------|:---:|:---:|---|
-| **Recommended (default)** | `ktq2_1` | `vtq2_2` | 2.78 | +0.15% | 83% smaller KV vs f16/f16; production default since 2026-04-25 |
+| **Recommended (default)** | `ktq2_1` | `vtq2_2` | 2.78 | +0.15% | 83% smaller KV vs f16/f16; current default since 2026-04-25 |
 | Aggressive        | `ktq2_1` | `vtq3_1` | 4.0  | +0.49% | If v2 kernels are not built |
 | Conservative      | `q8_0`   | `vtq2_1` | 5.5  | low    | No KTQ kernels needed; mixes with stock K |
 | Conservative-v3   | `q8_0`   | `vtq3_1` | 6.25 | +1.05% | Stock K + v1 V |
@@ -354,7 +354,7 @@ This implementation is inspired by but deviates from the cited papers. KTQ uses 
 - **v7+VTQ split** (2026-04-16): KTQ/VTQ split. VTQ v1 types (`vtq{1..4}_1`) for V-cache — no FWHT, no sign bits, `__forceinline__` dequant. TQ renamed to KTQ. Shared `PQ_CODEBOOK` constants.
 - **2026-04-23**: VTQ v2 Trellis family (`vtq{2,3,4}_2`) — group-Viterbi, inverse-Gaussian CDF table. VTQ v3 outlier-channel-split (`vtq{2,3,4}_3`) — 4 fp16 outliers per block.
 - **2026-04-24**: MMA-KTQ tensor-core path live on CC ≥ 7.5 (Turing-tested). PP128 727 t/s vs 431 f16.
-- **2026-04-25**: Production default switched to `ktq2_1 + vtq2_2` (2.78 bpw avg, +0.15% PPL, 83% smaller KV) after vtq2_2 vs vtq2_1 sweep showed v2 wins or ties on PPL/pp/tg.
+- **2026-04-25**: Default switched to `ktq2_1 + vtq2_2` (2.78 bpw avg, +0.15% PPL, 83% smaller KV) after vtq2_2 vs vtq2_1 sweep showed v2 wins or ties on PPL/pp/tg.
 - **2026-04-26**: 80B-TQ1_0 deployed full-VRAM (54.93 t/s, +50% vs IQ2_XXS). Phase 4 perf stack: `MADV_HUGEPAGE`, `mul_mat_id` prefetch, `OMP_WAIT_POLICY=active`, adaptive layer-split (80B: 18/18/12), P2P opt-in, AVX2-FWHT-32. Cumulative +18.5% TG on 80B, +9.3% on 122B.
 - **2026-04-27**: XQuant Phase 1–5 code-complete (XKTQ2_1, dormant on hybrid SSM). `--moe-pin-experts` opt-in (+3.3% TG on 80B-IQ2). gpt-oss-20b head_dim=64 fix (commit `c818f6c84`). Anthropic `/v1/messages` with prompt caching, `TCP_NODELAY`, gzip.
 - **2026-04-28**: gpu00 model directory consolidated to `/home/lance/models/`. Doc rewrite — this file.
