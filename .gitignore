@@ -159,3 +159,25 @@ docs/plans/*
 !docs/plans/2026-04-25-phase1-vrows-results.md
 !docs/plans/2026-04-25-ktq3-research.md
 autoresearch/
+
+# Fork-private development directories — recursive guards (added 2026-05-05)
+**/LEGION/
+**/autoresearch/
+**/brainstorming-*/
+**/notes-*/
+
+# Draft / private docs — never push
+*.draft.md
+**/*-private.md
+**/*-internal.md
+
+# Local agent state
+.aider*
+.claude/
+**/.claude/
+.serena/
+**/.serena/
+
+# Local tmp / scratch
+/tmp_*
+**/scratch-*/
