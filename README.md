@@ -15,7 +15,7 @@
 > - **−0.33% PPL drift vs f16** (chunks=3 wikitext-2, within stderr)
 > - 100k+mmproj fits a single 12 GB GPU; 200k parallel slots × 2 fits 24 GB total
 >
-> **What this fork does that no other does** (per [Research summary 2026-05-02](docs/research/SUMMARY-2026-05-02.md)):
+> **What this fork does that no other does** (see [TurboQuant tech notes](docs/turboquant.md)):
 > - First inference engine with K vs V as separate type families (KTQ × VTQ matrix)
 > - Hadamard-domain Q·K dot product (compute attention without dequantizing K — likely the first software impl)
 > - V-cache outlier-channel-split (top-N fp16 outliers per block) for lossless V quality
