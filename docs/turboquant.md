@@ -1,9 +1,9 @@
 # TurboQuant — KTQ/VTQ KV Cache Quantization for CUDA
 
-Status: 2026-05-02. **v8 unified type aliases shipped.** Short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults; new `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers — essentially **lossless** on 35B-A3B (-0.03% PPL drift vs f16). Three V-cache families (v1, v2 Trellis, v3 Trellis+outlier-split) and one K-cache family (KTQ), freely composable.
+Status: 2026-05-05. **v8 unified type aliases shipped (2026-05-02).** Short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults; new `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers — essentially **lossless** on 35B-A3B (-0.03% PPL drift vs f16). Three V-cache families (v1, v2 Trellis, v3 Trellis+outlier-split) and one K-cache family (KTQ), freely composable.
 
 **Recommended (35B-A3B):** `--cache-type-k ktq2 --cache-type-v vtq3` (v8 quality tier, lossless).
-**Legacy default since 2026-04-25:** `--cache-type-k ktq2_1 --cache-type-v vtq2_2` (= `ktq2/vtq2` in v8).
+**Stable default (since 2026-04-25, EOS-cutoff fix 2026-05-03):** `--cache-type-k ktq2 --cache-type-v vtq2` (= `ktq2_1 / vtq2_2` in legacy long-form). Avoid `vtq2_1` on long contexts on builds with S199 plumbing — see Version History 2026-05-03.
 
 ## Overview
 
@@ -295,25 +295,33 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 
 ## Roadmap
 
-### Active research
+> Full v6 plan: see [docs/plans/2026-05-05-v6-roadmap.md](plans/2026-05-05-v6-roadmap.md). The v6 verdict drops Trellis-K (mathematically incompatible with our Hadamard-domain Q·K USP) and prioritises performance levers.
 
+### Active research (v6 scope)
+
+- **`mmvq` IQ2_XS tuning on sm_75** — currently 28% of kernel time on 35B configs. Target: `__dp4a` INT8 tiled mmvq, expected +15–25% TG. Largest single lever in the repo.
+- **S199 Sparse-K-Skip Phase 1** — branch `feature/s199-sparse-k-skip`, MVP code-complete. Fixed-threshold skip in the FA-vec hot path. Expected +3–8% on long contexts.
+- **FA-kernel register-pressure audit** — Turing CC 7.5 needs ≤32 reg/thread for full occupancy; current is ~48–64. Spill ktq scales to SMEM, FWHT-twiddle to constant, sign-flips as bitmask. Expected +5–10% TG.
+- **Sub-2bpw K via attention-sink-fp16** — `ktq0_1` @ 2.0 bpw with first-N tokens kept in fp16 (KVQuant trick). Low risk, ~1 week.
 - **Correction Overlay Buffer** — designed, not implemented. Top-N lossless error patch on top of KTQ.
 - **Phase 7 — imatrix-aware KTQ calibration** — proposed. Use importance matrix to bias the K-quant Lloyd-Max codebook.
-- **`mmvq` IQ2_XS tuning on sm_75** — currently 28% of kernel time on 35B configs.
 
 ### Discarded after measurement
 
+- **Trellis-K (TCQ-style)** — incompatible with Hadamard-domain Q·K USP (sliding-window Trellis is non-linear in idx; H-domain skalar product requires linear dequant). Cached SMEM decode would work but loses the USP for ~0.5–1% PPL gain — not worth the trade. Tracked as v6-roadmap kill.
 - **Speculative decoding on A3B MoE** — expert-saturation pathology makes it ineffective.
 - **VTQ_MIXED** — dominated by `vtq3_1`, no CUDA path. Enum kept for ABI.
 - **Calibrated outlier selection** (pre-v3 design) — marginal gain after RHT.
 - **MMA-KTQ as default for all ctx** — regresses past ~512 tokens. Now short-ctx-prefill only.
 - **XQuant on hybrid SSM/attention models** — Qwen3.X-A3B / Qwen3.6-27B alternate Mamba/attention layers, yielding 0 pairs. Code-complete and dormant; intended for pure-transformer dense models (Llama-3, Mistral, Gemma-2 family).
+- **Phase 6 adaptive top-k MoE routing** — `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT` in Qwen3 produces a near-uniform softmax distribution post-top-k; cumulative-mass thresholding is meaningless. The selection itself is highly skewed though — see [docs/research/moe-expert-locality.md](research/moe-expert-locality.md) for the L3-pinning / static-prune levers that survived.
 
 ### Not on roadmap
 
 - FA3 (requires sm_80+).
 - Paged attention (scope mismatch).
 - Multi-node inference.
+- MLA / DeepSeek-style latent KV (model-side architecture change, not a quant lever).
 
 ## When *not* to use TurboQuant
 
@@ -358,3 +366,6 @@ This implementation is inspired by but deviates from the cited papers. KTQ uses 
 - **2026-04-26**: 80B-TQ1_0 deployed full-VRAM (54.93 t/s, +50% vs IQ2_XXS). Phase 4 perf stack: `MADV_HUGEPAGE`, `mul_mat_id` prefetch, `OMP_WAIT_POLICY=active`, adaptive layer-split (80B: 18/18/12), P2P opt-in, AVX2-FWHT-32. Cumulative +18.5% TG on 80B, +9.3% on 122B.
 - **2026-04-27**: XQuant Phase 1–5 code-complete (XKTQ2_1, dormant on hybrid SSM). `--moe-pin-experts` opt-in (+3.3% TG on 80B-IQ2). gpt-oss-20b head_dim=64 fix (commit `c818f6c84`). Anthropic `/v1/messages` with prompt caching, `TCP_NODELAY`, gzip.
 - **2026-04-28**: gpu00 model directory consolidated to `/home/lance/models/`. Doc rewrite — this file.
+- **2026-05-02 — TurboQuant v8 unified type aliases**: short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults. New `vtq3_v8` (enum 58, 3.625 bpw) = trellis-3bit + 2 fp16 outliers — essentially **lossless** on 35B-A3B (−0.03% PPL drift vs f16 baseline, 12% smaller than legacy `vtq3_3`). Legacy long names (`ktq2_1`, `vtq2_2`, …) remain accepted.
+- **2026-05-03 — EOS-cutoff regression fix**: long-context coding outputs (Snake-game generation) cut off mid-function with `ktq2_1 + vtq2_1` on the post-S199-plumbing build. A/B test (n=5, Snake prompt with 9k input): `ktq2_1+vtq2_1` 1/3 cutoffs, `ktq2+vtq2_2` 0/5 cutoffs. Fix is a pure KV-type switch (no `--logit-bias` workaround). Hypothesis: the S199 `extern __constant__ float d_ktq_sparse_k_threshold;` symbol changes nvcc codegen for the `vtq2_1` dispatch path; `vtq2_2` is unaffected. Bisect against `e054a3088` not yet performed. Default deploy scripts updated.
+- **2026-05-05 — Repo cleanup**: scrub of marketing wording (`production`, `prod`, `first-class`) across own docs and bench result tags; rename of legacy filenames in `docs/blog/`. Vendored upstream content untouched. Math fix: VRAM-saved tier-table values corrected (e.g. 2.78 bpw is 83% saved, not 91%). v6 roadmap captured in `docs/plans/2026-05-05-v6-roadmap.md`.
