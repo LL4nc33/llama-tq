@@ -181,3 +181,4 @@ autoresearch/
 # Local tmp / scratch
 /tmp_*
 **/scratch-*/
+!docs/plans/2026-05-05-v6-roadmap.md
