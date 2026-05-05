@@ -4,9 +4,9 @@
 [![Upstream](https://img.shields.io/badge/upstream-llama.cpp-blue)](https://github.com/ggml-org/llama.cpp)
 [![Hardware](https://img.shields.io/badge/tested-2x%20RTX%202060%20(CC%207.5)-orange)](#hardware-notes)
 
-**The llama.cpp fork with independent K and V cache type families. Hadamard-domain Q·K dot product. Trellis V-cache. 38% smaller KV than upstream's most aggressive quant — at lossless quality.**
+**A llama.cpp fork with independent K and V cache type families. Hadamard-domain Q·K dot product. Trellis V-cache. 38% smaller KV than upstream's most aggressive quant — at lossless quality.**
 
-**For users:** drop in two flags (`--cache-type-k ktq2 --cache-type-v vtq2`), get a Qwen3.6-35B-A3B running at **86 t/s @ 100k+mmproj on a single 12 GB RTX 2060** — or 2× 200k parallel slots on a 24 GB total dual-2060 setup. Same answer quality as f16 (PPL drift −0.33% at chunks=3, within stderr). **For developers:** the only inference engine where K-cache and V-cache have separate type families (KTQ × VTQ matrix, full FA dispatch). KTQ uses Randomized Hadamard Transform + Lloyd-Max codebook with Hadamard-domain Q·K (no K dequant in attention). VTQ has three sub-families: codebook (v1), group-Viterbi Trellis (v2), Trellis + outlier-channel-split (v3).
+**For users:** drop in two flags (`--cache-type-k ktq2 --cache-type-v vtq2`), get a Qwen3.6-35B-A3B running at **~72 t/s live @ 100k+mmproj on a single 12 GB RTX 2060** (85.71 t/s on `llama-bench tg128` full-GPU dual) — or 2× 200k parallel slots on a 24 GB total dual-2060 setup. Same answer quality as f16 (PPL drift −0.33% at chunks=3, within stderr). **For developers:** an inference engine where K-cache and V-cache have separate type families (KTQ × VTQ matrix, full FA dispatch). KTQ uses Randomized Hadamard Transform + Lloyd-Max codebook with Hadamard-domain Q·K (no K dequant in attention). VTQ has three sub-families: codebook (v1), group-Viterbi Trellis (v2), Trellis + outlier-channel-split (v3).
 
 > **tl;dr** — `--cache-type-k ktq2 --cache-type-v vtq2` (= 2.78 bpw KV) on Qwen3.6-35B-A3B-IQ2_XXS:
 > - **+4% TG vs upstream q4_0/q4_0** (85.71 vs 82.42 t/s, llama-bench)
@@ -15,12 +15,12 @@
 > - **−0.33% PPL drift vs f16** (chunks=3 wikitext-2, within stderr)
 > - 100k+mmproj fits a single 12 GB GPU; 200k parallel slots × 2 fits 24 GB total
 >
-> **What this fork does that no other does** (see [TurboQuant tech notes](docs/turboquant.md)):
-> - First inference engine with K vs V as separate type families (KTQ × VTQ matrix)
-> - Hadamard-domain Q·K dot product (compute attention without dequantizing K — likely the first software impl)
-> - V-cache outlier-channel-split (top-N fp16 outliers per block) for lossless V quality
+> **What this fork adds on top of upstream llama.cpp** (see [TurboQuant tech notes](docs/turboquant.md)):
+> - K and V cache as separate type families (KTQ × VTQ matrix)
+> - Hadamard-domain Q·K dot product (compute attention without dequantizing K)
+> - V-cache outlier-channel-split (top-N fp16 outliers per block) for near-lossless V quality
 > - Sparse V dequant skip (+22% decode at 32k+ context)
-> - Currently running 100k+ context on a 12 GB single-GPU; talks to any OpenAI-compatible or Anthropic-compatible client (see [Client integration](#client-integration))
+> - Runs 100k+ context on a 12 GB single-GPU; speaks both OpenAI-compatible and Anthropic-compatible APIs (see [Client integration](#client-integration))
 
 ## Contents
 
@@ -64,11 +64,11 @@ Combined score: `ppl_delta_pct + 0.5 × tg_slowdown_pct`. Lower is better. f16/f
 | Score | K / V | Note |
 |:---:|---|---|
 |  0.00 | f16 / f16 | reference |
-| **0.82** | **ktq2_1 / vtq2_2** | 🏆 current default since 2026-04-25 |
+| **0.82** | **ktq2_1 / vtq2_2** | 🏆 current default (since 2026-04-25, EOS-cutoff fix 2026-05-03) |
 |  1.69 | ktq4_1 / vtq4_1 | |
-|  2.40 | ktq2_1 / vtq3_1 | legacy v1 (replaced) |
+|  2.40 | ktq2_1 / vtq3_1 | legacy (replaced) |
 |  2.47 | ktq3_1 / vtq3_1 | |
-|  5.50 | ktq2_1 / vtq2_1 | legacy v1 (replaced) |
+|  5.50 | ktq2_1 / vtq2_1 | legacy (replaced) |
 | 17.66 | ktq1_1 / vtq1_1 | 1-bit floor, unusable |
 
 From `autoresearch/baseline.json`. See the [autoresearch loop](autoresearch/README.md) for iterating on new quant variants.
@@ -111,10 +111,10 @@ cmake --build build -j$(nproc) --target llama-server
 
 | Tier | K | V | Avg bpw | VRAM saved | PPL cost | Who it's for |
 |---|---|---|:---:|:---:|:---:|---|
-| ⭐ **Lossless** (recommended) | `ktq2` | `vtq2` | 2.78 | **91%** | **−0.33%** (3-chunk) / +0.15% (8-chunk) | Most users. Fits ~330k single-ctx (or ~470k with `-ub 128`, or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. Alias of `ktq2_1`/`vtq2_2`. |
-| 🪜 **Multi-tenant** (parallel slots) | `ktq2` | `vtq2` | 2.78 | **91%** | **−0.33%** | Multi-user / agent fleets. `gpt-oss-20b F16` (12.85 GB MXFP4-native) fits 24 GB with **4 concurrent 65k slots** (262k total) at 61 t/s per slot. |
-| 🆕 **Quality v8** | `ktq2` | `vtq3` | 3.56 | 78% | **−0.03%** | Essentially f16-quality at 3.56 bpw. New `vtq3_v8` = trellis-3bit + 2 outliers (12% smaller than legacy `vtq3_3`). |
-| **Aggressive** | `ktq2_1` | `vtq3_1` | 4.0 | 77% | +0.49% | Trade ~0.5% PPL for a different bpw point if v2 isn't built. |
+| ⭐ **Lossless** (recommended) | `ktq2` | `vtq2` | 2.78 | **83%** | **−0.33%** (3-chunk) / +0.15% (8-chunk) | Most users. Fits ~330k single-ctx (or ~470k with `-ub 128`, or 2× 200k parallel slots) of a 35B MoE on 24 GB total VRAM. Alias of `ktq2_1`/`vtq2_2`. |
+| 🪜 **Multi-tenant** (parallel slots) | `ktq2` | `vtq2` | 2.78 | **83%** | **−0.33%** | Multi-user / agent fleets. `gpt-oss-20b F16` (12.85 GB MXFP4-native) fits 24 GB with **4 concurrent 65k slots** (262k total) at 61 t/s per slot. |
+| 🆕 **Quality v8** | `ktq2` | `vtq3` | 3.625 | 77% | **−0.03%** | Essentially f16-quality at 3.625 bpw. New `vtq3_v8` = trellis-3bit + 2 outliers (12% smaller than legacy `vtq3_3`). |
+| **Aggressive** | `ktq2_1` | `vtq3_1` | 4.0 | 75% | +0.49% | Trade ~0.5% PPL for a different bpw point if v2 isn't built. |
 | **Conservative** | `q8_0` | `vtq3_1` | 6.25 | 61% | +1.05% | Falls back to the standard `q8_0` K-quant — no KTQ kernels needed. |
 | **Research** | `q8_0` | `vtq4_2` | 6.03 | 62% | +0.44% | Highest-quality Trellis V-cache, larger blocks. |
 
@@ -555,7 +555,7 @@ Rows in **bold** are the deploy recommendations: `f16/vtq2_2` is near-free on FA
 - **`q4_0` / `q8_0` as V destroys FA dispatch** — drops to ~650 PP, ~60 TG (legacy types fall out of fastest FA path on CC 7.5).
 - **Asymmetric `ktq2_1 / vtq2_2`** is the deploy winner at 2.2% PP / 2.5% TG cost for **~80% KV savings** (28.75 MiB vs 160 MiB at ctx=8192).
 - **1bit (vtq1_1) is usable** — `f16/vtq1_1` only −2.0% TG. Speed-wise the `ktq1_1/vtq1_1` combo at 2.0 bpw avg costs only 3.2% TG. PPL +16.5% on Qwen (6.95 vs 5.97) → "Aggressive" quality tier.
-- **VTQ_2 V-cache is literally PPL-lossless** — 64-chunk PPL on Qwen3.6: `f16/f16` = `f16/vtq2_2` = `f16/vtq3_2` = `f16/vtq4_2` = **7.062**. The Trellis-quantized V cache reproduces the f16 attention output bit-perfectly at this measurement granularity.
+- **VTQ_2 V-cache is PPL-lossless within measurement granularity** — 64-chunk PPL on Qwen3.6: `f16/f16` = `f16/vtq2_2` = `f16/vtq3_2` = `f16/vtq4_2` = **7.062**. The Trellis-quantized V cache reproduces the f16 attention output to the precision of this 64-chunk benchmark.
 - **KTQ K-quant costs ~+0.15% PPL** — `ktq2_1/vtq2_2` = `ktq2_1/vtq3_2` = **7.073** (+0.15% vs f16/f16 baseline 7.062, 64-chunk). All Trellis V variants give identical PPL once K is quantized.
 - **`ktq2_1/vtq2_2` (2.78 bpw avg) is the Pareto winner** — same PPL as vtq4_2 (3.78 bpw) at lower VRAM. The bpw difference is gratis savings.
 
@@ -716,7 +716,7 @@ For llama-server use the existing `--tq-v-override` flag.
 >
 > Three measurement regimes appear:
 > - **64-chunk ctx=512** (matrix sweep, full attn-only PPL) — the headline `+0.15%` for `ktq2_1+vtq2_2` lives here. Used in TL;DR.
-> - **8-chunk ctx=512** (apples-to-apples vs upstream, noisier sample) — `+1.34%`. Used only in [vs upstream table](#vs-llamacpp-upstream--apples-to-apples-2026-04-27).
+> - **8-chunk ctx=512** (apples-to-apples vs upstream, noisier sample) — `+1.34%`. Used only in [vs upstream table](#vs-llamacpp-upstream--apples-to-apples-2026-05-02).
 > - **4-chunk ctx=512 `-b 1 -ub 1`** (deploy-aligned, exercises VTQ_2 deferred path) — `+0.85%` on 35B, `−0.06%` on 80B, `−0.63%` on 122B. Used in per-model deploy tables.
 >
 > The numbers are not contradictory — they're different sample sizes / different decode paths. 64-chunk is the cleanest noise floor; 4-chunk `-b 1 -ub 1` is what the deployed config actually does.
