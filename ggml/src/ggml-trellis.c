@@ -171,7 +171,7 @@ void ggml_trellis_encode_group(
 
     // Group L2 norm
     double n2 = 0.0;
-    for (int j = 0; j < N; j++) n2 += (double)x[j] * x[j];
+    for (int j = 0; j < N; j++) n2 += (double)x[j] * (double)x[j];
     float norm = (float)sqrt(n2);
     if (norm < 1e-30f) {
         *out_start_state = 0;
@@ -309,7 +309,7 @@ void ggml_trellis_encode_group(
     double recon_sq = 0.0;
     for (int i = 0; i < N; i++) {
         float code = table[states[i + 1]] * cb_scale;
-        recon_sq += (double)code * code;
+        recon_sq += (double)code * (double)code;
     }
     float recon_norm = (float)sqrt(recon_sq);
     *out_d = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
