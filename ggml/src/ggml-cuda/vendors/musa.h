@@ -124,6 +124,7 @@
 #define cuGetErrorString muGetErrorString
 #define cudaErrorGraphExecUpdateFailure musaErrorGraphExecUpdateFailure
 #define cudaErrorInvalidDeviceFunction musaErrorInvalidDeviceFunction
+#define cudaErrorInvalidValue musaErrorInvalidValue
 #define cudaGraphDestroy musaGraphDestroy
 #define cudaGraphExecDestroy musaGraphExecDestroy
 #define cudaGraphExec_t musaGraphExec_t
