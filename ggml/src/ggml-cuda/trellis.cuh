@@ -60,14 +60,19 @@ extern __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
 
 // Host-side init: called once per CUDA context before any dequant.
 // Uses cudaMemcpyToSymbol on the caller's TU symbol.
+//
+// Casts the cudaGetDevice / cudaMemcpyToSymbol return values to (void)
+// because HIP's hipError_t is `[[nodiscard]]` and the -Werror=unused-value
+// quality-check would otherwise reject this macro on the HIP path. NVCC
+// doesn't mark cudaError_t nodiscard, so this is a no-op on the CUDA path.
 #define GGML_CUDA_INIT_TRELLIS_TABLE_IMPL()                              \
     do {                                                                 \
         int _cur_dev = 0;                                                \
-        cudaGetDevice(&_cur_dev);                                        \
+        (void) cudaGetDevice(&_cur_dev);                                 \
         static bool _init_done[16] = {false};                            \
         if (_cur_dev >= 0 && _cur_dev < 16 && !_init_done[_cur_dev]) {   \
             const float * host_tbl = ggml_trellis_table();               \
-            cudaMemcpyToSymbol(vtq_trellis_table_storage, host_tbl,      \
+            (void) cudaMemcpyToSymbol(vtq_trellis_table_storage, host_tbl, \
                                sizeof(float) * (1 << VTQ_TRELLIS_L));    \
             _init_done[_cur_dev] = true;                                 \
         }                                                                \
