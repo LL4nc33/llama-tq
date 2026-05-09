@@ -274,7 +274,9 @@ private:
     const uint32_t n_swa = 0;
 
     // TurboQuant boundary layer protection
-    const uint32_t tq_protect_layers = 0;
+    // (clang flags this as unused-private-field on macOS even though it IS
+    // referenced in the .cpp constructor body; suppress with maybe_unused.)
+    [[maybe_unused]] const uint32_t tq_protect_layers = 0;
 
     // TurboQuant attention-sink protection (StreamingLLM)
     const uint32_t tq_protect_sinks = 0;
