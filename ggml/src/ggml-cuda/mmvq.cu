@@ -491,6 +491,10 @@ static __global__ void mul_mat_vec_q(
 #endif
     constexpr int s_grid_size = use_shmem_iq2xs ? 512 : (use_shmem_iq2xxs ? 256 : 1);
     __shared__ uint64_t s_grid[s_grid_size];
+    // Silence nvcc warning #177-D when neither shared-memory path is taken
+    // (Turing-only optimisation; off-Turing leaves s_grid sized 1 and
+    // unreferenced after the constexpr-if branches).
+    (void) s_grid;
     if constexpr (use_shmem_iq2xxs) {
 #pragma unroll
         for (int i = tid; i < 256; i += nwarps*warp_size) {
