@@ -15,9 +15,12 @@ exclude =
     build,
     # This contains builds that we don't want to check
     dist,  # This is generated with `python build .` for package releases
-    # TurboQuant fork: exclude research/PoC scripts and vendored upstream
-    # benchmarks. Tracked in-tree for reproducibility but not part of the
-    # production code path; lint-clean is not a goal there.
+    # TurboQuant fork: exclude research/PoC scripts, calibration tools,
+    # and vendored upstream benchmarks. Tracked in-tree for reproducibility
+    # but not part of the production code path; lint-clean is not a goal
+    # there.
     tests/trellis-phase1,
-    bench/harness/vendor
+    bench,
+    scripts/calibrate_ktq_codebook.py,
+    scripts/tq_calibrate_outliers.py
 # max-complexity = 10
