@@ -33,7 +33,7 @@ extern "C" {
 
 // Returns pointer to lazy-initialized 2^L inverse-Gaussian-CDF LUT.
 // Thread-safe first init via atomic flag; subsequent calls are free.
-const float * ggml_trellis_table(void);
+GGML_API const float * ggml_trellis_table(void);
 
 // Encode `QK_GROUP` float samples into `start_state` (L bits) +
 // `qs_bytes` packed emitted bits. Uses full Viterbi over 2^L states.
@@ -45,7 +45,7 @@ const float * ggml_trellis_table(void);
 //   *out_d           : scale such that decode * (1/sqrt(QK_GROUP)) * d
 //                      matches x. Stored as fp32; caller converts to fp16.
 //   qs[0 .. (QK_GROUP*K + 7)/8 - 1] : packed emitted bits (little-endian)
-void ggml_trellis_encode_group(
+GGML_API void ggml_trellis_encode_group(
     const float * x,       // QK_GROUP input samples
     int           K,       // code bits (2, 3, or 4)
     uint16_t    * out_start_state,
@@ -55,7 +55,7 @@ void ggml_trellis_encode_group(
 // Decode QK_GROUP float samples from stored start_state + qs + d.
 // Reconstruction: y[i] = table[state_i] / sqrt(QK_GROUP) * d
 // where d is the encoder-computed scale (NOT the L2 norm of x).
-void ggml_trellis_decode_group(
+GGML_API void ggml_trellis_decode_group(
     uint16_t        start_state,
     int             K,
     float           d,
@@ -73,7 +73,7 @@ void ggml_trellis_decode_group(
 // relative error |src-decoded|/max(|src|,1e-6) falls below threshold are
 // marked invalid (flag bit0=0) so decode skips them — avoids spending a slot
 // on already-accurate blocks. Returns the number of VALID entries emitted.
-int ggml_trellis_overlay_extract(
+GGML_API int ggml_trellis_overlay_extract(
     const float * src,        // QK_GROUP ground-truth fp32 samples
     const float * decoded,    // QK_GROUP decoded fp32 samples
     int           n_per_block,
@@ -81,7 +81,7 @@ int ggml_trellis_overlay_extract(
     uint8_t     * out_entries);   // n_per_block*4 bytes
 
 // Apply overlay corrections in place. Invalid entries are skipped.
-void ggml_trellis_overlay_apply(
+GGML_API void ggml_trellis_overlay_apply(
     const uint8_t * entries,  // n_per_block*4 bytes
     int             n_per_block,
     float         * y);       // QK_GROUP decoded samples, patched in place
@@ -93,7 +93,7 @@ void ggml_trellis_overlay_apply(
 //   out_val_fp32[0..n_out-1] : the picked fp32 values, ordered to match out_pos
 //   x_masked[0..QK_GROUP-1]  : copy of x with out_pos slots zeroed (Trellis-encode input)
 // If n_out >= QK_GROUP, all positions are picked. n_out is clamped to [0, 255].
-void ggml_trellis_outliers_pick(
+GGML_API void ggml_trellis_outliers_pick(
     const float * x,
     int           n_out,
     uint8_t     * out_pos,
@@ -102,7 +102,7 @@ void ggml_trellis_outliers_pick(
 
 // Patch decoded y[] in place by overwriting y[pos[k]] with fp16->fp32(val_fp16[k]).
 // Caller guarantees pos[k] < QK_GROUP.
-void ggml_trellis_outliers_apply(
+GGML_API void ggml_trellis_outliers_apply(
     const uint8_t     * pos,
     const ggml_fp16_t * val_fp16,
     int                 n_out,
