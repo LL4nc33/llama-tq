@@ -4139,7 +4139,33 @@ static void ggml_vk_load_shaders(vk_device& device) {
         rm_stdq = 2;
         rm_stdq_int = 2;
     }
+    // NVIDIA Turing (sm_75 — RTX 2060/2070/2080 family) has a 64 KB
+    // register file per SM and a native 32-thread warp; the upstream
+    // default rm_kq = 2 / rm_iq = 4 was tuned for Ampere+ where occupancy
+    // is less constrained. Bumping rm_kq to 4 (=> rm_iq = 8) — the same
+    // value AMD GCN already uses — amortises the shared-memory grid-table
+    // load across more rows per workgroup. Measured on 2x RTX 2060 with
+    // Qwen3.6-35B-A3B-IQ2_XXS (TG 51.5 -> 61.9 t/s, +20%) and Gemma-4-26B
+    // IQ4_XS (+5%); neutral on K-quants and standard quants.
+    // Set GGML_VK_TURING_RMKQ4=0 to opt out and fall back to rm_kq = 2.
+    if (device->vendor_id == VK_VENDOR_ID_NVIDIA &&
+        device->architecture == vk_device_architecture::NVIDIA_TURING) {
+        const char *opt_out = std::getenv("GGML_VK_TURING_RMKQ4");
+        if (opt_out == nullptr || std::string(opt_out) != "0") {
+            rm_kq = 4;
+        }
+    }
     uint32_t rm_iq = 2 * rm_kq;
+    // Sweep override knobs (bench / A-B harness only). Bounded to keep
+    // VGPR pressure inside the safe envelope.
+    if (const char *e = std::getenv("GGML_VK_RM_KQ")) {
+        const int v = std::atoi(e);
+        if (v >= 1 && v <= 8) rm_kq = (uint32_t)v;
+    }
+    if (const char *e = std::getenv("GGML_VK_RM_IQ")) {
+        const int v = std::atoi(e);
+        if (v >= 1 && v <= 16) rm_iq = (uint32_t)v;
+    }
 
     const bool use_subgroups = device->subgroup_arithmetic && device->architecture != vk_device_architecture::AMD_GCN;
     // Ensure a subgroup size >= 16 is available
