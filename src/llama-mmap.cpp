@@ -455,6 +455,9 @@ struct llama_mmap::impl {
 #endif
 
         // Honor legacy env var as a fallback to enable THP-mode huge pages.
+        // The variable is also set conditionally inside the __linux__ block
+        // below; on non-Linux it stays false and the consumer block (also
+        // __linux__-guarded) is skipped — so suppress the unused warning.
         bool huge_thp_only = false;
 #ifdef __linux__
         if (!huge) {
@@ -464,6 +467,8 @@ struct llama_mmap::impl {
                 }
             }
         }
+#else
+        (void)huge_thp_only;
 #endif
 
         addr = MAP_FAILED;
