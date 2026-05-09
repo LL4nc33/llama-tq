@@ -69,6 +69,7 @@
 #define cudaMallocManaged musaMallocManaged
 #define cudaMemcpy musaMemcpy
 #define cudaMemcpyAsync musaMemcpyAsync
+#define cudaMemcpyToSymbol musaMemcpyToSymbol
 #define cudaMemcpyPeerAsync musaMemcpyPeerAsync
 #define cudaMemcpy2DAsync musaMemcpy2DAsync
 #define cudaMemcpyDeviceToDevice musaMemcpyDeviceToDevice
