@@ -462,7 +462,7 @@ Unsloth ships a `UD-IQ1_M` (1.75 bpw) variant at **31.8 GB instead of 36.6 GB**.
 
 For 122B, **stay on IQ2_XXS at long ctx**. The TQ1_0 trick that made 80B fly (full-VRAM, no PCIe streaming) doesn't translate here — even at 1.75 bpw the model exceeds 24 GB VRAM, so we still pay the offload cost without the FA quality of the IQ2 path.
 
-**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Deploy PPL sweep (legacy notes): [docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md](docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md).
+**PCIe asymmetry matters:** GPU0 x16 / GPU1 x4 means heavier expert-load on GPU0 avoids x4 cross-traffic. 19L (10+9) beats balanced 9+9 by +2% TG and +11% PP-stability. Full sweep: [docs/bench-qwen35-122b-a10b.md](docs/bench-qwen35-122b-a10b.md). Deploy PPL sweep (legacy notes): [docs/blog/2026-04-25-giant-models-deploy-ppl-sweep.md](docs/blog/2026-04-25-giant-models-deploy-ppl-sweep.md).
 
 </details>
 

@@ -61,10 +61,10 @@ On bigger models with more attention heads (122B has 32-head GQA(2)), the Viterb
 
 ## Files
 
-- This blog: `docs/blog/2026-04-25-giant-models-prod-ppl-sweep.md`
-- CSV: `bench/plots/benchmarks.csv` rows tagged `prod-c4-b1`
-- Sister blog: `docs/blog/2026-04-25-80b-prod-config-ppl-sweep.md` (80B-only details)
-- Production deploys:
+- This blog: `docs/blog/2026-04-25-giant-models-deploy-ppl-sweep.md`
+- CSV: `bench/plots/benchmarks.csv` rows tagged `prod-c4-b1` (legacy tag)
+- Sister blog: `docs/blog/2026-04-25-80b-deploy-config-ppl-sweep.md` (80B-only details)
+- Deployments:
   - 80B: `docs/plans/2026-04-24-80b-low-hanging-perf.md`
   - 122B: `docs/bench-qwen35-122b-a10b.md`
 
