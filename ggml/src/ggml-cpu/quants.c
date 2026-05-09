@@ -421,7 +421,7 @@ void ggml_vec_dot_q8_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
-void ggml_vec_dot_ktq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_tq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);
@@ -473,7 +473,7 @@ void ggml_vec_dot_ktq1_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs,
     *s = sumf;
 }
 
-void ggml_vec_dot_ktq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+void ggml_vec_dot_tq2_0_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
     UNUSED(bx);
@@ -1321,7 +1321,7 @@ void ggml_vec_dot_vtq2_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
     dequantize_row_vtq2_2((const block_vtq2_2 *)vx, tmp, n);
     const float * y = (const float *)vy;
     double sum = 0.0;
-    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * (double)y[i];
     *s = (float)sum;
 }
 
@@ -1333,7 +1333,7 @@ void ggml_vec_dot_vtq3_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
     dequantize_row_vtq3_2((const block_vtq3_2 *)vx, tmp, n);
     const float * y = (const float *)vy;
     double sum = 0.0;
-    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * (double)y[i];
     *s = (float)sum;
 }
 
@@ -1345,6 +1345,6 @@ void ggml_vec_dot_vtq4_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
     dequantize_row_vtq4_2((const block_vtq4_2 *)vx, tmp, n);
     const float * y = (const float *)vy;
     double sum = 0.0;
-    for (int i = 0; i < n; i++) sum += (double)tmp[i] * y[i];
+    for (int i = 0; i < n; i++) sum += (double)tmp[i] * (double)y[i];
     *s = (float)sum;
 }
