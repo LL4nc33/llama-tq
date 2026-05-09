@@ -49,9 +49,9 @@ Falls real PPL-Drift den Sim-MSE folgt, wäre `vtq3_v8` der **klare Pareto-Gewin
 
 ## Next Steps
 
-1. **Build verify** auf gpu00 (running)
-2. **Smoke test** vtq3_v8 mit qwen3.5-0.8b-q8_0 oder Qwen3.5-4B  
-3. **PPL Sweep Gate B**: 35B-A3B mit ktq2/vtq3 v8 vs current prod (ktq2_1+vtq2_1)
+1. **Build verify** on the test box (running)
+2. **Smoke test** vtq3_v8 with qwen3.5-0.8b-q8_0 or Qwen3.5-4B
+3. **PPL Sweep Gate B**: 35B-A3B mit ktq2/vtq3 v8 vs current default (ktq2_1+vtq2_1)
 4. **PPL Sweep Gate C**: 4B-Q4_K_M mit ktq2/vtq3 v8 vs current best (ktq2_1+vtq4_1)
 5. **Deploy** falls Gates passed
 
