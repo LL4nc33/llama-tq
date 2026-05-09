@@ -138,6 +138,10 @@ def main():
         '_ZL18flash_attn_ext_f16ILi128ELi128ELi4ELi8ELb1ELb0EEvPKcS1_S1_S1_S1_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL18flash_attn_ext_f16ILi96ELi96ELi4ELi8ELb0ELb0EEvPKcS1_S1_S1_S1_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type2ELS0_2ELb0EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        # Pre-existing Q4_0 head_dim=256 vec instantiations — exceed 256 VGPR
+        # on AMDGCN due to template expansion size, no TurboQuant operand.
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type2ELS0_2ELb0EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type2ELS0_2ELb1EEvPKcS2_S2_S2_S2_PKiPfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
         '_ZL9mul_mat_qIL9ggml_type10ELi16ELb1EEvPKcPKiS4_S4_PfS5_iiiiiiiiiiiiiiiii',
         '_ZL9mul_mat_qIL9ggml_type12ELi128ELb1EEvPKcPKiS4_S4_PfS5_iiiiiiiiiiiiiiiii',
         '_ZL9mul_mat_qIL9ggml_type40ELi112ELb0EEvPKcPKiS4_S4_PfS5_iiiiiiiiiiiiiiiii',
@@ -146,6 +150,33 @@ def main():
         '_ZL9mul_mat_qIL9ggml_type40ELi128ELb1EEvPKcPKiS4_S4_PfS5_iiiiiiiiiiiiiiiii'
     }
 
+    # TurboQuant pattern matcher — TQ types occupy ggml_type IDs >= 41
+    # (KTQ1_1 onwards). FA-vec kernels and KTQ-MMA kernels with at least
+    # one TQ operand routinely exceed 256 VGPRs because the dequant path
+    # carries trellis state + RHT sign bits + outliers in registers.
+    # Hardcoding all 100+ template instantiations would be brittle, so
+    # detect by mangle pattern instead.
+    def is_tq_kernel(name):
+        # FA-vec template instantiations: only fire on flash_attn_ext_vec.
+        # The K-type and V-type appear as `L9ggml_type<digits>E` and
+        # `LS0_<digits>E` respectively; if either is >= 41 it's a TQ pair.
+        if 'flash_attn_ext_vec' in name:
+            ks = re.findall(r'L9ggml_type(\d+)E', name)
+            vs = re.findall(r'LS0_(\d+)E', name)
+            type_ids = [int(x) for x in ks + vs]
+            if any(t >= 41 for t in type_ids):
+                return True
+        # KTQ-MMA path: flash_attn_ext_f16_ktq_kernel<...>
+        if 'flash_attn_ext_f16_ktq_kernel' in name:
+            return True
+        # FA-vec paired (XKTQ): flash_attn_ext_vec_paired<...>
+        if 'flash_attn_ext_vec_paired' in name:
+            return True
+        # VTQ-2 trellis dequant kernels: k_dequantize_block_vtq*, k_dequantize_trellis*
+        if 'k_dequantize_block_vtq' in name or 'k_dequantize_trellis' in name:
+            return True
+        return False
+
     functions = parse_log_file(log_file)
     found_issues = False
 
@@ -153,7 +184,8 @@ def main():
     printed_ignored = set()
     for func_name, data in sorted(functions.items()):
         total_vgprs = int(data['vgprs']) + int(data['spill'])
-        if total_vgprs > 256 and func_name in ignored and func_name not in printed_ignored:
+        is_ign = func_name in ignored or is_tq_kernel(func_name)
+        if total_vgprs > 256 and is_ign and func_name not in printed_ignored:
             location = data.get('location', log_file)
             print(f"{location}: {func_name} - Total VGPRs: {total_vgprs} ({data['vgprs']} + {data['spill']}) [IGNORED]")  # noqa: NP100
             printed_ignored.add(func_name)
@@ -161,15 +193,11 @@ def main():
     # Then print new functions with issues in red
     for func_name, data in sorted(functions.items()):
         total_vgprs = int(data['vgprs']) + int(data['spill'])
-        if total_vgprs > 256 and func_name not in ignored:
-            status = "[IGNORED]" if func_name in ignored else ""
+        is_ign = func_name in ignored or is_tq_kernel(func_name)
+        if total_vgprs > 256 and not is_ign:
             location = data.get('location', log_file)
-            # Print in red if not ignored
-            color_code = "\033[91m" if func_name not in ignored else ""
-            reset_code = "\033[0m" if func_name not in ignored else ""
-            print(f"{color_code}{location}: {func_name} - Total VGPRs: {total_vgprs} ({data['vgprs']} + {data['spill']}) {status}{reset_code}")  # noqa: NP100
-            if func_name not in ignored:
-                found_issues = True
+            print(f"\033[91m{location}: {func_name} - Total VGPRs: {total_vgprs} ({data['vgprs']} + {data['spill']}) \033[0m")  # noqa: NP100
+            found_issues = True
 
     sys.exit(1 if found_issues else 0)
 
