@@ -43,9 +43,9 @@ Switching to `ktq2_1 + vtq2_2` (Trellis V-cache, 2.78 bpw) yields PPL **−0.06%
 
 ## Files
 
-- This blog: `docs/blog/2026-04-25-80b-prod-config-ppl-sweep.md`
-- CSV: `bench/plots/benchmarks.csv` rows tagged `prod-c4-b1`
-- Production runbook: `docs/plans/2026-04-24-80b-low-hanging-perf.md` (-ot regex source)
+- This blog: `docs/blog/2026-04-25-80b-deploy-config-ppl-sweep.md`
+- CSV: `bench/plots/benchmarks.csv` rows tagged `prod-c4-b1` (legacy tag)
+- Deployment runbook: `docs/plans/2026-04-24-80b-low-hanging-perf.md` (-ot regex source)
 
 ## Open
 
