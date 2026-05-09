@@ -273,13 +273,20 @@ private:
     // SWA
     const uint32_t n_swa = 0;
 
-    // TurboQuant boundary layer protection
-    // (clang flags this as unused-private-field on macOS even though it IS
-    // referenced in the .cpp constructor body; suppress with maybe_unused.)
-    [[maybe_unused]] const uint32_t tq_protect_layers = 0;
-
-    // TurboQuant attention-sink protection (StreamingLLM)
-    const uint32_t tq_protect_sinks = 0;
+    // TurboQuant boundary-layer + attention-sink protection.
+    // Both fields ARE referenced in the .cpp constructor body, but clang's
+    // -Wunused-private-field is more aggressive than gcc's and flags them
+    // as unused on macOS even when they're used outside the class scope.
+    // Suppress for these two declarations only.
+#if defined(__clang__)
+#  pragma clang diagnostic push
+#  pragma clang diagnostic ignored "-Wunused-private-field"
+#endif
+    const uint32_t tq_protect_layers = 0;
+    const uint32_t tq_protect_sinks  = 0;
+#if defined(__clang__)
+#  pragma clang diagnostic pop
+#endif
 
     // TurboQuant deferred K quantization
     tq_deferred_state deferred_state = TQ_DEFERRED_OFF;
