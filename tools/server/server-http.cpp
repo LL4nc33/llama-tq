@@ -408,8 +408,11 @@ static void process_handler_response(server_http_req_ptr && request, server_http
         //   (c) stream ends (has_next=false).
         // 16ms ≈ one frame at 60Hz — keeps perceived UX flush-rate while batching
         // 1-4 tokens per chunk on local LAN. Win on prod 35B-A3B: ~+10% wallclock TG.
-        constexpr size_t COALESCE_BYTES         = 4 * 1024;
-        constexpr int64_t COALESCE_DEADLINE_US  = 16'000;  // 16 ms
+        // MSVC requires constexpr ODR-used inside a lambda to be either
+        // captured explicitly or have static storage; mark static so the
+        // existing init-capture style continues to work.
+        static constexpr size_t COALESCE_BYTES         = 4 * 1024;
+        static constexpr int64_t COALESCE_DEADLINE_US  = 16'000;  // 16 ms
         const auto chunked_content_provider = [response = r_ptr](size_t, httplib::DataSink & sink) -> bool {
             std::string buffer;
             buffer.reserve(COALESCE_BYTES);
