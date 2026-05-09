@@ -136,6 +136,7 @@
 #define cudaGraphDestroy hipGraphDestroy
 #define cudaGraphKernelNodeSetParams hipGraphKernelNodeSetParams
 #define cudaErrorInvalidDeviceFunction hipErrorInvalidDeviceFunction
+#define cudaErrorInvalidValue hipErrorInvalidValue
 #define cudaGraphKernelNodeGetParams hipGraphKernelNodeGetParams
 #define cudaGraphNodeGetType hipGraphNodeGetType
 #define cudaGraphGetNodes hipGraphGetNodes
