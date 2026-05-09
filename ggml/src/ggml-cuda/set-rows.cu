@@ -545,7 +545,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
         // TODO(phase3): wire the GPU outlier-pick kernel directly into this
         // launcher to eliminate the host roundtrip.
         const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq2_3);
-        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0, blocks, stream));
         vtq_cuda_encode_set_rows<idx_t, block_vtq2_3, 2>(
             src0_d, src1_d, (block_vtq2_3*)dst->data,
             ne00, ne01, ne02, ne03,
@@ -557,7 +557,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
         );
     } else if (dst->type == GGML_TYPE_VTQ3_3) {
         const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq3_3);
-        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0, blocks, stream));
         vtq_cuda_encode_set_rows<idx_t, block_vtq3_3, 3>(
             src0_d, src1_d, (block_vtq3_3*)dst->data,
             ne00, ne01, ne02, ne03,
@@ -569,7 +569,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
         );
     } else if (dst->type == GGML_TYPE_VTQ4_3) {
         const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq4_3);
-        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0, blocks, stream));
         vtq_cuda_encode_set_rows<idx_t, block_vtq4_3, 4>(
             src0_d, src1_d, (block_vtq4_3*)dst->data,
             ne00, ne01, ne02, ne03,
@@ -587,7 +587,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
         // zero so the FA dequant kernel sees a sane "patch sample 0 to 0"
         // pattern until the picker overwrites them.
         const size_t blocks = ((ne00 * ne01 * ne02 * ne03) / QK_VTQ_TRELLIS) * sizeof(block_vtq3_v8);
-        cudaMemsetAsync(dst->data, 0, blocks, stream);
+        CUDA_CHECK(cudaMemsetAsync(dst->data, 0, blocks, stream));
         vtq_cuda_encode_set_rows<idx_t, block_vtq3_v8, 3>(
             src0_d, src1_d, (block_vtq3_v8*)dst->data,
             ne00, ne01, ne02, ne03,
