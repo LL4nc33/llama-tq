@@ -204,6 +204,44 @@ struct block_q1_0
 #define A_TYPE block_q1_0
 #endif
 
+// ----------------------------------------------------------------------------
+// KTQ2_1 — TurboQuant K-cache, 2-bit codebook, 3.5 bpw, QK=32, 14 B/block.
+// Layout matches `block_ktq2_1` in ggml-common.h:317-322:
+//   offset 0  : ggml_half d            // fp16 norm
+//   offset 2  : uint8_t   qs[8]        // 2-bit codebook indices, 4/byte
+//   offset 10 : uint8_t   sb[4]        // RHT sign bits, 1 bit/element
+//
+// Block-level dequant (warp-cooperative FWHT) lives in `dequant_ktq2_1.comp`.
+// Inline `dequantize`/`dequantize4`/`get_dm` in `dequant_funcs.glsl` are stubs
+// for symbol resolution only — see comment there. KTQ's RHT-domain attention
+// requires a forked `flash_attn_ktq.comp` (Stage 3 follow-up).
+// ----------------------------------------------------------------------------
+#define QUANT_K_KTQ2_1 32
+#define QUANT_R_KTQ2_1 1
+
+struct block_ktq2_1
+{
+    float16_t d;
+    uint8_t   qs[8];
+    uint8_t   sb[4];
+};
+
+// packed16 view: 14 B = 7 × uint16. Used by `dequantize4` stub for vec4-load.
+struct block_ktq2_1_packed16
+{
+    uint16_t  d_u16;     // raw fp16 bits (re-cast via uint16BitsToHalf)
+    uint16_t  qs[4];     // 8 bytes of qs as 4 × u16
+    uint16_t  sb[2];     // 4 bytes of sb as 2 × u16
+};
+
+#if defined(DATA_A_KTQ2_1)
+#define QUANT_K QUANT_K_KTQ2_1
+#define QUANT_R QUANT_R_KTQ2_1
+#define QUANT_AUXF 1
+#define A_TYPE block_ktq2_1
+#define A_TYPE_PACKED16 block_ktq2_1_packed16
+#endif
+
 #define QUANT_K_Q8_1 32
 #define QUANT_R_Q8_1 1
 

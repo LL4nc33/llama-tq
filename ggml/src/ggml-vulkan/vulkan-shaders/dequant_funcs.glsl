@@ -104,6 +104,72 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_KTQ2_1)
+// ============================================================================
+// KTQ2_1 inline dequant — STUB / SYMBOL-RESOLUTION ONLY.
+//
+// FUNDAMENTAL ARCHITECTURAL CAVEAT (see spec §11 Q4 + Layer 4 commit msg):
+//   KTQ2_1 dequant is warp-cooperative: every block of 32 elements requires
+//   a 5-stage FWHT across the 32 lanes via subgroupShuffleXor. A single
+//   thread CANNOT compute the correct value of one (or four) element(s) in
+//   isolation — it would need to do the full 32×32 Hadamard transform
+//   alone, defeating the bandwidth advantage of the 3.5 bpw layout.
+//
+//   The standard `dequantize`/`dequantize4` interface used by `flash_attn.comp`
+//   (scalar) and `flash_attn_cm1.comp` (coopmat1) calls these per-thread
+//   inside a tight inner loop with arbitrary `iqs`. There is no clean way
+//   to express the FWHT in this shape.
+//
+// CURRENT BEHAVIOR:
+//   These stubs return the codebook entry only — no FWHT, no sign flip, no
+//   norm. They WILL produce wrong attention output. They exist solely so
+//   that the SPIR-V for `flash_attn_*_ktq2_1*` and `mul_mat_vec_ktq2_1_*`
+//   etc. links cleanly during shader generation. The pipelines registered
+//   from these blobs are NOT correctness-validated.
+//
+// FOLLOW-UP (Stage 3, A-shaders-K agent):
+//   Either (a) fork `flash_attn_ktq.comp` doing warp-cooperative dequant
+//   inline, or (b) prepend a per-tile block-dequant pass that materialises
+//   K (and V) in an fp32 shmem tile before the main FA dot-product loop.
+//   See spec §11 Q4 and `docs/plans/tq-vulkan-port/layer3-poc-ktq2-results.md`.
+//
+// Production paths (CUDA + CPU) are NOT affected — they already do warp/
+// block cooperative dequant in `turboquant.cuh` / `ggml-quants.c`.
+// ============================================================================
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    const uint qbyte = uint(data_a[a_offset + ib].qs[(iqs >> 0) / 4u]);
+    const uint shift0 = ((iqs    ) & 3u) << 1u;
+    const uint shift1 = ((iqs + 1u) & 3u) << 1u;
+    const uint qbyte1 = uint(data_a[a_offset + ib].qs[(iqs + 1u) / 4u]);
+    const uint i0 = (qbyte  >> shift0) & 0x3u;
+    const uint i1 = (qbyte1 >> shift1) & 0x3u;
+    // Codebook entries (PolarQuant 2-bit, mirrored from ggml-cuda/turboquant.cuh:114-116).
+    const float cb[4] = float[4](-1.489560, -0.451428, +0.451428, +1.489560);
+    return vec2(cb[i0], cb[i1]);  // STUB: missing FWHT + sign + norm. See comment above.
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const uint qbyte = uint(data_a[a_offset + ib].qs[iqs / 4u]);
+    const float cb[4] = float[4](-1.489560, -0.451428, +0.451428, +1.489560);
+    // 4 contiguous 2-bit indices live in the same byte when iqs is 4-aligned.
+    const uint base_shift = (iqs & 3u) << 1u;
+    if (base_shift == 0u) {
+        return vec4(
+            cb[(qbyte >> 0u) & 0x3u],
+            cb[(qbyte >> 2u) & 0x3u],
+            cb[(qbyte >> 4u) & 0x3u],
+            cb[(qbyte >> 6u) & 0x3u]
+        );
+    }
+    // Misaligned fallback: 4 separate scalar lookups (rarely hit in practice; FA uses iqs%4==0).
+    const vec2 v0 = dequantize(ib, iqs,      a_offset);
+    const vec2 v1 = dequantize(ib, iqs + 2u, a_offset);
+    return vec4(v0.x, v0.y, v1.x, v1.y);  // STUB.
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].d), 0.0);
+}
+#endif
+
 #if defined(DATA_A_IQ1_S)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint ib32 = iqs / 32;

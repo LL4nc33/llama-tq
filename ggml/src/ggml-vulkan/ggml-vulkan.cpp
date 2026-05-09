@@ -3534,6 +3534,13 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_FA(GGML_TYPE_Q5_1,     q5_1, FA_SCALAR, )
             CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_SCALAR, )
         }
+        // KTQ2_1: scalar FA path. NOTE: PPL drift gate (G3 ≤ 0.5%) WILL FAIL until
+        // Stage 3 lands a forked `flash_attn_ktq.comp` doing warp-cooperative dequant
+        // — the inline `dequantize`/`dequantize4` stubs in dequant_funcs.glsl do
+        // codebook-only (no FWHT / sign / norm). Pipeline registers cleanly and
+        // dispatch routes correctly; numerical correctness is the next stage's job.
+        // Always non-int8: KTQ qs[] is a 2-bit codebook index, not a signed q8 value.
+        CREATE_FA(GGML_TYPE_KTQ2_1, ktq2_1, FA_SCALAR, )
     } else {
         CREATE_FA(GGML_TYPE_F32, f32, FA_SCALAR, _fp32)
         CREATE_FA(GGML_TYPE_F16, f16, FA_SCALAR, _fp32)
@@ -3556,6 +3563,8 @@ static void ggml_vk_load_shaders(vk_device& device) {
             CREATE_FA(GGML_TYPE_Q5_1,     q5_1, FA_SCALAR, _fp32)
             CREATE_FA(GGML_TYPE_IQ4_NL, iq4_nl, FA_SCALAR, _fp32)
         }
+        // KTQ2_1 fp32 scalar (see comment in fp16 branch above).
+        CREATE_FA(GGML_TYPE_KTQ2_1, ktq2_1, FA_SCALAR, _fp32)
     }
 #if defined(VK_KHR_cooperative_matrix) && defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
     if (device->coopmat1_fa_support) {
@@ -4325,6 +4334,11 @@ static void ggml_vk_load_shaders(vk_device& device) {
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ4_NL],  "dequant_iq4_nl",  dequant_iq4_nl_len,  dequant_iq4_nl_data,  "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_MXFP4],   "dequant_mxfp4",   dequant_mxfp4_len,   dequant_mxfp4_data,   "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_NVFP4],   "dequant_nvfp4",   dequant_nvfp4_len,   dequant_nvfp4_data,   "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
+    // KTQ2_1: TurboQuant K-cache (3.5 bpw, QK=32, 14 B/block). Block-level shader,
+    // 1 workgroup per block, 32 lanes/WG (warp-cooperative FWHT). One WG handles
+    // 32 logical elements, so workgroup count = (count / 32). Required subgroup
+    // size 32 — pipeline-creation infra resolves via VK_EXT_subgroup_size_control.
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_KTQ2_1],  "dequant_ktq2_1",  dequant_ktq2_1_len,  dequant_ktq2_1_data,  "main", 2, 5 * sizeof(uint32_t), {32, 1, 1}, {}, 1, false /*disable_robustness*/, true /*require_full_subgroups*/, 32 /*required_subgroup_size*/);
 
     // get_rows
     ggml_vk_create_pipeline(device, device->pipeline_get_rows[GGML_TYPE_F32 ], "get_rows_f32",  get_rows_f32_len,  get_rows_f32_data,  "main", 3, sizeof(vk_op_binary_push_constants), { 512, 1, 1}, {}, 1);
@@ -15476,6 +15490,13 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 case GGML_TYPE_Q5_1:
                 case GGML_TYPE_IQ4_NL:
                     // supported in scalar and coopmat2 paths
+                    break;
+                case GGML_TYPE_KTQ2_1:
+                    // TurboQuant K-cache (3.5 bpw, QK=32). V1: scalar FA path only,
+                    // K==V symmetric (L15466 check above enforces). The current
+                    // dequant_funcs.glsl entries are codebook-only stubs — pipeline
+                    // dispatches but PPL is wrong until Stage 3 forks the FA shader
+                    // for warp-cooperative dequant. See spec-master.md §11 Q4.
                     break;
                 // K dequants currently disabled because D dimension is rounded up to 256 and runs inefficiently
                 //case GGML_TYPE_Q2_K:
