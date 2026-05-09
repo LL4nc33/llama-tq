@@ -37,7 +37,7 @@ static int get_pool_slots_env(void) {
 
 const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t /*stream*/) {
     int device = 0;
-    cudaGetDevice(&device);
+    (void) cudaGetDevice(&device);
     if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) device = 0;
 
     vtq_encode_workspace * ws     = &g_vtq_ws[device];
@@ -83,9 +83,9 @@ void vtq_free_encode_workspace(void) {
         if (!g_vtq_ws_inited[d]) continue;
         vtq_encode_workspace * ws = &g_vtq_ws[d];
         // Best-effort: device may already be unusable at teardown.
-        if (ws->dp_cur)  cudaFree(ws->dp_cur);
-        if (ws->dp_next) cudaFree(ws->dp_next);
-        if (ws->bt)      cudaFree(ws->bt);
+        if (ws->dp_cur)  (void) cudaFree(ws->dp_cur);
+        if (ws->dp_next) (void) cudaFree(ws->dp_next);
+        if (ws->bt)      (void) cudaFree(ws->bt);
         *ws = { nullptr, nullptr, nullptr, 0 };
         g_vtq_ws_inited[d] = false;
     }
