@@ -31,7 +31,14 @@
 #pragma once
 
 #include <cstdint>
-#include <cuda_runtime.h>
+// Pull in cudaStream_t / cudaError_t via the appropriate vendor runtime.
+#if defined(GGML_USE_HIP)
+#  include <hip/hip_runtime.h>
+#elif defined(GGML_USE_MUSA)
+#  include <musa_runtime.h>
+#else
+#  include <cuda_runtime.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
