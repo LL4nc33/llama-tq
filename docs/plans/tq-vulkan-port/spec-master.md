@@ -9,14 +9,18 @@ Subsequent agents (Layers 3–6) treat this as canonical.*
 
 ## 1. Goals & Non-Goals
 
-**V1 (this spec)**
-- Decode-only Vulkan path for `GGML_TYPE_KTQ2_1` (K-cache, 3.5 bpw, 14 B/block, QK=32) and `GGML_TYPE_VTQ2_2` (V-cache, 2.25 bpw, 36 B/block, QK=128).
-- Symmetric K==V usage. Both types whitelisted in `supports_op`, but the FA dispatch line at `ggml-vulkan.cpp:15466` (which rejects `src[1]->type != src[2]->type`) is **not lifted**. Models must be loaded with matching K/V quant.
+**V1 (this spec)** — *scope reduced after Q1 spike (commit `c1419aed1`):*
+
+- Decode-only Vulkan path for `GGML_TYPE_KTQ2_1` ONLY (K-cache, 3.5 bpw, 14 B/block, QK=32).
+- Symmetric K==V usage with KTQ2_1 on both K and V. Whitelisted in `supports_op`. The FA dispatch line at `ggml-vulkan.cpp:15466` (which rejects `src[1]->type != src[2]->type`) is **not lifted**. Models must be loaded with matching K/V quant.
 - Three FA paths: scalar (mandatory), coopmat1 (Turing+), coopmat2 (Ada+). All gated behind `subgroupSize == 32`.
-- Acceptance gate: PPL drift ≤ 0.3 % vs CUDA reference; ≥ 95 % deterministic prefix-match over 5×500 tokens.
+- Acceptance gate: PPL drift ≤ 0.3 % vs CUDA reference (`(KTQ2_1, KTQ2_1)` Test A from Q1 spike); ≥ 95 % deterministic prefix-match over 5×500 tokens.
 - Hardware tier-1: RTX 2060 (sm_75) + NV proprietary 580.x. Tier-1 RADV: RX 7900 mesa-25+. Tier-2 advisory: Intel Arc A770, MoltenVK.
 
+**VTQ2_2 dropped from V1.** The Q1 spike confirmed CUDA hard-rejects `(VTQ2_2, VTQ2_2)` symmetric (`fattn.cu:339-360` whitelist comment: "VTQ types are V-cache only — always asymmetric K!=V"). With no CUDA oracle for symmetric VTQ, there's no numerical reference to validate against. VTQ2_2 ships in V2 alongside the asymmetric K!=V dispatcher work.
+
 **V2 (deferred)**
+- VTQ2_2 V-side dequant shader (mirror of KTQ2_1 work).
 - Asymmetric K/V (lift the `src[1]->type != src[2]->type` check, double FA pipeline matrix).
 - Quantize-side (encode) shaders. Philox-6r in GLSL. Norm-correction encode.
 
@@ -58,16 +62,12 @@ Total: 7 new shader/source files, 5 modified, 2 new test files, 1 fixture binary
 - **S1.3** Wire `pipeline_dequant[GGML_TYPE_KTQ2_1]` in `ggml-vulkan.cpp`. `[S1.2]`
 - **S1.4** Test harness with golden-block fixture. **Gate G1: max_abs_err ≤ 1e-3, mean_abs_err ≤ 1e-5.** `[S1.3]`
 
-**Stage 2 — VTQ2_2 scalar dequant path**
-- **S2.1** Trellis-LUT SSBO binding + upload at first FA dispatch. `[S0.3]`
-- **S2.2** `dequant_funcs.glsl` — VTQ2_2 with O(1) `vtq_state_at<2>` formula and sparse-V early-out. `[S0.2, S2.1]`
-- **S2.3** `dequant_vtq2_2.comp`. `[S2.2]`
-- **S2.4** Pipeline registration. **Gate G2: same numeric envelope as G1.** `[S2.3]`
+**Stage 2 — DEFERRED TO V2.** VTQ2_2 work moved out of V1 after Q1 spike (no CUDA oracle for symmetric VTQ).
 
 **Stage 3 — Scalar FA wiring**
-- **S3.1** `CREATE_FA(GGML_TYPE_KTQ2_1, ktq2_1, FA_SCALAR, …)` — 4 variants. `[S1.4, S2.4]`
-- **S3.2** Same for VTQ2_2. `[S3.1]`
-- **S3.3** Extend `supports_op` for FLASH_ATTN_EXT, GET_ROWS, SET_ROWS, CPY. **Don't lift L15466 K==V check (V2 work).** `[S3.2]`
+- **S3.1** `CREATE_FA(GGML_TYPE_KTQ2_1, ktq2_1, FA_SCALAR, …)` — 4 variants. `[S1.4]`
+- **S3.2** ~~Same for VTQ2_2.~~ DEFERRED TO V2.
+- **S3.3** Extend `supports_op` for FLASH_ATTN_EXT, GET_ROWS, SET_ROWS, CPY for KTQ2_1 only. **Don't lift L15466 K==V check (V2 work).** `[S3.1]`
 - **S3.4** PPL smoke on Qwen3.5-0.8B-Q8_0. **Gate G3: drift ≤ 0.5% scalar-only path.** `[S3.3]`
 
 **Stage 4 — Coopmat1 path** (Turing accel)
@@ -243,15 +243,16 @@ for (uint32_t s = 0; s < 65536; ++s) {
 
 ## 9. Worktree Assignment for Layer 4 (parallel impl)
 
+*Updated after Q1 resolution — VTQ-track removed from V1.*
+
 | Agent | Owns | Subtasks |
 |---|---|---|
-| **A-shaders-K** | KTQ shader files | S0.1 (KTQ rows), S0.2 (KTQ struct), S1.1, S1.2 |
-| **A-shaders-V** | VTQ shader + trellis LUT host code | S0.1 (VTQ rows), S0.2 (VTQ struct), S0.3, S2.2, S2.3 |
-| **A-cpp-wiring** | All `ggml-vulkan.cpp` and `vulkan-shaders-gen.cpp` edits | S0.1 (merge integrator), S1.3, S2.1, S2.4, S3.1, S3.2, S3.3, S4.2, S5.2, S5.3 |
-| **A-cm-paths** | Coopmat fork files | S4.1, S5.1 |
-| **A-tests** | Test harness | S1.4, G1, G2, G3, G4, G5, S6.1–S6.3 |
+| **A-shaders-K** | KTQ shader files | S0.1, S0.2, S1.1, S1.2. POC commit `d959f50bd` already provides `dequant_ktq2_1.comp` — this agent integrates + extends for the FA path. |
+| **A-cpp-wiring** | All `ggml-vulkan.cpp` and `vulkan-shaders-gen.cpp` edits | S0.1 (integrator), S1.3, S3.1, S3.3, S4.2, S5.2, S5.3 |
+| **A-cm-paths** | Coopmat fork files for KTQ | S4.1, S5.1 |
+| **A-tests** | Test harness for KTQ | S1.4, G1, G3, G4, G5, S6.1–S6.3 |
 
-A-shaders-K and A-shaders-V rebase onto A-cpp-wiring's S0.1 branch before modifying their respective files. A-cm-paths blocks on A-shaders-K/V completing.
+A-shaders-K rebases onto A-cpp-wiring's S0.1 branch before modifying shader files. A-cm-paths blocks on A-shaders-K completing S1.x. **Stage 2 (VTQ) is fully deferred to V2.**
 
 ## 10. Validation Gates (Layer 5/6)
 
@@ -271,7 +272,12 @@ A-shaders-K and A-shaders-V rebase onto A-cpp-wiring's S0.1 branch before modify
 
 ## 11. Known Unknowns (Layer 3 POC must answer)
 
-**Q1 (CONTRADICTION).** Asymmetric KTQ K + VTQ V is the prod CUDA path; Vulkan FA blocks K≠V. **POC must verify**: when both K and V are loaded as the *same* type (e.g. both KTQ2_1, both VTQ2_2), does CUDA FA-vec dispatcher even compile/run? The prod CUDA path may *only* exist for asymmetric pairing. → POC: build synthetic 2-layer model with `(KTQ2_1, KTQ2_1)` and `(VTQ2_2, VTQ2_2)` and confirm CUDA reference produces sane outputs.
+**Q1. RESOLVED by Q1 spike (commit `c1419aed1`).**
+- `(KTQ2_1, KTQ2_1)` on CUDA: FA-vec ON, coherent output, valid byte-exact reference. ✓
+- `(VTQ2_2, VTQ2_2)` on CUDA: FA-vec selector hard-rejects (`fattn.cu:339-360` — "VTQ types are V-cache only"). Falls back to non-FA path (12× slower, useless as oracle). ✗
+- `(KTQ2_1, VTQ2_2)` asymmetric: prod baseline confirmed. → V2.
+
+Decision: **V1 ships KTQ2_1-only. VTQ2_2 dropped from V1**, moved to V2 with the asymmetric-dispatcher work.
 
 **Q2. RESOLVED by Layer 2 driver probe (commit `2d2f0b4be`).** `subgroupShuffleXor` in tight FWHT loop works correctly on driver 580.126.09 Turing across 65,536 workgroups (~2.1M lanes), bit-exact against CPU reference, **with and without** `subgroupBarrier()`. Decision: keep barrier as defensive portability hedge (free on Turing, protects MoltenVK + older RADV + future driver regressions). Soften the comment from "MANDATORY" to "DEFENSIVE".
 
