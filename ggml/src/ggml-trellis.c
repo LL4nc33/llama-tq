@@ -6,10 +6,27 @@
 
 #include <float.h>
 #include <math.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// MSVC's <stdatomic.h> requires /experimental:c11atomics which our CI
+// doesn't enable. Fall back to Interlocked* for the small set of atomic
+// ops we use here. Same pattern as ggml-cpu.c.
+#if defined(_MSC_VER) && !defined(__clang__)
+#  include <windows.h>
+typedef volatile LONG ggml_trellis_atomic_int;
+#  define GGML_TRELLIS_ATOMIC_LOAD(p)               InterlockedCompareExchange((p), 0, 0)
+#  define GGML_TRELLIS_ATOMIC_STORE(p, v)           InterlockedExchange((p), (v))
+#  define GGML_TRELLIS_ATOMIC_CAS(p, expp, newval) \
+        (InterlockedCompareExchange((p), (newval), *(expp)) == *(expp))
+#else
+#  include <stdatomic.h>
+typedef atomic_int ggml_trellis_atomic_int;
+#  define GGML_TRELLIS_ATOMIC_LOAD(p)               atomic_load((p))
+#  define GGML_TRELLIS_ATOMIC_STORE(p, v)           atomic_store((p), (v))
+#  define GGML_TRELLIS_ATOMIC_CAS(p, expp, newval)  atomic_compare_exchange_strong((p), (expp), (newval))
+#endif
 
 // --- Inverse Normal CDF (Acklam 2003) ---
 static double inv_norm_cdf(double p) {
@@ -46,7 +63,7 @@ static double inv_norm_cdf(double p) {
 // Thread-safe lazy init: the first thread sees g_table_ready=0, fills the
 // table, then publishes the ready flag. Subsequent threads spin until ready.
 static float g_table[1u << GGML_TRELLIS_L];
-static atomic_int g_table_state = 0;  // 0=uninit, 1=filling, 2=ready
+static ggml_trellis_atomic_int g_table_state = 0;  // 0=uninit, 1=filling, 2=ready
 
 static void fill_table(void) {
     const size_t n = (size_t)1 << GGML_TRELLIS_L;
@@ -61,11 +78,11 @@ static void fill_table(void) {
 
 const float * ggml_trellis_table(void) {
     int expected = 0;
-    if (atomic_compare_exchange_strong(&g_table_state, &expected, 1)) {
+    if (GGML_TRELLIS_ATOMIC_CAS(&g_table_state, &expected, 1)) {
         fill_table();
-        atomic_store(&g_table_state, 2);
+        GGML_TRELLIS_ATOMIC_STORE(&g_table_state, 2);
     } else {
-        while (atomic_load(&g_table_state) != 2) {
+        while (GGML_TRELLIS_ATOMIC_LOAD(&g_table_state) != 2) {
             // Spin — init is ~200µs, contention only at first call.
         }
     }

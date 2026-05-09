@@ -1311,7 +1311,12 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
 // --- VTQ_2 (Trellis v2) vec_dot: dequantize then fp32 dot product ---
 // Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2.
 
-#include <alloca.h>
+// alloca header is platform-specific — Windows ships it in malloc.h.
+#if defined(_WIN32)
+#  include <malloc.h>
+#else
+#  include <alloca.h>
+#endif
 
 void ggml_vec_dot_vtq2_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
