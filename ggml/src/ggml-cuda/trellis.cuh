@@ -27,10 +27,22 @@
 // Trellis LUT: SINGLE device-global definition in trellis.cu, referenced
 // via extern from every TU that includes this header. Requires RDC
 // (CUDA_SEPARABLE_COMPILATION=ON) — enabled in ggml/src/ggml-cuda/CMakeLists.txt.
-#ifdef VTQ_TRELLIS_TABLE_DEFINE
-__device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
+//
+// HIP/AMDGCN nuance: clang emits `__device__` globals with `protected`
+// visibility by default. lld's amdgcn linker rejects cross-TU references
+// to protected symbols ("undefined protected symbol: …") even with RDC.
+// Force `default` visibility on the HIP path so the extern resolves.
+// CUDA's nvlink is unaffected either way.
+#if defined(__HIP_PLATFORM_AMD__) || defined(__MUSA__)
+#  define GGML_TQ_LUT_VISIBILITY __attribute__((visibility("default")))
 #else
-extern __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
+#  define GGML_TQ_LUT_VISIBILITY
+#endif
+
+#ifdef VTQ_TRELLIS_TABLE_DEFINE
+__device__ GGML_TQ_LUT_VISIBILITY float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
+#else
+extern __device__ GGML_TQ_LUT_VISIBILITY float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
 #endif
 
 // Host-side init: called once per CUDA context before any dequant.
