@@ -273,9 +273,9 @@ A-shaders-K and A-shaders-V rebase onto A-cpp-wiring's S0.1 branch before modify
 
 **Q1 (CONTRADICTION).** Asymmetric KTQ K + VTQ V is the prod CUDA path; Vulkan FA blocks K≠V. **POC must verify**: when both K and V are loaded as the *same* type (e.g. both KTQ2_1, both VTQ2_2), does CUDA FA-vec dispatcher even compile/run? The prod CUDA path may *only* exist for asymmetric pairing. → POC: build synthetic 2-layer model with `(KTQ2_1, KTQ2_1)` and `(VTQ2_2, VTQ2_2)` and confirm CUDA reference produces sane outputs.
 
-**Q2.** Does `subgroupShuffleXor` in tight FWHT loop work correctly on driver 580.x Turing **without** `subgroupBarrier()` between stages? POC: micro-bench FWHT with/without barrier; bit-diff against CUDA. **Default: keep barrier.**
+**Q2. RESOLVED by Layer 2 driver probe (commit `2d2f0b4be`).** `subgroupShuffleXor` in tight FWHT loop works correctly on driver 580.126.09 Turing across 65,536 workgroups (~2.1M lanes), bit-exact against CPU reference, **with and without** `subgroupBarrier()`. Decision: keep barrier as defensive portability hedge (free on Turing, protects MoltenVK + older RADV + future driver regressions). Soften the comment from "MANDATORY" to "DEFENSIVE".
 
-**Q3.** Does spec-constant array `PQ_CB_2BIT[4]` indexed by per-thread variable lower to constant-bank loads on NVIDIA 580.x and RADV RDNA3? POC: SASS / RGA dump.
+**Q3. RESOLVED by Layer 2 driver probe.** `glslc -O` emits `OpAccessChain + OpLoad` on a Function-storage 4-element array for both spec-constant and inline-const variants — same shape as upstream IQ-quant Vulkan shaders. Decision: use **inline `const float[4]`** for V1 (matches upstream convention, no spec-const machinery needed).
 
 **Q4.** Is upstream `flash_attn_vec.comp` parametric enough for KTQ's custom warp-cooperative `vec_dot_KQ` via `dequant_funcs.glsl`, or does the v7 Hadamard-domain trick require a forked `flash_attn_ktq.comp`? POC: prototype scalar-FA call site.
 
