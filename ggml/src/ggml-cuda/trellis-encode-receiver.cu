@@ -432,8 +432,10 @@ static cudaError_t ensure_beam_scratch(int device, size_t need_bytes,
         return cudaSuccess;
     }
     // Free old, reallocate with 25% headroom to amortise growth.
-    if (g_beam_scratch_edge[device])   cudaFree(g_beam_scratch_edge[device]);
-    if (g_beam_scratch_parent[device]) cudaFree(g_beam_scratch_parent[device]);
+    // (void) on cudaFree because hipError_t is nodiscard; teardown errors
+    // here aren't actionable.
+    if (g_beam_scratch_edge[device])   (void) cudaFree(g_beam_scratch_edge[device]);
+    if (g_beam_scratch_parent[device]) (void) cudaFree(g_beam_scratch_parent[device]);
     g_beam_scratch_edge[device]   = nullptr;
     g_beam_scratch_parent[device] = nullptr;
     g_beam_scratch_capacity[device] = 0;
@@ -443,7 +445,7 @@ static cudaError_t ensure_beam_scratch(int device, size_t need_bytes,
     if (err != cudaSuccess) return err;
     err = cudaMalloc((void **)&g_beam_scratch_parent[device], cap);
     if (err != cudaSuccess) {
-        cudaFree(g_beam_scratch_edge[device]);
+        (void) cudaFree(g_beam_scratch_edge[device]);
         g_beam_scratch_edge[device] = nullptr;
         return err;
     }
@@ -455,8 +457,8 @@ static cudaError_t ensure_beam_scratch(int device, size_t need_bytes,
 
 extern "C" void trellis_encode_group_cuda_free(void) {
     for (int d = 0; d < GGML_CUDA_MAX_DEVICES; d++) {
-        if (g_beam_scratch_edge[d])   cudaFree(g_beam_scratch_edge[d]);
-        if (g_beam_scratch_parent[d]) cudaFree(g_beam_scratch_parent[d]);
+        if (g_beam_scratch_edge[d])   (void) cudaFree(g_beam_scratch_edge[d]);
+        if (g_beam_scratch_parent[d]) (void) cudaFree(g_beam_scratch_parent[d]);
         g_beam_scratch_edge[d]    = nullptr;
         g_beam_scratch_parent[d]  = nullptr;
         g_beam_scratch_capacity[d] = 0;
@@ -562,7 +564,7 @@ extern "C" cudaError_t trellis_encode_group_cuda(
 
     // -------------------- Beam search --------------------
     int device = 0;
-    cudaGetDevice(&device);
+    (void) cudaGetDevice(&device);
     if (device < 0 || device >= GGML_CUDA_MAX_DEVICES) device = 0;
 
     // Round beam up/down to the nearest supported template instantiation.
