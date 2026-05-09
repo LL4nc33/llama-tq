@@ -15,8 +15,7 @@ using json = nlohmann::ordered_json;
 // so the strong definition of ggml_cpu_set_expert_hotness in ggml-cpu.c is
 // not available at link time. Provide a weak no-op fallback so the linker
 // resolves cleanly. On builds that DO link ggml-cpu, the strong symbol from
-// ggml-cpu.c wins. Weak attribute is a GCC/Clang extension; on MSVC we use
-// a static stub guarded with __has_attribute (which MSVC defines).
+// ggml-cpu.c wins.
 #if defined(__GNUC__) || defined(__clang__)
 extern "C" __attribute__((weak)) void ggml_cpu_set_expert_hotness(
         const int32_t * const * /*hot_per_layer*/,
@@ -24,6 +23,24 @@ extern "C" __attribute__((weak)) void ggml_cpu_set_expert_hotness(
         int                     /*n_layers*/) {
     // No-op fallback: only reached on builds without ggml-cpu linked.
 }
+#elif defined(_MSC_VER)
+// MSVC has no weak-symbol attribute. Use the /alternatename linker pragma:
+// emit a default stub under a private name and tell the linker to use it
+// only if the strong symbol is missing. The strong symbol from ggml-cpu.c
+// wins when ggml-cpu is linked.
+extern "C" void ggml_cpu_set_expert_hotness_default(
+        const int32_t * const * /*hot_per_layer*/,
+        const int             * /*n_per_layer*/,
+        int                     /*n_layers*/) {
+    // No-op fallback.
+}
+#  if defined(_M_X64) || defined(_M_AMD64) || defined(_M_ARM64)
+// 64-bit: symbol names have no leading underscore.
+#    pragma comment(linker, "/alternatename:ggml_cpu_set_expert_hotness=ggml_cpu_set_expert_hotness_default")
+#  else
+// 32-bit: __cdecl symbols carry a leading underscore.
+#    pragma comment(linker, "/alternatename:_ggml_cpu_set_expert_hotness=_ggml_cpu_set_expert_hotness_default")
+#  endif
 #endif
 
 bool expert_hotness_load(const std::string & path, expert_hotness & out) {

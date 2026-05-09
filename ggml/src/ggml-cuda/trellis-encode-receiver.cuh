@@ -32,10 +32,12 @@
 
 #include <cstdint>
 // Pull in cudaStream_t / cudaError_t via the appropriate vendor runtime.
+// vendors/hip.h and vendors/musa.h define `cudaXxx` macro aliases on top
+// of the native runtime headers, which the API in this file uses.
 #if defined(GGML_USE_HIP)
-#  include <hip/hip_runtime.h>
+#  include "vendors/hip.h"
 #elif defined(GGML_USE_MUSA)
-#  include <musa_runtime.h>
+#  include "vendors/musa.h"
 #else
 #  include <cuda_runtime.h>
 #endif
