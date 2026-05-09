@@ -588,7 +588,7 @@ static void vtq_cuda_encode_set_rows(
             pool_slots, wave_start);
 
         if (num_waves > 1) {
-            cudaStreamSynchronize(stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
         }
     }
 }
