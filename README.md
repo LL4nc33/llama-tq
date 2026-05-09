@@ -105,6 +105,18 @@ cmake -B build -DGGML_CUDA=ON
 cmake --build build -j$(nproc) --target llama-server
 ```
 
+#### Vulkan build (AMD / Intel / Apple / Turing-tuned NVIDIA)
+
+```bash
+./scripts/build-vulkan.sh
+```
+
+Vulkan path is supported for non-CUDA hardware and ships a Turing-specific
+`rm_kq=4` mat-vec tuning that lifts IQ2_XXS TG by **+20%** on RTX 2060/2070/2080.
+TurboQuant KV cache types remain CUDA-only; Vulkan builds silently fall
+back to F16 KV. See [`docs/vulkan.md`](docs/vulkan.md) for prereqs (LunarG
+SDK strongly recommended), real bench numbers, and the env-var tuning matrix.
+
 ### Pick your tier
 
 > **TurboQuant v8 (2026-05-02):** short CLI aliases `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults. New `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers — essentially **lossless** on 35B-A3B (−0.03% PPL drift vs f16 baseline). Legacy long names (`ktq2_1`, `vtq2_2`, etc.) remain supported.
