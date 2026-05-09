@@ -585,6 +585,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_ktq_iter(
     for (int k0_start = (DKQ/2-1) - (DKQ/2-1) % nbatch_K2; k0_start >= 0; k0_start -= nbatch_K2) {
         const int k0_stop = k0_start + nbatch_K2 < DKQ/2 ? k0_start + nbatch_K2 : DKQ/2;
         const int k0_diff = k0_stop - k0_start;
+        (void)k0_diff;  // KTQ inline ignores k0 slicing (whole-row dequant); kept for parity with f16 path
 
         if constexpr (nstages <= 1) {
             constexpr bool use_cp_async = nstages == 1;
