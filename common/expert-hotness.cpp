@@ -11,6 +11,21 @@
 
 using json = nlohmann::ordered_json;
 
+// Vulkan-only / metal-only / etc. builds don't link the ggml-cpu library,
+// so the strong definition of ggml_cpu_set_expert_hotness in ggml-cpu.c is
+// not available at link time. Provide a weak no-op fallback so the linker
+// resolves cleanly. On builds that DO link ggml-cpu, the strong symbol from
+// ggml-cpu.c wins. Weak attribute is a GCC/Clang extension; on MSVC we use
+// a static stub guarded with __has_attribute (which MSVC defines).
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void ggml_cpu_set_expert_hotness(
+        const int32_t * const * /*hot_per_layer*/,
+        const int             * /*n_per_layer*/,
+        int                     /*n_layers*/) {
+    // No-op fallback: only reached on builds without ggml-cpu linked.
+}
+#endif
+
 bool expert_hotness_load(const std::string & path, expert_hotness & out) {
     std::ifstream f(path);
     if (!f.is_open()) {
