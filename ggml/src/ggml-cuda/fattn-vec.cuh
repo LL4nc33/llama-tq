@@ -1131,8 +1131,19 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
     }
 }
 
+// __attribute__((used)) keeps the explicit template instantiation alive
+// when nvcc + RDC would otherwise prune it. MSVC's nvcc front-end uses
+// cl.exe for host code which doesn't understand GCC attributes — hide
+// the attribute on that toolchain (template instantiations stay live
+// without it on MSVC because the link model is different).
+#if defined(_MSC_VER) && !defined(__GNUC__) && !defined(__clang__)
+#  define GGML_FATTN_VEC_USED
+#else
+#  define GGML_FATTN_VEC_USED __attribute__((used))
+#endif
+
 #define DECL_FATTN_VEC_CASE(D, type_K, type_V)                              \
-    template __attribute__((used)) void ggml_cuda_flash_attn_ext_vec_case   \
+    template GGML_FATTN_VEC_USED void ggml_cuda_flash_attn_ext_vec_case     \
     <D, type_K, type_V>(ggml_backend_cuda_context & ctx, ggml_tensor * dst) \
 
 #define EXTERN_DECL_FATTN_VEC_CASES(D, type_K)             \
@@ -1191,7 +1202,7 @@ EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_KTQ4_1)
 // is dispatched against need extern decls. Add new (D, type_V) pairs here
 // when extending FATTN_VEC_CASES_PAIRED_* in fattn-vec-dispatch-ktq.cu.
 #define DECL_FATTN_VEC_CASE_PAIRED(D, type_K, type_V)                              \
-    template __attribute__((used)) void ggml_cuda_flash_attn_ext_vec_case_paired   \
+    template GGML_FATTN_VEC_USED void ggml_cuda_flash_attn_ext_vec_case_paired     \
     <D, type_K, type_V>(ggml_backend_cuda_context & ctx, ggml_tensor * dst)        \
 
 #define EXTERN_DECL_FATTN_VEC_CASES_PAIRED(D, type_K)             \
