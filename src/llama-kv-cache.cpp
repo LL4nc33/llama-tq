@@ -163,7 +163,7 @@ llama_kv_cache::llama_kv_cache(
     xq_dominant_of_layer.assign(hparams.n_layer, -1);
     // Phase 3c (CUDA dispatcher) and Phase 3d (paired kernel + launcher) are
     // landed (commits 0e91a2365 + f4d5c7efb). The pair-pass is now active.
-    constexpr bool xquant_dispatch_ready = true;
+    [[maybe_unused]] constexpr bool xquant_dispatch_ready = true;
     if (xquant_enabled && is_tq_type_k && type_k == GGML_TYPE_KTQ2_1) {
         // XQuant paper recommends *boundary protection* of the first/last few
         // layers (sink + tail) regardless of user's tq_protect_layers setting,
