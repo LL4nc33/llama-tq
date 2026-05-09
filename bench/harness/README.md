@@ -38,8 +38,8 @@ budgeting) will land via a `requirements.txt` next to this README.
 
 ## Running the Smoke
 
-**Do not run against the live deploy on internal-host:8791.** Spin a local server
-with the smallest test model first:
+**Do not run against a live deployment.** Spin a local server with the
+smallest test model first:
 
 ```bash
 # Terminal A — local llama-server with the smallest test model
@@ -65,7 +65,8 @@ only, not a quality signal.
   regressions. Do not optimise this away.
 - Single-stream evals: `parallel: 1`, `cont_batching: false` for
   determinism on MoE models (Qwen3.6-A3B expert routing is order-sensitive).
-- No parallel bench runs on test-rig (see project memory rule).
+- No parallel bench runs on the same GPU — VRAM contention and thermal
+  drift skew measurements.
 
 ## Implementation Order (from spec §9)
 

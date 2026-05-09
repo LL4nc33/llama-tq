@@ -38,14 +38,14 @@
 
 ## Hardware-Umgebung
 
-- **Dev-Sandbox:** GPU0 (RTX 2060 12GB, x16). Nach 03:02 CEST geräumt (8/11825 MB).
-- **Untouched:** GPU1 (RTX 2060 12GB, x4) — TTS + FunctionGemma + 4B Triple-Goal Deploy live.
-- **Build-Tool:** llama-tq turboquant branch, test-rig.
+- **Dev-Sandbox:** GPU0 (RTX 2060 12GB, x16). Cleared after the redeploy window.
+- **Untouched:** GPU1 (RTX 2060 12GB, x4) — TTS + FunctionGemma + 4B Triple-Goal deployment live.
+- **Build-Tool:** llama-tq turboquant branch.
 
 ## Redeploy nach Dev-Phase
 
-Snapshot der GPU0 Settings: `/workspace/gpu0_redeploy_settings.md` auf test-rig.
+Snapshot of the GPU0 settings is captured in the deployment runbook.
 
 ```bash
-ssh <user>@example.local "bash ~/llama-tq/scripts/deploy-35b-singlegpu-100k.sh"
+bash scripts/deploy-35b-singlegpu-100k.sh
 ```
