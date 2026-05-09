@@ -9,8 +9,7 @@
 // See: docs/plans/2026-04-28-two-tier-expert-cache.md (Phase A, Option C).
 
 #include "moe-pin.cuh"
-
-#include <cuda_runtime.h>
+#include "common.cuh"  // vendor shim for HIP/MUSA cuda_runtime.h equivalence
 
 #include <vector>
 #include <utility>
