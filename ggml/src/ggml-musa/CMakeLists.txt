@@ -69,6 +69,12 @@ if (MUSAToolkit_FOUND)
                              ${GGML_SOURCES_MUSA}
                             )
 
+    # Mirror the CUDA RDC settings for the trellis LUT (see ggml-cuda's
+    # CMakeLists.txt). MUSA reuses the CUDA-language compiler path so the
+    # CUDA_SEPARABLE_COMPILATION property applies.
+    set_target_properties(ggml-musa PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    set_target_properties(ggml-musa PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+
     # TODO: do not use CUDA definitions for MUSA
     if (NOT GGML_BACKEND_DL)
         target_compile_definitions(ggml PUBLIC GGML_USE_CUDA)
