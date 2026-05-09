@@ -33,7 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cfloat>
-#include <cuda_runtime.h>
+// cuda_runtime.h is pulled in via common.cuh (HIP/MUSA: vendor shim).
 
 // ============================================================
 // Env-var parsing (one-shot cache so we don't re-read getenv per call).
