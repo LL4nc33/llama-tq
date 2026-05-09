@@ -22,6 +22,18 @@
 #include <alloca.h>
 #endif
 
+// Portable prefetch. GCC/Clang use __builtin_prefetch; MSVC needs _mm_prefetch.
+#if defined(_MSC_VER) && !defined(__clang__)
+#  include <xmmintrin.h>
+#  define GGML_PREFETCH(p, rw, locality) \
+        _mm_prefetch((const char *)(p), \
+                     (locality) >= 3 ? _MM_HINT_T0 : \
+                     (locality) >= 2 ? _MM_HINT_T1 : \
+                     (locality) >= 1 ? _MM_HINT_T2 : _MM_HINT_NTA)
+#else
+#  define GGML_PREFETCH(p, rw, locality) __builtin_prefetch((p), (rw), (locality))
+#endif
+
 #include <assert.h>
 #include <errno.h>
 #include <time.h>
@@ -1526,7 +1538,7 @@ static inline void ggml_prefetch_hot_experts(
         const char * p = base + (size_t) eid * nb02;
         const char * end = p + nb02;
         for (const char * q = p; q < end; q += 64) {
-            __builtin_prefetch(q, 0, 3);
+            GGML_PREFETCH(q, 0, 3);
         }
     }
 }
@@ -1745,8 +1757,8 @@ static void ggml_compute_forward_mul_mat_id(
         // the DRAM-fetch latency behind the in-flight mat-vec.
         for (int next_a = cur_a + 1; next_a < n_as; ++next_a) {
             if (matrix_row_counts[next_a] > 0) {
-                __builtin_prefetch((const char *) src0->data + next_a * nb02, 0, 0);
-                __builtin_prefetch((const char *) src0->data + next_a * nb02 + 64, 0, 0);
+                GGML_PREFETCH((const char *) src0->data + next_a * nb02, 0, 0);
+                GGML_PREFETCH((const char *) src0->data + next_a * nb02 + 64, 0, 0);
                 break;
             }
         }
