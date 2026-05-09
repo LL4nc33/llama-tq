@@ -87,6 +87,13 @@ ggml_add_backend_library(ggml-hip
                          ${GGML_SOURCES_ROCM}
                         )
 
+# Mirror the CUDA RDC settings — TurboQuant trellis LUT (vtq_trellis_table_storage)
+# is a single __device__ global referenced via extern from multiple TUs. Without
+# relocatable device code the HIP/AMDGCN linker emits "undefined protected symbol"
+# for the extern references. Same fix as ggml-cuda's CMakeLists.txt.
+set_target_properties(ggml-hip PROPERTIES HIP_SEPARABLE_COMPILATION ON)
+set_target_properties(ggml-hip PROPERTIES HIP_RESOLVE_DEVICE_SYMBOLS ON)
+
 # TODO: do not use CUDA definitions for HIP
 if (NOT GGML_BACKEND_DL)
     target_compile_definitions(ggml PUBLIC GGML_USE_CUDA)
