@@ -8,11 +8,14 @@ deprecated = "warn"
 [src]
 exclude = [
     "./tools/mtmd/legacy-models/**",
-    # TurboQuant fork: research/PoC scripts and vendored upstream benchmarks.
-    # In-tree for reproducibility, but missing third-party deps (jieba,
-    # fuzzywuzzy, rouge, wonderwords, ...) and not on the production path.
+    # TurboQuant fork: research/PoC scripts, calibration tools, and
+    # vendored upstream benchmarks. In-tree for reproducibility, but
+    # missing third-party deps (jieba, fuzzywuzzy, rouge, wonderwords, ...)
+    # and not on the production path.
     "./tests/trellis-phase1/**",
-    "./bench/harness/vendor/**",
+    "./bench/**",
+    "./scripts/calibrate_ktq_codebook.py",
+    "./scripts/tq_calibrate_outliers.py",
 ]
 
 [[overrides]]
