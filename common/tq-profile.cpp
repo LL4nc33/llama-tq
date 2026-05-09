@@ -237,6 +237,7 @@ static void apply_strategy(
         const std::string & strategy,
         ggml_type base, ggml_type low, ggml_type high)
 {
+    (void)base;  // 'base' is informational only; out is pre-initialised by caller
     const int n = (int) out.size();
     const std::string strat = to_lower(strategy);
 
