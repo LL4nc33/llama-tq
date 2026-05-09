@@ -12,7 +12,12 @@
 #include <random>
 #include <vector>
 
-#define QK 256
+// Must match GGML_TRELLIS_QK_GROUP (the encoder/decoder operate on this many
+// samples per block). Was 256, halved to 128 in task #143 — keep in sync or
+// the post-128 tail of the test array is uninitialised after decode and the
+// argmax/MSE assertions misbehave (e.g. injected outlier at pos 137 is
+// outside the scan range of overlay_extract).
+#define QK GGML_TRELLIS_QK_GROUP
 
 static double mse(const float * a, const float * b, int n) {
     double s = 0.0;
@@ -49,8 +54,8 @@ static int test_top1_argmax() {
     for (int i = 0; i < QK; i++) src[i] = gauss(rng);
     for (int i = 0; i < QK; i++) dec[i] = src[i] + 0.1f * gauss(rng);
 
-    // Inject a known large error at a known position.
-    const int P = 137;
+    // Inject a known large error at a known position (must be < QK).
+    const int P = 73;
     const float injected = 5.0f;
     dec[P] = src[P] - injected;
 
