@@ -253,8 +253,10 @@ static __device__ __forceinline__ int pq_stochastic_round(float val, const float
 // pair (a, b) becomes (a+b, a−b) as required by the Hadamard recursion.
 // ============================================================
 static __device__ __forceinline__ float ktq_cuda_fwht_warp(float val) {
+    // 4-arg form (mask, val, step, width) for HIP/ROCm portability — HIP's
+    // __shfl_xor_sync macro requires the width argument; nvcc accepts both.
     for (int step = 1; step < 32; step <<= 1) {
-        float other = __shfl_xor_sync(0xFFFFFFFF, val, step);
+        float other = __shfl_xor_sync(0xFFFFFFFF, val, step, 32);
         float sum = val + other;
         float diff = other - val;   // (other - val) so high-half lanes get (a - b) after the swap
         val = (threadIdx.x & step) ? diff : sum;
