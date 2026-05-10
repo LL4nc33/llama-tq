@@ -248,7 +248,8 @@ jobs:
                   glslc \
                   gcc-14-loongarch64-linux-gnu \
                   g++-14-loongarch64-linux-gnu \
-                  libvulkan-dev:loong64
+                  libvulkan-dev:loong64 \
+                  spirv-headers
 
       - name: Build
         run: |
