@@ -555,6 +555,8 @@ struct common_params {
     uint32_t tq_protect_sinks  = 0; // attention-sink protection: force layer-0 V-cache to f16 when > 0 (StreamingLLM)
     bool tq_deferred_k = false;     // defer K quantization until prefill->decode transition
     bool tq_deferred_v = false;     // defer V quantization until prefill->decode transition
+    bool tq_no_deferred_k = false;  // opt-out: disable deferred K staging even for KTQ types (saves f16 staging VRAM)
+    bool tq_no_deferred_v = false;  // opt-out: disable deferred V staging even for VTQ_2/_3/_v8 types (saves f16 staging VRAM)
     uint32_t tq_profile_heads = 0;  // Trick 2 PR1: profile first N decode calls — dump per-head V variance/kurtosis as JSON
 
     // Phase 6a: router confidence profiler.

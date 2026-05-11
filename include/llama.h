@@ -370,6 +370,8 @@ extern "C" {
         uint32_t tq_protect_sinks;  // attention-sink protection (StreamingLLM): force layer-0 V-cache to f16 when > 0
         bool tq_deferred_k;        // defer K quantization until prefill->decode transition
         bool tq_deferred_v;        // defer V quantization until prefill->decode transition
+        bool tq_no_deferred_k;     // opt-out: disable deferred K staging even for KTQ types (saves ~n_embd_k_gqa * kv_size * 2 bytes/layer VRAM)
+        bool tq_no_deferred_v;     // opt-out: disable deferred V staging even for VTQ_2/_3/_v8 types (saves ~n_embd_v_gqa * kv_size * 2 bytes/layer VRAM)
         uint32_t tq_profile_heads; // Trick 2 PR1: if > 0, profile first N decode calls and dump per-head V variance/kurtosis
         bool xquant_enabled;       // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers for ~50% K-cache savings
 

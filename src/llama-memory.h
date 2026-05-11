@@ -33,6 +33,12 @@ struct llama_memory_params {
     // TurboQuant deferred V quantization
     bool tq_deferred_v;
 
+    // TurboQuant deferred-K opt-out (saves f16 staging VRAM at quality cost)
+    bool tq_no_deferred_k;
+
+    // TurboQuant deferred-V opt-out (saves f16 staging VRAM at decode-speed cost)
+    bool tq_no_deferred_v;
+
     // XQuant cross-layer KV reuse (Phase 5b)
     bool xquant_enabled;
 };
