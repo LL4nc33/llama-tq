@@ -384,6 +384,54 @@ static __device__ __forceinline__ void flash_attn_ext_f16_ktq_load_tile(
     }
 }
 
+// VTQ2_1 warp-cooperative tile-load for V cache (Phase 1 scaffolding — not yet wired).
+// V is pre-rotated graph-level (self_v_rot) so dequant is JUST codebook lookup × norm.
+// No FWHT, no sign bits — much simpler than KTQ K-dequant.
+//
+// Each warp.y row handles one V token, iterates blocks sequentially along head_dim.
+// tile_V ends up as half in shmem (same layout as f16 V tile fills).
+//
+// Block format: block_vtq2_1 { ggml_half d; uint8_t qs[8]; } (10 bytes, 32 elements at 2 bpw).
+//
+// TODO Phase 2/3: wire this into ggml_cuda_flash_attn_ext_mma_ktq_inline_case
+// to enable KTQ K + VTQ V inline MMA path for Ministral-3-3B prefill speed.
+template<int stride_tile, int nwarps, int nbatch_fa, bool oob_check>
+static __device__ __forceinline__ void flash_attn_ext_f16_vtq_load_tile_V_vtq2_1(
+        const block_vtq2_1 * const __restrict__ V_blocks,
+        half2 * const __restrict__ tile_V,
+        const int D2,                  // head_dim in half2 (= head_dim/2)
+        const int stride_V_blocks,     // row stride in block_vtq2_1 units
+        const int i_sup) {
+    const int tid  = threadIdx.x;
+    const int warp = threadIdx.y;
+    const int D    = 2 * D2;
+    const int nblk_per_row = D / QK_VTQ;
+
+    #pragma unroll
+    for (int i0 = 0; i0 < nbatch_fa; i0 += nwarps) {
+        const int i = i0 + warp;
+        if (i >= nbatch_fa) break;
+
+        const bool oob = oob_check && (i >= i_sup);
+        const block_vtq2_1 * row = V_blocks + int64_t(i) * stride_V_blocks;
+        half * tile_row_h = reinterpret_cast<half *>(tile_V + i * stride_tile);
+
+        #pragma unroll 4
+        for (int ib = 0; ib < nblk_per_row; ++ib) {
+            float val = 0.0f;
+            if (!oob) {
+                const float norm = (float) row[ib].d;
+                if (norm > 1e-30f) {
+                    // 2-bit codebook lookup: each byte holds 4 indices, tid covers 32 elements
+                    const int idx = (row[ib].qs[tid >> 2] >> ((tid & 3) * 2)) & 0x3;
+                    val = VTQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE * norm;
+                }
+            }
+            tile_row_h[ib * QK_VTQ + tid] = __float2half(val);
+        }
+    }
+}
+
 // KTQ2_1 warp-cooperative tile-load: each warp.y row handles one K token,
 // iterates blocks sequentially along head_dim. No cp.async — FWHT IS the
 // compute that hides latency. tile_K ends up as half in shmem (same layout
