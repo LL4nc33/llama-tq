@@ -29,6 +29,8 @@ public:
                      uint32_t   tq_protect_sinks,
                          bool   tq_deferred_k,
                          bool   tq_deferred_v,
+                         bool   tq_no_deferred_k,
+                         bool   tq_no_deferred_v,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
         const std::vector<ggml_type> & type_v_layers = {});
