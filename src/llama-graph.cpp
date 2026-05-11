@@ -126,6 +126,18 @@ bool llm_graph_input_pos::can_reuse(const llm_graph_params & params) {
     return res;
 }
 
+void llm_graph_input_attn_temp::ensure_table(uint32_t max_pos) {
+    if (scale_table.size() > max_pos) return;
+    const size_t old_size = scale_table.size();
+    const size_t new_size = std::max<size_t>(max_pos + 1, std::max<size_t>(old_size * 2, 8192));
+    scale_table.resize(new_size);
+    for (size_t p = old_size; p < new_size; ++p) {
+        scale_table[p] = std::log(
+            std::floor((static_cast<double>(p) + f_attn_temp_offset) / n_attn_temp_floor_scale) + 1.0
+        ) * f_attn_temp_scale + 1.0;
+    }
+}
+
 void llm_graph_input_attn_temp::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && attn_scale) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -133,12 +145,16 @@ void llm_graph_input_attn_temp::set_input(const llama_ubatch * ubatch) {
         GGML_ASSERT(f_attn_temp_scale != 0.0f);
         GGML_ASSERT(n_attn_temp_floor_scale != 0);
 
-        std::vector<float> attn_scale_data(n_tokens, 0.0f);
+        // find max pos in this ubatch for table sizing
+        llama_pos max_pos = 0;
         for (int i = 0; i < n_tokens; ++i) {
-            const float pos = ubatch->pos[i];
-            attn_scale_data[i] = std::log(
-                std::floor((pos + f_attn_temp_offset) / n_attn_temp_floor_scale) + 1.0
-            ) * f_attn_temp_scale + 1.0;
+            if (ubatch->pos[i] > max_pos) max_pos = ubatch->pos[i];
+        }
+        ensure_table(static_cast<uint32_t>(max_pos));
+
+        std::vector<float> attn_scale_data(n_tokens);
+        for (int i = 0; i < n_tokens; ++i) {
+            attn_scale_data[i] = scale_table[ubatch->pos[i]];
         }
 
         ggml_backend_tensor_set(attn_scale, attn_scale_data.data(), 0, n_tokens*ggml_element_size(attn_scale));
