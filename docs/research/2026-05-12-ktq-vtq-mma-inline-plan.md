@@ -122,9 +122,62 @@ static __device__ __forceinline__ void flash_attn_ext_f16_vtq_load_tile_V_vtq2_1
 - [ ] Bench-gate: verify build doesn't regress
 
 ### Phase 2: Kernel template extension
-- [ ] Add `typename V_type` template param to inline kernel
-- [ ] Specialize V load path: half2 vs block_vtq2_1
-- [ ] Stride math correction
+
+**Approach decision (2026-05-12):** Use `bool V_is_vtq2_1` template param instead
+of full `typename V_type`. Keeps changes surgical, all type-conditional logic
+guarded by `if constexpr (V_is_vtq2_1)`.
+
+#### 2.1: Extend `flash_attn_ext_f16_ktq_iter` (line 558)
+- Add `bool V_is_vtq2_1` template param
+- Add `using V_ptr_t = std::conditional_t<V_is_vtq2_1, const block_vtq2_1*, const half2*>;`
+- Change `const half2 * V_h2` to `V_ptr_t V_data`
+- Stride conversion at call site: f16 stride / sizeof(block_vtq2_1) / 2
+
+#### 2.2: V load conditional (lines 620, 977)
+Replace:
+```cpp
+flash_attn_ext_f16_ktq_load_tile<stride_tile_V, nwarps, nbatch_fa, use_cp_async, oob_check>
+    (V_h2 + int64_t(k_VKQ_0)*stride_V, tile_V, nbatch_V2, stride_V, k_VKQ_sup);
+```
+With:
+```cpp
+if constexpr (V_is_vtq2_1) {
+    // VTQ V dequant in shmem
+    flash_attn_ext_f16_vtq_load_tile_V_vtq2_1<stride_tile_V, nwarps, nbatch_fa, oob_check>
+        (V_data + int64_t(k_VKQ_0)*stride_V_blocks, tile_V, nbatch_V2, stride_V_blocks, k_VKQ_sup);
+} else {
+    // existing f16 path with cp_async
+    flash_attn_ext_f16_ktq_load_tile<stride_tile_V, nwarps, nbatch_fa, use_cp_async, oob_check>
+        (V_data + int64_t(k_VKQ_0)*stride_V, tile_V, nbatch_V2, stride_V, k_VKQ_sup);
+}
+```
+
+**Note:** VTQ load does NOT use cp_async (it's synchronous dequant with compute).
+This may reduce throughput vs f16+cp_async on Ampere+, but Turing has no cp_async
+anyway so this is neutral on RTX 2060.
+
+#### 2.3: Extend kernel + inner_loop + main_kernel
+Cascade `bool V_is_vtq2_1` through:
+- `flash_attn_ext_f16_ktq_inner_loop` (line 1101)
+- `flash_attn_ext_f16_ktq_kernel` (line 1645)
+- Template instantiation at `flash_attn_ext_mma_ktq_inline_case` (line 1822)
+
+#### 2.4: V_data cast at kernel entry (lines 1748, 1794)
+```cpp
+const auto V_data = (V_is_vtq2_1
+    ? reinterpret_cast<V_ptr_t>(V + nb23*sequence + nb22*z_KV)
+    : reinterpret_cast<V_ptr_t>(V + nb23*sequence + nb22*z_KV));
+```
+
+#### 2.5: Stride conversion
+`stride_V` is in `half2` units for f16. For VTQ, blocks are 10 bytes for 32 elements.
+- f16 stride_V (in half2): `nb21 / sizeof(half2)`
+- VTQ stride_V_blocks: `nb21 / sizeof(block_vtq2_1)` — but nb21 is in bytes!
+
+Need to verify: when V is `vtq2_1` type, what does `nb21` mean? It should be the row
+stride in bytes (n_embd_v_gqa × bytes_per_element = head_dim × 10/32 = 40 bytes for D=128).
+
+Block-stride: `nb21 / sizeof(block_vtq2_1)`.
 
 ### Phase 3: Dispatch
 - [ ] Update `ggml_cuda_flash_attn_ext_mma_ktq:65` for ktq2_1+vtq2_1 path
