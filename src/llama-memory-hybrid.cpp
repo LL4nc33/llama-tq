@@ -23,6 +23,8 @@ llama_memory_hybrid::llama_memory_hybrid(
                  uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
                      bool   tq_deferred_v,
+                     bool   tq_no_deferred_k,
+                     bool   tq_no_deferred_v,
                      bool   xquant_enabled,
                             /* recurrent */
                 ggml_type   type_r,
@@ -53,6 +55,8 @@ llama_memory_hybrid::llama_memory_hybrid(
         tq_protect_sinks,
         tq_deferred_k,
         tq_deferred_v,
+        tq_no_deferred_k,
+        tq_no_deferred_v,
         filter_attn == nullptr ?
             [&](int32_t il) { return !hparams.is_recurrent(il); }
             : filter_attn,
