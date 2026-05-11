@@ -102,6 +102,8 @@ llama_kv_cache::llama_kv_cache(
                  uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
                      bool   tq_deferred_v,
+                     bool   tq_no_deferred_k,
+                     bool   tq_no_deferred_v,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
     const std::vector<ggml_type> & type_v_layers,
@@ -133,21 +135,27 @@ llama_kv_cache::llama_kv_cache(
     // when already auto-enabled.
     const bool is_tq_type_k = (type_k == GGML_TYPE_KTQ1_1 || type_k == GGML_TYPE_KTQ2_1 ||
                                 type_k == GGML_TYPE_KTQ3_1 || type_k == GGML_TYPE_KTQ4_1);
-    const bool use_deferred_k = is_tq_type_k;
-    (void) tq_deferred_k; // flag retained for backwards compat; always on for KTQ
+    // Opt-out (--no-tq-deferred-k): user accepts per-token KTQ quantization
+    // noise during prefill to save the f16 staging buffer (~n_embd_k_gqa *
+    // kv_size * 2 bytes per layer). Required for fitting full ctx on small-VRAM
+    // GPUs where staging would dwarf the quant savings.
+    const bool use_deferred_k = is_tq_type_k && !tq_no_deferred_k;
+    (void) tq_deferred_k; // positive flag retained for backwards compat; opt-in is auto via KTQ type
 
     // check if deferred V quantization is applicable (VTQ_2 Trellis-coded types only)
     // Auto-enable for VTQ_2 types: per-token Viterbi encoding during decode is
     // ~21.7ms/call which blocks the decode loop. Deferred V stages f16 writes
     // during prefill and bulk-Viterbi converts at prefill→decode. The legacy
     // --tq-deferred-v flag is retained as a no-op for backwards compat.
+    // Opt-out (--no-tq-deferred-v): user accepts per-token Viterbi blocking on
+    // decode writes to save the f16 staging buffer.
     const bool is_vtq2_type_v = (type_v == GGML_TYPE_VTQ2_2 || type_v == GGML_TYPE_VTQ3_2 ||
                                   type_v == GGML_TYPE_VTQ4_2 ||
                                   type_v == GGML_TYPE_VTQ2_3 || type_v == GGML_TYPE_VTQ3_3 ||
                                   type_v == GGML_TYPE_VTQ4_3 ||
                                   type_v == GGML_TYPE_VTQ3_V8);
-    const bool use_deferred_v = is_vtq2_type_v;
-    (void) tq_deferred_v; // flag retained for backwards compat; always on for VTQ_2
+    const bool use_deferred_v = is_vtq2_type_v && !tq_no_deferred_v;
+    (void) tq_deferred_v; // positive flag retained for backwards compat; opt-in is auto via VTQ_2 type
 
     // XQuant pairing pass — populate xq_dominant_of_layer mapping.
     // Convention: subordinate layers are odd indices (l = 2k+1) starting at l=5

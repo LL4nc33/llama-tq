@@ -300,6 +300,8 @@ llama_context::llama_context(
             /*.tq_protect_sinks    =*/ params.tq_protect_sinks,
             /*.tq_deferred_k       =*/ params.tq_deferred_k,
             /*.tq_deferred_v       =*/ params.tq_deferred_v,
+            /*.tq_no_deferred_k    =*/ params.tq_no_deferred_k,
+            /*.tq_no_deferred_v    =*/ params.tq_no_deferred_v,
             /*.xquant_enabled      =*/ params.xquant_enabled,
         };
 
@@ -3127,6 +3129,8 @@ llama_context_params llama_context_default_params() {
         /*.tq_protect_sinks            =*/ 0,
         /*.tq_deferred_k               =*/ false,
         /*.tq_deferred_v               =*/ false,
+        /*.tq_no_deferred_k            =*/ false,
+        /*.tq_no_deferred_v            =*/ false,
         /*.tq_profile_heads            =*/ 0,
         /*.xquant_enabled              =*/ false,
         /*.abort_callback              =*/ nullptr,
