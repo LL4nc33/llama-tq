@@ -147,6 +147,11 @@ public:
     const uint32_t n_attn_temp_floor_scale;
     const float    f_attn_temp_scale;
     const float    f_attn_temp_offset;
+
+    // precomputed log(floor(pos / floor_scale) + 1) * scale + 1 table — pos-indexed lookup
+    // avoids per-token CPU log/floor in set_input (hot path for Mistral3/Ministral decode)
+    std::vector<float> scale_table;
+    void ensure_table(uint32_t max_pos);
 };
 
 class llm_graph_input_pos_bucket : public llm_graph_input_i {
