@@ -94,3 +94,29 @@ Future hebel:
 1. Sparse-K attention skip (S199 branch from memory canonical — not in current repo)
 2. VEC kernel V-dequant micro-optimization for decode
 3. KV-cache L2 layout reordering for attention-sink reuse
+
+## Ministral-3-14B validation (2026-05-12)
+
+Same kernel works on the bigger family member. UD-IQ2_XXS, 40 layers,
+n_embd=5120, GQA 32/8 head_dim=128 (same shape as 3B → kernel applies).
+
+Deploy: `--cache-type-k ktq2_1 --cache-type-v vtq2_1 --tq-protect-layers 20`
+(40 layers ⇒ need ~50% protect for stability; 12 caused gibberish.)
+
+Single-GPU0 at 65k ctx: **10.1 GB VRAM** (fits with headroom).
+
+PP results:
+
+| Tokens | 14B PP (t/s) | 3B PP (Phase 5) |
+|--------|--------------|-----------------|
+| ~5k    | **849**      | 1249–2304       |
+| ~26k   | **636**      | 435 (Phase 4)   |
+| ~59k   | **441**      | 199 (Phase 4)   |
+
+Headline: at 26k tokens the **14B model with our kernel beats the 3B baseline
+without it (122 t/s)** by 5.2×. The MMA-inline KTQ+VTQ path scales
+cleanly with model size as long as the head-shape (D=128, GQA=4) matches.
+
+TG: ~35 t/s short-ctx, decays at long ctx (roofline-bound at 14B too).
+
+Quality: coherent at all tested ctx lengths with protect=20.
