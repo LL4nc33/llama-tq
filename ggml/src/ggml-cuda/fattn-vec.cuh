@@ -92,15 +92,21 @@ static __global__ void flash_attn_ext_vec(
     // reloads on D=256/512 paths used by Gemma4 etc.
     //   VTQ_1 family (codebook): every dequant call reloads x[ib].d.
     //   VTQ_2 family (trellis):  reloads (d, start_state, qs ptr) per call.
-    // Both benefit from larger ne. Conservative: only at D >= 256 to avoid
-    // register pressure regression on Qwen3.6's D=128 path.
+    // Both benefit from larger ne.
+    //
+    // 2026-05-12 — extended to D>=128 for VTQ_1 family (Ministral-3 et al.).
+    // VTQ_1 codebook dequant is shallow (1 LDG.S8 + 1 const-LDG + 1 FMA per element);
+    // doubling ne from 4→8 packs 2 elements into one issue-cycle when compiler
+    // does the right thing, while halving the block-header reload cost.
+    // VTQ_2 stays at ne=4 for D<256 because its trellis state-replay is per-call
+    // and not strictly proportional to ne.
     constexpr bool is_vtq1_family = type_V == GGML_TYPE_VTQ1_1 || type_V == GGML_TYPE_VTQ2_1
                                  || type_V == GGML_TYPE_VTQ3_1 || type_V == GGML_TYPE_VTQ4_1;
     constexpr bool is_vtq2_family = type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2
                                  || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3
                                  || type_V == GGML_TYPE_VTQ3_V8;
     constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne
-                                    : ((is_vtq1_family || is_vtq2_family) && D >= 256 ? 8 : 4);
+                                    : (is_vtq1_family ? 8 : (is_vtq2_family && D >= 256 ? 8 : 4));
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, D, nthreads_KQ>();
