@@ -103,6 +103,28 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
         }
     }
 
+    // Phase 6 (2026-05-13): D=256 GQA=8 inline path for Qwen3.6-35B-A3B (OidaNiceGPT-34B).
+    // Same idea as the D=128 path but for head_dim=256, n_head=16, n_head_kv=2.
+    // Covers both KTQ K + f16 V (existing) and KTQ K + VTQ2_1 V (new).
+    if ((K->type == GGML_TYPE_KTQ2_1) &&
+        (V->type == GGML_TYPE_F16 || V->type == GGML_TYPE_VTQ2_1) &&
+        Q->ne[0] == 256 && V->ne[0] == 256) {
+        const int gqa_ratio = Q->ne[2] / K->ne[2];
+        if (gqa_ratio == 8) {
+            constexpr int ncols2 = 8;
+            const bool V_vtq = (V->type == GGML_TYPE_VTQ2_1);
+            if (Q->ne[1] >= 8) {
+                if (V_vtq) ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 8, ncols2, /*V_is_vtq2_1=*/true>(ctx, dst);
+                else       ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 8, ncols2, /*V_is_vtq2_1=*/false>(ctx, dst);
+                return;
+            } else if (Q->ne[1] >= 4) {
+                if (V_vtq) ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 4, ncols2, /*V_is_vtq2_1=*/true>(ctx, dst);
+                else       ggml_cuda_flash_attn_ext_mma_ktq_inline_case<256, 256, 4, ncols2, /*V_is_vtq2_1=*/false>(ctx, dst);
+                return;
+            }
+        }
+    }
+
     // Fallback: split-dequant.
     ggml_cuda_flash_attn_ext_mma_ktq_split(ctx, dst);
 }
