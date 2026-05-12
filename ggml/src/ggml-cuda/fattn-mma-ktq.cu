@@ -7,7 +7,7 @@
 #include "convert.cuh"
 #include "ggml-cuda/common.cuh"
 
-template <int DKQ, int DV, int ncols1, int ncols2>
+template <int DKQ, int DV, int ncols1, int ncols2, bool V_is_vtq2_1 = false>
 void ggml_cuda_flash_attn_ext_mma_ktq_inline_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 static void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -80,6 +80,23 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
                 return;
             } else if (Q->ne[1] >= 4) {
                 ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 4, ncols2>(ctx, dst);
+                return;
+            }
+        }
+    }
+
+    // Phase 3: KTQ2_1 K + VTQ2_1 V inline path (Ministral-3 prefill at long ctx).
+    // Avoids the full-K f16 dequant scratch buffer that the split fallback allocates.
+    if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_VTQ2_1 &&
+        Q->ne[0] == 128 && V->ne[0] == 128) {
+        const int gqa_ratio = Q->ne[2] / K->ne[2];
+        if (gqa_ratio == 4) {
+            constexpr int ncols2 = 4;
+            if (Q->ne[1] >= 8) {
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 8, ncols2, /*V_is_vtq2_1=*/true>(ctx, dst);
+                return;
+            } else if (Q->ne[1] >= 4) {
+                ggml_cuda_flash_attn_ext_mma_ktq_inline_case<128, 128, 4, ncols2, /*V_is_vtq2_1=*/true>(ctx, dst);
                 return;
             }
         }

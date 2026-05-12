@@ -7,3 +7,7 @@
 
 DECL_FATTN_MMA_KTQ_INLINE_CASE(128, 128, 4, 4);
 DECL_FATTN_MMA_KTQ_INLINE_CASE(128, 128, 8, 4);
+
+// Phase 3: VTQ V variant — used when V cache is vtq2_1 (Ministral-3 prefill path).
+DECL_FATTN_MMA_KTQ_VTQ_INLINE_CASE(128, 128, 4, 4);
+DECL_FATTN_MMA_KTQ_VTQ_INLINE_CASE(128, 128, 8, 4);
