@@ -407,14 +407,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             Q->ne[0] == 128 && V->ne[0] == 128 && (Q->ne[2] / K->ne[2]) == 4) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
-        // Phase 6 (2026-05-13): D=256 GQA=8 inline path for Qwen3.6-35B-A3B (OidaNiceGPT-34B).
-        // KTQ2_1 K + (f16 or VTQ2_1) V, n_head=16, n_head_kv=2.
-        if (K->type == GGML_TYPE_KTQ2_1 &&
-            (V->type == GGML_TYPE_F16 || V->type == GGML_TYPE_VTQ2_1) &&
-            turing_mma_available(cc) && Q->ne[1] >= 8 &&
-            Q->ne[0] == 256 && V->ne[0] == 256 && (Q->ne[2] / K->ne[2]) == 8) {
-            return BEST_FATTN_KERNEL_MMA_KTQ;
-        }
         return BEST_FATTN_KERNEL_VEC;
     }
 
