@@ -7,7 +7,8 @@
 #include "convert.cuh"
 #include "ggml-cuda/common.cuh"
 
-template <int DKQ, int DV, int ncols1, int ncols2, bool V_is_vtq2_1 = false>
+// Default value for V_is_vtq2_1 is defined in fattn-mma-ktq-inline.cuh; forward-decl must not redefine it.
+template <int DKQ, int DV, int ncols1, int ncols2, bool V_is_vtq2_1>
 void ggml_cuda_flash_attn_ext_mma_ktq_inline_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 static void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
