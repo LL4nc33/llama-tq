@@ -976,12 +976,29 @@ static __device__ __forceinline__ void flash_attn_ext_f16_ktq_iter(
         if constexpr (nstages <= 1) {
             if (!V_is_K_view || i0_stop > 2*nbatch_K2) {
                 constexpr bool use_cp_async = nstages == 1;
-                flash_attn_ext_f16_ktq_load_tile<stride_tile_V, nwarps, nbatch_fa, use_cp_async, oob_check>
-                    (V_h2 + int64_t(k_VKQ_0)*stride_V + i0_start/2, tile_V, i0_diff/2, stride_V, k_VKQ_sup);
-                if (use_cp_async) {
-                    cp_async_wait_all();
+                if constexpr (V_is_vtq2_1) {
+                    // Phase 2b: VTQ V dequant in shmem (Ministral-3 path).
+                    //
+                    // For VTQ V the caller (kernel) passes stride_V as the *row stride in block_vtq2_1
+                    // units*, not as half2 units. This keeps the dequant-load arithmetic in block-units
+                    // throughout this function.
+                    //
+                    // Constraint: i0_start must be 0 (single-pass full-row dequant).
+                    // For D=128 with nbatch_V2=64 this holds (loop runs once with i0_start=0).
+                    // For other configs, this would need column-slicing in the VTQ decoder.
+                    GGML_CUDA_ASSUME(i0_start == 0);
+                    const block_vtq2_1 * V_vtq = reinterpret_cast<const block_vtq2_1 *>(V_h2);
+                    flash_attn_ext_f16_vtq_load_tile_V_vtq2_1<stride_tile_V, nwarps, nbatch_fa, oob_check>
+                        (V_vtq + int64_t(k_VKQ_0)*stride_V, tile_V, i0_diff/2, stride_V, k_VKQ_sup);
+                    __syncthreads();
+                } else {
+                    flash_attn_ext_f16_ktq_load_tile<stride_tile_V, nwarps, nbatch_fa, use_cp_async, oob_check>
+                        (V_h2 + int64_t(k_VKQ_0)*stride_V + i0_start/2, tile_V, i0_diff/2, stride_V, k_VKQ_sup);
+                    if (use_cp_async) {
+                        cp_async_wait_all();
+                    }
+                    __syncthreads();
                 }
-                __syncthreads();
             }
         }
         const half2 * tile_V_i = !V_is_K_view || i0_stop > 2*nbatch_K2 ? tile_V : tile_V + i0_start/2;
@@ -1715,7 +1732,10 @@ static __global__ void flash_attn_ext_f16_ktq_kernel(
     const int stride_K    = nb11 / sizeof(block_ktq2_1);
     const int stride_mask = nb31 / sizeof(half);
 
-    const int stride_V = V_is_K_view ? stride_K : nb21 / sizeof(half2);
+    // For VTQ V the stride is measured in block_vtq2_1 units (10 bytes / 32 elements);
+    // f16 V uses half2 units.
+    const int stride_V = V_is_K_view ? stride_K :
+                         (V_is_vtq2_1 ? (int)(nb21 / sizeof(block_vtq2_1)) : (int)(nb21 / sizeof(half2)));
 
     const int iter_k     = (ne11      + (nbatch_fa - 1)) / nbatch_fa;
     const int iter_j     = (ne01.z    + (ncols1    - 1)) / ncols1;
