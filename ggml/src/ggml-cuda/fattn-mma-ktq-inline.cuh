@@ -555,9 +555,12 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_mask(
     }
 }
 
+// Phase 2a: V_is_vtq2_1 template param (default false = backwards-compatible).
+// When true, V is read as block_vtq2_1* (caller responsibility to pass correct type).
 template<int DKQ, int DV, int ncols1, int ncols2, int nwarps,
     bool use_logit_softcap, bool V_is_K_view, bool needs_fixup, bool is_fixup, bool last_iter, bool oob_check,
-    typename T_A_KQ, typename T_B_KQ, typename T_C_KQ, typename T_A_VKQ, typename T_B_VKQ, typename T_C_VKQ>
+    typename T_A_KQ, typename T_B_KQ, typename T_C_KQ, typename T_A_VKQ, typename T_B_VKQ, typename T_C_VKQ,
+    bool V_is_vtq2_1 = false>
 static __device__ __forceinline__ void flash_attn_ext_f16_ktq_iter(
         const float2 * const __restrict__ Q_f2,
         const block_ktq2_1 * const __restrict__ K_ktq,
@@ -1098,7 +1101,7 @@ template<int ncols> struct mma_tile_sizes {
 };
 #endif // defined(TURING_MMA_AVAILABLE)
 
-template<int DKQ, int DV, int ncols1, int ncols2, int nwarps, bool use_logit_softcap, bool V_is_K_view, bool needs_fixup, bool is_fixup>
+template<int DKQ, int DV, int ncols1, int ncols2, int nwarps, bool use_logit_softcap, bool V_is_K_view, bool needs_fixup, bool is_fixup, bool V_is_vtq2_1 = false>
 static __device__ __forceinline__ void flash_attn_ext_f16_ktq_process_tile(
         const float2 * const __restrict__ Q_f2,
         const block_ktq2_1 * const __restrict__ K_ktq,
@@ -1640,7 +1643,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_ktq_process_tile(
 #endif // defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || (defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)) || defined(AMD_MFMA_AVAILABLE)
 }
 
-template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view>
+template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool V_is_vtq2_1 = false>
 __launch_bounds__(ggml_cuda_fattn_mma_get_nthreads(DKQ, DV, ncols1*ncols2), ggml_cuda_fattn_mma_get_occupancy(DKQ, DV, ncols1*ncols2))
 static __global__ void flash_attn_ext_f16_ktq_kernel(
         const char * __restrict__ Q,
