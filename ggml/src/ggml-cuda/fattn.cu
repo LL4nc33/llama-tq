@@ -401,10 +401,18 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // Phase 3 (2026-05-12): KTQ2_1 K + VTQ2_1 V — route to MMA-KTQ inline path
         // (handled in fattn-mma-ktq.cu by V-type check). Same Q->ne[1]>=8 gate as f16 V.
         // Inline templates compiled for DKQ=DV=128 GQA=4 (Ministral-3); other shapes
-        // fall back to split-dequant which doesn't support VTQ V yet → keep on VEC path.
+        // fall back to split-dequant.
         if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_VTQ2_1 &&
             turing_mma_available(cc) && Q->ne[1] >= 8 &&
             Q->ne[0] == 128 && V->ne[0] == 128 && (Q->ne[2] / K->ne[2]) == 4) {
+            return BEST_FATTN_KERNEL_MMA_KTQ;
+        }
+        // 2026-05-13: KTQ K + VTQ V on non-inline shapes (e.g. D=256 GQA=8 for
+        // Qwen3.6-A35-A3B) — route to MMA-KTQ split which now dequants both
+        // K and V into f16 scratch, then runs the standard MMA-f16 prefill.
+        // Still gated on Q->ne[1]>=8 (prefill batch size) to avoid hurting decode.
+        if ((K->type == GGML_TYPE_KTQ2_1 || K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1)
+            && is_vtq_v && turing_mma_available(cc) && Q->ne[1] >= 8) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
         return BEST_FATTN_KERNEL_VEC;

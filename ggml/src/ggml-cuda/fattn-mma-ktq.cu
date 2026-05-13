@@ -11,56 +11,88 @@
 template <int DKQ, int DV, int ncols1, int ncols2, bool V_is_vtq2_1>
 void ggml_cuda_flash_attn_ext_mma_ktq_inline_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
-static void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    ggml_tensor * K = dst->src[1];
+// Helper: dequant a quantized cache tensor into an f16 scratch buffer in-place
+// (mutating tensor metadata so the downstream MMA-f16 kernel sees it as f16).
+// Returns saved metadata so the caller can restore after the kernel call.
+struct fattn_cache_save {
+    ggml_type type;
+    void *    data;
+    size_t    nb[4];
+};
 
-    to_fp16_nc_cuda_t to_fp16 = ggml_get_to_fp16_nc_cuda(K->type);
+static void fattn_ktq_dequant_to_scratch(ggml_backend_cuda_context & ctx,
+                                         ggml_tensor * t,
+                                         ggml_cuda_pool_alloc<half> & scratch,
+                                         fattn_cache_save & saved) {
+    to_fp16_nc_cuda_t to_fp16 = ggml_get_to_fp16_nc_cuda(t->type);
     GGML_ASSERT(to_fp16 != nullptr);
 
-    const int64_t ne00 = K->ne[0];
-    const int64_t ne01 = K->ne[1];
-    const int64_t ne02 = K->ne[2];
-    const int64_t ne03 = K->ne[3];
+    const int64_t ne00 = t->ne[0];
+    const int64_t ne01 = t->ne[1];
+    const int64_t ne02 = t->ne[2];
+    const int64_t ne03 = t->ne[3];
     const int64_t scratch_elems = ne00 * ne01 * ne02 * ne03;
 
-    // dequantize_block_ktq*_nc kernels expect strides in block units, not bytes
-    // (ibx0 = i03*s03 + i02*s02 + i01*s01 is used directly as a block index into
-    // vx, which is then offset by sizeof(block_ktq*_1) via `x[ib]`). Match the
-    // convention used by the inline path (fattn-mma-ktq-inline.cuh:1662) and by
-    // every other call site of ggml_get_to_fp16_nc_cuda (fattn-common.cuh:1705).
-    // Passing bytes would overshoot by a factor of sizeof(block_ktq*_1), causing
-    // OOB reads — benign for KTQ2_1 on some shapes, reliable crash for KTQ3_1/4_1.
-    const size_t ts = ggml_type_size(K->type);
-    GGML_ASSERT(K->nb[0] == ts);
-    const int64_t s01 = K->nb[1] / ts;
-    const int64_t s02 = K->nb[2] / ts;
-    const int64_t s03 = K->nb[3] / ts;
+    // dequantize_block_*_nc kernels expect strides in block units, not bytes.
+    const size_t ts = ggml_type_size(t->type);
+    GGML_ASSERT(t->nb[0] == ts);
+    const int64_t s01 = t->nb[1] / ts;
+    const int64_t s02 = t->nb[2] / ts;
+    const int64_t s03 = t->nb[3] / ts;
 
-    ggml_cuda_pool_alloc<half> k_scratch(ctx.pool(), scratch_elems);
-    to_fp16(K->data, k_scratch.get(), ne00, ne01, ne02, ne03, s01, s02, s03, ctx.stream());
+    scratch.alloc(ctx.pool(), scratch_elems);
+    to_fp16(t->data, scratch.get(), ne00, ne01, ne02, ne03, s01, s02, s03, ctx.stream());
 
-    const ggml_type saved_type = K->type;
-    void * const    saved_data = K->data;
-    const size_t    saved_nb0  = K->nb[0];
-    const size_t    saved_nb1  = K->nb[1];
-    const size_t    saved_nb2  = K->nb[2];
-    const size_t    saved_nb3  = K->nb[3];
+    saved.type   = t->type;
+    saved.data   = t->data;
+    saved.nb[0]  = t->nb[0];
+    saved.nb[1]  = t->nb[1];
+    saved.nb[2]  = t->nb[2];
+    saved.nb[3]  = t->nb[3];
 
-    K->type = GGML_TYPE_F16;
-    K->data = k_scratch.get();
-    K->nb[0] = sizeof(half);
-    K->nb[1] = K->nb[0] * ne00;
-    K->nb[2] = K->nb[1] * ne01;
-    K->nb[3] = K->nb[2] * ne02;
+    t->type  = GGML_TYPE_F16;
+    t->data  = scratch.get();
+    t->nb[0] = sizeof(half);
+    t->nb[1] = t->nb[0] * ne00;
+    t->nb[2] = t->nb[1] * ne01;
+    t->nb[3] = t->nb[2] * ne02;
+}
+
+static void fattn_cache_restore(ggml_tensor * t, const fattn_cache_save & saved) {
+    t->type  = saved.type;
+    t->data  = saved.data;
+    t->nb[0] = saved.nb[0];
+    t->nb[1] = saved.nb[1];
+    t->nb[2] = saved.nb[2];
+    t->nb[3] = saved.nb[3];
+}
+
+static void ggml_cuda_flash_attn_ext_mma_ktq_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    ggml_tensor * K = dst->src[1];
+    ggml_tensor * V = dst->src[2];
+
+    // K is always quantized in this fallback.
+    ggml_cuda_pool_alloc<half> k_scratch;
+    fattn_cache_save k_saved;
+    fattn_ktq_dequant_to_scratch(ctx, K, k_scratch, k_saved);
+
+    // V may be quantized (VTQ-family) or already f16; only dequant if needed.
+    // This lets KTQ+VTQ shapes that don't fit the inline kernel (e.g. D=256 GQA=8
+    // for Qwen3.6-A35-A3B) still benefit from the MMA-f16 prefill kernel instead
+    // of falling back to the slower vec path.
+    ggml_cuda_pool_alloc<half> v_scratch;
+    fattn_cache_save           v_saved;
+    const bool                 v_needs_dequant = V->type != GGML_TYPE_F16 && V->type != GGML_TYPE_BF16;
+    if (v_needs_dequant) {
+        fattn_ktq_dequant_to_scratch(ctx, V, v_scratch, v_saved);
+    }
 
     ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
 
-    K->type = saved_type;
-    K->data = saved_data;
-    K->nb[0] = saved_nb0;
-    K->nb[1] = saved_nb1;
-    K->nb[2] = saved_nb2;
-    K->nb[3] = saved_nb3;
+    fattn_cache_restore(K, k_saved);
+    if (v_needs_dequant) {
+        fattn_cache_restore(V, v_saved);
+    }
 }
 
 void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
