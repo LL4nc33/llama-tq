@@ -1270,13 +1270,18 @@ static void dequantize_row_vtq4_1_cuda(const void * vx, dst_t * y, const int64_t
 }
 
 // --- Generic VTQ NC (non-contiguous) dequant kernel ---
+// Multi-warp-per-CTA: each warp dequants one VTQ block independently.
+// threadIdx.y selects warp (= which block-in-row), threadIdx.x is the
+// tid within that block. Reduces gridDim.x by warps_per_cta → better SM
+// occupancy on small row-counts (D=128 → 4 blocks/row).
 template <typename block_t, typename Decoder, typename dst_t>
 static __global__ void k_dequantize_block_vtq_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
         const int64_t ne00, const int64_t ne01,
         const int64_t ne0203, const uint3 ne02_fdv,
         const int64_t s01, const int64_t s02, const int64_t s03) {
-    const int64_t ib_in_row = blockIdx.x;
-    const int tid = threadIdx.x;
+    const int warp = threadIdx.y;
+    const int tid  = threadIdx.x;
+    const int64_t ib_in_row = blockIdx.x * blockDim.y + warp;
     const int64_t nb_per_row = ne00 / QK_VTQ;
     if (ib_in_row >= nb_per_row) return;
     for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
@@ -1306,8 +1311,12 @@ static void vtq_dequantize_nc_cuda(const void * vx, dst_t * y,
     const int64_t nb_per_row = ne00 / QK_VTQ;
     const int64_t ne0203 = ne02*ne03;
     const uint3 ne02_fdv = init_fastdiv_values(ne02);
-    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    k_dequantize_block_vtq_nc<block_t, Decoder, dst_t><<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+    // 4 warps per CTA: 4× fewer launches, much better SM occupancy.
+    constexpr int warps_per_cta = 4;
+    const int64_t nb_in_x = (nb_per_row + warps_per_cta - 1) / warps_per_cta;
+    const dim3 num_blocks((int)nb_in_x, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    const dim3 block_dim(32, warps_per_cta);
+    k_dequantize_block_vtq_nc<block_t, Decoder, dst_t><<<num_blocks, block_dim, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
 }
 
 // Concrete NC wrappers (signature matches convert.cu dispatcher)
