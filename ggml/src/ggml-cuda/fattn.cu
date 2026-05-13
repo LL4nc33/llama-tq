@@ -407,16 +407,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             Q->ne[0] == 128 && V->ne[0] == 128 && (Q->ne[2] / K->ne[2]) == 4) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
-        // 2026-05-13: KTQ K + VTQ V on non-inline shapes (e.g. D=256 GQA=8 for
-        // Qwen3.6-A35-A3B) — route to standard MMA-F16. launch_fattn already
-        // handles need_f16_K/V dequant via ggml_get_to_fp16_nc_cuda, no need
-        // for the split-wrapper duplication. The wrapper path stays for shapes
-        // where MMA-F16 dispatch would otherwise fail (asymmetric K != V types
-        // when GGML_CUDA_FA_ALL_QUANTS is not defined).
-        if ((K->type == GGML_TYPE_KTQ2_1 || K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1)
-            && is_vtq_v && turing_mma_available(cc) && Q->ne[1] >= 8) {
-            return BEST_FATTN_KERNEL_MMA_F16;
-        }
+        // 2026-05-13 abend: revert MMA-F16 routing for KTQ K + VTQ V.
+        // Stable bench (build ca9a68cf3) zeigte VEC pfad ist +4% schneller als
+        // MMA-F16 mit pre-dequant: f16 K + VTQ V (→ VEC) = 1031 PP@4k vs
+        // KTQ K + VTQ V (→ MMA-F16) = 988 PP@4k. Die "+2%" zahl von f46e9626f
+        // war cold-cache outlier, nicht reproduzierbar.
+        // VEC mit in-kernel VTQ-V dequant eliminiert den fp16-V-scratch buffer
+        // und damit den L2-cache-pressure, was bei prefill den FA-kernel selber
+        // bremst.
         return BEST_FATTN_KERNEL_VEC;
     }
 
