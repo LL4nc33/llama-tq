@@ -10,13 +10,16 @@ Während der phase-4-skeleton-arbeit zwei kritische entdeckungen gemacht:
 
 ## Implication für phase 4 strategie
 
-Statt 600-900 LOC ik_llama PR #229 port:
+**KORREKTUR 22:25:** `ggml_backend_buft_is_cuda_split` trifft nur für `LLAMA_SPLIT_MODE_ROW`, NICHT für unseren `LLAMA_SPLIT_MODE_LAYER` (default).
 
-| schritt (alt) | schritt (revidiert) | scope |
-|---|---|---|
-| Neues GGML_OP_MOE_FUSED_UP_GATE op | Existing pattern aktivieren | trivial |
-| ~6 dateien, ~700 LOC | 1 file, ~50 LOC | 90% reduktion |
-| Komplett neue kernel | Existing kernel reuse | hochrobust |
+Verified via `src/llama-model.cpp:589`: split-buffer-type wird nur erstellt wenn `split_mode == LLAMA_SPLIT_MODE_ROW`. Layer-split nutzt normale per-device cuda-buffer.
+
+**Konsequenz:** fusion ist auf unserem dual-GPU layer-split deploy **bereits aktiv**! Der 3% gap zwischen single-GPU (1017) und dual-GPU (988) PP@4k ist NICHT durch fehlende fusion erklärt, sondern durch:
+- PCIe sync overhead zwischen GPUs
+- Inter-GPU memory-transfer per layer-boundary
+- Möglicherweise scheduler-overhead
+
+**Phase 4 strategie zurück zu original ik_llama PR #229 port** — oder ein anderer hebel.
 
 ## Concrete file:line pointers
 
