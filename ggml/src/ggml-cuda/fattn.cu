@@ -408,12 +408,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
         // 2026-05-13: KTQ K + VTQ V on non-inline shapes (e.g. D=256 GQA=8 for
-        // Qwen3.6-A35-A3B) — route to MMA-KTQ split which now dequants both
-        // K and V into f16 scratch, then runs the standard MMA-f16 prefill.
-        // Still gated on Q->ne[1]>=8 (prefill batch size) to avoid hurting decode.
+        // Qwen3.6-A35-A3B) — route to standard MMA-F16. launch_fattn already
+        // handles need_f16_K/V dequant via ggml_get_to_fp16_nc_cuda, no need
+        // for the split-wrapper duplication. The wrapper path stays for shapes
+        // where MMA-F16 dispatch would otherwise fail (asymmetric K != V types
+        // when GGML_CUDA_FA_ALL_QUANTS is not defined).
         if ((K->type == GGML_TYPE_KTQ2_1 || K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1)
             && is_vtq_v && turing_mma_available(cc) && Q->ne[1] >= 8) {
-            return BEST_FATTN_KERNEL_MMA_KTQ;
+            return BEST_FATTN_KERNEL_MMA_F16;
         }
         return BEST_FATTN_KERNEL_VEC;
     }
