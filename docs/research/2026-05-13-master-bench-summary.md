@@ -39,14 +39,23 @@ Build: `135829149 (17692)` (Phase 5 KTQ+VTQ MMA inline + V_rows OOB fix)
 | PP@4096 | 837 |
 | TG@64 | 81.5 |
 
-## PPL Quality (wikitext-2, 100 chunks)
+## PPL Quality (wikitext-2)
 
-Ministral-3-3B Q4_K_M:
+### Ministral-3-3B Q4_K_M (100 chunks)
 
 | KV config | PPL | 1σ |
 |-----------|-----|----|
 | f16/f16 | 9.087 | ±0.141 |
 | ktq2_1/vtq2_1 | **9.628** | ±0.149 (Δ +5.95%) |
+
+### Ministral-3-14B IQ2_XXS (50 chunks)
+
+| KV config | PPL | 1σ |
+|-----------|-----|----|
+| f16/f16 | 8.054 | ±0.175 |
+| ktq2_1/vtq2_1 | **8.374** | ±0.180 (Δ +4.0%) |
+
+→ Confirms 14B has more KV-quant capacity headroom than 3B (4.0% vs 5.95%).
 
 ## Observations
 
