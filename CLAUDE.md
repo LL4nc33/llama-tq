@@ -106,3 +106,44 @@ IMPORTANT: Ensure you've thoroughly reviewed the [AGENTS.md](AGENTS.md) file bef
 - Do not apply mass-`sed` to vendored upstream content.
 - If a researcher / agent reports findings, **verify on the actual repo state**
   before acting. Stale clones are common.
+
+## 11. Build & Revert Workflow (gpu00) — ALWAYS APPLIES
+
+**The build VM takes 2-3h for any change touching `fattn-tq.cuh`, `fattn-vec*.cuh`,
+or `turboquant.cuh` (template-header recompile cascade).** A single failed
+experiment can cost a full afternoon. Mitigation:
+
+### Before any experiment that touches template headers
+
+Quick experiments belong in `fattn.cu` / `ggml-cuda.cu` (dispatch level, ~5 min
+incremental build). Touching template headers should be reserved for changes
+that are already designed + reviewed.
+
+### After every successful build — snapshot it
+
+```bash
+bash scripts/snapshot-build.sh
+```
+
+This copies `llama-bench` + `libggml-*.so*` to
+`build/snapshots/<commit-sha>/`. Tiny disk cost, huge time savings.
+
+### To roll back instead of rebuilding
+
+```bash
+bash scripts/restore-build.sh --list        # show available snapshots
+bash scripts/restore-build.sh <sha-or-tag>  # restore in ~5 seconds
+```
+
+**Use this whenever a bench shows regression instead of `git revert` +
+2-3h rebuild.**
+
+### Build pitfalls (recorded incidents)
+
+- `-j2` or higher on the build VM = OOM-freeze (40 GB RAM, each nvcc/ptxas
+  needs 3-5 GB). Always `-j1`.
+- ne=8 specialized dequant (commit `0d59b687d`, 2026-05-13): register-spill
+  on Turing → -9% PP@4k regression. Lesson: run `nvcc -Xptxas=-v` before
+  committing template-header changes.
+- `GGML_CUDA_FORCE_GRAPHS=1` with dual-GPU split: -30% PP. Incompatible with
+  layer-split buffer mode.
