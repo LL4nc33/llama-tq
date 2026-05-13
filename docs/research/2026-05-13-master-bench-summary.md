@@ -1,5 +1,10 @@
 # Master Bench Summary — 2026-05-13
 
+**UPDATE (later 2026-05-13):** dual-GPU layer-split + ub=128 tuning delivers
+additional +40-78% PP wins. See [MULTIGPU-WIN doc](./2026-05-13-MULTIGPU-WIN.md)
+and [ubatch tuning doc](./2026-05-13-ubatch-tuning.md). Numbers below are
+single-GPU-only baseline for reference.
+
 Vollständiger snapshot aller relevanten model-shapes auf gpu00 RTX 2060 mit
 `-ctk ktq2_1 -ctv vtq2_1 -fa 1 -ngl 99` (single-GPU0).
 
@@ -91,3 +96,20 @@ VTQ cp.async pipeline brauchen.
 
 - D=256 MMA inline (Phase 6) — letzter versuch crashed NVCC, blieb reverted
 - Async V-load — größerer kernel-refactor, risk-reward unklar ohne profiling
+
+## FINAL OPTIMAL CONFIGURATION (after iteration)
+
+Ministral-3-3B Q4_K_M, dual-GPU + ub=128 + Phase 5 (build `f8c68433b`):
+
+| ctx | t/s | Δ vs single-GPU Phase 5 | Δ vs pre-Phase-5 |
+|------|------|---|---|
+| PP@1024 | **2637** | +55% | n/a |
+| PP@2048 | **2194** | +67% | ~14× |
+| PP@4096 | **1583** | +76% | n/a |
+| PP@8192 | **972** | +78% | n/a |
+| PP@10240 | **787** | +77% | ~3.7× |
+| TG@128 | 97 | flat | flat |
+
+Stack: KTQ2_1 K + VTQ2_1 V (MMA inline) × dual-GPU layer-split × ub=128.
+
+See `scripts/deploy-ministral-3b-dualgpu-optimal.sh` for deployment template.
