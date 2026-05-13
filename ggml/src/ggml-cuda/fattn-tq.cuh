@@ -731,8 +731,71 @@ static __device__ __forceinline__ void dequantize_V_vtq(const void * __restrict_
     }
 }
 
+// 2026-05-13: spezialisierter dequant für VTQ2_1 mit ne=8 (D>=256 pfad).
+// Statt 8× separate `qs[(il+l)/4]` byte-loads laden wir die 2 bytes einmal,
+// extrahieren 8 indices via shifts, dann 8× pre-scaled CB lookup × norm.
+// Reduziert byte-loads von 8 auf 2 pro thread pro V-tile.
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    if constexpr (ne == 8) {
+        // Compile-time gate für ne==8; il muss aligned auf 8 sein (gegeben durch
+        // V_rows_per_thread=8 design — il = (tid % nthreads_V) * 8).
+        const block_vtq2_1 * x = (const block_vtq2_1 *) vx;
+        const int64_t ib = i0 / QK_VTQ;
+        const int     il = (int)(i0 % QK_VTQ);
+        const float   scale = (float)x[ib].d;
+
+        // Pre-scale codebook in registers (saves 1 mul per element vs scale-after).
+        const float cb0 = VTQ_CUDA_CB_2BIT_SCALED[0] * scale;
+        const float cb1 = VTQ_CUDA_CB_2BIT_SCALED[1] * scale;
+        const float cb2 = VTQ_CUDA_CB_2BIT_SCALED[2] * scale;
+        const float cb3 = VTQ_CUDA_CB_2BIT_SCALED[3] * scale;
+
+        // 8 indices = 2 bytes (qs[il/4] and qs[il/4 + 1])
+        const uint8_t b0 = x[ib].qs[(il    ) / 4];
+        const uint8_t b1 = x[ib].qs[(il + 4) / 4];
+        const int i0_ = (b0     ) & 0x3;
+        const int i1_ = (b0 >> 2) & 0x3;
+        const int i2_ = (b0 >> 4) & 0x3;
+        const int i3_ = (b0 >> 6) & 0x3;
+        const int i4_ = (b1     ) & 0x3;
+        const int i5_ = (b1 >> 2) & 0x3;
+        const int i6_ = (b1 >> 4) & 0x3;
+        const int i7_ = (b1 >> 6) & 0x3;
+
+        auto pick = [&](int i) -> float {
+            return (i == 0) ? cb0 : (i == 1) ? cb1 : (i == 2) ? cb2 : cb3;
+        };
+        const float v0 = pick(i0_);
+        const float v1 = pick(i1_);
+        const float v2 = pick(i2_);
+        const float v3 = pick(i3_);
+        const float v4 = pick(i4_);
+        const float v5 = pick(i5_);
+        const float v6 = pick(i6_);
+        const float v7 = pick(i7_);
+
+        if constexpr (std::is_same_v<T, half>) {
+            ((half *) dst)[0] = __float2half(v0);
+            ((half *) dst)[1] = __float2half(v1);
+            ((half *) dst)[2] = __float2half(v2);
+            ((half *) dst)[3] = __float2half(v3);
+            ((half *) dst)[4] = __float2half(v4);
+            ((half *) dst)[5] = __float2half(v5);
+            ((half *) dst)[6] = __float2half(v6);
+            ((half *) dst)[7] = __float2half(v7);
+        } else {
+            ((float *) dst)[0] = v0;
+            ((float *) dst)[1] = v1;
+            ((float *) dst)[2] = v2;
+            ((float *) dst)[3] = v3;
+            ((float *) dst)[4] = v4;
+            ((float *) dst)[5] = v5;
+            ((float *) dst)[6] = v6;
+            ((float *) dst)[7] = v7;
+        }
+        return;
+    }
     dequantize_V_vtq<block_vtq2_1, T, ne, vtq_decode_2bit>(vx, dst, i0);
 }
 
