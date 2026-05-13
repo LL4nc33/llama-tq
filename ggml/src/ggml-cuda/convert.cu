@@ -896,8 +896,12 @@ static __global__ void dequantize_block_ktq2_1_nc(const void * __restrict__ vx, 
         const int64_t ne00, const int64_t ne01,
         const int64_t ne0203, const uint3 ne02_fdv,
         const int64_t s01, const int64_t s02, const int64_t s03) {
-    const int64_t ib_in_row = blockIdx.x;
-    const int tid = threadIdx.x;
+    // Multi-block-per-CTA: each warp (32 threads) dequantizes one KTQ block.
+    // CTA has blockDim.y warps → blockDim.y blocks dequantized per CTA-iteration.
+    // Reduces gridDim.x by blockDim.y, improves SM occupancy (was 1 warp / block).
+    const int warp = threadIdx.y;
+    const int tid  = threadIdx.x;
+    const int64_t ib_in_row = blockIdx.x * blockDim.y + warp;
     const int64_t nb_per_row = ne00 / QK_KTQ;
     if (ib_in_row >= nb_per_row) return;
     for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
@@ -1016,8 +1020,13 @@ static void dequantize_block_ktq2_1_nc_cuda(const void * vx, dst_t * y,
     const int64_t nb_per_row = ne00 / QK_KTQ;
     const int64_t ne0203 = ne02*ne03;
     const uint3 ne02_fdv = init_fastdiv_values(ne02);
-    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    dequantize_block_ktq2_1_nc<<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+    // 4 warps per CTA: dequantize 4 KTQ blocks per CTA → 4x occupancy improvement
+    // for small-row cases (D=128 → 4 blocks/row → 1 CTA/row instead of 4).
+    constexpr int warps_per_cta = 4;
+    const int64_t nb_in_x = (nb_per_row + warps_per_cta - 1) / warps_per_cta;
+    const dim3 num_blocks((int)nb_in_x, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    const dim3 block_dim(32, warps_per_cta);
+    dequantize_block_ktq2_1_nc<<<num_blocks, block_dim, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
 }
 
 template <typename dst_t>
