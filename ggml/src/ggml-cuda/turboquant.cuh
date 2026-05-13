@@ -1169,11 +1169,19 @@ static __device__ __forceinline__ void vtq_encode_4bit(uint8_t * qs, int j, int 
 // callers in fattn-tq.cuh that use them as constexpr non-type template
 // parameters from inside `__device__` functions (HIP-clang allows that).
 
+// Decoder functors for the READ path. Use pre-scaled codebooks where available
+// (saves one FMUL per element vs unscaled lookup × PQ_CUDA_CB_SCALE).
+// These MUST NOT be used in vtq_cuda_quantize_block — the norm-correction loop
+// there must stay in the unscaled space matching the encode-side codebook.
 struct VtqDecode1Bit {
-    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) { return vtq_decode_1bit(qs, j); }
+    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) {
+        return VTQ_CUDA_CB_1BIT_SCALED[(qs[j / 8] >> (j % 8)) & 0x1];
+    }
 };
 struct VtqDecode2Bit {
-    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) { return vtq_decode_2bit(qs, j); }
+    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) {
+        return VTQ_CUDA_CB_2BIT_SCALED[(qs[j / 4] >> (2 * (j % 4))) & 0x3];
+    }
 };
 struct VtqDecode3Bit {
     static __device__ __forceinline__ float decode(const uint8_t * qs, int j) { return vtq_decode_3bit(qs, j); }
