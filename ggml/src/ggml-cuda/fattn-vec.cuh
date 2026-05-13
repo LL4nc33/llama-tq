@@ -105,8 +105,11 @@ static __global__ void flash_attn_ext_vec(
     constexpr bool is_vtq2_family = type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2
                                  || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3
                                  || type_V == GGML_TYPE_VTQ3_V8;
+    // V_rows_per_thread×nthreads_V must be ≤ D, otherwise threads read OOB past
+    // the row end. nthreads_V = min(D/4, 32), so for D=128 nthreads_V=32 caps
+    // V_rows at 4 (32×4=128). D≥256 allows 8 (32×8=256). Revert to D≥256 gate.
     constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne
-                                    : (is_vtq1_family ? 8 : (is_vtq2_family && D >= 256 ? 8 : 4));
+                                    : ((is_vtq1_family || is_vtq2_family) && D >= 256 ? 8 : 4);
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, D, nthreads_KQ>();
