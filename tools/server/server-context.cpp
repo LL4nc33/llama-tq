@@ -2492,6 +2492,13 @@ private:
                                             // guarantee that a checkpoint will result in at least one token being processed [TAG_PROMPT_LOGITS]
                                             LOG_INF("slot %12.*s: id %2d | task %d | Checking checkpoint with [%d, %d] against %d...\n", 12,
                                                 func_name, (slot).id, ((slot).task ? (slot).task->id : -1), cur.pos_min, cur.pos_max, pos_min_thold);
+                                            // Fix für hybrid/recurrent models (Qwen3.6 DeltaNet, Mamba): pos_min
+                                            // entspricht immer der vollen sequence-länge, also failed der SWA-basierte
+                                            // pos_min-check immer. Stattdessen pos_max <= pos_next nutzen um den
+                                            // jüngsten valid checkpoint zu finden. Quelle: llama.cpp issue #22384.
+                                            if (llama_model_is_recurrent(model) || llama_model_is_hybrid(model)) {
+                                                return cur.pos_max <= pos_next;
+                                            }
                                             return cur.pos_min < pos_min_thold || cur.pos_min == 0;
                                         }
                                     );
@@ -2726,8 +2733,11 @@ private:
                     const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx), slot.id);
                     const auto pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx), slot.id);
 
-                    // no need for empty or small checkpoints
-                    do_checkpoint = do_checkpoint && (pos_min >= 0 && slot.prompt.n_tokens() >= 64);
+                    // no need for empty or small checkpoints — hybrid/recurrent models brauchen
+                    // niedrigeren threshold weil sie sonst bei kurzen prompts (z.B. agentic-tool-calls)
+                    // nie einen checkpoint kriegen. Quelle: llama.cpp issue #22384.
+                    const int checkpoint_min_tokens = (llama_model_is_recurrent(model) || llama_model_is_hybrid(model)) ? 4 : 64;
+                    do_checkpoint = do_checkpoint && (pos_min >= 0 && slot.prompt.n_tokens() >= checkpoint_min_tokens);
 
                     // do not checkpoint after mtmd chunks
                     do_checkpoint = do_checkpoint && !has_mtmd;
