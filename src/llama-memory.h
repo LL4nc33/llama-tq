@@ -1,6 +1,7 @@
 #pragma once
 
 #include "llama.h"
+#include "llama-graph.h"
 
 #include <map>
 #include <memory>
@@ -41,6 +42,7 @@ struct llama_memory_params {
 
     // XQuant cross-layer KV reuse (Phase 5b)
     bool xquant_enabled;
+    llama_context_type ctx_type;
 };
 
 enum llama_memory_status {
