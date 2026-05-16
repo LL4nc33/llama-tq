@@ -54,3 +54,50 @@ LLAMA_API void llama_quant_compute_types(
         ggml_tensor ** tensors,
         ggml_type * result_types,
         size_t n_tensors);
+
+//
+// device memory querying
+//
+
+// "memory" as in physical memory for a buffer type, in bytes
+struct llama_memory_breakdown_data {
+    size_t model   = 0; // memory allocated for the model
+    size_t context = 0; // memory allocated for the context
+    size_t compute = 0; // memory allocated for temporary compute buffers
+
+    size_t total() const {
+        return model + context + compute;
+    }
+};
+
+struct llama_device_memory_data {
+    int64_t total;
+    int64_t free;
+    llama_memory_breakdown_data mb;
+};
+
+// TODO: convert to C-style data structure
+using llama_memory_breakdown = std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data>;
+
+LLAMA_API int32_t llama_model_n_expert (const struct llama_model * model);
+LLAMA_API int32_t llama_model_n_devices(const struct llama_model * model);
+
+LLAMA_API ggml_backend_dev_t llama_model_get_device(const struct llama_model * model, int i);
+
+LLAMA_API llama_memory_breakdown llama_get_memory_breakdown(const struct llama_context * ctx);
+
+//
+// pre-norm embeddings (hidden state before the final output norm)
+//
+
+// mirrors:
+// LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
+LLAMA_API void llama_set_embeddings_pre_norm(struct llama_context * ctx, bool value);
+
+// mirrors:
+// LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
+LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
+
+// mirrors:
+// LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
+LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
