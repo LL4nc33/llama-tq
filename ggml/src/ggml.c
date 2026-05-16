@@ -6989,16 +6989,27 @@ static void ggml_compute_backward(
             // have no implemented backward. When all parameters reachable through
             // those ops are frozen via --train-skip-regex, gradient flow simply
             // stops at the boundary (acceptable for LoRA-style sparse training).
+            //
+            // Fast-path: if NO source needs a gradient, this op has nothing to
+            // contribute even with a working backward — just return silently.
+            if (!src0_needs_grads && !src1_needs_grads && !src2_needs_grads) {
+                break;
+            }
             static int skip_unsup = -1;
             if (skip_unsup < 0) {
                 const char * env = getenv("GGML_BACKWARD_SKIP_INPLACE");
                 skip_unsup = (env && env[0] && env[0] != '0') ? 1 : 0;
             }
             if (skip_unsup) {
-                fprintf(stderr,
-                    "%s: skipping unsupported backward op '%s' (name='%s') — "
-                    "no gradient propagates through this node. GGML_BACKWARD_SKIP_INPLACE=1 is set.\n",
-                    __func__, ggml_op_name(tensor->op), tensor->name);
+                static int warned = 0;
+                if (warned < 16) {
+                    fprintf(stderr,
+                        "%s: skipping unsupported backward op '%s' (name='%s', src0_g=%d src1_g=%d src2_g=%d) — "
+                        "gradient flow through this node is dropped. GGML_BACKWARD_SKIP_INPLACE=1 is set.\n",
+                        __func__, ggml_op_name(tensor->op), tensor->name,
+                        src0_needs_grads, src1_needs_grads, src2_needs_grads);
+                    warned++;
+                }
                 break;
             }
             GGML_ABORT("%s: unsupported ggml op for backward pass: %s\n", __func__, ggml_op_name(tensor->op));
