@@ -13,6 +13,16 @@
 #include <string>
 
 bool llama_model_saver_supports_arch(llm_arch arch) {
+    // LLAMA_SAVER_ALLOW_UNTESTED=1 forces a best-effort save attempt for
+    // architectures that were marked as "untested by the saver". Required for
+    // fine-tuning hybrid MoE+SSM models (Qwen3.5/3.6, Plamo3, etc.) where the
+    // saver hasn't been explicitly validated upstream but the underlying
+    // gguf_writer path is architecture-agnostic for tensor data.
+    static int allow_untested = -1;
+    if (allow_untested < 0) {
+        const char * env = getenv("LLAMA_SAVER_ALLOW_UNTESTED");
+        allow_untested = (env && env[0] && env[0] != '0') ? 1 : 0;
+    }
     switch (arch) {
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_QWEN35:
@@ -29,6 +39,12 @@ bool llama_model_saver_supports_arch(llm_arch arch) {
         case LLM_ARCH_APERTUS:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
+            if (allow_untested) {
+                fprintf(stderr,
+                    "llama_model_saver: arch '%s' is marked untested but LLAMA_SAVER_ALLOW_UNTESTED=1 — attempting save anyway.\n",
+                    llm_arch_name(arch));
+                return true;
+            }
             return false;
         default:
             return true;
