@@ -6983,6 +6983,24 @@ static void ggml_compute_backward(
         } break;
         case GGML_OP_COUNT:
         default: {
+            // For unsupported backward ops, allow graceful skip via env var.
+            // This is used for hybrid Mamba+MoE models (Qwen3.6-A35B etc.) where
+            // certain ops (MUL_MAT_ID, FLASH_ATTN_EXT, SSM_SCAN, SSM_CONV, ...)
+            // have no implemented backward. When all parameters reachable through
+            // those ops are frozen via --train-skip-regex, gradient flow simply
+            // stops at the boundary (acceptable for LoRA-style sparse training).
+            static int skip_unsup = -1;
+            if (skip_unsup < 0) {
+                const char * env = getenv("GGML_BACKWARD_SKIP_INPLACE");
+                skip_unsup = (env && env[0] && env[0] != '0') ? 1 : 0;
+            }
+            if (skip_unsup) {
+                fprintf(stderr,
+                    "%s: skipping unsupported backward op '%s' (name='%s') — "
+                    "no gradient propagates through this node. GGML_BACKWARD_SKIP_INPLACE=1 is set.\n",
+                    __func__, ggml_op_name(tensor->op), tensor->name);
+                break;
+            }
             GGML_ABORT("%s: unsupported ggml op for backward pass: %s\n", __func__, ggml_op_name(tensor->op));
         } //break;
     }
