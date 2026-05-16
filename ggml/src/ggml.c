@@ -7169,9 +7169,33 @@ void ggml_build_backward_expand(
             continue;
         }
 
-        // inplace operations are currently not supported
-        GGML_ASSERT(!node->view_src || node->op == GGML_OP_CPY || node->op == GGML_OP_VIEW ||
-            node->op == GGML_OP_RESHAPE || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE);
+        // inplace operations are currently not supported in the autograd backward graph.
+        // For hybrid Mamba/SSM/RWKV models, when env GGML_BACKWARD_SKIP_INPLACE=1 we degrade
+        // gracefully by *not* propagating gradients through such ops (they typically belong
+        // to the recurrent state path of Mamba/SSM, whose backward is not implemented in ggml).
+        // Without the env var we keep the original strict assertion.
+        if (node->view_src && node->op != GGML_OP_CPY && node->op != GGML_OP_VIEW &&
+            node->op != GGML_OP_RESHAPE && node->op != GGML_OP_PERMUTE && node->op != GGML_OP_TRANSPOSE) {
+            static int skip_inplace = -1;
+            if (skip_inplace < 0) {
+                const char * env = getenv("GGML_BACKWARD_SKIP_INPLACE");
+                skip_inplace = (env && env[0] && env[0] != '0') ? 1 : 0;
+            }
+            if (!skip_inplace) {
+                fprintf(stderr,
+                    "ggml_build_backward_expand: inplace op '%s' (view_src='%s', name='%s') reached the autograd path.\n"
+                    "  This typically happens with Mamba/SSM/RWKV recurrent state ops.\n"
+                    "  Set GGML_BACKWARD_SKIP_INPLACE=1 to skip gradient propagation through such ops\n"
+                    "  (only safe if those parameters are frozen via --train-skip-regex).\n",
+                    ggml_op_name(node->op),
+                    node->view_src->name ? node->view_src->name : "?",
+                    node->name ? node->name : "?");
+            }
+            GGML_ASSERT(skip_inplace && "inplace op in backward graph — set GGML_BACKWARD_SKIP_INPLACE=1 to override");
+            // Skip: do not allocate gradient accumulator; mark grads_needed=false so downstream
+            // consumers also see this op as having no gradient.
+            continue;
+        }
 
         const size_t ihash = ggml_hash_find(&cgraph->visited_hash_set, node);
         GGML_ASSERT(ihash != GGML_HASHSET_FULL);
