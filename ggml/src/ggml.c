@@ -6949,6 +6949,17 @@ static void ggml_compute_backward(
                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, ggml_sigmoid(ctx, src0)));
                     }
                 } break;
+                case GGML_UNARY_OP_SIGMOID: {
+                    if (src0_needs_grads) {
+                        // d/dx sigmoid(x) = sigmoid(x) * (1 - sigmoid(x))
+                        // tensor is the forward output = sigmoid(src0), so use it directly.
+                        // Compute: dsig = tensor * (1 - tensor) via scale+add.
+                        struct ggml_tensor * neg_s    = ggml_scale(ctx, tensor, -1.0f);
+                        struct ggml_tensor * one_m_s  = ggml_scale_bias(ctx, neg_s, 1.0f, 1.0f);
+                        struct ggml_tensor * dsig     = ggml_mul(ctx, tensor, one_m_s);
+                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, dsig));
+                    }
+                } break;
                 default: {
                     fprintf(stderr, "%s: unsupported unary op for backward pass: %s\n",
                         __func__, ggml_unary_op_name(ggml_get_unary_op(tensor)));
@@ -7217,8 +7228,8 @@ void ggml_build_backward_expand(
                     "  Set GGML_BACKWARD_SKIP_INPLACE=1 to skip gradient propagation through such ops\n"
                     "  (only safe if those parameters are frozen via --train-skip-regex).\n",
                     ggml_op_name(node->op),
-                    node->view_src->name ? node->view_src->name : "?",
-                    node->name ? node->name : "?");
+                    node->view_src->name,
+                    node->name);
             }
             GGML_ASSERT(skip_inplace && "inplace op in backward graph — set GGML_BACKWARD_SKIP_INPLACE=1 to override");
             // Skip: do not allocate gradient accumulator; mark grads_needed=false so downstream
