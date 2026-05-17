@@ -984,13 +984,18 @@ void ggml_opt_epoch_callback_progress_bar(
     const int64_t t_eta_m = t_eta_s / 60;
     t_eta_s -= t_eta_m * 60;
 
-    fprintf(stderr, "] data=%07" PRId64 "/%07" PRId64 " loss=%.5lf±%.5lf acc=%.2lf±%.2lf%% "
-            "t=%02" PRId64 ":%02" PRId64 ":%02" PRId64 " ETA=%02" PRId64 ":%02" PRId64 ":%02" PRId64 " \r",
-            idata, idata_max, loss, loss_unc, 100.0*accuracy, 100.0*accuracy_unc,
-            t_ibatch_h, t_ibatch_m, t_ibatch_s, t_eta_h, t_eta_m, t_eta_s);
-    if (ibatch == ibatch_max) {
-        fprintf(stderr, "\n");
+    // GGML_OPT_LINE_PROGRESS=1 → newline per update (good for tee/pipe/log files).
+    // Default keeps the original \r single-line behavior for interactive terminals.
+    static int line_progress = -1;
+    if (line_progress < 0) {
+        const char * env = getenv("GGML_OPT_LINE_PROGRESS");
+        line_progress = (env && env[0] && env[0] != '0') ? 1 : 0;
     }
+    const char * eol = (line_progress || ibatch == ibatch_max) ? "\n" : "\r";
+    fprintf(stderr, "] data=%07" PRId64 "/%07" PRId64 " loss=%.5lf±%.5lf acc=%.2lf±%.2lf%% "
+            "t=%02" PRId64 ":%02" PRId64 ":%02" PRId64 " ETA=%02" PRId64 ":%02" PRId64 ":%02" PRId64 " %s",
+            idata, idata_max, loss, loss_unc, 100.0*accuracy, 100.0*accuracy_unc,
+            t_ibatch_h, t_ibatch_m, t_ibatch_s, t_eta_h, t_eta_m, t_eta_s, eol);
     fflush(stderr);
 
     GGML_UNUSED(dataset);

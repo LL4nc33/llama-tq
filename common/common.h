@@ -602,6 +602,9 @@ struct common_params {
     struct lr_opt lr;
     enum ggml_opt_optimizer_type optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
     float val_split = 0.05f; // fraction of the data used for the validation set
+    std::string train_skip_regex; // tensors whose name matches this regex are excluded from training
+                                  // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
+                                  // Default empty = train every F32 parameter (original behavior).
 
     // embedding
     bool embedding         = false; // get only sentence embedding
