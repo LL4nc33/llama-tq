@@ -4987,7 +4987,18 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_DUP:
             {
                 ggml_type src0_type = op->src[0]->type;
-                return src0_type != GGML_TYPE_I32 && src0_type != GGML_TYPE_I16;
+                if (src0_type == GGML_TYPE_I32 || src0_type == GGML_TYPE_I16) {
+                    return false;
+                }
+                // Quantised types can only be DUP'd via memcpy (no per-element
+                // kernel for blocked-quant), so require both src and dst
+                // contiguous. The CPU backend handles non-contiguous quant DUP.
+                if (src0_type != GGML_TYPE_F32 && src0_type != GGML_TYPE_F16 &&
+                    src0_type != GGML_TYPE_BF16) {
+                    return ggml_is_contiguous(op->src[0]) &&
+                           (op->src[1] == nullptr || ggml_is_contiguous(op->src[1]));
+                }
+                return true;
             } break;
         case GGML_OP_ARGMAX:
         case GGML_OP_COUNT_EQUAL:
