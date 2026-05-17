@@ -497,7 +497,8 @@ llama_adapter_lora * llama_adapter_lora_init_for_training(
         if (!base || !std::regex_search(base_name, re)) {
             continue;
         }
-        if (ggml_n_dims(base) != 2) {
+        const int ndims = ggml_n_dims(base);
+        if (ndims != 2 && ndims != 3) {
             continue;
         }
 
@@ -517,8 +518,20 @@ llama_adapter_lora * llama_adapter_lora_init_for_training(
         const int64_t in_dim  = base->ne[0];
         const int64_t out_dim = base->ne[1];
 
-        ggml_tensor * a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, in_dim,  rank);
-        ggml_tensor * b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rank,    out_dim);
+        ggml_tensor * a;
+        ggml_tensor * b;
+        if (ndims == 2) {
+            // Standard 2D LoRA: A=[in,rank], B=[rank,out].
+            a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, in_dim,  rank);
+            b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rank,    out_dim);
+        } else {
+            // 3D LoRA for MoE expert weights ([in,out,n_expert]):
+            // A=[in,rank,n_expert], B=[rank,out,n_expert]. build_lora_mm_id
+            // applies them per-expert via mul_mat_id.
+            const int64_t n_expert = base->ne[2];
+            a = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, in_dim,  rank,    n_expert);
+            b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, rank,    out_dim, n_expert);
+        }
         ggml_set_name(a, (base_name + ".lora_a").c_str());
         ggml_set_name(b, (base_name + ".lora_b").c_str());
 
