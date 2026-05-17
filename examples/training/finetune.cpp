@@ -109,6 +109,13 @@ int main(int argc, char ** argv) {
         }
         LOG_INF("%s: LoRA training adapter initialised — rank=%d alpha=%.1f\n",
                 __func__, params.lora_train_rank, (double) params.lora_train_alpha);
+
+        // Stage-3.5: attach the adapter to the context so build_lora_mm / build_lora_mm_id
+        // pick up the A/B tensors during forward-graph construction. Without this, the
+        // adapter lives only in model->loras (lifetime tracking) but never enters the
+        // computational graph — backward then sees zero trainable params.
+        float lora_scale = 1.0f;
+        llama_set_adapters_lora(ctx, &lora_adapter, 1, &lora_scale);
     }
 
     struct llama_opt_params lopt_params{
