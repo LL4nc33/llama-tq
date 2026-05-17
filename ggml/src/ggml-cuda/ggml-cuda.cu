@@ -4987,17 +4987,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_DUP:
             {
                 ggml_type src0_type = op->src[0]->type;
-                if (src0_type == GGML_TYPE_I32 || src0_type == GGML_TYPE_I16) {
-                    return false;
-                }
-                // Quantised types can only be DUP'd via memcpy (no per-element
-                // kernel for blocked-quant). Require fully contiguous src; the
-                // CPU backend handles strided / sliced quantised DUP cleanly.
-                if (src0_type != GGML_TYPE_F32 && src0_type != GGML_TYPE_F16 &&
-                    src0_type != GGML_TYPE_BF16) {
-                    return ggml_is_contiguous(op->src[0]);
-                }
-                return true;
+                return src0_type != GGML_TYPE_I32 && src0_type != GGML_TYPE_I16;
             } break;
         case GGML_OP_ARGMAX:
         case GGML_OP_COUNT_EQUAL:
@@ -5070,17 +5060,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             return op->src[0]->ne[1] % 128 == 0;
         }
         case GGML_OP_CONT:
-            {
-                // Same restriction as DUP: blocked-quant CONT requires a
-                // contiguous source (row strides == row bytes). Strided
-                // quantised slices route to CPU.
-                ggml_type src0_type = op->src[0]->type;
-                if (src0_type != GGML_TYPE_F32 && src0_type != GGML_TYPE_F16 &&
-                    src0_type != GGML_TYPE_BF16 && src0_type != GGML_TYPE_I32) {
-                    return ggml_is_contiguous(op->src[0]);
-                }
-                return true;
-            }
+            return true;
         case GGML_OP_DIAG_MASK_INF:
             return true;
         case GGML_OP_SOFT_MAX:

@@ -546,15 +546,70 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
             ggml_cpy_scalar_cuda<int32_t, float>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         }
-    } else if (src0->type == src1->type &&
-               ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
-               ggml_nbytes(src0) == ggml_nbytes(src1)) {
-        // Same-type fully contiguous CPY (e.g. iq2_xxs→iq2_xxs during
-        // training graph build) is just a memcpy — no per-type kernel.
-        // Non-contig same-type cases are filtered out via supports_op and
-        // routed to the CPU backend.
-        CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0),
-                                   cudaMemcpyDeviceToDevice, main_stream));
+    } else if (src0->type == src1->type) {
+        // Same-type CPY (typically DUP/CONT of a quantised tensor in the
+        // MoE backward graph). Three layouts handled:
+        //   (a) both fully contiguous → flat cudaMemcpyAsync
+        //   (b) src strided rows, dst packed → cudaMemcpy3DAsync with
+        //       (width=row_bytes, height=ne1, depth=ne2*ne3) and the
+        //       correct src/dst pitches
+        //   (c) anything more exotic → abort with diagnostics
+        const bool src_contig = ggml_is_contiguous(src0);
+        const bool dst_contig = ggml_is_contiguous(src1);
+        const int64_t row_bytes = ggml_row_size(src0->type, src0->ne[0]);
+        const bool row_size_matches =
+            src0->ne[0] == src1->ne[0] &&
+            src0->ne[1] == src1->ne[1] &&
+            src0->ne[2] == src1->ne[2] &&
+            src0->ne[3] == src1->ne[3];
+
+        if (src_contig && dst_contig && ggml_nbytes(src0) == ggml_nbytes(src1)) {
+            CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0),
+                                       cudaMemcpyDeviceToDevice, main_stream));
+        } else if (row_size_matches &&
+                   (size_t) row_bytes <= src0->nb[1] &&
+                   (size_t) row_bytes <= src1->nb[1]) {
+            // 3D block copy: width = row_bytes, height = ne1, depth = ne2*ne3.
+            // Source pitch = src->nb[1], dest pitch = dst->nb[1].
+            // For depth we need slice pitch = nb[2].
+            const int64_t depth = (int64_t) src0->ne[2] * src0->ne[3];
+            cudaMemcpy3DParms p = {};
+            p.srcPtr = make_cudaPitchedPtr((void *) src0_ddc, src0->nb[1],
+                                           row_bytes, src0->ne[1]);
+            p.dstPtr = make_cudaPitchedPtr((void *) src1_ddc, src1->nb[1],
+                                           row_bytes, src1->ne[1]);
+            p.extent = make_cudaExtent(row_bytes, src0->ne[1], depth);
+            p.kind   = cudaMemcpyDeviceToDevice;
+            // cudaMemcpy3D only handles depth properly when slice pitches
+            // are uniform — assert before issuing.
+            if (src0->nb[2] == src0->nb[1] * src0->ne[1] &&
+                src1->nb[2] == src1->nb[1] * src1->ne[1]) {
+                CUDA_CHECK(cudaMemcpy3DAsync(&p, main_stream));
+            } else {
+                // Fallback: loop over the higher dims and do 2D copies per slice.
+                for (int64_t i3 = 0; i3 < src0->ne[3]; ++i3) {
+                    for (int64_t i2 = 0; i2 < src0->ne[2]; ++i2) {
+                        const char * sp = (const char *) src0_ddc + i3*src0->nb[3] + i2*src0->nb[2];
+                        char       * dp = (char *)       src1_ddc + i3*src1->nb[3] + i2*src1->nb[2];
+                        CUDA_CHECK(cudaMemcpy2DAsync(dp, src1->nb[1],
+                                                     sp, src0->nb[1],
+                                                     row_bytes, src0->ne[1],
+                                                     cudaMemcpyDeviceToDevice, main_stream));
+                    }
+                }
+            }
+        } else {
+            GGML_ABORT("%s: same-type CPY unsupported layout (%s) "
+                       "src_contig=%d dst_contig=%d row_bytes=%lld "
+                       "shape0=[%lld,%lld,%lld,%lld] nb0=[%zu,%zu,%zu,%zu] "
+                       "shape1=[%lld,%lld,%lld,%lld] nb1=[%zu,%zu,%zu,%zu]\n",
+                       __func__, ggml_type_name(src0->type),
+                       (int) src_contig, (int) dst_contig, (long long) row_bytes,
+                       (long long)src0->ne[0],(long long)src0->ne[1],(long long)src0->ne[2],(long long)src0->ne[3],
+                       src0->nb[0],src0->nb[1],src0->nb[2],src0->nb[3],
+                       (long long)src1->ne[0],(long long)src1->ne[1],(long long)src1->ne[2],(long long)src1->ne[3],
+                       src1->nb[0],src1->nb[1],src1->nb[2],src1->nb[3]);
+        }
     } else {
         GGML_ABORT("%s: unsupported type combination (%s to %s)\n", __func__,
                 ggml_type_name(src0->type), ggml_type_name(src1->type));
