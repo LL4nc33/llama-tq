@@ -13,6 +13,16 @@
 #include <string>
 
 bool llama_model_saver_supports_arch(llm_arch arch) {
+    // LLAMA_SAVER_ALLOW_UNTESTED=1 forces a best-effort save attempt for
+    // architectures that were marked as "untested by the saver". Required for
+    // fine-tuning hybrid MoE+SSM models (Qwen3.5/3.6, Plamo3, etc.) where the
+    // saver hasn't been explicitly validated upstream but the underlying
+    // gguf_writer path is architecture-agnostic for tensor data.
+    static int allow_untested = -1;
+    if (allow_untested < 0) {
+        const char * env = getenv("LLAMA_SAVER_ALLOW_UNTESTED");
+        allow_untested = (env && env[0] && env[0] != '0') ? 1 : 0;
+    }
     switch (arch) {
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_QWEN35:
@@ -29,6 +39,12 @@ bool llama_model_saver_supports_arch(llm_arch arch) {
         case LLM_ARCH_APERTUS:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
+            if (allow_untested) {
+                fprintf(stderr,
+                    "llama_model_saver: arch '%s' is marked untested but LLAMA_SAVER_ALLOW_UNTESTED=1 — attempting save anyway.\n",
+                    llm_arch_name(arch));
+                return true;
+            }
             return false;
         default:
             return true;
@@ -201,7 +217,10 @@ void llama_model_saver::add_kv_from_model() {
     // add_kv(LLM_KV_GENERAL_SOURCE_HF_REPO,            ???);
 
     add_kv(LLM_KV_VOCAB_SIZE,                        vocab.n_tokens());
-    add_kv(LLM_KV_CONTEXT_LENGTH,                    hparams.n_ctx_train);
+    // If opt_init stashed the original n_ctx_train (fine-tune scenario), use it for the saved
+    // context_length so downstream inference doesn't get capped to the training batch ctx.
+    add_kv(LLM_KV_CONTEXT_LENGTH,
+        hparams.orig_n_ctx_train > 0 ? hparams.orig_n_ctx_train : hparams.n_ctx_train);
     add_kv(LLM_KV_EMBEDDING_LENGTH,                  hparams.n_embd);
     if (hparams.n_embd_out_impl > 0) {
         add_kv(LLM_KV_EMBEDDING_LENGTH_OUT,          hparams.n_embd_out_impl);
@@ -211,7 +230,9 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_FEED_FORWARD_LENGTH,               hparams.n_ff_arr, true);
     add_kv(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,        hparams.n_ff_exp);
     add_kv(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp);
-    add_kv(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_chexp);
+    // FIX: was duplicate LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, overwriting
+    // n_ff_shexp with n_ff_chexp (which is usually 0) and breaking saved MoE GGUFs.
+    add_kv(LLM_KV_EXPERT_CHUNK_FEED_FORWARD_LENGTH,  hparams.n_ff_chexp);
     add_kv(LLM_KV_SWIGLU_CLAMP_EXP,                  hparams.swiglu_clamp_exp);
     add_kv(LLM_KV_SWIGLU_CLAMP_SHEXP,                hparams.swiglu_clamp_shexp);
     add_kv(LLM_KV_USE_PARALLEL_RESIDUAL,             hparams.use_par_res);

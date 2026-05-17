@@ -41,6 +41,7 @@ struct llama_hparams {
     bool swin_norm;
 
     uint32_t n_ctx_train; // context size the model was trained on
+    uint32_t orig_n_ctx_train = 0; // stash for the model_saver — set by opt_init when fine-tuning
     uint32_t n_embd;
     uint32_t n_layer;
     int32_t n_layer_kv_from_start = -1; // if non-negative, the first n_layer_kv_from_start layers have KV cache

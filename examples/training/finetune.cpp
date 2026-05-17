@@ -8,7 +8,15 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <regex>
 #include <vector>
+
+// Regex-based parameter filter for selective fine-tuning (e.g. skip Mamba/SSM layers).
+// When the tensor name matches the regex, it is EXCLUDED from training.
+static bool finetune_param_filter_skip_regex(const struct ggml_tensor * t, void * ud) {
+    auto * re = static_cast<std::regex *>(ud);
+    return !std::regex_search(t->name, *re);
+}
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267)  // possible loss of data
@@ -67,10 +75,26 @@ int main(int argc, char ** argv) {
             ggml_opt_optimizer_name(params.optimizer), (double) lr.lr0, (double) lr.wd, (double) lr.lr_min, (double) lr.decay_epochs,
             (unsigned) lr.epochs, (double) params.n_batch / params.n_ubatch, (double) params.val_split);
 
+    // Compile optional skip-regex (Mamba/SSM tensors etc.) ONCE, hold it stable
+    // for the lifetime of the optimizer setup.
+    std::regex skip_re;
+    bool skip_re_active = !params.train_skip_regex.empty();
+    if (skip_re_active) {
+        try {
+            skip_re = std::regex(params.train_skip_regex);
+        } catch (const std::regex_error & e) {
+            LOG_ERR("%s: invalid --train-skip-regex '%s': %s\n",
+                    __func__, params.train_skip_regex.c_str(), e.what());
+            return 1;
+        }
+        LOG_INF("%s: parameter filter active — tensors matching /%s/ will be FROZEN (no gradients)\n",
+                __func__, params.train_skip_regex.c_str());
+    }
+
     struct llama_opt_params lopt_params{
         /*n_ctx_train     =*/0,
-        /*param_filter    =*/llama_opt_param_filter_all,
-        /*param_filter_ud =*/nullptr,
+        /*param_filter    =*/skip_re_active ? finetune_param_filter_skip_regex : llama_opt_param_filter_all,
+        /*param_filter_ud =*/skip_re_active ? (void *) &skip_re : nullptr,
         /*get_opt_pars    =*/common_opt_lr_pars,
         /*get_opt_pars_ud =*/&params.lr,
         /*optimizer_type  =*/params.optimizer,
