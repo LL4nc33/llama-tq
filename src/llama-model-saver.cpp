@@ -217,7 +217,10 @@ void llama_model_saver::add_kv_from_model() {
     // add_kv(LLM_KV_GENERAL_SOURCE_HF_REPO,            ???);
 
     add_kv(LLM_KV_VOCAB_SIZE,                        vocab.n_tokens());
-    add_kv(LLM_KV_CONTEXT_LENGTH,                    hparams.n_ctx_train);
+    // If opt_init stashed the original n_ctx_train (fine-tune scenario), use it for the saved
+    // context_length so downstream inference doesn't get capped to the training batch ctx.
+    add_kv(LLM_KV_CONTEXT_LENGTH,
+        hparams.orig_n_ctx_train > 0 ? hparams.orig_n_ctx_train : hparams.n_ctx_train);
     add_kv(LLM_KV_EMBEDDING_LENGTH,                  hparams.n_embd);
     if (hparams.n_embd_out_impl > 0) {
         add_kv(LLM_KV_EMBEDDING_LENGTH_OUT,          hparams.n_embd_out_impl);
