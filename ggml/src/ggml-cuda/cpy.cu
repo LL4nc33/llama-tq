@@ -546,39 +546,15 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
             ggml_cpy_scalar_cuda<int32_t, float>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         }
-    } else if (src0->type == src1->type) {
-        // Same-type CPY. Three cases:
-        //  (1) both contiguous       → flat cudaMemcpyAsync of nbytes
-        //  (2) row-aligned non-contig → row-strided 2D memcpy (block_size×nrows)
-        //  (3) anything else         → diagnostic abort (CPU fallback expected)
-        // Triggered on MoE finetune backward where DUP makes a non-contig
-        // expert slice contiguous for downstream ops.
-        const size_t nb_src = ggml_nbytes(src0);
-        const size_t nb_dst = ggml_nbytes(src1);
-        const bool both_contig = ggml_is_contiguous(src0) && ggml_is_contiguous(src1);
-        if (both_contig && nb_src == nb_dst) {
-            CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, nb_src,
-                                       cudaMemcpyDeviceToDevice, main_stream));
-        } else if (ggml_is_contiguous(src1) && src0->ne[0] == src1->ne[0]) {
-            // Row-major slice: copy each row (ne0 elements = row-bytes) from
-            // src0 with stride nb01, dst is packed contiguous.
-            const int64_t row_bytes  = ggml_row_size(src0->type, src0->ne[0]);
-            const int64_t n_rows     = (int64_t)src0->ne[1] * src0->ne[2] * src0->ne[3];
-            const size_t  src_pitch  = src0->nb[1]; // stride between rows
-            CUDA_CHECK(cudaMemcpy2DAsync(src1_ddc, row_bytes,
-                                         src0_ddc, src_pitch,
-                                         row_bytes, n_rows,
-                                         cudaMemcpyDeviceToDevice, main_stream));
-        } else {
-            GGML_ABORT("%s: same-type CPY needs CPU fallback (%s %zu -> %s %zu) "
-                       "src0_contig=%d src1_contig=%d shape0=[%lld,%lld,%lld,%lld] shape1=[%lld,%lld,%lld,%lld]\n",
-                       __func__,
-                       ggml_type_name(src0->type), nb_src,
-                       ggml_type_name(src1->type), nb_dst,
-                       (int)ggml_is_contiguous(src0), (int)ggml_is_contiguous(src1),
-                       (long long)src0->ne[0],(long long)src0->ne[1],(long long)src0->ne[2],(long long)src0->ne[3],
-                       (long long)src1->ne[0],(long long)src1->ne[1],(long long)src1->ne[2],(long long)src1->ne[3]);
-        }
+    } else if (src0->type == src1->type &&
+               ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
+               ggml_nbytes(src0) == ggml_nbytes(src1)) {
+        // Same-type fully contiguous CPY (e.g. iq2_xxs→iq2_xxs during
+        // training graph build) is just a memcpy — no per-type kernel.
+        // Non-contig same-type cases are filtered out via supports_op and
+        // routed to the CPU backend.
+        CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0),
+                                   cudaMemcpyDeviceToDevice, main_stream));
     } else {
         GGML_ABORT("%s: unsupported type combination (%s to %s)\n", __func__,
                 ggml_type_name(src0->type), ggml_type_name(src1->type));
