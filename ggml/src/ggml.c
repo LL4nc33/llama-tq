@@ -7091,7 +7091,9 @@ static void ggml_compute_backward(
                         src0_needs_grads, src1_needs_grads, src2_needs_grads);
                     warned++;
                 }
-                break;
+                // Skip the trailing shape-asserts: those grads were never allocated when we
+                // took the skip path, so dereferencing cgraph->grads[isrc*] would segfault.
+                return;
             }
             GGML_ABORT("%s: unsupported ggml op for backward pass: %s\n", __func__, ggml_op_name(tensor->op));
         } //break;
