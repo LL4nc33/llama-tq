@@ -6769,6 +6769,24 @@ static void ggml_compute_backward(
                     ggml_mul_mat_id_grad_as(ctx, grad, src1, src2, src0->ne[2]));
             }
             if (src1_needs_grads) {
+                // Quantised weights cannot be transposed cheaply: the
+                // backward path needs cont(transpose(as)) which would force
+                // a strided block-copy of a multi-GiB expert tensor every
+                // step. For LoRA training the weight is frozen anyway, so
+                // dropping grad_b just truncates an already-finalised
+                // sub-graph without harming the LoRA gradient flow.
+                if (src0->type != GGML_TYPE_F32 &&
+                    src0->type != GGML_TYPE_F16 &&
+                    src0->type != GGML_TYPE_BF16) {
+                    static int warned_quant_T = 0;
+                    if (!warned_quant_T) {
+                        fprintf(stderr,
+                            "ggml_compute_backward: MUL_MAT_ID grad_b skipped — src0 is %s (transpose+cont of quantised weight is prohibitive). LoRA path still flows via grad_as.\n",
+                            ggml_type_name(src0->type));
+                        warned_quant_T = 1;
+                    }
+                    return;
+                }
                 if (src1->ne[1] == src2->ne[0]) {
                     // Standard case: n_used_b == n_used (no broadcast).
                     struct ggml_tensor * as_T = ggml_cont(ctx, ggml_transpose(ctx, src0));
