@@ -30,6 +30,7 @@
 #include "ggml-cuda/moe-pin.cuh"
 #include "ggml-cuda/mmvf.cuh"
 #include "ggml-cuda/mmvq.cuh"
+#include "ggml-cuda/mul-mat-id-grad-as.cuh"
 #include "ggml-cuda/norm.cuh"
 #include "ggml-cuda/opt-step-adamw.cuh"
 #include "ggml-cuda/opt-step-sgd.cuh"
@@ -2783,6 +2784,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_MUL_MAT_ID:
             ggml_cuda_mul_mat_id(ctx, dst);
             break;
+        case GGML_OP_MUL_MAT_ID_GRAD_AS:
+            ggml_cuda_op_mul_mat_id_grad_as(ctx, dst);
+            break;
         case GGML_OP_OUT_PROD:
             ggml_cuda_out_prod(ctx, dst);
             break;
@@ -5122,6 +5126,17 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_DIAG:
         case GGML_OP_SOLVE_TRI:
             return true;
+        case GGML_OP_MUL_MAT_ID_GRAD_AS:
+            {
+                // F32 only, ids must be I32. The CPU fallback handles everything else.
+                const ggml_tensor * grad_c = op->src[0];
+                const ggml_tensor * b      = op->src[1];
+                const ggml_tensor * ids    = op->src[2];
+                return op->type == GGML_TYPE_F32
+                    && grad_c->type == GGML_TYPE_F32
+                    && b->type      == GGML_TYPE_F32
+                    && ids->type    == GGML_TYPE_I32;
+            }
 
         default:
             return false;
