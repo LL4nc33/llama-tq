@@ -144,7 +144,27 @@ int main(int argc, char ** argv) {
     ggml_opt_result_free(result_train);
     ggml_opt_result_free(result_eval);
 
-    llama_model_save_to_file(model, params.out_file.c_str());
+    if (lora_adapter != nullptr) {
+        // Saving the merged base+adapter as a GGUF is not yet supported for
+        // quantised tensors, so write the adapter alone (round-trippable via
+        // --lora). Defaults to <out_file>.lora.gguf if --output is the model.
+        std::string adapter_out = params.out_file;
+        const std::string ext = ".gguf";
+        if (adapter_out.size() >= ext.size() &&
+            adapter_out.compare(adapter_out.size() - ext.size(), ext.size(), ext) == 0) {
+            adapter_out.insert(adapter_out.size() - ext.size(), ".lora");
+        } else {
+            adapter_out += ".lora.gguf";
+        }
+        if (llama_adapter_lora_save_to_file(lora_adapter, adapter_out.c_str()) != 0) {
+            LOG_ERR("%s: failed to write LoRA adapter to '%s'\n", __func__, adapter_out.c_str());
+        } else {
+            LOG_INF("%s: wrote trained LoRA adapter to '%s' — load with --lora %s\n",
+                    __func__, adapter_out.c_str(), adapter_out.c_str());
+        }
+    } else {
+        llama_model_save_to_file(model, params.out_file.c_str());
+    }
 
     llama_backend_free();
 
