@@ -116,6 +116,12 @@ cmake --build build -j2 --target llama-server llama-finetune
 
 ---
 
+## Maintenance &amp; roadmap
+
+This fork is actively maintained alongside its own roadmap. Upstream `llama.cpp` fixes (CUDA, server, build) are cherry-picked when they apply cleanly; larger features (MTP, fusion infrastructure) are integrated case-by-case. See [ROADMAP.md](ROADMAP.md) for what's working, what's in flight, and the path toward real capability gains in fine-tuning.
+
+---
+
 ## License
 
 MIT — inherited from upstream llama.cpp.
