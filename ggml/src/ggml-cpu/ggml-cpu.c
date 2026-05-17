@@ -1816,6 +1816,122 @@ static void ggml_compute_forward_mul_mat_id(
     }
 }
 
+// ggml_compute_forward_mul_mat_id_grad_as
+//
+// Backward pass for mul_mat_id with respect to "as" (stacked expert weights).
+// dst:     grad_as  [D_out, D_in,    n_expert]   F32, expected zero-initialised
+// src[0]:  grad_c   [D_out, n_used,  n_tokens]   F32 (gradient flowing in)
+// src[1]:  b        [D_in,  n_used_b, n_tokens]  F32 (forward input b)
+// src[2]:  ids      [n_used, n_tokens]           I32 (routing decisions)
+//
+// Computes: grad_as[i, j, k] = sum over (e, t) where ids[e, t] == k of
+//                                 grad_c[i, e, t] * b[j, e mod n_used_b, t]
+//
+// Parallelisation: threads divide the expert axis k. Each thread owns a disjoint
+// range of k and never writes outside that range, so no atomics are required.
+//
+// Memory layout reminder: ggml tensors are column-major in the (ne[0], ne[1], ne[2])
+// sense, but the storage convention is that ne[0] is the contiguous "fast" axis,
+// and we index dst[i, j, k] as dst[k*nb2 + j*nb1 + i*nb0] with nb0 = sizeof(float).
+static void ggml_compute_forward_mul_mat_id_grad_as(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * grad_c = dst->src[0];
+    const struct ggml_tensor * b      = dst->src[1];
+    const struct ggml_tensor * ids    = dst->src[2];
+
+    GGML_ASSERT(grad_c->type == GGML_TYPE_F32);
+    GGML_ASSERT(b->type      == GGML_TYPE_F32);
+    GGML_ASSERT(ids->type    == GGML_TYPE_I32);
+    GGML_ASSERT(dst->type    == GGML_TYPE_F32);
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    // dst shape: [D_in, D_out, n_expert]  (mirrors original "as" shape).
+    // grad_c shape: [D_out, n_used, n_tokens]
+    // b shape:      [D_in,  n_used_b, n_tokens]
+    const int64_t D_in      = dst->ne[0];
+    const int64_t D_out     = dst->ne[1];
+    const int64_t n_expert  = dst->ne[2];
+    const int64_t n_used    = ids->ne[0];
+    const int64_t n_tokens  = ids->ne[1];
+    const int64_t n_used_b  = b->ne[1];
+
+    GGML_ASSERT(grad_c->ne[0] == D_out);
+    GGML_ASSERT(grad_c->ne[1] == n_used);
+    GGML_ASSERT(grad_c->ne[2] == n_tokens);
+    GGML_ASSERT(b->ne[0]      == D_in);
+    GGML_ASSERT(b->ne[2]      == n_tokens);
+    GGML_ASSERT(n_used % n_used_b == 0);
+
+    // Partition the expert axis across threads. Each thread zeros its own slice
+    // of dst first (the rest of dst is owned by other threads).
+    const int64_t k_per_thread = (n_expert + nth - 1) / nth;
+    const int64_t k_start      = MIN(ith * k_per_thread,     n_expert);
+    const int64_t k_end        = MIN(k_start + k_per_thread, n_expert);
+
+    if (k_start >= k_end) {
+        return;
+    }
+
+    const size_t  nb0 = dst->nb[0];
+    const size_t  nb1 = dst->nb[1];
+    const size_t  nb2 = dst->nb[2];
+    GGML_ASSERT(nb0 == sizeof(float));
+
+    // Zero our slice of dst. dst layout is [D_in, D_out, n_expert] with D_in innermost.
+    // Each k-slice is D_in * D_out floats, stored row-major in (r=D_out outer, c=D_in inner).
+    for (int64_t k = k_start; k < k_end; ++k) {
+        char * dst_k = (char *) dst->data + k*nb2;
+        for (int64_t r = 0; r < D_out; ++r) {
+            memset(dst_k + r*nb1, 0, D_in*sizeof(float));
+        }
+    }
+
+    // Iterate over all (e, t) routing pairs and accumulate into the matching k bucket.
+    // Per-thread ownership of [k_start, k_end) guarantees no cross-thread writes.
+    const int32_t * ids_data = (const int32_t *) ids->data;
+
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        for (int64_t e = 0; e < n_used; ++e) {
+            const int32_t k = ids_data[e + t*n_used];
+            if (k < k_start || k >= k_end) {
+                continue;
+            }
+            GGML_ASSERT(k >= 0 && k < n_expert);
+
+            const int64_t e_b = e % n_used_b;
+
+            // grad_c[:, e, t]: contiguous row of length D_out, indexed by r.
+            const float * grad_row = (const float *)
+                ((const char *) grad_c->data + e*grad_c->nb[1] + t*grad_c->nb[2]);
+
+            // b[:, e_b, t]: contiguous row of length D_in, indexed by c.
+            const float * b_row = (const float *)
+                ((const char *) b->data + e_b*b->nb[1] + t*b->nb[2]);
+
+            char * dst_k = (char *) dst->data + k*nb2;
+
+            // grad_as[c, r, k] += b[c] * grad_c[r].
+            // dst layout puts c (D_in) on the fastest axis (nb0=sizeof(float)),
+            // r (D_out) on nb1. So we iterate r outer, c inner, and the inner
+            // loop is a scalar*vector AXPY: dst[r,:] += grad_c[r] * b[:].
+            for (int64_t r = 0; r < D_out; ++r) {
+                const float gr = grad_row[r];
+                if (gr == 0.0f) {
+                    continue;
+                }
+                float * dst_row = (float *) (dst_k + r*nb1);
+                for (int64_t c = 0; c < D_in; ++c) {
+                    dst_row[c] += gr * b_row[c];
+                }
+            }
+        }
+    }
+}
+
 /////////////////////////////////
 
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
@@ -1950,6 +2066,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_MUL_MAT_ID:
             {
                 ggml_compute_forward_mul_mat_id(params, tensor);
+            } break;
+        case GGML_OP_MUL_MAT_ID_GRAD_AS:
+            {
+                ggml_compute_forward_mul_mat_id_grad_as(params, tensor);
             } break;
         case GGML_OP_OUT_PROD:
             {
@@ -2416,6 +2536,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_CONCAT:
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
+        case GGML_OP_MUL_MAT_ID_GRAD_AS:
         case GGML_OP_OUT_PROD:
             {
                 n_tasks = n_threads;

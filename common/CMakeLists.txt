@@ -75,6 +75,8 @@ add_library(${TARGET} STATIC
     ngram-cache.cpp
     ngram-cache.h
     ngram-map.cpp
+    lora-training.cpp
+    lora-training.h
     ngram-map.h
     ngram-mod.cpp
     ngram-mod.h

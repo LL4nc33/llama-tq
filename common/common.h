@@ -603,6 +603,15 @@ struct common_params {
     enum ggml_opt_optimizer_type optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
     float val_split = 0.05f; // fraction of the data used for the validation set
     std::string train_skip_regex; // tensors whose name matches this regex are excluded from training
+
+    // LoRA training adapter (Stage 3). When lora_train_regex is non-empty,
+    // every base-tensor matching the regex gets a fresh LoRA adapter pair
+    // (A: in_dim x rank, B: rank x out_dim) and is itself frozen via the
+    // skip path. A is gauss-initialised, B is zeros, so the adapter starts
+    // as a no-op. Only A and B are trained.
+    std::string lora_train_regex;
+    int         lora_train_rank  = 16;
+    float       lora_train_alpha = 32.0f;
                                   // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
                                   // Default empty = train every F32 parameter (original behavior).
 
