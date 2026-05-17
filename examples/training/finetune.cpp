@@ -2,6 +2,7 @@
 #include "common.h"
 #include "log.h"
 #include "llama.h"
+#include "lora-training.h"
 
 #include <clocale>
 #include <cmath>
@@ -89,6 +90,25 @@ int main(int argc, char ** argv) {
         }
         LOG_INF("%s: parameter filter active — tensors matching /%s/ will be FROZEN (no gradients)\n",
                 __func__, params.train_skip_regex.c_str());
+    }
+
+    // Stage-3: optionally bootstrap a fresh LoRA training adapter. The base
+    // tensors matched by --lora-train-regex are then frozen via the same
+    // skip path; only A and B receive gradients.
+    llama_adapter_lora * lora_adapter = nullptr;
+    if (!params.lora_train_regex.empty()) {
+        lora_training_config lcfg;
+        lcfg.target_regex = params.lora_train_regex;
+        lcfg.rank         = params.lora_train_rank;
+        lcfg.alpha        = params.lora_train_alpha;
+        lora_adapter      = lora_training_init(model, lcfg);
+        if (!lora_adapter) {
+            LOG_ERR("%s: --lora-train-regex /%s/ matched zero tensors\n",
+                    __func__, params.lora_train_regex.c_str());
+            return 1;
+        }
+        LOG_INF("%s: LoRA training adapter initialised — rank=%d alpha=%.1f\n",
+                __func__, params.lora_train_rank, (double) params.lora_train_alpha);
     }
 
     struct llama_opt_params lopt_params{
