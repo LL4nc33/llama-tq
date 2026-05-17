@@ -6908,7 +6908,25 @@ static void ggml_compute_backward(
         } break;
         case GGML_OP_GET_ROWS: {
             if (src0_needs_grads) {
-                ggml_add_or_set(ctx, cgraph, isrc0, ggml_get_rows_back(ctx, grad, src1, src0));
+                // ggml_get_rows_back asserts grad is a 2D matrix and src1 (indices) is a
+                // 1D vector. MoE expert-routing uses 3D get_rows with 2D indices for which
+                // there is no backward kernel. Skip with a one-time warning rather than
+                // aborting so LoRA-only finetune still works (the un-back-prop'd path is
+                // upstream of the expert routing — gradient through it would only matter
+                // if we trained router gates, which we explicitly don't).
+                if (ggml_is_matrix(grad) && ggml_is_vector(src1)) {
+                    ggml_add_or_set(ctx, cgraph, isrc0, ggml_get_rows_back(ctx, grad, src1, src0));
+                } else {
+                    static int warned_gr = 0;
+                    if (!warned_gr) {
+                        fprintf(stderr,
+                            "ggml_compute_backward: GET_ROWS backward unsupported for "
+                            "grad.dims=%d ids.dims=%d (MoE 3D routing) — gradient dropped.\n",
+                            ggml_n_dims(grad), ggml_n_dims(src1));
+                        warned_gr = 1;
+                    }
+                    return;
+                }
             }
             if (src1_needs_grads) {
                 // noop
