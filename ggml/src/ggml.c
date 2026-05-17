@@ -6949,6 +6949,17 @@ static void ggml_compute_backward(
                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, ggml_sigmoid(ctx, src0)));
                     }
                 } break;
+                case GGML_UNARY_OP_SIGMOID: {
+                    if (src0_needs_grads) {
+                        // d/dx sigmoid(x) = sigmoid(x) * (1 - sigmoid(x))
+                        // tensor is the forward output = sigmoid(src0), so use it directly.
+                        // Compute: dsig = tensor * (1 - tensor) via scale+add.
+                        struct ggml_tensor * neg_s    = ggml_scale(ctx, tensor, -1.0f);
+                        struct ggml_tensor * one_m_s  = ggml_scale_bias(ctx, neg_s, 1.0f, 1.0f);
+                        struct ggml_tensor * dsig     = ggml_mul(ctx, tensor, one_m_s);
+                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, dsig));
+                    }
+                } break;
                 default: {
                     fprintf(stderr, "%s: unsupported unary op for backward pass: %s\n",
                         __func__, ggml_unary_op_name(ggml_get_unary_op(tensor)));
@@ -6983,6 +6994,35 @@ static void ggml_compute_backward(
         } break;
         case GGML_OP_COUNT:
         default: {
+            // For unsupported backward ops, allow graceful skip via env var.
+            // This is used for hybrid Mamba+MoE models (Qwen3.6-A35B etc.) where
+            // certain ops (MUL_MAT_ID, FLASH_ATTN_EXT, SSM_SCAN, SSM_CONV, ...)
+            // have no implemented backward. When all parameters reachable through
+            // those ops are frozen via --train-skip-regex, gradient flow simply
+            // stops at the boundary (acceptable for LoRA-style sparse training).
+            //
+            // Fast-path: if NO source needs a gradient, this op has nothing to
+            // contribute even with a working backward — just return silently.
+            if (!src0_needs_grads && !src1_needs_grads && !src2_needs_grads) {
+                break;
+            }
+            static int skip_unsup = -1;
+            if (skip_unsup < 0) {
+                const char * env = getenv("GGML_BACKWARD_SKIP_INPLACE");
+                skip_unsup = (env && env[0] && env[0] != '0') ? 1 : 0;
+            }
+            if (skip_unsup) {
+                static int warned = 0;
+                if (warned < 16) {
+                    fprintf(stderr,
+                        "%s: skipping unsupported backward op '%s' (name='%s', src0_g=%d src1_g=%d src2_g=%d) — "
+                        "gradient flow through this node is dropped. GGML_BACKWARD_SKIP_INPLACE=1 is set.\n",
+                        __func__, ggml_op_name(tensor->op), tensor->name,
+                        src0_needs_grads, src1_needs_grads, src2_needs_grads);
+                    warned++;
+                }
+                break;
+            }
             GGML_ABORT("%s: unsupported ggml op for backward pass: %s\n", __func__, ggml_op_name(tensor->op));
         } //break;
     }
@@ -7169,9 +7209,33 @@ void ggml_build_backward_expand(
             continue;
         }
 
-        // inplace operations are currently not supported
-        GGML_ASSERT(!node->view_src || node->op == GGML_OP_CPY || node->op == GGML_OP_VIEW ||
-            node->op == GGML_OP_RESHAPE || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_TRANSPOSE);
+        // inplace operations are currently not supported in the autograd backward graph.
+        // For hybrid Mamba/SSM/RWKV models, when env GGML_BACKWARD_SKIP_INPLACE=1 we degrade
+        // gracefully by *not* propagating gradients through such ops (they typically belong
+        // to the recurrent state path of Mamba/SSM, whose backward is not implemented in ggml).
+        // Without the env var we keep the original strict assertion.
+        if (node->view_src && node->op != GGML_OP_CPY && node->op != GGML_OP_VIEW &&
+            node->op != GGML_OP_RESHAPE && node->op != GGML_OP_PERMUTE && node->op != GGML_OP_TRANSPOSE) {
+            static int skip_inplace = -1;
+            if (skip_inplace < 0) {
+                const char * env = getenv("GGML_BACKWARD_SKIP_INPLACE");
+                skip_inplace = (env && env[0] && env[0] != '0') ? 1 : 0;
+            }
+            if (!skip_inplace) {
+                fprintf(stderr,
+                    "ggml_build_backward_expand: inplace op '%s' (view_src='%s', name='%s') reached the autograd path.\n"
+                    "  This typically happens with Mamba/SSM/RWKV recurrent state ops.\n"
+                    "  Set GGML_BACKWARD_SKIP_INPLACE=1 to skip gradient propagation through such ops\n"
+                    "  (only safe if those parameters are frozen via --train-skip-regex).\n",
+                    ggml_op_name(node->op),
+                    node->view_src->name,
+                    node->name);
+            }
+            GGML_ASSERT(skip_inplace && "inplace op in backward graph — set GGML_BACKWARD_SKIP_INPLACE=1 to override");
+            // Skip: do not allocate gradient accumulator; mark grads_needed=false so downstream
+            // consumers also see this op as having no gradient.
+            continue;
+        }
 
         const size_t ihash = ggml_hash_find(&cgraph->visited_hash_set, node);
         GGML_ASSERT(ihash != GGML_HASHSET_FULL);
