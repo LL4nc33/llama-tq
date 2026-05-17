@@ -1205,7 +1205,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 96");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1241,6 +1241,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "X*Y",
     "X[i]*Y",
+    "X[i]*Y_back_as",
     "X*Y",
 
     "x*v",
@@ -1315,7 +1316,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 96");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3423,6 +3424,51 @@ struct ggml_tensor * ggml_mul_mat_id(
 
     result->op     = GGML_OP_MUL_MAT_ID;
     result->src[0] = as;
+    result->src[1] = b;
+    result->src[2] = ids;
+
+    return result;
+}
+
+// ggml_mul_mat_id_grad_as
+//
+// Backward pass for ggml_mul_mat_id w.r.t. the stacked expert weights "as".
+//
+// Forward (recap):  c[r, e, t] = sum_c as[c, r, ids[e, t]] * b[c, e mod n_used_b, t]
+// Backward (this op):
+//   grad_as[c, r, k] = sum over (e, t) where ids[e, t] == k of
+//                          b[c, e mod n_used_b, t] * grad_c[r, e, t]
+//
+// Every output expert k accumulates outer products over all (e, t) routing pairs
+// that fired for that expert. The CPU implementation parallelises over k (expert
+// buckets) so no atomic primitives are required.
+//
+// grad_c shape:  [rows,   n_used,    n_tokens]   (= shape of mul_mat_id output)
+// b shape:       [cols,   n_used_b,  n_tokens]   (= same b passed to forward)
+// ids shape:     [n_used, n_tokens] i32          (= same ids passed to forward)
+// output shape:  [cols,   rows,      n_expert]   (= original as)
+struct ggml_tensor * ggml_mul_mat_id_grad_as(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * grad_c,
+        struct ggml_tensor  * b,
+        struct ggml_tensor  * ids,
+        int64_t               n_expert) {
+    GGML_ASSERT(ids->type == GGML_TYPE_I32);
+    GGML_ASSERT(grad_c->ne[3] == 1);
+    GGML_ASSERT(b->ne[3] == 1);
+    GGML_ASSERT(ids->ne[2] == 1 && ids->ne[3] == 1);
+    GGML_ASSERT(ids->ne[1] == grad_c->ne[2]); // same n_tokens
+    GGML_ASSERT(ids->ne[0] == grad_c->ne[1]); // same n_used
+    GGML_ASSERT(b->ne[2] == grad_c->ne[2]);   // same n_tokens
+    GGML_ASSERT(ids->ne[0] % b->ne[1] == 0);  // broadcast factor
+
+    // grad_as mirrors the shape of the original "as" passed to ggml_mul_mat_id:
+    //   as ggml shape = [cols, rows, n_expert] = [b.ne[0], grad_c.ne[0], n_expert]
+    const int64_t ne[4] = { b->ne[0], grad_c->ne[0], n_expert, 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MAT_ID_GRAD_AS;
+    result->src[0] = grad_c;
     result->src[1] = b;
     result->src[2] = ids;
 
@@ -6706,6 +6752,30 @@ static void ggml_compute_backward(
                             src0,               // [n,m,q1,r1]
                             ggml_transpose(ctx, // [p,m,qq,rr]
                                 grad)));        // [m,p,qq,rr]
+            }
+        } break;
+        case GGML_OP_MUL_MAT_ID: {
+            // src0 = as       [D_out, D_in, n_expert]
+            // src1 = b        [D_in,  n_used_b, n_tokens]
+            // src2 = ids      [n_used, n_tokens]  i32
+            // grad = grad_c   [D_out, n_used, n_tokens]
+            //
+            // grad_as = scatter_outer_product(grad, b, ids)
+            // grad_b  = mul_mat_id(transpose(as), grad, ids)   (assumes n_used_b == n_used)
+            // grad_ids = 0  (i32, discrete routing decisions)
+            struct ggml_tensor * src2 = tensor->src[2];
+            if (src0_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, isrc0,
+                    ggml_mul_mat_id_grad_as(ctx, grad, src1, src2, src0->ne[2]));
+            }
+            if (src1_needs_grads) {
+                // Standard case: n_used_b == n_used (no broadcast). The full broadcast
+                // case (n_used_b == 1, n_used > 1) is not yet hooked up — it would need
+                // an extra reduce_sum along the duplicated expert axis.
+                GGML_ASSERT(src1->ne[1] == src2->ne[0] && "MUL_MAT_ID backward currently requires n_used_b == n_used");
+                struct ggml_tensor * as_T = ggml_cont(ctx, ggml_transpose(ctx, src0));
+                ggml_add_or_set(ctx, cgraph, isrc1,
+                    ggml_mul_mat_id(ctx, as_T, grad, src2));
             }
         } break;
         case GGML_OP_SCALE: {

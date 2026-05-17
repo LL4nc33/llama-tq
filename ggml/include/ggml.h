@@ -521,6 +521,7 @@ extern "C" {
 
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_ID,
+        GGML_OP_MUL_MAT_ID_GRAD_AS,
         GGML_OP_OUT_PROD,
 
         GGML_OP_SCALE,
@@ -1442,6 +1443,26 @@ extern "C" {
             struct ggml_tensor  * as,
             struct ggml_tensor  * b,
             struct ggml_tensor  * ids);
+
+    // Backward pass for ggml_mul_mat_id w.r.t. "as" (the stacked expert weights).
+    //
+    // ggml mul_mat_id uses shapes [cols, rows, n_expert] / [cols, n_used_b, n_tokens] /
+    // [n_used, n_tokens] for as / b / ids; the forward output c has shape
+    // [rows, n_used, n_tokens]. The backward output mirrors "as":
+    //
+    //   grad_c shape: [rows,  n_used,    n_tokens]
+    //   b shape:      [cols,  n_used_b,  n_tokens]
+    //   ids shape:    [n_used, n_tokens] i32
+    //   output:       [cols,  rows,      n_expert]   (same shape as the original as)
+    //
+    // grad_as[c, r, k] = sum over (e, t) where ids[e, t] == k of
+    //                        b[c, e mod n_used_b, t] * grad_c[r, e, t]
+    GGML_API struct ggml_tensor * ggml_mul_mat_id_grad_as(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * grad_c,
+            struct ggml_tensor  * b,
+            struct ggml_tensor  * ids,
+            int64_t               n_expert);
 
     // A: m columns, n rows,
     // B: p columns, n rows,
