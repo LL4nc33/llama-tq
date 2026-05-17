@@ -676,6 +676,19 @@ extern "C" {
             struct llama_model * model,
             const char * path_lora);
 
+    // Bootstrap a fresh trainable LoRA adapter. For every model tensor whose
+    // name matches the supplied ECMAScript regex, a new (A, B) pair is created
+    // with A ~ Normal(0, 1/sqrt(rank)) and B = 0, registered with the model,
+    // and marked trainable via ggml_set_param. The returned adapter is owned
+    // by the model and freed via llama_adapter_lora_free or model teardown.
+    //
+    // Returns nullptr if the regex matches zero tensors.
+    LLAMA_API struct llama_adapter_lora * llama_adapter_lora_init_for_training(
+            struct llama_model * model,
+            const char * target_regex,
+            int32_t rank,
+            float alpha);
+
     // Functions to access the adapter's GGUF metadata scalar values
     // - The functions return the length of the string on success, or -1 on failure
     // - The output string is always null-terminated and cleared on failure
