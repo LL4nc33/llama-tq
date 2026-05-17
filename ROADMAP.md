@@ -18,7 +18,17 @@ This file tracks what works, what's in flight, and what's on the wishlist. Maint
 
 ## 🎯 Roadmap toward real capability gains in fine-tuning
 
-The current fine-tune path trains only Embed + LM-head + Norms — useful for surface-distribution drift (output style, format adherence), but **not new capability**. Three phases to close that gap:
+The current fine-tune path trains only Embed + LM-head + Norms. That's useful for surface-distribution drift (output style, format adherence, tool-call template fidelity) but **not new capability** — the model learns *how it sounds*, not *how it thinks*. Real capability training requires reaching the parts of the network where reasoning lives:
+
+| Component        | Today    | Needed for capability training              |
+|------------------|----------|---------------------------------------------|
+| Token embeddings | trainable | extends vocab, but no new skills            |
+| LM head          | trainable | only output distribution shift              |
+| Attention        | frozen   | **required** for reasoning + context tracking |
+| MoE experts (`MUL_MAT_ID`) | frozen | **required** for domain knowledge           |
+| Mamba / SSM      | frozen   | sequential state — nice-to-have             |
+
+Three phases to close that gap:
 
 ### Phase A — MUL_MAT_ID backward (~3-5 days)
 
