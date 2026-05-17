@@ -461,29 +461,34 @@ llama_adapter_lora * llama_adapter_lora_init_for_training(
         return nullptr;
     }
 
-    auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-    if (!cpu_dev) {
-        LLAMA_LOG_ERROR("%s: no CPU backend available\n", __func__);
-        return nullptr;
-    }
-    ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(cpu_dev);
-
     auto * adapter = new llama_adapter_lora(model);
     adapter->alpha = alpha;
 
-    const size_t max_pairs = 4096;
-    ggml_init_params ip = {
-        /* .mem_size   = */ 2 * max_pairs * ggml_tensor_overhead(),
-        /* .mem_buffer = */ nullptr,
-        /* .no_alloc   = */ true,
+    // Per-buft context map. Each LoRA A/B pair must live in the same buffer-type
+    // as its base tensor — otherwise the backend scheduler cannot pair the
+    // mul_mat operands and `ggml_backend_sched_backend_id_from_cur` aborts on
+    // dual-GPU/MoE finetune. Earlier code hard-pinned everything to CPU which
+    // worked for single-GPU dense smoke but breaks on Qwen3.6-A35B layer-split.
+    std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map;
+    auto ctx_for_buft = [&](ggml_backend_buffer_type_t bt) -> ggml_context * {
+        auto it = ctx_map.find(bt);
+        if (it != ctx_map.end()) {
+            return it->second;
+        }
+        const size_t max_pairs = 4096;
+        ggml_init_params ip = {
+            /* .mem_size   = */ 2 * max_pairs * ggml_tensor_overhead(),
+            /* .mem_buffer = */ nullptr,
+            /* .no_alloc   = */ true,
+        };
+        ggml_context * c = ggml_init(ip);
+        if (!c) {
+            return nullptr;
+        }
+        ctx_map[bt] = c;
+        adapter->ctxs.emplace_back(c);
+        return c;
     };
-    ggml_context * ctx = ggml_init(ip);
-    if (!ctx) {
-        LLAMA_LOG_ERROR("%s: ggml_init failed\n", __func__);
-        delete adapter;
-        return nullptr;
-    }
-    adapter->ctxs.emplace_back(ctx);
 
     size_t matched = 0;
     for (const auto & kv_t : llama_internal_get_tensor_map(model)) {
@@ -495,6 +500,20 @@ llama_adapter_lora * llama_adapter_lora_init_for_training(
         if (ggml_n_dims(base) != 2) {
             continue;
         }
+
+        // Match the base tensor's buffer type — the scheduler needs this.
+        ggml_backend_buffer_t base_buf = base->buffer;
+        ggml_backend_buffer_type_t bt =
+            base_buf ? ggml_backend_buffer_get_type(base_buf)
+                     : ggml_backend_dev_buffer_type(
+                           ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU));
+        ggml_context * ctx = ctx_for_buft(bt);
+        if (!ctx) {
+            LLAMA_LOG_ERROR("%s: ggml_init failed for buft\n", __func__);
+            delete adapter;
+            return nullptr;
+        }
+
         const int64_t in_dim  = base->ne[0];
         const int64_t out_dim = base->ne[1];
 
@@ -513,11 +532,17 @@ llama_adapter_lora * llama_adapter_lora_init_for_training(
         return nullptr;
     }
 
-    ggml_backend_buffer_ptr buf { ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft) };
-    if (!buf) {
-        LLAMA_LOG_ERROR("%s: backend buffer alloc failed\n", __func__);
-        delete adapter;
-        return nullptr;
+    // Allocate one backend buffer per buft.
+    for (auto & kv : ctx_map) {
+        ggml_backend_buffer_ptr buf {
+            ggml_backend_alloc_ctx_tensors_from_buft(kv.second, kv.first)
+        };
+        if (!buf) {
+            LLAMA_LOG_ERROR("%s: backend buffer alloc failed for buft\n", __func__);
+            delete adapter;
+            return nullptr;
+        }
+        adapter->bufs.emplace_back(std::move(buf));
     }
 
     {
@@ -540,7 +565,6 @@ llama_adapter_lora * llama_adapter_lora_init_for_training(
             ggml_backend_tensor_set(b, tmp.data(), 0, ggml_nbytes(b));
         }
     }
-    adapter->bufs.emplace_back(std::move(buf));
 
     for (auto & kv : adapter->ab_map) {
         ggml_set_param(kv.second.a);
