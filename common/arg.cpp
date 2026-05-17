@@ -3945,6 +3945,23 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) { params.train_skip_regex = value; }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--lora-train-target"}, "REGEX",
+        "ECMAScript regex; matched tensors are FROZEN and a fresh LoRA adapter pair (A,B) is created and trained instead. "
+        "Use together with (not instead of) --train-skip-regex if you want some tensors fully frozen with no LoRA. "
+        "Typical scope: '(attn_[qkvo]|ffn_(gate|down|up)_exps|ffn_gate_inp).weight'",
+        [](common_params & params, const std::string & value) { params.lora_train_regex = value; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
+        {"--lora-train-rank"}, "N",
+        string_format("LoRA adapter rank (default: %d)", params.lora_train_rank),
+        [](common_params & params, int v) { params.lora_train_rank = v; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
+        {"--lora-train-alpha"}, "FLOAT",
+        string_format("LoRA adapter alpha; effective scale = alpha/rank (default: %.1f)", (double) params.lora_train_alpha),
+        [](common_params & params, const std::string & value) { params.lora_train_alpha = std::stof(value); }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
         {"-epochs", "--epochs"}, "N",
         string_format("optimizer max # of epochs (default: %d)", params.lr.epochs),
         [](common_params & params, int epochs) { params.lr.epochs = epochs; }
