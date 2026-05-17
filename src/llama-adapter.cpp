@@ -655,3 +655,91 @@ const llama_token * llama_adapter_get_alora_invocation_tokens(const llama_adapte
     GGML_ASSERT(adapter);
     return adapter->alora_invocation_tokens.data();
 }
+
+int32_t llama_adapter_lora_save_to_file(const llama_adapter_lora * adapter, const char * path_lora) {
+    if (!adapter || !path_lora) {
+        return -1;
+    }
+    if (!adapter->model) {
+        LLAMA_LOG_ERROR("%s: adapter has no associated model\n", __func__);
+        return -1;
+    }
+    if (adapter->ab_map.empty()) {
+        LLAMA_LOG_ERROR("%s: adapter has no tensor pairs to save\n", __func__);
+        return -1;
+    }
+
+    gguf_context * ctx_gguf = gguf_init_empty();
+    if (!ctx_gguf) {
+        LLAMA_LOG_ERROR("%s: gguf_init_empty failed\n", __func__);
+        return -1;
+    }
+
+    LLM_KV llm_kv = LLM_KV(adapter->model->arch);
+    gguf_set_val_str(ctx_gguf, llm_kv(LLM_KV_GENERAL_TYPE).c_str(),         "adapter");
+    gguf_set_val_str(ctx_gguf, llm_kv(LLM_KV_GENERAL_ARCHITECTURE).c_str(), llm_arch_name(adapter->model->arch));
+    gguf_set_val_str(ctx_gguf, llm_kv(LLM_KV_ADAPTER_TYPE).c_str(),         "lora");
+    gguf_set_val_f32(ctx_gguf, llm_kv(LLM_KV_ADAPTER_LORA_ALPHA).c_str(),   adapter->alpha);
+
+    // Build a host-resident ggml_context to hold the cloned tensors so the
+    // gguf writer can read their .data pointers directly.
+    const size_t n_tensors = adapter->ab_map.size() * 2;
+    size_t total_bytes = 0;
+    for (auto & kv : adapter->ab_map) {
+        const auto & w = kv.second;
+        if (w.a) total_bytes += ggml_nbytes(w.a);
+        if (w.b) total_bytes += ggml_nbytes(w.b);
+    }
+    ggml_init_params host_params = {
+        /*.mem_size   =*/ n_tensors * ggml_tensor_overhead() + total_bytes + 1024,
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ false,
+    };
+    ggml_context * ctx_host = ggml_init(host_params);
+    if (!ctx_host) {
+        gguf_free(ctx_gguf);
+        LLAMA_LOG_ERROR("%s: failed to init host ggml_context for %zu bytes\n", __func__, total_bytes);
+        return -1;
+    }
+
+    auto clone_to_host = [&](const std::string & full_name, ggml_tensor * src) -> ggml_tensor * {
+        ggml_tensor * dst = ggml_new_tensor(ctx_host, src->type, ggml_n_dims(src), src->ne);
+        if (!dst) {
+            return nullptr;
+        }
+        ggml_set_name(dst, full_name.c_str());
+        ggml_backend_tensor_get(src, dst->data, 0, ggml_nbytes(src));
+        return dst;
+    };
+
+    for (auto & kv : adapter->ab_map) {
+        const std::string & base_name = kv.first;
+        const auto & w = kv.second;
+        if (!w.a || !w.b) {
+            LLAMA_LOG_ERROR("%s: pair '%s' missing a/b — skipping\n", __func__, base_name.c_str());
+            continue;
+        }
+        ggml_tensor * a_host = clone_to_host(base_name + ".lora_a", w.a);
+        ggml_tensor * b_host = clone_to_host(base_name + ".lora_b", w.b);
+        if (!a_host || !b_host) {
+            ggml_free(ctx_host);
+            gguf_free(ctx_gguf);
+            LLAMA_LOG_ERROR("%s: failed to clone tensor for '%s'\n", __func__, base_name.c_str());
+            return -1;
+        }
+        gguf_add_tensor(ctx_gguf, a_host);
+        gguf_add_tensor(ctx_gguf, b_host);
+    }
+
+    const bool ok = gguf_write_to_file(ctx_gguf, path_lora, /*only_meta=*/false);
+    gguf_free(ctx_gguf);
+    ggml_free(ctx_host);
+
+    if (!ok) {
+        LLAMA_LOG_ERROR("%s: gguf_write_to_file('%s') failed\n", __func__, path_lora);
+        return -1;
+    }
+    LLAMA_LOG_INFO("%s: saved %zu LoRA pairs to '%s' (alpha=%.2f)\n",
+                   __func__, adapter->ab_map.size(), path_lora, adapter->alpha);
+    return 0;
+}
