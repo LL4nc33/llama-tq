@@ -6,8 +6,12 @@
 
 #include <map>
 #include <cassert>
+#include <cmath>
+#include <random>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 // vec
 
@@ -430,6 +434,125 @@ llama_adapter_lora * llama_adapter_lora_init(llama_model * model, const char * p
     }
 
     return nullptr;
+}
+
+
+// Bootstrap a fresh trainable LoRA adapter. Mirrors llama_adapter_lora_init_impl
+// but creates random-initialised A and B in place of GGUF-loaded weights.
+llama_adapter_lora * llama_adapter_lora_init_for_training(
+        llama_model * model,
+        const char * target_regex,
+        int32_t      rank,
+        float        alpha) {
+    if (!target_regex || !*target_regex) {
+        LLAMA_LOG_ERROR("%s: empty target_regex\n", __func__);
+        return nullptr;
+    }
+    if (rank <= 0) {
+        LLAMA_LOG_ERROR("%s: rank must be > 0\n", __func__);
+        return nullptr;
+    }
+
+    std::regex re;
+    try {
+        re = std::regex(target_regex);
+    } catch (const std::regex_error & err) {
+        LLAMA_LOG_ERROR("%s: invalid regex '%s': %s\n", __func__, target_regex, err.what());
+        return nullptr;
+    }
+
+    auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!cpu_dev) {
+        LLAMA_LOG_ERROR("%s: no CPU backend available\n", __func__);
+        return nullptr;
+    }
+    ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(cpu_dev);
+
+    auto * adapter = new llama_adapter_lora(model);
+    adapter->alpha = alpha;
+
+    const size_t max_pairs = 4096;
+    ggml_init_params ip = {
+        /* .mem_size   = */ 2 * max_pairs * ggml_tensor_overhead(),
+        /* .mem_buffer = */ nullptr,
+        /* .no_alloc   = */ true,
+    };
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) {
+        LLAMA_LOG_ERROR("%s: ggml_init failed\n", __func__);
+        delete adapter;
+        return nullptr;
+    }
+    adapter->ctxs.emplace_back(ctx);
+
+    size_t matched = 0;
+    for (const auto & kv_t : llama_internal_get_tensor_map(model)) {
+        const std::string & base_name = kv_t.first;
+        ggml_tensor *       base      = kv_t.second;
+        if (!base || !std::regex_search(base_name, re)) {
+            continue;
+        }
+        if (ggml_n_dims(base) != 2) {
+            continue;
+        }
+        const int64_t in_dim  = base->ne[0];
+        const int64_t out_dim = base->ne[1];
+
+        ggml_tensor * a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, in_dim,  rank);
+        ggml_tensor * b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, rank,    out_dim);
+        ggml_set_name(a, (base_name + ".lora_a").c_str());
+        ggml_set_name(b, (base_name + ".lora_b").c_str());
+
+        adapter->ab_map[base_name] = llama_adapter_lora_weight(a, b);
+        ++matched;
+    }
+
+    if (matched == 0) {
+        LLAMA_LOG_WARN("%s: regex '%s' matched zero 2D tensors\n", __func__, target_regex);
+        delete adapter;
+        return nullptr;
+    }
+
+    ggml_backend_buffer_ptr buf { ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft) };
+    if (!buf) {
+        LLAMA_LOG_ERROR("%s: backend buffer alloc failed\n", __func__);
+        delete adapter;
+        return nullptr;
+    }
+
+    {
+        std::mt19937 rng(0x10ad1234u);
+        const float std_a = 1.0f / std::sqrt((float) rank);
+        std::normal_distribution<float> dist(0.0f, std_a);
+
+        std::vector<float> tmp;
+        for (auto & kv : adapter->ab_map) {
+            ggml_tensor * a = kv.second.a;
+            ggml_tensor * b = kv.second.b;
+
+            tmp.assign(ggml_nelements(a), 0.0f);
+            for (auto & v : tmp) {
+                v = dist(rng);
+            }
+            ggml_backend_tensor_set(a, tmp.data(), 0, ggml_nbytes(a));
+
+            tmp.assign(ggml_nelements(b), 0.0f);
+            ggml_backend_tensor_set(b, tmp.data(), 0, ggml_nbytes(b));
+        }
+    }
+    adapter->bufs.emplace_back(std::move(buf));
+
+    for (auto & kv : adapter->ab_map) {
+        ggml_set_param(kv.second.a);
+        ggml_set_param(kv.second.b);
+    }
+
+    model->loras.insert(adapter);
+
+    LLAMA_LOG_INFO("%s: bootstrapped %zu LoRA pairs (rank=%d alpha=%.2f)\n",
+                   __func__, adapter->ab_map.size(), rank, (double) alpha);
+
+    return adapter;
 }
 
 int32_t llama_adapter_meta_val_str(const llama_adapter_lora * adapter, const char * key, char * buf, size_t buf_size) {
