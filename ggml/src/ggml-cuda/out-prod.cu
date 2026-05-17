@@ -39,8 +39,17 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     const bool src1_T = ggml_is_transposed(src1);
     const cublasOperation_t src1_cublas_op =  src1_T ? CUBLAS_OP_N : CUBLAS_OP_T;
-    const int64_t           ldb            = (src1_T ?        nb10 :        nb11) /  sizeof(float);
+    int64_t                 ldb            = (src1_T ?        nb10 :        nb11) /  sizeof(float);
     GGML_ASSERT(                             (src1_T ?        nb11 :        nb10) == sizeof(float));
+    // When the leading dim collapses (e.g. src1 inner dim==1 for a gate/scalar
+    // gradient), nb11 == nb10 == sizeof(float) yields ldb=1. cuBLAS reference
+    // requires ldb >= K when opB=CUBLAS_OP_T (B stored as K rows × N cols) and
+    // ldb >= N when opB=CUBLAS_OP_N. Clamp accordingly to avoid
+    // CUBLAS_STATUS_INVALID_VALUE on collapsed shapes.
+    const int64_t ldb_min = src1_T ? ne11 : ne01;  // ne01 == K
+    if (ldb < ldb_min) {
+        ldb = ldb_min;
+    }
 
     // data strides in dimensions 2/3
     const size_t s02 = nb02 / sizeof(float);
