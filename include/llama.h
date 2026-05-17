@@ -711,6 +711,16 @@ extern "C" {
     // NOTE: loaded adapters that are not manually freed will be freed when the associated model is deleted
     LLAMA_API void llama_adapter_lora_free(struct llama_adapter_lora * adapter);
 
+    // Serialise a trained LoRA adapter to a GGUF file that can later be
+    // loaded via llama_adapter_lora_init / --lora. Writes only the
+    // (lora_a, lora_b) tensor pairs plus the metadata required for the
+    // loader (general.type=adapter, general.architecture=<arch>,
+    // adapter.type=lora, adapter.lora.alpha=<float>).
+    // Returns 0 on success, -1 on failure.
+    LLAMA_API int32_t llama_adapter_lora_save_to_file(
+            const struct llama_adapter_lora * adapter,
+            const char * path_lora);
+
     // Get the invocation tokens if the current lora is an alora
     LLAMA_API uint64_t            llama_adapter_get_alora_n_invocation_tokens(const struct llama_adapter_lora * adapter);
     LLAMA_API const llama_token * llama_adapter_get_alora_invocation_tokens  (const struct llama_adapter_lora * adapter);
