@@ -546,12 +546,24 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
             ggml_cpy_scalar_cuda<int32_t, float>
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
         }
-    } else if (src0->type == src1->type && contiguous_srcs) {
-        // Same-type contiguous CPY (e.g. iq2_xxs→iq2_xxs, iq3_s→iq3_s during
-        // training graph build) is just a memcpy — no per-type kernel needed.
-        // Triggered on MoE finetune where backward-graph dup's a quantized
-        // base tensor without converting it.
-        CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0),
+    } else if (src0->type == src1->type) {
+        // Same-type CPY. Use cudaMemcpyAsync for contiguous tensors; for
+        // non-contiguous tensors with matching strides and identical byte
+        // count it's still a flat memcpy. Triggered on MoE finetune backward
+        // where DUP replicates a quantised expert tensor.
+        const size_t nb_src = ggml_nbytes(src0);
+        const size_t nb_dst = ggml_nbytes(src1);
+        if (nb_src != nb_dst) {
+            GGML_ABORT("%s: same-type CPY size mismatch (%s %zu -> %s %zu) "
+                       "src0_contig=%d src1_contig=%d shape0=[%lld,%lld,%lld,%lld] shape1=[%lld,%lld,%lld,%lld]\n",
+                       __func__,
+                       ggml_type_name(src0->type), nb_src,
+                       ggml_type_name(src1->type), nb_dst,
+                       (int)ggml_is_contiguous(src0), (int)ggml_is_contiguous(src1),
+                       (long long)src0->ne[0],(long long)src0->ne[1],(long long)src0->ne[2],(long long)src0->ne[3],
+                       (long long)src1->ne[0],(long long)src1->ne[1],(long long)src1->ne[2],(long long)src1->ne[3]);
+        }
+        CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, nb_src,
                                    cudaMemcpyDeviceToDevice, main_stream));
     } else {
         GGML_ABORT("%s: unsupported type combination (%s to %s)\n", __func__,
