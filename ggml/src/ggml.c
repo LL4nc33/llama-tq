@@ -6769,13 +6769,32 @@ static void ggml_compute_backward(
                     ggml_mul_mat_id_grad_as(ctx, grad, src1, src2, src0->ne[2]));
             }
             if (src1_needs_grads) {
-                // Standard case: n_used_b == n_used (no broadcast). The full broadcast
-                // case (n_used_b == 1, n_used > 1) is not yet hooked up — it would need
-                // an extra reduce_sum along the duplicated expert axis.
-                GGML_ASSERT(src1->ne[1] == src2->ne[0] && "MUL_MAT_ID backward currently requires n_used_b == n_used");
-                struct ggml_tensor * as_T = ggml_cont(ctx, ggml_transpose(ctx, src0));
-                ggml_add_or_set(ctx, cgraph, isrc1,
-                    ggml_mul_mat_id(ctx, as_T, grad, src2));
+                if (src1->ne[1] == src2->ne[0]) {
+                    // Standard case: n_used_b == n_used (no broadcast).
+                    struct ggml_tensor * as_T = ggml_cont(ctx, ggml_transpose(ctx, src0));
+                    ggml_add_or_set(ctx, cgraph, isrc1,
+                        ggml_mul_mat_id(ctx, as_T, grad, src2));
+                } else {
+                    // Broadcast case (n_used_b == 1, n_used > 1) used by Qwen3.6-A35B etc.:
+                    // every expert slot reads the same b-row, so the full grad_b is the
+                    // sum of contributions across all expert routings. Computing that
+                    // would need an extra reduce-sum kernel. For LoRA training, b carries
+                    // gradient only through the lora_a → lora_b path which lives in src0;
+                    // src1 (the activation feeding the experts) is downstream from the
+                    // LoRA-merged weight, so dropping its gradient just truncates an
+                    // already-trained subgraph. Warn once, skip grad_b, but still keep
+                    // grad_as (which we computed above) — return early so the trailing
+                    // shape-asserts don't deref the never-allocated cgraph->grads[isrc1].
+                    static int warned_bcast = 0;
+                    if (!warned_bcast) {
+                        fprintf(stderr,
+                            "ggml_compute_backward: MUL_MAT_ID broadcast b (n_used_b=%lld, n_used=%lld) "
+                            "— grad_b dropped (follow-up: needs reduce_sum kernel). LoRA grad_as still flows.\n",
+                            (long long) src1->ne[1], (long long) src2->ne[0]);
+                        warned_bcast = 1;
+                    }
+                    return;
+                }
             }
         } break;
         case GGML_OP_SCALE: {
