@@ -3034,7 +3034,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, int value) {
             params.embd_normalize = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_EMBEDDING, LLAMA_EXAMPLE_DEBUG}));
+    ).set_examples({LLAMA_EXAMPLE_EMBEDDING, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_DEBUG}));
     add_opt(common_arg(
         {"--embd-output-format"}, "FORMAT",
         "empty = default, \"array\" = [[],[]...], \"json\" = openai style, \"json+\" = same \"json\" + cosine similarity matrix, \"raw\" = plain whitespace-delimited output (one embedding per line)",
@@ -3936,6 +3936,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"-val-split", "--val-split"}, "FRACTION",
         string_format("fraction of data to use as validation set for training (default: %.2g).", (double) params.val_split),
         [](common_params & params, const std::string & value) { params.val_split = std::stof(value); }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
+        {"--train-skip-regex"}, "REGEX",
+        "ECMAScript regex; tensors whose name matches are FROZEN (no gradients). "
+        "Use for hybrid architectures with non-differentiable ops (e.g. Mamba/SSM). "
+        "Example for Qwen3.5/3.6 GatedDeltaNet: '(ssm_|conv1d|linear_attn|\\.A_log$|\\.D$|mamba_)' (default: empty = train everything)",
+        [](common_params & params, const std::string & value) { params.train_skip_regex = value; }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
         {"-epochs", "--epochs"}, "N",

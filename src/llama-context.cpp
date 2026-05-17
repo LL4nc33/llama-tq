@@ -2899,6 +2899,12 @@ static void llama_set_param(struct ggml_tensor * tensor, llama_opt_param_filter 
 
 void llama_context::opt_init(struct llama_model * model, struct llama_opt_params lopt_params) {
     GGML_ASSERT(!opt_ctx);
+    // Stash the model's *real* n_ctx_train into orig_n_ctx_train so that the model-saver
+    // can restore it on save. Otherwise the in-memory n_ctx_train gets clobbered by the
+    // training batch ctx (often 256) and the saved GGUF advertises a useless context_length.
+    if (model->hparams.orig_n_ctx_train == 0) {
+        model->hparams.orig_n_ctx_train = model->hparams.n_ctx_train;
+    }
     model->hparams.n_ctx_train = lopt_params.n_ctx_train > 0 ? lopt_params.n_ctx_train : n_ctx();
     const uint32_t n_batch     = std::min(this->n_batch(),  model->hparams.n_ctx_train);
     const uint32_t n_ubatch    = std::min(this->n_ubatch(), n_batch);
