@@ -1932,6 +1932,51 @@ static void ggml_compute_forward_mul_mat_id_grad_as(
     }
 }
 
+// ggml_compute_forward_quantize_dequantize_fake
+//
+// Stage-4 QAT op: round-trip each F32 row through `target_quant` to bake the
+// quantisation error into the activation in the forward pass. The backward
+// uses Straight-Through Estimator (identity) so the LoRA adapter can learn
+// to compensate for the quant-error.
+//
+// dst:     F32 (same shape as src0)
+// src[0]:  F32 input
+// op_params[0]: enum ggml_type target_quant (Q4_0, IQ2_XXS, ...)
+static void ggml_compute_forward_quantize_dequantize_fake(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0];
+    GGML_ASSERT(src0->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type  == GGML_TYPE_F32);
+
+    enum ggml_type target = (enum ggml_type) dst->op_params[0];
+    GGML_ASSERT(ggml_is_quantized(target));
+
+    const int64_t nrows = ggml_nrows(src0);
+    const int64_t ne0   = src0->ne[0];
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t rows_per_thread = (nrows + nth - 1) / nth;
+    const int64_t row_start = ith * rows_per_thread;
+    const int64_t row_end   = MIN(row_start + rows_per_thread, nrows);
+
+    const size_t row_size_q = ggml_row_size(target, ne0);
+    void * my_scratch = (char *) params->wdata + (size_t) ith * row_size_q;
+
+    const ggml_from_float_t  quant_fn   = ggml_get_type_traits(target)->from_float;
+    const ggml_to_float_t    dequant_fn = ggml_get_type_traits(target)->to_float;
+    GGML_ASSERT(quant_fn && dequant_fn);
+
+    for (int64_t r = row_start; r < row_end; r++) {
+        const float * src_row = (const float *) ((const char *) src0->data + r * src0->nb[1]);
+        float       * dst_row =       (float *) ((      char *) dst->data  + r * dst->nb[1]);
+        quant_fn(src_row, my_scratch, ne0);
+        dequant_fn(my_scratch, dst_row, ne0);
+    }
+}
+
 /////////////////////////////////
 
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
@@ -2070,6 +2115,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_MUL_MAT_ID_GRAD_AS:
             {
                 ggml_compute_forward_mul_mat_id_grad_as(params, tensor);
+            } break;
+        case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE:
+            {
+                ggml_compute_forward_quantize_dequantize_fake(params, tensor);
             } break;
         case GGML_OP_OUT_PROD:
             {
@@ -2537,6 +2586,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
         case GGML_OP_MUL_MAT_ID_GRAD_AS:
+        case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE:
         case GGML_OP_OUT_PROD:
             {
                 n_tasks = n_threads;
@@ -3050,6 +3100,11 @@ struct ggml_cplan ggml_graph_plan(
                 case GGML_OP_COUNT_EQUAL:
                     {
                         cur = ggml_type_size(node->type)*n_tasks;
+                    } break;
+                case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE:
+                    {
+                        enum ggml_type target = (enum ggml_type) node->op_params[0];
+                        cur = ggml_row_size(target, node->ne[0]) * n_tasks;
                     } break;
                 case GGML_OP_MUL_MAT:
                     {

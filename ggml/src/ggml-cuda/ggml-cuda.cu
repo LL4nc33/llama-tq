@@ -4881,6 +4881,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 && op->src[1]->type == GGML_TYPE_F32
                 && op->ne[1]       > 1   // N > 1
                 && op->src[0]->ne[1] > 1;  // K > 1
+        case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE:
+            // CPU fallback for now — the per-row quantise+dequantise round-trip
+            // doesn't have a CUDA kernel yet, but training is heavily CPU-bound
+            // anyway so this is acceptable for Stage-4 PoC.
+            return false;
         case GGML_OP_GET_ROWS:
             {
                 switch (op->src[0]->type) {
