@@ -63,14 +63,6 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t dps2 = ne2 / ne02;
     const int64_t dps3 = ne3 / ne03;
 
-    fprintf(stderr,
-        "[out_prod] dst=%s shape=[%lld,%lld,%lld,%lld] "
-        "src0=%s shape=[%lld,%lld,%lld,%lld] "
-        "src1=%s shape=[%lld,%lld,%lld,%lld] M=%lld N=%lld K=%lld lda=%lld ldb=%lld ldc=%lld\n",
-        dst->name, ne0, ne1, ne2, ne3,
-        src0->name, src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3],
-        src1->name, src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3],
-        ne0, ne1, ne01, lda, ldb, ldc);
     // TODO batched matrix multiplication
     for (int64_t i3 = 0; i3 < ne3; ++i3) {
         for (int64_t i2 = 0; i2 < ne2; ++i2) {
