@@ -3962,6 +3962,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) { params.lora_train_alpha = std::stof(value); }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--checkpoint-every"}, "N",
+        string_format("Flush the LoRA adapter to disk every N training batches (0 = only at epoch end / signal; default: %d). "
+                      "Useful for long runs that may crash or be killed mid-epoch — recovery loads the last checkpoint via --lora.",
+                      params.checkpoint_every_n_batches),
+        [](common_params & params, int v) { params.checkpoint_every_n_batches = v; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
         {"-epochs", "--epochs"}, "N",
         string_format("optimizer max # of epochs (default: %d)", params.lr.epochs),
         [](common_params & params, int epochs) { params.lr.epochs = epochs; }
