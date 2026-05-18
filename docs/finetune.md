@@ -1,7 +1,7 @@
 # llama-tq fine-tune patches
 
 `llama-finetune` is extended so hybrid Mixture-of-Experts + State-Space-Model
-architectures (Qwen3.5/3.6-A3B/A35B, Nemotron-Nano, Bamba, RWKV-hybrids) can be
+architectures (Qwen3.5/3.6-A35-A3B, Nemotron-3-MoE, Bamba, RWKV-hybrids) can be
 trained directly on quantized GGUFs. Two training surfaces are supported, with
 opt-in flags:
 
