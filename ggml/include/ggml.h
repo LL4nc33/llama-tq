@@ -522,6 +522,7 @@ extern "C" {
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_ID,
         GGML_OP_MUL_MAT_ID_GRAD_AS,
+        GGML_OP_QUANTIZE_DEQUANTIZE_FAKE,
         GGML_OP_OUT_PROD,
 
         GGML_OP_SCALE,
@@ -1463,6 +1464,16 @@ extern "C" {
             struct ggml_tensor  * b,
             struct ggml_tensor  * ids,
             int64_t               n_expert);
+
+    // QAT fake-quantize op: round-trip a F32 tensor through `target_quant`
+    // format, returning a F32 tensor with the quantization error baked in.
+    // Backward uses Straight-Through Estimator: grad_in = grad_out (identity).
+    // Used for Stage-4 QAT: LoRA training where the adapter learns to
+    // compensate for the base-model's quantization error.
+    GGML_API struct ggml_tensor * ggml_quantize_dequantize_fake(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            enum   ggml_type      target_quant);
 
     // A: m columns, n rows,
     // B: p columns, n rows,

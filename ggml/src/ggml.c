@@ -1131,6 +1131,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "MUL_MAT",
     "MUL_MAT_ID",
+    "QUANTIZE_DEQUANTIZE_FAKE",
     "OUT_PROD",
 
     "SCALE",
@@ -1205,7 +1206,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1242,6 +1243,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "X*Y",
     "X[i]*Y",
     "X[i]*Y_back_as",
+    "fake_quant(X)",
     "X*Y",
 
     "x*v",
@@ -1316,7 +1318,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 96");
+static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3472,6 +3474,22 @@ struct ggml_tensor * ggml_mul_mat_id_grad_as(
     result->src[1] = b;
     result->src[2] = ids;
 
+    return result;
+}
+
+// ggml_quantize_dequantize_fake (QAT fake-quantize, STE backward)
+
+struct ggml_tensor * ggml_quantize_dequantize_fake(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        enum   ggml_type      target_quant) {
+    GGML_ASSERT(a->type == GGML_TYPE_F32 && "fake_quant input must be F32");
+    GGML_ASSERT(ggml_is_quantized(target_quant) && "target_quant must be a quantized type");
+
+    struct ggml_tensor * result = ggml_dup_tensor(ctx, a);
+    result->op           = GGML_OP_QUANTIZE_DEQUANTIZE_FAKE;
+    result->op_params[0] = (int32_t) target_quant;
+    result->src[0]       = a;
     return result;
 }
 
@@ -6813,6 +6831,12 @@ static void ggml_compute_backward(
                     }
                     return;
                 }
+            }
+        } break;
+        case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE: {
+            if (src0_needs_grads) {
+                // Straight-Through Estimator: gradient flows through unchanged.
+                ggml_add_or_set(ctx, cgraph, isrc0, grad);
             }
         } break;
         case GGML_OP_SCALE: {
