@@ -6,7 +6,7 @@
 A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork with two independent additions:
 
 1. **TurboQuant** — independent K and V cache type families with Hadamard-domain Q·K dot product and Trellis-quantized V cache. 38% smaller KV than upstream's most aggressive quant at lossless quality.
-2. **Sparse fine-tuning for hybrid MoE+SSM** — an extended `llama-finetune` that can train hybrid Mamba/MoE architectures (Qwen3.5/3.6-A3B/A35B, Nemotron-Nano, Bamba, RWKV-hybrids) directly on GGUF, without writing new backward kernels.
+2. **MoE LoRA fine-tuning directly on quantised GGUFs** — an extended `llama-finetune` that trains LoRA adapters on the expert weights of hybrid Mamba/MoE architectures (Qwen3.5/3.6-A3B/A35B, Nemotron-Nano, Bamba, RWKV-hybrids) without dequantising the base. Adapter saves as a portable `.lora.gguf` loadable via `--lora`.
 
 ---
 
