@@ -9,8 +9,30 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <csignal>
 #include <regex>
+#include <string>
 #include <vector>
+
+// Global hook so SIGINT/SIGTERM (e.g. timeout(1) sending SIGTERM at the
+// hard limit) can still flush the trained LoRA weights to disk before the
+// process dies. Without this, multi-hour runs lose all progress when the
+// shell-level timeout fires before the final llama_adapter_lora_save call.
+static llama_adapter_lora * g_lora_adapter_for_signal = nullptr;
+static std::string          g_adapter_out_for_signal;
+static volatile sig_atomic_t g_signal_save_done = 0;
+
+static void finetune_save_adapter_on_signal(int signum) {
+    if (g_signal_save_done || !g_lora_adapter_for_signal || g_adapter_out_for_signal.empty()) {
+        _exit(128 + signum);
+    }
+    g_signal_save_done = 1;
+    // Best-effort save — the rest of the process may already be in an
+    // inconsistent state, but the adapter buffers are independent.
+    llama_adapter_lora_save_to_file(g_lora_adapter_for_signal,
+                                    g_adapter_out_for_signal.c_str());
+    _exit(128 + signum);
+}
 
 // Regex-based parameter filter for selective fine-tuning (e.g. skip Mamba/SSM layers).
 // When the tensor name matches the regex, it is EXCLUDED from training.
@@ -116,6 +138,23 @@ int main(int argc, char ** argv) {
         // computational graph — backward then sees zero trainable params.
         float lora_scale = 1.0f;
         llama_set_adapters_lora(ctx, &lora_adapter, 1, &lora_scale);
+
+        // Compute the same output path as the post-training block below so
+        // the signal handler can flush the current adapter state on SIGTERM.
+        g_lora_adapter_for_signal = lora_adapter;
+        g_adapter_out_for_signal  = params.out_file;
+        {
+            const std::string ext = ".gguf";
+            if (g_adapter_out_for_signal.size() >= ext.size() &&
+                g_adapter_out_for_signal.compare(g_adapter_out_for_signal.size() - ext.size(),
+                                                 ext.size(), ext) == 0) {
+                g_adapter_out_for_signal.insert(g_adapter_out_for_signal.size() - ext.size(), ".lora");
+            } else {
+                g_adapter_out_for_signal += ".lora.gguf";
+            }
+        }
+        std::signal(SIGTERM, finetune_save_adapter_on_signal);
+        std::signal(SIGINT,  finetune_save_adapter_on_signal);
     }
 
     struct llama_opt_params lopt_params{
