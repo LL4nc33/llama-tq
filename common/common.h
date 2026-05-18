@@ -612,6 +612,10 @@ struct common_params {
     std::string lora_train_regex;
     int         lora_train_rank  = 16;
     float       lora_train_alpha = 32.0f;
+    // Periodic mid-training checkpoint (C.4): if > 0, the adapter is flushed
+    // every N training batches. Useful for long runs where a mid-batch crash
+    // would otherwise discard everything since the last epoch boundary.
+    int         checkpoint_every_n_batches = 0;
                                   // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
                                   // Default empty = train every F32 parameter (original behavior).
 
