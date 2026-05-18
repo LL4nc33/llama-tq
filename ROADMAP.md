@@ -5,7 +5,7 @@ This file tracks what works, what's in flight, and what's on the wishlist. Maint
 ## ✅ What works today
 
 - **Full MoE-expert LoRA fine-tuning** of `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS, end-to-end on a single RTX 2060 12 GB (2026-05-18). Train → save (`.lora.gguf`) → load via `--lora` → inference, all green. Validated hyperparams: rank=2, alpha=4, lr=5e-6, SGD, ctx=128. Loss 4.0 → 2.4 on a 500-line × 3-epoch run.
-- **Sparse fine-tuning** of Embed + LM-head + Norms on hybrid MoE+SSM models (Qwen3.5/3.6, Bamba, Nemotron-Nano) — the older, simpler path, still supported.
+- **Sparse fine-tuning** of Embed + LM-head + Norms on hybrid MoE+SSM models (Qwen3.5/3.6-A35-A3B, Bamba, Nemotron-3-MoE) — the older, simpler path, still supported.
 - **`llama_adapter_lora_save_to_file` API** — adapters serialise to `.lora.gguf` with the metadata the `--lora` loader expects.
 - **SIGTERM / SIGINT safety flush** in `llama-finetune` — multi-hour runs survive `timeout` and `Ctrl+C` without losing the adapter.
 - **`GGML_OP_QUANTIZE_DEQUANTIZE_FAKE` op** — forward (CPU compute) and STE backward landed. Public API: `ggml_quantize_dequantize_fake(ctx, F32_tensor, target_quant)`. CLI flag + LoRA-graph integration still queued (see Phase C below).
