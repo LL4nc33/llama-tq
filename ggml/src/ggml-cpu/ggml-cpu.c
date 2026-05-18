@@ -1965,7 +1965,7 @@ static void ggml_compute_forward_quantize_dequantize_fake(
     const size_t row_size_q = ggml_row_size(target, ne0);
     void * my_scratch = (char *) params->wdata + (size_t) ith * row_size_q;
 
-    const ggml_from_float_t  quant_fn   = ggml_get_type_traits(target)->from_float;
+    const ggml_from_float_t  quant_fn   = ggml_get_type_traits_cpu(target)->from_float;
     const ggml_to_float_t    dequant_fn = ggml_get_type_traits(target)->to_float;
     GGML_ASSERT(quant_fn && dequant_fn);
 
