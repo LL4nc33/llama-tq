@@ -37,12 +37,6 @@ struct ggml_opt_context {
     struct ggml_context      * ctx_copy             = nullptr;
     ggml_backend_buffer_t      buf_static           = nullptr;
     ggml_backend_buffer_t      buf_cpu              = nullptr;
-    // Per-buft static contexts/buffers — required when params live on multiple
-    // backends (multi-GPU LoRA). Each param's momenta + grad_acc must be
-    // allocated in the same buft as the param itself, otherwise the scheduler
-    // cannot route OPT_STEP_* to a backend that can run it.
-    std::map<ggml_backend_buffer_type_t, struct ggml_context *> ctx_static_buft;
-    std::vector<ggml_backend_buffer_t>                          bufs_static_buft;
     std::mt19937               rng;
     enum ggml_opt_loss_type    loss_type;
     enum ggml_opt_build_type   build_type;
@@ -461,32 +455,6 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         return;
     }
 
-    // Helper: get-or-create a per-buft static context. Used to ensure each
-    // param's momenta + grad_acc live in the same buft as the param itself
-    // (required for multi-GPU layer-split LoRA — see ctx_static_buft comment).
-    auto ctx_for_param = [&](ggml_tensor * param) -> ggml_context * {
-        ggml_backend_buffer_t  pbuf = param ? param->buffer : nullptr;
-        if (!pbuf) {
-            return opt_ctx->ctx_static; // fallback: same as default
-        }
-        ggml_backend_buffer_type_t bt = ggml_backend_buffer_get_type(pbuf);
-        auto it = opt_ctx->ctx_static_buft.find(bt);
-        if (it != opt_ctx->ctx_static_buft.end()) {
-            return it->second;
-        }
-        // Generous overhead — each param needs up to 3 (grad_acc + m + v).
-        const int n_param_max = opt_ctx->gf->n_nodes;
-        const size_t size_meta = 3 * n_param_max * ggml_tensor_overhead();
-        ggml_init_params ip = {
-            /*.mem_size   =*/ size_meta,
-            /*.mem_buffer =*/ nullptr,
-            /*.no_alloc   =*/ true,
-        };
-        ggml_context * c = ggml_init(ip);
-        opt_ctx->ctx_static_buft[bt] = c;
-        return c;
-    };
-
     if (opt_ctx->grad_accs.empty()) {
         GGML_ASSERT(opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_GRAD);
 
@@ -495,8 +463,7 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         for (int i = 0; i < n_nodes; ++i) {
             ggml_tensor * node = opt_ctx->gf->nodes[i];
             if ((accumulate && (node->flags & GGML_TENSOR_FLAG_PARAM)) || (node->flags & GGML_TENSOR_FLAG_LOSS)) {
-                ggml_context * c = (node->flags & GGML_TENSOR_FLAG_PARAM) ? ctx_for_param(node) : opt_ctx->ctx_static;
-                opt_ctx->grad_accs[i] = ggml_new_tensor(c, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                opt_ctx->grad_accs[i] = ggml_new_tensor(opt_ctx->ctx_static, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
             } else {
                 opt_ctx->grad_accs[i] = nullptr;
             }
@@ -508,9 +475,8 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
             for (int i = 0; i < n_nodes; ++i) {
                 ggml_tensor * node = opt_ctx->gf->nodes[i];
                 if (node->flags & GGML_TENSOR_FLAG_PARAM) {
-                    ggml_context * c = ctx_for_param(node);
-                    opt_ctx->grad_m[i] = ggml_new_tensor(c, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
-                    opt_ctx->grad_v[i] = ggml_new_tensor(c, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                    opt_ctx->grad_m[i] = ggml_new_tensor(opt_ctx->ctx_static, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                    opt_ctx->grad_v[i] = ggml_new_tensor(opt_ctx->ctx_static, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
                 } else {
                     opt_ctx->grad_m[i] = nullptr;
                     opt_ctx->grad_v[i] = nullptr;
@@ -574,14 +540,49 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     if (!opt_ctx->buf_static) {
         opt_ctx->buf_static = ggml_backend_alloc_ctx_tensors(
             opt_ctx->ctx_static, ggml_backend_sched_get_backend(opt_ctx->backend_sched, 0));
-        // Allocate per-buft static buffers (multi-GPU LoRA). On single-GPU /
-        // single-buft setups this map is empty and the loop is a no-op.
-        for (auto & kv : opt_ctx->ctx_static_buft) {
-            ggml_backend_buffer_t b = ggml_backend_alloc_ctx_tensors_from_buft(kv.second, kv.first);
-            if (b) {
-                opt_ctx->bufs_static_buft.push_back(b);
+
+        // Multi-GPU LoRA training routing: when params live on different
+        // backends (layer-split), the OPT_STEP_* op for each param must be
+        // dispatched to the same backend as the param itself. Pin the op to
+        // the param's backend so the scheduler does not abort with
+        // "buffer cannot run OPT_STEP_*" on dual-GPU MoE finetune.
+        for (int i = opt_ctx->gf->n_nodes - 1; i >= 0; --i) {
+            ggml_tensor * node = opt_ctx->gf->nodes[i];
+            if (!(node->flags & GGML_TENSOR_FLAG_PARAM)) {
+                continue;
+            }
+            ggml_backend_buffer_t pbuf = node->buffer;
+            if (!pbuf) {
+                continue;
+            }
+            ggml_backend_buffer_type_t pbt = ggml_backend_buffer_get_type(pbuf);
+            // Find the backend matching the param's buft. ggml_backend_sched
+            // owns one backend per buft; we walk them and pin OPT_STEP nodes
+            // that target this param.
+            const int n_backends = ggml_backend_sched_get_n_backends(opt_ctx->backend_sched);
+            ggml_backend_t target = nullptr;
+            for (int b = 0; b < n_backends; ++b) {
+                ggml_backend_t cand = ggml_backend_sched_get_backend(opt_ctx->backend_sched, b);
+                if (ggml_backend_sched_get_buffer_type(opt_ctx->backend_sched, cand) == pbt) {
+                    target = cand;
+                    break;
+                }
+            }
+            if (!target) {
+                continue;
+            }
+            // Find the OPT_STEP node consuming this param and pin it.
+            // OPT_STEP_* uses src[0] = param.
+            for (int j = 0; j < opt_ctx->gb_opt->n_nodes; ++j) {
+                ggml_tensor * op_node = opt_ctx->gb_opt->nodes[j];
+                if ((op_node->op == GGML_OP_OPT_STEP_ADAMW || op_node->op == GGML_OP_OPT_STEP_SGD)
+                    && op_node->src[0] == node) {
+                    ggml_backend_sched_set_tensor_backend(opt_ctx->backend_sched, op_node, target);
+                    break;
+                }
             }
         }
+
         ggml_graph_reset(opt_ctx->gb_opt);
     }
 
@@ -629,13 +630,7 @@ void ggml_opt_free(ggml_opt_context_t opt_ctx) {
     }
     ggml_backend_buffer_free(opt_ctx->buf_static);
     ggml_backend_buffer_free(opt_ctx->buf_cpu);
-    for (auto & b : opt_ctx->bufs_static_buft) {
-        ggml_backend_buffer_free(b);
-    }
     ggml_free(opt_ctx->ctx_static);
-    for (auto & kv : opt_ctx->ctx_static_buft) {
-        ggml_free(kv.second);
-    }
     ggml_free(opt_ctx->ctx_cpu);
     ggml_free(opt_ctx->ctx_copy);
     delete opt_ctx;
