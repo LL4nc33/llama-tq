@@ -1,6 +1,6 @@
 # Tensor Parallelism + TurboQuant KV-Cache (TP+TQ)
 
-> First implementation of Tensor Parallelism with quantized KV-cache on consumer GPUs.
+> Tensor Parallelism combined with quantized KV-cache on consumer GPUs.
 
 ## Overview
 
