@@ -4,8 +4,10 @@ This file tracks what works, what's in flight, and what's on the wishlist. Maint
 
 ## ✅ What works today
 
-- **Sparse fine-tuning** of Embed + LM-head + Norms on hybrid MoE+SSM models (Qwen3.5/3.6, Bamba, Nemotron-Nano).
-- **End-to-end pipeline:** load IQ2_XXS → train → save GGUF → inference.
+- **Full MoE-expert LoRA fine-tuning** of `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS, end-to-end on a single RTX 2060 12 GB. Train → save (`.lora.gguf`) → load via `--lora` → inference, all green (2026-05-18).
+- **Sparse fine-tuning** of Embed + LM-head + Norms on hybrid MoE+SSM models (Qwen3.5/3.6, Bamba, Nemotron-Nano) — the older, simpler path, still supported.
+- **`llama_adapter_lora_save_to_file` API** — adapters serialise to `.lora.gguf` with the metadata `--lora` expects.
+- **SIGTERM / SIGINT safety flush** in `llama-finetune` — multi-hour runs survive `timeout` and `Ctrl+C` without losing the adapter.
 - **TurboQuant KV cache** at 2.78 bpw (KTQ + VTQ v2 Trellis) with f16-equivalent quality.
 - **CUDA backend** on sm_75+ (Turing tested daily); compiled binaries for sm_75/80/86/89/90/120.
 - **Dual-GPU tensor split** for fine-tuning (verified on 2× RTX 2060 12 GB).
@@ -18,21 +20,19 @@ This file tracks what works, what's in flight, and what's on the wishlist. Maint
 
 ## 🎯 Roadmap toward real capability gains in fine-tuning
 
-The current fine-tune path trains only Embed + LM-head + Norms. That's useful for surface-distribution drift (output style, format adherence, tool-call template fidelity) but **not new capability** — the model learns *how it sounds*, not *how it thinks*. Real capability training requires reaching the parts of the network where reasoning lives:
+Where we stand on the capability surfaces (2026-05-18):
 
-| Component        | Today    | Needed for capability training              |
-|------------------|----------|---------------------------------------------|
-| Token embeddings | trainable | extends vocab, but no new skills            |
-| LM head          | trainable | only output distribution shift              |
-| Attention        | frozen   | **required** for reasoning + context tracking |
-| MoE experts (`MUL_MAT_ID`) | frozen | **required** for domain knowledge           |
-| Mamba / SSM      | frozen   | sequential state — nice-to-have             |
+| Component        | Today      | Needed for capability training              |
+|------------------|------------|---------------------------------------------|
+| Token embeddings | trainable  | extends vocab, but no new skills            |
+| LM head          | trainable  | only output distribution shift              |
+| Attention        | frozen     | **required** for reasoning + context tracking |
+| MoE experts (`MUL_MAT_ID`) | **trainable via LoRA** (2026-05-18) | unlocks domain knowledge |
+| Mamba / SSM      | frozen     | sequential state — nice-to-have             |
 
-Three phases to close that gap:
+### ✅ Phase A — MUL_MAT_ID backward (done 2026-05-18)
 
-### Phase A — MUL_MAT_ID backward (~3-5 days)
-
-Without this, no MoE expert can be trained. Skeleton documented; mathematically straightforward (routing gradient = gating × expert-output). Expected bench gain on tool-calling: +5-10 pp.
+`ggml_mul_mat_id_grad_as` implemented on CPU + CUDA for the `as`-gradient. The `b`-broadcast case used by Qwen3.6-A35B (`n_used_b=1, n_used=8`) is dropped with a one-time warning — mathematically safe for the LoRA setup because the base weight is frozen and the LoRA path flows via `grad_as`. The strided `cont(transpose(W_q))` path that would otherwise force a multi-GiB block-copy of the quantised weight is also gated out. Full LoRA training of `ffn_*_exps` converges on a single 12 GB GPU.
 
 ### Phase B — Attention backward without FlashAttn (1-2 weeks)
 
@@ -41,15 +41,17 @@ Either port FA backward to CUDA, or fall back to standard attention backward (ex
 ### Phase C — Research-grade (months)
 
 - **SSM_SCAN / SSM_CONV backward** for Mamba state training (mathematically non-trivial — selective state spaces).
-- **Quantization-Aware Training** with straight-through estimator, so `token_embd` / `output` re-quantization doesn't eat the learning gain.
+- **Quantization-Aware Training** — Stage-4 `GGML_OP_QUANTIZE_DEQUANTIZE_FAKE` op committed with Straight-Through Estimator backward. CLI flag `--qat-target-quant` + LoRA-graph integration are queued; once wired up, the LoRA adapter can be trained to compensate for the base-model's quantisation error.
+- **Dense LoRA gradient flow through quantised activations** — currently the autograd skips `MUL_MAT_ID grad_b` for quantised `src0`. Adding a dequant-on-the-fly path would let deeper LoRA stacks see end-to-end gradients.
 
 ## ⚠️ Known quality gaps
 
 - **Saver audit** — `LLAMA_SAVER_ALLOW_UNTESTED=1` works around missing MoE hparam writes (`swiglu_clamp_shexp`, `expert_groups`, `n_layer_dense_lead`, `mamba_d_*`). A full audit would catch silent bugs.
 - **Re-quantization error** — `token_embd` + `output` train in FP32, then re-quantize back to IQ2_XXS on save. Quant error may eat part of the learning signal.
-- **No LoRA adapters** — full FP32 tensor updates use 100× more VRAM than a LoRA path would.
+- **LoRA-only on quantised models** — full FP32 tensor updates aren't usable on quantised base weights anyway (transpose+cont is prohibitive); the LoRA path is the practical one. Dense FP32 training still works for non-quantised setups.
 - **No gradient checkpointing** — limits practical context length (256–512 today, 2048+ would need it).
-- **No resume-from-checkpoint** — a crashed 6 h training run starts over from zero.
+- **No periodic mid-training checkpoint** — adapters are flushed at epoch boundaries and on SIGTERM/SIGINT, but a crash mid-batch loses since-last-flush progress. Periodic save-every-N-steps is queued.
+- **rank ≤ 2 for 282 LoRA-pairs on 12 GB** — rank=4 OOMs by ~1.3 GB. AdamW also doesn't fit. Dual-GPU tensor-split or `bitsandbytes`-style 8-bit optimiser state would lift this ceiling.
 
 ## Maintenance policy
 
