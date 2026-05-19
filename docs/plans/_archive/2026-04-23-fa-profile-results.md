@@ -1,7 +1,7 @@
 # FA Profiling on Turing sm_75 — Results
 
 **Date:** 2026-04-23
-**Target:** prod llama-server PID 2753213 on test-rig (Qwen3.5-35B-A3B IQ2_XS, TQ2_1 K-cache / F16 V-cache, 400k ctx, `-ub 512`, `-ts 12,12`, parallel=2)
+**Target:** prod llama-server PID 2753213 on the test rig (Qwen3.5-35B-A3B IQ2_XS, TQ2_1 K-cache / F16 V-cache, 400k ctx, `-ub 512`, `-ts 12,12`, parallel=2)
 **Baseline:** 67.65 tok/s TG @ 300 tokens
 **Hardware:** 2× RTX 2060 12GB (sm_75, 30 SMs/GPU, 3 MB L2, ~336 GB/s DRAM BW)
 
@@ -13,7 +13,7 @@ Runtime profiling could not be performed under the given constraints. Documented
 
 ### Why option (a) — attach nsys to PID — failed
 
-- `nsys --version` on test-rig: **2022.4.2.50** (package `nsight-systems 2022.4.2.50~12.0.1`).
+- `nsys --version` on the test rig: **2022.4.2.50** (package `nsight-systems 2022.4.2.50~12.0.1`).
 - `nsys profile --pid=<PID>` attach was introduced in **Nsight Systems 2023.1**.
 - The installed 2022.4 binary rejects `--pid`: `unrecognised option '--pid=2753213'`.
 - `nsys` on this box has no `attach` subcommand (only `profile`, `launch`, `start`, `stop`, `cancel`, `stats`, `status`, `shutdown`, `sessions list`, `export`, `analyze`).
@@ -32,7 +32,7 @@ Runtime profiling could not be performed under the given constraints. Documented
 ### What would unblock runtime profiling next session
 
 One of:
-1. Install `nsight-systems-2024.x` (or at minimum 2023.1) on test-rig with sudo.
+1. Install `nsight-systems-2024.x` (or at minimum 2023.1) on the test rig with sudo.
 2. Build `llama-bench` in `~/llama-tq/build/` (`cmake --build . --target llama-bench`) and momentarily stop prod to free VRAM for a 60-second bench run. User's constraint "don't disrupt prod" forbids this without coordination.
 3. Run profiling on a smaller model that fits in the VRAM headroom (e.g. a 3B Qwen, same TQ2_1 config). That answers kernel-level questions (occupancy, L2 hit-rate, launch count per token) but numbers for memory-bound vs compute-bound may shift with model size.
 
@@ -132,7 +132,7 @@ TL;DR: the occupancy fix is real and worth doing, but the bigger untapped lever 
 | Tool | Version | Usable? |
 |------|---------|---------|
 | `nsys` | 2022.4.2 | Runs, but the bundled importer is broken → cannot export stats from the qdstrm |
-| `ncu`  | 2022.4.1 | **Blocked** — `ERR_NVGPUCTRPERM` (needs root to flip `RmProfilingAdminOnly=1`). No sudo on test-rig |
+| `ncu`  | 2022.4.1 | **Blocked** — `ERR_NVGPUCTRPERM` (needs root to flip `RmProfilingAdminOnly=1`). No sudo on the test rig |
 | `nvprof` | CUDA 12.x | **Works** — deprecated on sm_75 but full timing data available |
 
 We therefore have accurate **kernel timing + launch counts**, but no occupancy / L2 / DRAM BW counters. Those numbers below are marked `[measured]` or `[static]`.

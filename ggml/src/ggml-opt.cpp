@@ -485,8 +485,24 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         }
     }
 
-    // gb_grad == graph backward gradients, forward pass, then backward pass to calculate gradients.
-    opt_ctx->gb_grad = ggml_graph_dup(opt_ctx->ctx_compute, opt_ctx->gf, /*force_grads =*/ true);
+    // gb_grad == graph backward gradients: forward pass + backward pass to
+    // compute gradients. `ggml_graph_dup` would allocate dst at `gf->size`
+    // exactly, but `ggml_build_backward_expand` below ADDS many new gradient
+    // nodes to it — and each new tensor consumes a visited_hash_set slot.
+    // On dual-GPU layer-split, the scheduler also injects cross-device copy
+    // + split-input tensors, pushing the total past the hash table size and
+    // triggering GGML_HASHSET_FULL in graph_cpy on the next dup (gb_opt).
+    //
+    // Pre-emptively allocate gb_grad with 8x size_gf headroom (matches the
+    // ctx_compute pre-sizing in llama-context). 4x was not enough for batch
+    // 2 builds on 35B MoE — build_backward expands ~2x forward count, plus
+    // dual-GPU scheduler cross-device copies push the total higher.
+    {
+        const size_t gb_grad_size = (size_t) opt_ctx->gf->size * 8;
+        opt_ctx->gb_grad = ggml_new_graph_custom(opt_ctx->ctx_compute, gb_grad_size, /*grads =*/ true);
+        GGML_ASSERT(opt_ctx->gb_grad && "ggml-opt: gb_grad allocation failed — ctx_compute too small");
+        ggml_graph_cpy(opt_ctx->gf, opt_ctx->gb_grad);
+    }
     ggml_build_backward_expand(opt_ctx->ctx_compute, opt_ctx->gb_grad, opt_ctx->grad_accs.data());
 
     if (opt_ctx->buf_static) {
@@ -500,8 +516,17 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
 
     GGML_ASSERT(opt_ctx->build_type_alloc == GGML_OPT_BUILD_TYPE_OPT);
 
-    // gb_opt == graph backward optimize, forward pass, then backward pass to calculate gradients, then optimizer step.
-    opt_ctx->gb_opt = ggml_graph_dup(opt_ctx->ctx_compute, opt_ctx->gb_grad, /*force_grads =*/ true);
+    // gb_opt == graph backward + optimizer step. Same hash-set sizing issue
+    // as gb_grad: the for-loop below adds an OPT_STEP node per trainable
+    // param. Use gb_grad's already-expanded size (which has the right
+    // headroom) instead of dup'ing at gb_grad->size, which would be the
+    // original gf->size and crash on the next hash insert.
+    {
+        const size_t gb_opt_size = (size_t) opt_ctx->gb_grad->size;
+        opt_ctx->gb_opt = ggml_new_graph_custom(opt_ctx->ctx_compute, gb_opt_size, /*grads =*/ true);
+        GGML_ASSERT(opt_ctx->gb_opt && "ggml-opt: gb_opt allocation failed — ctx_compute too small");
+        ggml_graph_cpy(opt_ctx->gb_grad, opt_ctx->gb_opt);
+    }
 
     opt_ctx->opt_step_params = ggml_new_tensor_1d(opt_ctx->ctx_cpu, GGML_TYPE_F32, need_momenta ? 7 : 2);
     ggml_tensor * adamw_params = opt_ctx->opt_step_params;
@@ -716,6 +741,33 @@ void ggml_opt_prepare_alloc(
         struct ggml_tensor  * inputs,
         struct ggml_tensor  * outputs) {
     GGML_ASSERT(!opt_ctx->static_graphs);
+
+    // Dynamic-graph mode (llama-context): caller allocates a fresh ctx_compute
+    // per batch and frees the previous one between calls. Any pointer in opt_ctx
+    // that points INTO that old ctx (gb_grad, gb_opt, loss, labels, transient
+    // build_backward intermediate tensors, the allocated_graph cache) is now
+    // dangling — the next opt_build re-creates them in the new ctx, but only
+    // if we explicitly invalidate the cached pointers first. Without this clear,
+    // build_backward_expand on batch 2 dereferences gb_grad's freed memory and
+    // segfaults.
+    //
+    // PERSISTENT state is NOT touched: ctx_static + buf_static (holding the
+    // F32 grad_acc / m / v tensors that carry optimiser momenta across batches),
+    // ctx_cpu + buf_cpu, opt_step_params, and the grad_accs / grad_m / grad_v
+    // vectors themselves (which hold pointers into ctx_static, not into the
+    // per-batch ctx_compute).
+    if (opt_ctx->ctx_compute != ctx_compute) {
+        opt_ctx->gb_grad              = nullptr;
+        opt_ctx->gb_opt               = nullptr;
+        opt_ctx->allocated_graph      = nullptr;
+        opt_ctx->allocated_graph_copy = nullptr;
+        opt_ctx->loss                 = nullptr;
+        opt_ctx->labels               = nullptr;
+        opt_ctx->pred                 = nullptr;
+        opt_ctx->ncorrect             = nullptr;
+        opt_ctx->opt_step_params      = nullptr; // lives in ctx_cpu which opt_build recreates
+    }
+
     opt_ctx->ctx_compute = ctx_compute;
     opt_ctx->gf          = gf;
     opt_ctx->inputs      = inputs;
@@ -771,6 +823,17 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         opt_ctx->allocated_graph_copy = dup_graph(opt_ctx->ctx_copy, graph);
     } else {
         opt_ctx->allocated_graph_copy = graph;
+    }
+
+    // Multi-GPU training graph-shape switching (gf -> gb_grad -> gb_opt):
+    // The scheduler caches prev_*_backend_ids from the last alloc; on a
+    // shape switch those still match for overlapping indices and mask the
+    // change, so sched_alloc_splits skips the reserve-and-retry path. The
+    // resulting init_tensor then segfaults on a stale buffer_id whose
+    // galloc->buffers[] slot is NULL. Invalidate prev_*_backend_ids so the
+    // next alloc_splits always takes the realloc path on a shape change.
+    if (opt_ctx->allocated_graph != graph) {
+        ggml_backend_sched_invalidate_prev_backend_ids(opt_ctx->backend_sched);
     }
 
     ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);

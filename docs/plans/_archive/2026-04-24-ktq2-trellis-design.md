@@ -104,7 +104,7 @@ throughput to justify any PPL gain."
 ### Loop shape
 
 1. Agent picks one axis (A/B/C/D) and one knob setting
-2. Builds on test-rig (`cmake --build build -j2 --target llama-perplexity llama-bench`)
+2. Builds on the test rig (`cmake --build build -j2 --target llama-perplexity llama-bench`)
 3. Measures PPL + TG (≤15 min total)
 4. Logs `score` vs baseline KTQ_1
 5. Keeps if `score < 0.9 * previous_best`, otherwise reverts

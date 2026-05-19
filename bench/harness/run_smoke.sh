@@ -4,7 +4,7 @@
 # Runs niah_single_3 at 4k, n=10, against a llama-server URL.
 # Intended target for first pass: a locally-spun llama-server with
 # qwen3.5-0.8b-q8_0.gguf (the smallest test model). DO NOT point this
-# at the live deploy on internal-host:8791.
+# at the live deploy on test-rig:8791.
 #
 # Usage:
 #   ./run_smoke.sh [SERVER_URL]

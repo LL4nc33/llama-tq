@@ -11,7 +11,7 @@ This file tracks what works, what's in flight, and what's on the wishlist. Maint
 - **`GGML_OP_QUANTIZE_DEQUANTIZE_FAKE` op** — forward (CPU compute) and STE backward landed. Public API: `ggml_quantize_dequantize_fake(ctx, F32_tensor, target_quant)`. CLI flag + LoRA-graph integration still queued (see Phase C below).
 - **TurboQuant KV cache** at 2.78 bpw (KTQ + VTQ v2 Trellis) with f16-equivalent quality.
 - **CUDA backend** on sm_75+ (Turing tested daily); compiled binaries for sm_75/80/86/89/90/120.
-- **Dual-GPU tensor split** for the sparse fine-tuning path (verified on 2× RTX 2060 12 GB). The LoRA-on-quantised-base path has been validated on single GPU only — dual-GPU there is a follow-up VRAM-headroom improvement (see Phase D below), not a correctness gate.
+- **Dual-GPU layer-split** for both the sparse fine-tuning path and the LoRA-on-quantised-base path (verified on 2× RTX 2060 12 GB, Phase D resolved 2026-05-19). Useful for VRAM headroom (200k+ ctx, higher rank, AdamW momenta); not a wall-clock speedup on consumer rigs without working P2P — see Phase D below for numbers.
 
 ## 🚧 In flight
 
@@ -49,19 +49,23 @@ Either port FA backward to CUDA or fall back to standard attention backward (exi
 - **SSM_SCAN / SSM_CONV backward** for Mamba state training (mathematically non-trivial — selective state spaces).
 - **Periodic mid-training checkpoint** — flush adapter every N steps so a crash mid-batch keeps progress. Currently flushes only at epoch boundary and on SIGTERM/SIGINT.
 
-### Phase D — Multi-GPU LoRA training on quantised base
+### Phase D — Multi-GPU LoRA training on quantised base (2026-05-19: FUNCTIONAL)
 
-Layer-split (`-sm layer -ts a,b`) for the LoRA-on-quantised path is **unvalidated**. The sparse path runs on dual-GPU (verified: Qwen3.6-A35B-IQ2_XXS, `-ts 6,5`, 250 samples × 1 epoch, 6h21m, loss 5.44→1.40), so the infrastructure — tensor split, device-aware backward, saver — is already in place. Only the LoRA-tensor plumbing (`lora_a`/`lora_b` placement, `grad_as` device-affinity) has never been exercised across two GPUs. Smoke test pending.
+Layer-split (`-sm layer -ts a,b`) for the LoRA-on-quantised path is now **functional** on 2× RTX 2060 12 GB. Smoke: Qwen3.6-A35B-IQ2_XXS, `-ts 1,1`, 222 steps SGD, loss 3.247 → 1.379, acc 31% → 64%, ~5 GB peak per GPU. Same numerical trajectory as the single-GPU path.
 
-**Why it matters.** Distillery's 10335-sample × 1 epoch production run diverged at step 1500 (loss 1.77 → 10.08) under SGD + lr=5e-6, consistent with biased-gradient drift accumulation from the quant-`src0` `grad_b` skip. AdamW would normalise that drift via its second-moment estimate, but rank=2 + AdamW OOMs on single 12 GB GPU. Dual-GPU lifts the VRAM ceiling enough to make rank=4 + AdamW reachable.
+Two scheduler fixes were needed (both on `feature/phase-d-multigpu-lora`):
+- `9d136dee5` — `sched->graph_inputs[]` is now a dynamic array. The previous fixed-size `GGML_SCHED_MAX_SPLIT_INPUTS=30` cap fits inference but is overrun by training graphs (forward + backward + per-param `OPT_STEP`) on a layer-split MoE.
+- `93388f61d` — new `ggml_backend_sched_invalidate_prev_backend_ids()` plus a sentinel-aware comparator. The scheduler previously cached `prev_node_backend_ids` from the prior shape; on a `gf → gb_grad → gb_opt` switch it missed the change, skipped the reserve-and-retry path, and segfaulted at `init_tensor` on a stale `buffer_id`. The invalidate helper is called from `ggml_opt_alloc` on every graph-shape change and forces the realloc path.
 
-**Goal.** Validate `-sm layer -ts 1,1 --lora-train-target …` on a smoke model (qwen3.5-0.8b-q8_0) first. If green, retry the 35B-MoE production run with `-ts 6,5 --optimizer adamw -lr 1e-5 --lora-train-rank 4`. Tensor-parallel (`-sm tensor`) for LoRA is a larger project — needs `AllReduce` on `grad_as` and is gated by B450 x16/x4 PCIe overhead; not in scope here.
+**Caveat — dual-GPU is not a speedup for fitted workloads.** Layer-split is sequential, and on consumer dual-2060 rigs without working P2P/NVLink, the cross-device sync cost (asymmetric PCIe x16+x4) outweighs the compute parallelism. Measured: ~0.35 step/s dual vs ~0.50 step/s single (~44% slower per step). Use dual-GPU when the workload does not fit single-GPU (200k+ ctx, higher rank, AdamW momenta), not as a free speedup. See `docs/phase-d-smoke-results.md`.
+
+**Next step.** rank=4 + AdamW reachable now that VRAM doubles, which addresses the SGD-only drift seen in the earlier 10335-sample run. Validation pending.
 
 ## ⚠️ Known quality gaps
 
 - **Saver audit.** `LLAMA_SAVER_ALLOW_UNTESTED=1` works around missing MoE hparam writes (`swiglu_clamp_shexp`, `expert_groups`, `n_layer_dense_lead`, `mamba_d_*`). A full audit would catch silent bugs.
 - **Re-quantisation error in the sparse path.** `token_embd` + `output` train in FP32, then re-quantise back to IQ2_XXS on save. Quant error may eat part of the learning signal there. The LoRA path doesn't have this problem — the adapter is stored as F32 and applied at inference.
-- **LoRA-on-quantised: rank ≤ 2 for 282 expert pairs on 12 GB.** rank=4 OOMs by ~1.3 GB. AdamW doesn't fit either. Dual-GPU tensor-split or 8-bit optimiser state would lift this ceiling.
+- **LoRA-on-quantised: rank ≤ 2 for 282 expert pairs on 12 GB single-GPU.** rank=4 OOMs by ~1.3 GB on single GPU. AdamW doesn't fit either. Dual-GPU layer-split lifts this ceiling (Phase D done) — actual rank=4 / AdamW validation on dual-GPU is the next milestone.
 - **LoRA-on-quantised: ctx=128 default.** Higher contexts need gradient checkpointing, not yet implemented.
 - **LoRA-on-quantised: convergence sweet spot is 100–500 sample subsets × 3 epochs, lr ≤ 1e-5.** Bigger single-runs (28k lines × 1 epoch) diverge with the current `grad_b`-skip setup. Split into sequential subsets.
 - **Convergence path through activations is truncated** by the quant-`src0` `grad_b` skip. Mathematically correct for single-target-layer LoRA; gives looser gradient flow for multi-layer LoRA stacks. Dequant-on-the-fly (Phase C) would address this.

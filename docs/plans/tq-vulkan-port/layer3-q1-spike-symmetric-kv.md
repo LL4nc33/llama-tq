@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-09
 **Branch:** turboquant (test build run from `/workspace/llama-tq` @ `f477fc7a8`, dispatcher matches `1910c4180`)
-**Model:** `qwen3.5-0.8b-q8_0.gguf` on test-rig, RTX 2060 dual-GPU (`-ngl 99 -mg 0 -fa 1 -c 512`)
+**Model:** `qwen3.5-0.8b-q8_0.gguf` on the test rig, RTX 2060 dual-GPU (`-ngl 99 -mg 0 -fa 1 -c 512`)
 **Question:** Does the CUDA TQ FA-vec dispatcher support symmetric K==V (both layers same TQ type), so we have a CUDA reference to validate Vulkan V1 against?
 
 ---
@@ -47,7 +47,7 @@ The vec-kernel selector explicitly comments **"VTQ types are V-cache only — al
 
 ---
 
-## Task 2 — Empirical Tests on test-rig
+## Task 2 — Empirical Tests on the test rig
 
 ### Test A — symmetric KTQ2_1 K==V
 

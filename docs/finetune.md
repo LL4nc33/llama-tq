@@ -172,14 +172,24 @@ loader path is healthy.
 
 ## Verified hardware envelopes
 
-### LoRA path (2026-05-18)
+### LoRA path single-GPU (2026-05-18, re-verified 2026-05-19)
 
 - 1× RTX 2060 12 GB sufficient
 - 11.8 GB peak VRAM with rank=2 + 128 ctx + 282 LoRA pairs
 - ~6:30 min for 100 lines × 3 epochs, ~33 min for 500 lines × 3 epochs on
   Qwen3.6-A35B-A3B IQ2_XXS
 - Loss curve: 4.0 → 2.4 over 3 epochs at lr=5e-6 (validated, converges)
+- Smoke 2026-05-19: 262 steps loss 3.247 → 1.420, acc 31% → 63%, no regression after multi-GPU fixes landed
 - Output: `out.lora.gguf` ~600 MB, loads cleanly in `llama-cli --lora`
+
+### LoRA path dual-GPU layer-split (2026-05-19)
+
+- 2× RTX 2060 12 GB, `-ts 1,1`
+- ~5 GB peak per GPU at rank=2 + 256 ctx
+- Smoke: 222 steps loss 3.247 → 1.379, acc 31% → 64%, same numerical trajectory as single-GPU
+- **Throughput: ~0.35 step/s vs single-GPU ~0.50 step/s** — dual-GPU layer-split is ~44% slower per step on a consumer dual-2060 rig (asymmetric PCIe x16+x4, no working P2P). Use only when the workload does not fit single-GPU.
+- See `docs/phase-d-smoke-results.md` for the full table and why dual-GPU loses to single-GPU on this hardware
+- Fix commits: `9d136dee5` (dynamic `sched->graph_inputs[]`) and `93388f61d` (sched comparator sentinel for graph-shape switches in opt mode)
 
 ### Sparse path
 
