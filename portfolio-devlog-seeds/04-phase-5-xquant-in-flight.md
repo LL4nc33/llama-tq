@@ -58,11 +58,11 @@ Phase 1 foundation committed: GGML_TYPE_XKTQ2_1=57, block_xktq2_1 (8 bytes), CPU
 
 Spec für Phase 2-5 fertig (~1165 LOC estimated total).
 
-Phase 1 build läuft gerade auf test-rig.
+Phase 1 build läuft gerade auf dem test rig.
 
 ## Risiken
 
-- eta values transferiren nicht Mistral->Qwen3.6: per-model grid search auf test-rig
+- eta values transferiren nicht Mistral->Qwen3.6: per-model grid search auf dem test rig
 - Adjacent-layer similarity fails auf MoE expert layers: pre-flight correlation probe
 - FA kernel register pressure: profile vor merge
 

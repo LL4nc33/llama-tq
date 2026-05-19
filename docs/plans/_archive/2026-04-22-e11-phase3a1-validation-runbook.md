@@ -14,7 +14,7 @@
 | PPL delta vs legacy VTQ3_2 | 0% | ≤ **0.5%** | ≤ 0.5% |
 | test-backend-ops FLASH_ATTN_EXT | PASS | PASS | PASS |
 
-## Step-by-Step auf test-rig
+## Step-by-Step auf dem test rig
 
 ### 1. Verify build
 

@@ -50,7 +50,7 @@ if (getenv("LLAMA_MMAP_HUGEPAGES")) {
 #endif
 ```
 
-3. Verify THP availability on test-rig: `cat /sys/kernel/mm/transparent_hugepage/enabled` must show `[madvise]` or `[always]`.
+3. Verify THP availability on the test rig: `cat /sys/kernel/mm/transparent_hugepage/enabled` must show `[madvise]` or `[always]`.
 
 **Optional Phase A2 — Explicit HugeTLB (only if A1 shows <3% gain):**
 
@@ -58,7 +58,7 @@ Switch mmap flags to `MAP_HUGETLB | MAP_HUGE_2MB` with pre-allocated hugepages p
 
 **Test plan:**
 
-1. Build branch `turboquant-hugepages` on test-rig (fresh build, ~15 min).
+1. Build branch `turboquant-hugepages` on the test rig (fresh build, ~15 min).
 2. Start on port **8795** (not the live 8791):
 
 ```bash
@@ -110,7 +110,7 @@ Memory-bound decode often doesn't scale past 4 threads. Might reduce L3 contenti
 
 **Test plan:** Same 5-run tg128 for each config, A/B vs baseline.
 
-**Prerequisites:** Check `numactl --hardware` output on test-rig. If single node (expected for 5700G), NUMA flags are no-ops but taskset still works.
+**Prerequisites:** Check `numactl --hardware` output on the test rig. If single node (expected for 5700G), NUMA flags are no-ops but taskset still works.
 
 **Decision gate:** Best config wins, merge into systemd service file.
 
@@ -158,7 +158,7 @@ Capture from `/v1/chat/completions` response timings:
 
 Morning — A (Huge Pages):
 
-1. Patch `llama-mmap.cpp`, commit to `turboquant-hugepages`, push, pull on test-rig, build. (1h)
+1. Patch `llama-mmap.cpp`, commit to `turboquant-hugepages`, push, pull on the test rig, build. (1h)
 2. Start test-server on 8795 with `LLAMA_MMAP_HUGEPAGES=1`. (5 min)
 3. 5-run tg128 bench, compare to 8791 baseline. Log to `docs/bench-80b-hugepages-2026-04-24.md`. (30 min)
 4. Decision: merge to `turboquant` if ≥ 3%, otherwise document and park.
@@ -195,7 +195,7 @@ Evening — Merge + service update:
 - New: `docs/bench-80b-ngram-spec-2026-04-24.md`
 - Update: `docs/bench-qwen3-next-80b.md` (final summary)
 - Update: `README.md` if gain > 5%
-- Update: systemd unit or start-script (local on test-rig)
+- Update: systemd unit or start-script (local on the test rig)
 
 ## Expected Cumulative Result
 

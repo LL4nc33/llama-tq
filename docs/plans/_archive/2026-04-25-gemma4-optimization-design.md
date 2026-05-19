@@ -82,7 +82,7 @@ VTQ_2 already at near-f16 performance on Gemma4 (`f16/vtq2_2` = −1.0% PP, −2
 
 ## How sweep results inform this
 
-The 21-config sweep currently running on test-rig will show:
+The 21-config sweep currently running on the test rig will show:
 - Whether VTQ_2 on Gemma4 has the same Pareto position as on Qwen3.6 (`f16/vtq2_2` near-free) → if not, Lever 4 (V-norm calib) is needed.
 - Whether `ktq2_1/vtq2_2` keeps the +slight-PPL-improvement we see on Qwen3.6 (-0.04%) → if it goes positive, the V-norm interaction is the suspect.
 - Absolute TG headroom vs f16/f16 — gives us the measurement floor to evaluate Lever 1.

@@ -4,6 +4,7 @@
 #include "llama.h"
 #include "lora-training.h"
 
+#include <cinttypes>
 #include <clocale>
 #include <cmath>
 #include <cstdio>
@@ -39,6 +40,54 @@ static void finetune_save_adapter_on_signal(int signum) {
 static bool finetune_param_filter_skip_regex(const struct ggml_tensor * t, void * ud) {
     auto * re = static_cast<std::regex *>(ud);
     return !std::regex_search(t->name, *re);
+}
+
+// C.4: Periodic mid-training checkpoint state. Tracks how many training
+// batches have been seen since process start and the target path / adapter
+// to flush. Hooked into ggml_opt_epoch via a wrapper callback that calls
+// the progress bar AND triggers a save every N batches.
+struct finetune_checkpoint_state {
+    llama_adapter_lora * adapter         = nullptr;
+    std::string          path;
+    int                  every_n         = 0;   // 0 = disabled
+    int64_t              batches_seen    = 0;   // monotonically increasing
+    int64_t              last_save_batch = 0;   // batches_seen at most recent save
+};
+static finetune_checkpoint_state g_checkpoint_state;
+
+static void finetune_epoch_callback_with_checkpoint(
+        bool                train,
+        ggml_opt_context_t  opt_ctx,
+        ggml_opt_dataset_t  dataset,
+        ggml_opt_result_t   result,
+        int64_t             ibatch,
+        int64_t             ibatch_max,
+        int64_t             t_start_us) {
+    // Always run the progress-bar visualisation first so user feedback stays
+    // identical to the upstream default.
+    ggml_opt_epoch_callback_progress_bar(train, opt_ctx, dataset, result,
+                                         ibatch, ibatch_max, t_start_us);
+
+    // Only count training batches; eval-pass callbacks don't modify weights.
+    if (!train) {
+        return;
+    }
+    auto & cs = g_checkpoint_state;
+    if (cs.every_n <= 0 || !cs.adapter || cs.path.empty()) {
+        return;
+    }
+    cs.batches_seen++;
+    if (cs.batches_seen - cs.last_save_batch < cs.every_n) {
+        return;
+    }
+    cs.last_save_batch = cs.batches_seen;
+    if (llama_adapter_lora_save_to_file(cs.adapter, cs.path.c_str()) != 0) {
+        fprintf(stderr, "\n%s: checkpoint flush at batch %" PRId64 " FAILED to '%s'\n",
+                __func__, cs.batches_seen, cs.path.c_str());
+    } else {
+        fprintf(stderr, "\n%s: checkpoint at batch %" PRId64 " → '%s'\n",
+                __func__, cs.batches_seen, cs.path.c_str());
+    }
 }
 
 #if defined(_MSC_VER)
@@ -155,6 +204,17 @@ int main(int argc, char ** argv) {
         }
         std::signal(SIGTERM, finetune_save_adapter_on_signal);
         std::signal(SIGINT,  finetune_save_adapter_on_signal);
+
+        // C.4: arm periodic mid-training checkpoint, if requested. Saves to
+        // the same path as the signal handler / final save so a crashed run
+        // can be resumed via --lora <path>.
+        if (params.checkpoint_every_n_batches > 0) {
+            g_checkpoint_state.adapter = lora_adapter;
+            g_checkpoint_state.path    = g_adapter_out_for_signal;
+            g_checkpoint_state.every_n = params.checkpoint_every_n_batches;
+            LOG_INF("%s: periodic checkpoint enabled — flushing every %d training batches to '%s'\n",
+                    __func__, params.checkpoint_every_n_batches, g_adapter_out_for_signal.c_str());
+        }
     }
 
     struct llama_opt_params lopt_params{
@@ -172,9 +232,18 @@ int main(int argc, char ** argv) {
     ggml_opt_result_t result_train = ggml_opt_result_init();
     ggml_opt_result_t result_eval  = ggml_opt_result_init();
 
+    // Use the checkpoint-aware callback only when the periodic checkpoint
+    // feature is active; otherwise fall through to the upstream progress
+    // bar with zero overhead. Eval pass keeps the plain progress bar — we
+    // don't want a stray flush triggered from validation batches.
+    ggml_opt_epoch_callback train_cb =
+        (params.checkpoint_every_n_batches > 0 && lora_adapter)
+            ? finetune_epoch_callback_with_checkpoint
+            : ggml_opt_epoch_callback_progress_bar;
+
     for (lr.epoch = 0; lr.epoch < lr.epochs; ++lr.epoch) {
         llama_opt_epoch(ctx, dataset, result_train, result_eval, idata_split,
-                        ggml_opt_epoch_callback_progress_bar, ggml_opt_epoch_callback_progress_bar);
+                        train_cb, ggml_opt_epoch_callback_progress_bar);
         fprintf(stderr, "\n");
 
         ggml_opt_result_reset(result_train);

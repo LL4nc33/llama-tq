@@ -52,6 +52,12 @@ struct llama_cparams {
     // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
     bool xquant_enabled;
 
+    // Stage-4 QAT (Phase C.1): if not GGML_TYPE_COUNT, wrap the LoRA delta
+    // (a@b applied to activations) in a fake-quantize-dequantize op that
+    // emulates the base-model's quantization error during forward. Straight-
+    // through backward keeps the adapter trainable. Default = COUNT = off.
+    enum ggml_type qat_target_quant;
+
     enum llama_pooling_type pooling_type;
 
     ggml_backend_sched_eval_callback cb_eval;

@@ -3962,6 +3962,33 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) { params.lora_train_alpha = std::stof(value); }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--checkpoint-every"}, "N",
+        string_format("Flush the LoRA adapter to disk every N training batches (0 = only at epoch end / signal; default: %d). "
+                      "Useful for long runs that may crash or be killed mid-epoch — recovery loads the last checkpoint via --lora.",
+                      params.checkpoint_every_n_batches),
+        [](common_params & params, int v) { params.checkpoint_every_n_batches = v; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
+        {"--qat-target-quant"}, "TYPE",
+        "Stage-4 QAT: fake-quantize the LoRA delta to TYPE in forward (e.g. q4_0, q8_0, iq4_nl, ktq2_1). "
+        "Backward is straight-through. The adapter learns to compensate for the target quant's error. "
+        "Off by default. Requires --lora-train-regex.",
+        [](common_params & params, const std::string & value) {
+            // Accept any ggml_type whose ggml_type_name matches. Look across
+            // all enum values up to GGML_TYPE_COUNT (a tight enum, so the
+            // linear scan is fine here — runs once at startup).
+            for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+                const enum ggml_type ty = (enum ggml_type) t;
+                const char * name = ggml_type_name(ty);
+                if (name && value == name) {
+                    params.qat_target_quant = ty;
+                    return;
+                }
+            }
+            throw std::runtime_error("Unsupported --qat-target-quant: " + value);
+        }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
         {"-epochs", "--epochs"}, "N",
         string_format("optimizer max # of epochs (default: %d)", params.lr.epochs),
         [](common_params & params, int epochs) { params.lr.epochs = epochs; }

@@ -133,7 +133,7 @@ Tier B.
 
 ### Phase 4 Tier A measurement (2026-04-25 evening)
 
-5-config sweep on 80B (Qwen3-Next-80B-A3B IQ2_XXS, ktq2_1+vtq2_2, on test-rig KVM):
+5-config sweep on 80B (Qwen3-Next-80B-A3B IQ2_XXS, ktq2_1+vtq2_2, on the test rig KVM):
 
 | Config | pp512 | tg128 | Δ tg vs base |
 |---|---:|---:|---:|
@@ -185,7 +185,7 @@ vCPUs when libgomp would otherwise yield.
 **Dense-vs-MoE finding:** 27B dense partial-offload runs at 2.97 t/s while
 35B-A3B MoE on the same hardware runs at 75 t/s. Dense models with tensors
 that don't fit fully in VRAM are crippled by the asymmetric PCIe x16/x4
-bus on test-rig — 50× slowdown, not an optimization opportunity but an
+bus on the test rig — 50× slowdown, not an optimization opportunity but an
 architectural cliff. MoE strategy validated as the right path on this
 hardware.
 

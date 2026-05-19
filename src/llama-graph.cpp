@@ -1002,6 +1002,15 @@ ggml_tensor * llm_graph_context::build_lora_mm(
                 );
 
         ab_cur = ggml_scale(ctx0, ab_cur, scale);
+
+        // Phase C.1: Stage-4 QAT — fake-quantize the LoRA delta so the
+        // forward pass observes the same quantization error the base model
+        // will see at inference. Backward is straight-through identity, so
+        // a/b keep training normally. Disabled by default (COUNT).
+        if (cparams.qat_target_quant != GGML_TYPE_COUNT) {
+            ab_cur = ggml_quantize_dequantize_fake(ctx0, ab_cur, cparams.qat_target_quant);
+        }
+
         res = ggml_add(ctx0, res, ab_cur);
     }
 
@@ -1034,6 +1043,12 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
                 );
 
         ab_cur = ggml_scale(ctx0, ab_cur, scale);
+
+        // Phase C.1: Stage-4 QAT — see build_lora_mm for rationale.
+        if (cparams.qat_target_quant != GGML_TYPE_COUNT) {
+            ab_cur = ggml_quantize_dequantize_fake(ctx0, ab_cur, cparams.qat_target_quant);
+        }
+
         res = ggml_add(ctx0, res, ab_cur);
     }
 
