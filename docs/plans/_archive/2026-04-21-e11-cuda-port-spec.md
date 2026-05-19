@@ -3,7 +3,7 @@
 **Datum:** 2026-04-21
 **Agent:** T4 (Architect, read-only)
 **Target:** `fattn-vec` kernel, VTQ_2 family only (VTQ2_2, VTQ3_2, VTQ4_2)
-**Reference:** E11 kernel in `/workspace/llama-tq/triton-autoresearch/variants_r3.py` on test-rig
+**Reference:** E11 kernel in `/workspace/llama-tq/triton-autoresearch/variants_r3.py` on the test rig
 **Status:** Design spec — no code. Implementation follows (T5).
 
 ---
@@ -325,7 +325,7 @@ Total 8 combos × {ncols=1, ncols=2} = 16 configs. Run `test-backend-ops -o FLAS
 **Branch naming:** `feature/e11-cuda-port-phase3a` off `phase2`.
 
 **Blocker checks before T5 starts:**
-- Confirm Triton E11 script on test-rig is still reproducible (`python variants_r3.py --verify`).
+- Confirm Triton E11 script on the test rig is still reproducible (`python variants_r3.py --verify`).
 - Confirm existing `test-backend-ops FLASH_ATTN_EXT` passes on phase2 HEAD.
 - Confirm `cuobjdump --dump-resource-usage` path on phase2 HEAD shows 249 regs baseline (so we can measure the drop).
 

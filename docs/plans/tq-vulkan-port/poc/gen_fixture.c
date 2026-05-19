@@ -17,7 +17,7 @@
 //   block_ktq2_1 blocks[N]            // raw, 14B each, no padding
 //   float        ref_dequant[N*32]    // CUDA-arithmetic reference
 //
-// Build (host or test-rig):
+// Build (host or test rig):
 //   gcc -O2 -Wall gen_fixture.c -o /tmp/poc-ktq2/gen_fixture -lm
 
 #include <stdio.h>

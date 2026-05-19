@@ -1,6 +1,6 @@
 # Phase 1: V_rows=8 D≥256 fix — Verification Results
 
-Stand: 2026-04-25, commit `584378082`. Build auf test-rig mit libggml-cuda 353MB neu (08:21). Sweep über 35 Configs (5 K × 7 V) für beide Modelle, fa=1, ngl=99, ts=12,12, llama-bench -p 512 -n 128.
+Stand: 2026-04-25, commit `584378082`. Build auf dem test rig mit libggml-cuda 353MB neu (08:21). Sweep über 35 Configs (5 K × 7 V) für beide Modelle, fa=1, ngl=99, ts=12,12, llama-bench -p 512 -n 128.
 
 ## Hypothesis
 
@@ -58,7 +58,7 @@ f16/vtq2_2 vs f16/f16 = -1.1% PP, -1.3% TG → Pareto auf Qwen weiter near-lossl
 
 ## Rohdaten
 
-Logs in `/workspace/sweep-phase1-20260425-0828/` auf test-rig. Zusammengefasst in `bench/plots/benchmarks.csv` (Spalten 6+7: PP/TG aktualisiert für Gemma4-bartowski-IQ2_XXS und Qwen3.6-IQ2_XXS).
+Logs in `/workspace/sweep-phase1-20260425-0828/` auf dem test rig. Zusammengefasst in `bench/plots/benchmarks.csv` (Spalten 6+7: PP/TG aktualisiert für Gemma4-bartowski-IQ2_XXS und Qwen3.6-IQ2_XXS).
 
 ## Nächste Phase
 

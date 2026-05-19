@@ -83,7 +83,7 @@ Falls E2-E5 fehlschlagen: recherchiere ob llama.cpp MoE-expert-routing-state ser
 
 1. **E1** (Agent running) → Root-Cause report
 2. **Based on E1:** pick E2 OR E3 OR E4 OR E5 first
-3. Implement, deploy on test-rig, run measure-prompt-cache-speedup.sh
+3. Implement, deploy on the test rig, run measure-prompt-cache-speedup.sh
 4. If ≥50% speedup: done
 5. If <50%: next experiment
 6. E6 (dense control) after first success
