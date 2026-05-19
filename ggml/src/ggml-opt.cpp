@@ -738,6 +738,33 @@ void ggml_opt_prepare_alloc(
         struct ggml_tensor  * inputs,
         struct ggml_tensor  * outputs) {
     GGML_ASSERT(!opt_ctx->static_graphs);
+
+    // Dynamic-graph mode (llama-context): caller allocates a fresh ctx_compute
+    // per batch and frees the previous one between calls. Any pointer in opt_ctx
+    // that points INTO that old ctx (gb_grad, gb_opt, loss, labels, transient
+    // build_backward intermediate tensors, the allocated_graph cache) is now
+    // dangling — the next opt_build re-creates them in the new ctx, but only
+    // if we explicitly invalidate the cached pointers first. Without this clear,
+    // build_backward_expand on batch 2 dereferences gb_grad's freed memory and
+    // segfaults.
+    //
+    // PERSISTENT state is NOT touched: ctx_static + buf_static (holding the
+    // F32 grad_acc / m / v tensors that carry optimiser momenta across batches),
+    // ctx_cpu + buf_cpu, opt_step_params, and the grad_accs / grad_m / grad_v
+    // vectors themselves (which hold pointers into ctx_static, not into the
+    // per-batch ctx_compute).
+    if (opt_ctx->ctx_compute != ctx_compute) {
+        opt_ctx->gb_grad              = nullptr;
+        opt_ctx->gb_opt               = nullptr;
+        opt_ctx->allocated_graph      = nullptr;
+        opt_ctx->allocated_graph_copy = nullptr;
+        opt_ctx->loss                 = nullptr;
+        opt_ctx->labels               = nullptr;
+        opt_ctx->pred                 = nullptr;
+        opt_ctx->ncorrect             = nullptr;
+        opt_ctx->opt_step_params      = nullptr; // lives in ctx_cpu which opt_build recreates
+    }
+
     opt_ctx->ctx_compute = ctx_compute;
     opt_ctx->gf          = gf;
     opt_ctx->inputs      = inputs;

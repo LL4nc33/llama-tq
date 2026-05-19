@@ -3020,14 +3020,21 @@ void llama_context::opt_epoch_iter(
             struct ggml_context * ctx_compute_opt;
             {
                 const size_t size_gf = ggml_graph_size(gf);
-                // ggml-opt allocates gb_grad/gb_opt with 4x size_gf headroom so backward-expand
-                // (which can grow the graph significantly on MoE + dual-GPU layer-split) has room
-                // for the cross-device copies and split-inputs the scheduler injects. ctx_compute
-                // must allocate matching metadata space — otherwise opt_build's ggml_new_graph_custom
-                // calls run out of ctx and segfault in graph_cpy. See ggml-opt.cpp line 489 for the
-                // matching 4x multiplier.
-                const size_t gb_size_factor = 4;
-                const size_t size_meta = 4*size_gf*ggml_tensor_overhead()
+                // ggml-opt allocates gb_grad/gb_opt with gb_size_factor x size_gf headroom so
+                // backward-expand (which can grow the graph significantly on MoE + dual-GPU
+                // layer-split) has room for cross-device copies, split-inputs, and the many
+                // gradient ops it creates. ctx_compute must hold both the tensor metadata for
+                // those new tensors AND the metadata for two graph objects of the expanded size,
+                // otherwise opt_build's ggml_new_graph_custom calls run out of ctx and segfault
+                // in graph_cpy (silent NULL return from new_object in NDEBUG release builds).
+                //
+                // Tensor count: forward + backward + opt_step. Forward has size_gf nodes;
+                // backward roughly doubles that with grad ops + scatter/reduce kernels; opt_step
+                // adds one node per param. Empirically gb_size_factor=8 covers 35B MoE without
+                // overflow on dual-GPU; bumped from 4 because earlier attempts with 4x still hit
+                // the cap when build_backward_expand fired on the second batch.
+                const size_t gb_size_factor = 8;
+                const size_t size_meta = gb_size_factor * size_gf * ggml_tensor_overhead()
                                        + 2*ggml_graph_overhead_custom(gb_size_factor * size_gf, /*grads = */ true);
                 struct ggml_init_params params = {
                     /*.mem_size   =*/ size_meta,
