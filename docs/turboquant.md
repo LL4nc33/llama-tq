@@ -160,7 +160,7 @@ All measured on the test box: Ryzen 7 3700X host (Zen 2, 8C/16T), KVM guest 12 v
 | llama-tq f16/f16   | 187 | 17.00 |
 | Δ                  | +5% | +9% |
 
-Live numbers (TG, PPL, HellaSwag for all five deploy targets): [`docs/bench/LIVE_NUMBERS.md`](bench/LIVE_NUMBERS.md). Raw CSV: [`bench/plots/benchmarks.csv`](bench/plots/benchmarks.csv).
+Live numbers (TG, PPL, HellaSwag for all five deploy targets): [`docs/bench/LIVE_NUMBERS.md`](bench/LIVE_NUMBERS.md).
 
 ## How It Works
 
@@ -290,7 +290,6 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 | `ggml/src/ggml-cuda/convert.cu`            | CUDA dequant dispatch (contiguous + NC) for KTQ + all VTQ families. |
 | `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ; shared `PQ_CODEBOOK_*` constants. |
 | `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_3`. |
-| `bench/plots/benchmarks.csv`               | Raw benchmark data (single source of truth). |
 | `docs/bench/LIVE_NUMBERS.md`               | Current TG/PPL/HellaSwag for all five deploy targets. |
 
 ## Roadmap
