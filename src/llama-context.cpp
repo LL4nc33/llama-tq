@@ -3020,7 +3020,15 @@ void llama_context::opt_epoch_iter(
             struct ggml_context * ctx_compute_opt;
             {
                 const size_t size_gf = ggml_graph_size(gf);
-                const size_t size_meta = 4*size_gf*ggml_tensor_overhead() + 2*ggml_graph_overhead_custom(size_gf, /*grads = */ true);
+                // ggml-opt allocates gb_grad/gb_opt with 4x size_gf headroom so backward-expand
+                // (which can grow the graph significantly on MoE + dual-GPU layer-split) has room
+                // for the cross-device copies and split-inputs the scheduler injects. ctx_compute
+                // must allocate matching metadata space — otherwise opt_build's ggml_new_graph_custom
+                // calls run out of ctx and segfault in graph_cpy. See ggml-opt.cpp line 489 for the
+                // matching 4x multiplier.
+                const size_t gb_size_factor = 4;
+                const size_t size_meta = 4*size_gf*ggml_tensor_overhead()
+                                       + 2*ggml_graph_overhead_custom(gb_size_factor * size_gf, /*grads = */ true);
                 struct ggml_init_params params = {
                     /*.mem_size   =*/ size_meta,
                     /*.mem_buffer =*/ nullptr,
