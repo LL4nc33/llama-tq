@@ -825,6 +825,18 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         opt_ctx->allocated_graph_copy = graph;
     }
 
+    // Multi-GPU training: when the graph shape switches (gf -> gb_grad -> gb_opt),
+    // sched->galloc must be re-reserved against the new graph before alloc; the
+    // post-reset state has stale buffer ids that segfault in init_tensor (line
+    // ggml-alloc.c:986) when a tensor's buffer_id points at a NULL galloc->buffers
+    // entry. ggml_backend_sched_reserve walks the graph and re-sizes the per-
+    // backend buffer arrays. Inference paths set ctx_compute=nullptr (static_graphs
+    // path) and dup the graph above, which has the same effect; the dynamic-mode
+    // training path has no equivalent and needs an explicit reserve.
+    if (opt_ctx->allocated_graph != graph) {
+        ggml_backend_sched_reserve(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
+    }
+
     ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
     opt_ctx->allocated_graph = graph;
 
