@@ -811,15 +811,7 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
 
     ggml_backend_sched_reset(opt_ctx->backend_sched); // clear allocation of previous graph
 
-    // Phase D: route the dynamic-mode opt path through the same dup_graph + ctx_copy
-    // machinery as static_graphs=true. Without this, dual-GPU LoRA training on a
-    // layer-split MoE accumulates hundreds of cross-device split-inputs per
-    // sched_split_graph pass (one per LoRA pair × OPT_STEP edge), tripping
-    // GGML_SCHED_MAX_SPLIT_INPUTS at ggml-backend.cpp:1345/1351/1353 regardless of
-    // how high that constant is bumped. dup_graph re-instantiates tensors in a
-    // fresh ctx so the scheduler re-collapses co-located tensors onto the same
-    // backend instead of treating each one as a cross-device input.
-    {
+    if (opt_ctx->static_graphs) {
         ggml_init_params params = {
             /*.mem_size   =*/ graph->size*ggml_tensor_overhead() + ggml_graph_overhead_custom(graph->size, graph->grads),
             /*.mem_buffer =*/ nullptr,
@@ -829,10 +821,15 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         opt_ctx->ctx_copy = ggml_init(params);
 
         opt_ctx->allocated_graph_copy = dup_graph(opt_ctx->ctx_copy, graph);
-
-        // Re-reserve so the galloc buffers match the (possibly larger) dup'd graph.
+    } else {
+        opt_ctx->allocated_graph_copy = graph;
+        // Phase D fix: ensure the scheduler's galloc is sized for this graph.
+        // gb_opt has more nodes than gb_grad (one OPT_STEP per trainable param),
+        // so the buffer-id array allocated during the previous gb_grad alloc may
+        // be too small, causing an OOB read in ggml_gallocr_init_tensor that
+        // segfaults at NULL+offset. Re-reserve when the graph shape changes.
         if (opt_ctx->allocated_graph != graph) {
-            ggml_backend_sched_reserve(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
+            ggml_backend_sched_reserve(opt_ctx->backend_sched, graph);
         }
     }
 
