@@ -96,15 +96,16 @@ This bootstraps a fresh LoRA adapter for the MoE expert weights (282 (lora_a, lo
 
 ### What works end-to-end
 
-- **Training** of `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS converges (train loss 4.0 → 2.4 on a 100–500 sample subset) on a single RTX 2060 12 GB. Held-out PPL validation in progress — see [ROADMAP](ROADMAP.md). Train-loss convergence demonstrates the pipeline works end-to-end; capability gains on a real held-out set are the next milestone.
+- **Training** of `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS converges on both **single-GPU** (1× RTX 2060 12 GB, loss 4.0 → 2.4 on a 100–500 sample subset) and **dual-GPU layer-split** (2× RTX 2060 12 GB, `-ts 1,1`, loss 3.25 → 1.38 on a 250-step smoke). Held-out PPL validation in progress — see [ROADMAP](ROADMAP.md). Train-loss convergence demonstrates the pipeline works end-to-end; capability gains on a real held-out set are the next milestone.
 - **Adapter save** via new `llama_adapter_lora_save_to_file` API → portable `.lora.gguf`
 - **Adapter load** via `llama-cli --lora` / `llama-server --lora`
 - **SIGTERM/SIGINT safety flush** so `timeout` hits or Ctrl+C never lose progress
 
 ### Verified hardware envelope
 
-- 1× RTX 2060 12 GB sufficient (single-GPU; multi-GPU split is a follow-up VRAM headroom improvement, not a correctness gate)
-- 11.8 GB peak VRAM with rank=2 + 128 ctx + 282 LoRA pairs
+- 1× RTX 2060 12 GB sufficient (single-GPU)
+- **2× RTX 2060 12 GB layer-split** verified (`-ts 1,1`): loss 3.25 → 1.38 over 222 steps, ~5 GB per GPU
+- 11.8 GB peak VRAM single-GPU with rank=2 + 128 ctx + 282 LoRA pairs
 - ~6:30 min for 100 lines × 3 epochs, ~33 min for 500 lines × 3 epochs
 - Convergence sweet spot: 100-500 sample subsets, lr ≤ 1e-5, 3 epochs. Bigger single-runs (28k lines × 1 epoch) diverge — split into sequential subsets.
 
