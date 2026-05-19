@@ -188,7 +188,7 @@ and accept a separate FA shader family — the spec already budgets for
 
 ### Q5 — Coopmat2 single-element granularity vs warp-cooperative FWHT
 
-**Not addressable at the POC layer (no Ada-class device on the test-rig
+**Not addressable at the POC layer (no Ada-class device on the test rig
 target).** Layer 4 spec §4.3 explicitly contemplates V1 shipping with
 cm2 disabled if the per-WG shmem block-cache strategy exceeds 16 KiB.
 Recommendation: keep cm2 disabled in `supports_op` for V1 unless an Ada

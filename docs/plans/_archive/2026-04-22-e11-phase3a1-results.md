@@ -43,9 +43,9 @@ Kernel code (fattn-vec-vtq2.cuh) keep in-tree for diagnosis. Dispatch hook in fa
 
 ## Notes on Test Setup
 
-- Prod-Server auf test-rig (Qwen3.5-35B-A3B, PID 167491→1600480) wurde für Messung gestoppt und nach 2min wieder hochgefahren
+- Prod-Server auf dem test rig (Qwen3.5-35B-A3B, PID 167491→1600480) wurde für Messung gestoppt und nach 2min wieder hochgefahren
 - test-rig checkout auf `fc1c512c1` + uncommitted E11 files (scp workaround wegen DNS-breakage von vorgestern)
-- 3A1 commits 31c6790c0 + 60258e002 existieren in origin/phase2, sind aber lokal auf test-rig nicht als commit sichtbar
+- 3A1 commits 31c6790c0 + 60258e002 existieren in origin/phase2, sind aber lokal auf dem test rig nicht als commit sichtbar
 
 
 ## Regs-Diagnose (cuobjdump)

@@ -78,7 +78,7 @@ If a future Phase-0 produces unexpected NaN/garbage output (rather than just a s
 If/when both PPL and FA-dispatch agents finish and test-box has free GPUs:
 
 ```bash
-ssh user@host "cd ~/llama-tq && ./build/bin/llama-server \
+ssh test-box "cd ~/llama-tq && ./build/bin/llama-server \
   -m ~/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf \
   -md ~/models/qwen3-0.6b-q8_0.gguf \
   -ngl 99 -ngld all \

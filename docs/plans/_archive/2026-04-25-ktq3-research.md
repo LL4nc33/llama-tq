@@ -96,7 +96,7 @@ Outliers sind in der **rohen K-Domäne**, nicht in Hadamard-K. Der Score läuft 
 
 **Option B — Outlier-Overlay nach Score (Post-Score-Correction).** Encoder speichert `(pos_i, raw_val_i)` und einen Offset-Vector `delta = raw_val_i · row(RHT, pos_i)`. Decoder addiert `Q_f32 · delta` zum Score nach dem main-Sweep. Korrekt rechenbar — aber **+4 dot-products pro Block** (4 dense vectors of length 32 against Q). Cost: ~4× compute des regulären Block-Sweep × 0.125 = +50% K-Score-Latenz. Ist auf D=128 schon dominanter Pfad. NO-GO.
 
-**Option C — Outlier nur für non-MMA, MMA-KTQ ignoriert sie.** KTQ_3 wirkt nur auf älteren GPUs (<sm_80, kein MMA). On Pascal/Turing schon. Aber: MMA-KTQ ist der Production-Pfad auf den Zielen RTX 2060+. KTQ_3 hätte auf test-rig (Turing) tatsächlich Effekt, auf modernen RTX nicht.
+**Option C — Outlier nur für non-MMA, MMA-KTQ ignoriert sie.** KTQ_3 wirkt nur auf älteren GPUs (<sm_80, kein MMA). On Pascal/Turing schon. Aber: MMA-KTQ ist der Production-Pfad auf den Zielen RTX 2060+. KTQ_3 hätte auf dem test rig (Turing) tatsächlich Effekt, auf modernen RTX nicht.
 
 ### 2.4 Erwartete Quality-Gewinne
 
