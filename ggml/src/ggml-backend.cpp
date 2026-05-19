@@ -757,12 +757,10 @@ static bool ggml_is_view_op(enum ggml_op op) {
 // 30 is the upstream inference default; training with backward + opt-step on
 // dual-GPU layer-split produces many more cross-device edges per split
 // (every LoRA A/B pair on a different GPU than the base counts as one input,
-// plus the OPT_STEP-side momenta and the corresponding gradient nodes).
-// Qwen3.6-A35B with 282 LoRA pairs on a 2x12GB layer-split exceeds 128 too;
-// 512 covers the worst case (every LoRA pair crossing the GPU boundary plus
-// optimizer state) with a comfortable margin. Bump further if SIGABRT at
-// ggml-backend.cpp:1351 returns on still larger configurations.
-#define GGML_SCHED_MAX_SPLIT_INPUTS 512
+// plus the OPT_STEP-side momenta). 128 is empirically enough for Qwen3.6-A35B
+// with 282 LoRA pairs on a 2x12GB layer-split. Bump further if SIGABRT at
+// ggml-backend.cpp:1345 returns on larger models.
+#define GGML_SCHED_MAX_SPLIT_INPUTS 128
 #endif
 
 #ifndef GGML_SCHED_MAX_COPIES
