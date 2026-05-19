@@ -493,12 +493,14 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     // + split-input tensors, pushing the total past the hash table size and
     // triggering GGML_HASHSET_FULL in graph_cpy on the next dup (gb_opt).
     //
-    // Pre-emptively allocate gb_grad with a larger size so backward-expand
-    // has headroom. 4x is a generous-but-bounded multiplier (matches what
-    // backward typically expands a forward graph to in MoE+attn models).
+    // Pre-emptively allocate gb_grad with 8x size_gf headroom (matches the
+    // ctx_compute pre-sizing in llama-context). 4x was not enough for batch
+    // 2 builds on 35B MoE — build_backward expands ~2x forward count, plus
+    // dual-GPU scheduler cross-device copies push the total higher.
     {
-        const size_t gb_grad_size = (size_t) opt_ctx->gf->size * 4;
+        const size_t gb_grad_size = (size_t) opt_ctx->gf->size * 8;
         opt_ctx->gb_grad = ggml_new_graph_custom(opt_ctx->ctx_compute, gb_grad_size, /*grads =*/ true);
+        GGML_ASSERT(opt_ctx->gb_grad && "ggml-opt: gb_grad allocation failed — ctx_compute too small");
         ggml_graph_cpy(opt_ctx->gf, opt_ctx->gb_grad);
     }
     ggml_build_backward_expand(opt_ctx->ctx_compute, opt_ctx->gb_grad, opt_ctx->grad_accs.data());
@@ -522,6 +524,7 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     {
         const size_t gb_opt_size = (size_t) opt_ctx->gb_grad->size;
         opt_ctx->gb_opt = ggml_new_graph_custom(opt_ctx->ctx_compute, gb_opt_size, /*grads =*/ true);
+        GGML_ASSERT(opt_ctx->gb_opt && "ggml-opt: gb_opt allocation failed — ctx_compute too small");
         ggml_graph_cpy(opt_ctx->gb_grad, opt_ctx->gb_opt);
     }
 
