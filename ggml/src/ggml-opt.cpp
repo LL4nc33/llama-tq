@@ -485,8 +485,22 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         }
     }
 
-    // gb_grad == graph backward gradients, forward pass, then backward pass to calculate gradients.
-    opt_ctx->gb_grad = ggml_graph_dup(opt_ctx->ctx_compute, opt_ctx->gf, /*force_grads =*/ true);
+    // gb_grad == graph backward gradients: forward pass + backward pass to
+    // compute gradients. `ggml_graph_dup` would allocate dst at `gf->size`
+    // exactly, but `ggml_build_backward_expand` below ADDS many new gradient
+    // nodes to it — and each new tensor consumes a visited_hash_set slot.
+    // On dual-GPU layer-split, the scheduler also injects cross-device copy
+    // + split-input tensors, pushing the total past the hash table size and
+    // triggering GGML_HASHSET_FULL in graph_cpy on the next dup (gb_opt).
+    //
+    // Pre-emptively allocate gb_grad with a larger size so backward-expand
+    // has headroom. 4x is a generous-but-bounded multiplier (matches what
+    // backward typically expands a forward graph to in MoE+attn models).
+    {
+        const size_t gb_grad_size = (size_t) opt_ctx->gf->size * 4;
+        opt_ctx->gb_grad = ggml_new_graph_custom(opt_ctx->ctx_compute, gb_grad_size, /*grads =*/ true);
+        ggml_graph_cpy(opt_ctx->gf, opt_ctx->gb_grad);
+    }
     ggml_build_backward_expand(opt_ctx->ctx_compute, opt_ctx->gb_grad, opt_ctx->grad_accs.data());
 
     if (opt_ctx->buf_static) {
@@ -500,8 +514,16 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
 
     GGML_ASSERT(opt_ctx->build_type_alloc == GGML_OPT_BUILD_TYPE_OPT);
 
-    // gb_opt == graph backward optimize, forward pass, then backward pass to calculate gradients, then optimizer step.
-    opt_ctx->gb_opt = ggml_graph_dup(opt_ctx->ctx_compute, opt_ctx->gb_grad, /*force_grads =*/ true);
+    // gb_opt == graph backward + optimizer step. Same hash-set sizing issue
+    // as gb_grad: the for-loop below adds an OPT_STEP node per trainable
+    // param. Use gb_grad's already-expanded size (which has the right
+    // headroom) instead of dup'ing at gb_grad->size, which would be the
+    // original gf->size and crash on the next hash insert.
+    {
+        const size_t gb_opt_size = (size_t) opt_ctx->gb_grad->size;
+        opt_ctx->gb_opt = ggml_new_graph_custom(opt_ctx->ctx_compute, gb_opt_size, /*grads =*/ true);
+        ggml_graph_cpy(opt_ctx->gb_grad, opt_ctx->gb_opt);
+    }
 
     opt_ctx->opt_step_params = ggml_new_tensor_1d(opt_ctx->ctx_cpu, GGML_TYPE_F32, need_momenta ? 7 : 2);
     ggml_tensor * adamw_params = opt_ctx->opt_step_params;
