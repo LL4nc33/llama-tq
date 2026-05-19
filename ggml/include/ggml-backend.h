@@ -345,6 +345,12 @@ extern "C" {
     // The correct way to use this API is to discard the deallocated tensors and create new ones.
     GGML_API void                 ggml_backend_sched_reset(ggml_backend_sched_t sched);
 
+    // Force the next sched_alloc_graph to take the realloc path even when nothing
+    // has structurally changed. Used by training (ggml-opt) where the same
+    // sched is reused across graph-shape switches (gf -> gb_grad -> gb_opt)
+    // and the cached prev_*_backend_ids would otherwise mask the change.
+    GGML_API void                 ggml_backend_sched_invalidate_prev_backend_ids(ggml_backend_sched_t sched);
+
     // Set a callback to be called for each resulting node during graph compute
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);
 

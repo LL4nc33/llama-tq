@@ -825,6 +825,17 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         opt_ctx->allocated_graph_copy = graph;
     }
 
+    // Multi-GPU training graph-shape switching (gf -> gb_grad -> gb_opt):
+    // The scheduler caches prev_*_backend_ids from the last alloc; on a
+    // shape switch those still match for overlapping indices and mask the
+    // change, so sched_alloc_splits skips the reserve-and-retry path. The
+    // resulting init_tensor then segfaults on a stale buffer_id whose
+    // galloc->buffers[] slot is NULL. Invalidate prev_*_backend_ids so the
+    // next alloc_splits always takes the realloc path on a shape change.
+    if (opt_ctx->allocated_graph != graph) {
+        ggml_backend_sched_invalidate_prev_backend_ids(opt_ctx->backend_sched);
+    }
+
     ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
     opt_ctx->allocated_graph = graph;
 
