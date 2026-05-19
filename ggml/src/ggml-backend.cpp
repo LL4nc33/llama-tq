@@ -1864,13 +1864,24 @@ void ggml_backend_sched_invalidate_prev_backend_ids(ggml_backend_sched_t sched) 
     // buffer_ids for the previous shape's wider node range. The next
     // init_tensor then hits galloc->buffers[buffer_id] == NULL.
     //
-    // Setting prev_*_backend_ids to -1 forces backend_ids_changed=true on the
-    // very next alloc, which triggers gallocr_reserve_n + retry inside
-    // sched_alloc_splits without us having to call sched_reserve manually
-    // (that path corrupts state when invoked from inside ggml_opt_alloc).
+    // sched_split_graph swaps (node_backend_ids, prev_node_backend_ids) at the
+    // start, so the value that ends up in prev_*_backend_ids for the splits
+    // comparator is whatever is in node_backend_ids when this is called. Set
+    // both arrays to -1 so the comparator sees the sentinel after the swap
+    // regardless of split_graph's internal bookkeeping.
+    if (sched->node_backend_ids) {
+        for (int i = 0; i < sched->nodes_size; i++) {
+            sched->node_backend_ids[i] = -1;
+        }
+    }
     if (sched->prev_node_backend_ids) {
         for (int i = 0; i < sched->nodes_size; i++) {
             sched->prev_node_backend_ids[i] = -1;
+        }
+    }
+    if (sched->leaf_backend_ids) {
+        for (int i = 0; i < sched->nodes_size; i++) {
+            sched->leaf_backend_ids[i] = -1;
         }
     }
     if (sched->prev_leaf_backend_ids) {
