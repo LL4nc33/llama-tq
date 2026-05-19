@@ -333,9 +333,6 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 
 - **Ministral-3B with KTQ K**: produces gibberish output. Root cause is on the K-quant path (head-dim / GQA layout interaction); unresolved. Workaround: `--cache-type-k q8_0 --cache-type-v q8_0` for this model.
 - **VTQ v1 on Qwen3-Next-80B with `-b 1 -ub 1`**: can crash via fused Gated Delta Net interaction. Tracked separately. Batched mode and other models unaffected.
-- **`vtq3_1` is 4.0 bpw, not 3.5** — earlier doc revisions had this wrong. Block layout is `[d:2B][qs:14B 3-bit indices]` with internal padding.
-- **`vtq2_2` index-rate 2.0 vs structural 2.25 bpw** — index-rate is bare quantizer width; structural includes the 16-bit `d` + 16-bit `start_state` overhead per 128-sample block. Older docs (pre Task #143) cite 2.06 / 132 B under the previous `QK_VTQ_TRELLIS=512` layout.
-- **gpt-oss-20b head_dim=64**: hit the upstream `head_dim % blck_size` check (false-positive for VTQ_2, which quantizes along the sequence axis, not D). Fixed in commit `c818f6c84` (2026-04-27).
 
 ## References
 
