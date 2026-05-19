@@ -5,8 +5,8 @@
 
 A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork with two independent additions:
 
-1. **TurboQuant** — independent K and V cache type families with Hadamard-domain Q·K dot product and Trellis-quantized V cache. 38% smaller KV than upstream's most aggressive quant at lossless quality.
-2. **MoE LoRA fine-tuning directly on quantised GGUFs** — an extended `llama-finetune` that trains LoRA adapters on the expert weights of hybrid Mamba/MoE architectures (Qwen3.5/3.6-A35-A3B, Nemotron-3-MoE, Bamba, RWKV-hybrids) without dequantising the base. Adapter saves as a portable `.lora.gguf` loadable via `--lora`.
+1. **TurboQuant** — independent K and V cache type families with Hadamard-domain Q·K dot product and Trellis-quantized V cache. **2.78 bpw KV at −0.33% PPL vs f16** (wikitext-2, within stderr) — the same quality as `f16/f16` at a quarter of the memory.
+2. **MoE LoRA fine-tuning directly on quantised GGUFs** — an extended `llama-finetune` that trains LoRA adapters on the expert weights of hybrid Mamba/MoE architectures (Qwen3.5/3.6-A35-A3B, Nemotron-3-MoE, Bamba, RWKV-hybrids) without dequantising the base. Adapter saves as a portable `.lora.gguf` loadable via `--lora`. **In-place LoRA fine-tune of a hybrid MoE+SSM model directly on a 2-bit GGUF, on a single 12 GB GPU.**
 
 ---
 
@@ -96,7 +96,7 @@ This bootstraps a fresh LoRA adapter for the MoE expert weights (282 (lora_a, lo
 
 ### What works end-to-end
 
-- **Training** of `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS converges (loss 4.0 → 2.4) on a single RTX 2060 12 GB
+- **Training** of `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS converges (train loss 4.0 → 2.4 on a 100–500 sample subset) on a single RTX 2060 12 GB. Held-out PPL validation in progress — see [ROADMAP](ROADMAP.md). Train-loss convergence demonstrates the pipeline works end-to-end; capability gains on a real held-out set are the next milestone.
 - **Adapter save** via new `llama_adapter_lora_save_to_file` API → portable `.lora.gguf`
 - **Adapter load** via `llama-cli --lora` / `llama-server --lora`
 - **SIGTERM/SIGINT safety flush** so `timeout` hits or Ctrl+C never lose progress
