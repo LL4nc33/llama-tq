@@ -823,6 +823,14 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         opt_ctx->allocated_graph_copy = dup_graph(opt_ctx->ctx_copy, graph);
     } else {
         opt_ctx->allocated_graph_copy = graph;
+        // Phase D fix: ensure the scheduler's galloc is sized for this graph.
+        // gb_opt has more nodes than gb_grad (one OPT_STEP per trainable param),
+        // so the buffer-id array allocated during the previous gb_grad alloc may
+        // be too small, causing an OOB read in ggml_gallocr_init_tensor that
+        // segfaults at NULL+offset. Re-reserve when the graph shape changes.
+        if (opt_ctx->allocated_graph != graph) {
+            ggml_backend_sched_reserve(opt_ctx->backend_sched, graph);
+        }
     }
 
     ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
