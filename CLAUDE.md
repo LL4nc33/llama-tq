@@ -46,10 +46,10 @@ IMPORTANT: Ensure you've thoroughly reviewed the [AGENTS.md](AGENTS.md) file bef
 
 - **Commit email:** `85998242+LL4nc33@users.noreply.github.com`. This is the
   noreply form for GitHub user `LL4nc33` (id 85998242) — required for the avatar
-  to render on GitHub. Already persisted in `.git/config` on `test-rig:~/llama-tq`.
+  to render on GitHub. Already persisted in `.git/config` on `the test rig (~/llama-tq)`.
 - **Commit name:** `LL4nc33`.
 - **No `Co-Authored-By:` lines.** Strip any tool-default trailer.
-- **Push path:** `test-rig` has no GitHub credential. Workflow for push:
+- **Push path:** the test rig has no GitHub credential. Workflow for push:
   1. clone the repo to a tmp dir on the WSL side,
   2. `git fetch <user>@example.local:/workspace/llama-tq turboquant`,
   3. `git merge --ff-only FETCH_HEAD` (or `git reset --hard FETCH_HEAD`),
@@ -88,7 +88,7 @@ IMPORTANT: Ensure you've thoroughly reviewed the [AGENTS.md](AGENTS.md) file bef
   performance levers (mmvq `__dp4a` tiling, S199 Sparse-K-Skip, FA register
   pressure audit) are the v6 scope.
 
-## 9. SSH & Service Map (test-rig)
+## 9. SSH & Service Map (test rig)
 
 - `localhost:8791` — `OidaNice-GPT-34B` (Qwen3.6-35B-A3B-IQ2_XXS hardlink),
   default deploy. KV-cache is `ktq2 + vtq2_2` since the 2026-05-03 EOS-cutoff fix

@@ -1537,6 +1537,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.tq_no_deferred_v  = params.tq_no_deferred_v;
     cparams.tq_profile_heads  = params.tq_profile_heads;
     cparams.xquant_enabled    = params.xquant_enabled;
+    cparams.qat_target_quant  = params.qat_target_quant;
 
     return cparams;
 }

@@ -571,6 +571,12 @@ struct common_params {
     std::string expert_hotness_path;
     bool xquant_enabled = false;    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
 
+    // Phase C.1 — Stage-4 QAT (Quantization-Aware Training): if not COUNT,
+    // wrap the LoRA delta in fake-quantize-dequantize so the adapter learns
+    // to compensate for the base model's quantization error. Active only
+    // when --lora-train-regex AND --qat-target-quant are both set.
+    enum ggml_type qat_target_quant = GGML_TYPE_COUNT;
+
     // Trick 2 PR2: per-layer mixed precision V-cache
     // When tq_v_layers is empty, cache_type_v is used uniformly (backward compatible).
     // OPT-IN: tq_mixed_v must be true (via --tq-mixed-v or LLAMA_ARG_TQ_MIXED_V=1) for any
@@ -612,6 +618,10 @@ struct common_params {
     std::string lora_train_regex;
     int         lora_train_rank  = 16;
     float       lora_train_alpha = 32.0f;
+    // Periodic mid-training checkpoint (C.4): if > 0, the adapter is flushed
+    // every N training batches. Useful for long runs where a mid-batch crash
+    // would otherwise discard everything since the last epoch boundary.
+    int         checkpoint_every_n_batches = 0;
                                   // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
                                   // Default empty = train every F32 parameter (original behavior).
 
