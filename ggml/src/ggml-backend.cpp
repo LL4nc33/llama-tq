@@ -786,11 +786,12 @@ struct ggml_backend_sched {
     int                 * hv_tensor_backend_ids; // [hash_set.size]
     struct ggml_tensor ** hv_tensor_copies;      // [hash_set.size][n_backends][n_copies]
 
-    int * node_backend_ids; // [graph_size]
-    int * leaf_backend_ids; // [graph_size]
+    int * node_backend_ids; // [nodes_size]
+    int * leaf_backend_ids; // [nodes_size]
 
-    int * prev_node_backend_ids; // [graph_size]
-    int * prev_leaf_backend_ids; // [graph_size]
+    int * prev_node_backend_ids; // [nodes_size]
+    int * prev_leaf_backend_ids; // [nodes_size]
+    int   nodes_size; // capacity of the four arrays above
 
     // copy of the graph with modified inputs
     struct ggml_cgraph graph;
@@ -1493,16 +1494,27 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
     bool backend_ids_changed = false;
     for (int i = 0; i < sched->graph.n_nodes; i++) {
-        if (sched->node_backend_ids[i] != sched->prev_node_backend_ids[i] &&
-            sched->bufts[sched->node_backend_ids[i]] != sched->bufts[sched->prev_node_backend_ids[i]]) {
+        const int prev_id = sched->prev_node_backend_ids[i];
+        if (prev_id < 0) {
+            // sentinel from sched_invalidate_prev_backend_ids
+            backend_ids_changed = true;
+            break;
+        }
+        if (sched->node_backend_ids[i] != prev_id &&
+            sched->bufts[sched->node_backend_ids[i]] != sched->bufts[prev_id]) {
             backend_ids_changed = true;
             break;
         }
     }
     if (!backend_ids_changed) {
         for (int i = 0; i < sched->graph.n_leafs; i++) {
-            if (sched->leaf_backend_ids[i] != sched->prev_leaf_backend_ids[i] &&
-                sched->bufts[sched->leaf_backend_ids[i]] != sched->bufts[sched->prev_leaf_backend_ids[i]]) {
+            const int prev_id = sched->prev_leaf_backend_ids[i];
+            if (prev_id < 0) {
+                backend_ids_changed = true;
+                break;
+            }
+            if (sched->leaf_backend_ids[i] != prev_id &&
+                sched->bufts[sched->leaf_backend_ids[i]] != sched->bufts[prev_id]) {
                 backend_ids_changed = true;
                 break;
             }
@@ -1766,6 +1778,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->leaf_backend_ids = (int *) calloc(nodes_size, sizeof(sched->leaf_backend_ids[0]));
     sched->prev_node_backend_ids = (int *) calloc(nodes_size, sizeof(sched->prev_node_backend_ids[0]));
     sched->prev_leaf_backend_ids = (int *) calloc(nodes_size, sizeof(sched->prev_leaf_backend_ids[0]));
+    sched->nodes_size = (int) nodes_size;
 
     sched->debug_graph_size = 0;
     sched->debug_prev_graph_size = 0;
@@ -1839,6 +1852,32 @@ void ggml_backend_sched_reset(ggml_backend_sched_t sched) {
         sched->is_reset = true;
     }
     sched->is_alloc = false;
+}
+
+void ggml_backend_sched_invalidate_prev_backend_ids(ggml_backend_sched_t sched) {
+    GGML_ASSERT(sched);
+    // sched_alloc_splits compares node_backend_ids vs prev_node_backend_ids to
+    // decide whether to take the realloc path. When training switches graph
+    // shape (gf -> gb_grad -> gb_opt), the cached prev_* arrays from the prior
+    // shape may still match node_backend_ids for the new shape's overlapping
+    // indices, leaving the realloc path untaken and the galloc carrying stale
+    // buffer_ids for the previous shape's wider node range. The next
+    // init_tensor then hits galloc->buffers[buffer_id] == NULL.
+    //
+    // Setting prev_*_backend_ids to -1 forces backend_ids_changed=true on the
+    // very next alloc, which triggers gallocr_reserve_n + retry inside
+    // sched_alloc_splits without us having to call sched_reserve manually
+    // (that path corrupts state when invoked from inside ggml_opt_alloc).
+    if (sched->prev_node_backend_ids) {
+        for (int i = 0; i < sched->nodes_size; i++) {
+            sched->prev_node_backend_ids[i] = -1;
+        }
+    }
+    if (sched->prev_leaf_backend_ids) {
+        for (int i = 0; i < sched->nodes_size; i++) {
+            sched->prev_leaf_backend_ids[i] = -1;
+        }
+    }
 }
 
 void ggml_backend_sched_reserve_size(ggml_backend_sched_t sched, struct ggml_cgraph * measure_graph, size_t * sizes) {
