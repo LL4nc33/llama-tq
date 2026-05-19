@@ -805,8 +805,13 @@ struct ggml_backend_sched {
     int cur_copy;
     int next_copy;
     ggml_backend_event_t events[GGML_SCHED_MAX_BACKENDS][GGML_SCHED_MAX_COPIES];
-    struct ggml_tensor * graph_inputs[GGML_SCHED_MAX_SPLIT_INPUTS];
+    // graph_inputs grows on demand. Inference graphs typically stay well under
+    // the historical fixed limit of 30, but training graphs (forward+backward+
+    // opt_step on a layer-split MoE) can produce hundreds of cross-device
+    // entries — too many for any reasonable compile-time bound.
+    struct ggml_tensor ** graph_inputs;
     int n_graph_inputs;
+    int graph_inputs_capacity;
 
     struct ggml_context * ctx;
 
@@ -1342,7 +1347,13 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                             SET_CAUSE(tensor_copy, "4.cpy");
                         }
                         int n_graph_inputs = sched->n_graph_inputs++;
-                        GGML_ASSERT(n_graph_inputs < GGML_SCHED_MAX_SPLIT_INPUTS);
+                        if (n_graph_inputs >= sched->graph_inputs_capacity) {
+                            sched->graph_inputs_capacity *= 2;
+                            sched->graph_inputs = (struct ggml_tensor **) realloc(
+                                sched->graph_inputs,
+                                sched->graph_inputs_capacity * sizeof(sched->graph_inputs[0]));
+                            GGML_ASSERT(sched->graph_inputs != NULL);
+                        }
                         sched->graph_inputs[n_graph_inputs] = src;
                     }
                 }
@@ -1766,6 +1777,12 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->splits = (ggml_backend_sched_split *) calloc(initial_splits_capacity, sizeof(sched->splits[0]));
     sched->splits_capacity = initial_splits_capacity;
 
+    const int initial_graph_inputs_capacity = GGML_SCHED_MAX_SPLIT_INPUTS;
+    sched->graph_inputs = (struct ggml_tensor **) calloc(initial_graph_inputs_capacity, sizeof(sched->graph_inputs[0]));
+    GGML_ASSERT(sched->graph_inputs != NULL);
+    sched->graph_inputs_capacity = initial_graph_inputs_capacity;
+    sched->n_graph_inputs = 0;
+
     for (int b = 0; b < n_backends; b++) {
         sched->backends[b] = backends[b];
         sched->bufts[b] = bufts ? bufts[b] : ggml_backend_get_default_buffer_type(backends[b]);
@@ -1799,6 +1816,7 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
     ggml_free(sched->ctx);
     ggml_hash_set_free(&sched->hash_set);
     free(sched->splits);
+    free(sched->graph_inputs);
     free(sched->hv_tensor_backend_ids);
     free(sched->hv_tensor_copies);
     free(sched->node_backend_ids);
