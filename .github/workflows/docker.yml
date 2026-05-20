@@ -26,10 +26,8 @@ permissions:
 
 jobs:
   create_tag:
-    name: Create and push git tag
+    name: Derive image tag name
     runs-on: ubuntu-slim
-    permissions:
-      contents: write
     outputs:
       source_tag: ${{ steps.srctag.outputs.name }}
 
@@ -46,12 +44,11 @@ jobs:
         env:
           BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
 
-      - name: Create and push git tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git tag ${{ steps.srctag.outputs.name }} || exit 0
-          git push origin ${{ steps.srctag.outputs.name }} || exit 0
+      # NOTE: this job intentionally does NOT create or push a git tag.
+      # The upstream workflow pushed a daily git tag here, which flooded the
+      # fork with thousands of build tags. We only need the derived name to
+      # label the Docker image; the checkout below uses the branch ref, not a
+      # freshly-created tag.
 
   prepare_matrices:
     name: Prepare Docker matrices
@@ -68,21 +65,18 @@ jobs:
           set -euo pipefail
 
           # Keep all build targets in one place and derive merge targets from it.
+          # Trimmed from the upstream 13-target matrix to the two targets this
+          # fork actually ships. TurboQuant is CUDA-only (sm_75+), so the
+          # primary artifact is the CUDA amd64 image; the CPU amd64 image is a
+          # no-GPU fallback. arm64 / s390x / musa / intel / rocm / openvino /
+          # vulkan targets are dropped — arm64 CUDA in particular timed out the
+          # daily build (TurboQuant template instances are heavy), and none of
+          # them are part of the supported envelope. Re-add a row here if a
+          # platform becomes a real target.
           cat > build-matrix.json <<'JSON'
           [
-            { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" },
-            { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "cpu", "dockerfile": ".devops/s390x.Dockerfile", "platforms": "linux/s390x", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04-s390x" },
             { "tag": "cuda cuda12", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "12.8.1", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "cuda cuda12", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "12.8.1", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "cuda13", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "13.1.1", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "cuda13", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "13.1.1", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "musa", "dockerfile": ".devops/musa.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "intel", "dockerfile": ".devops/intel.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "vulkan", "dockerfile": ".devops/vulkan.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" },
-            { "tag": "vulkan", "dockerfile": ".devops/vulkan.Dockerfile", "platforms": "linux/arm64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04-arm" },
-            { "tag": "rocm", "dockerfile": ".devops/rocm.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
-            { "tag": "openvino", "dockerfile": ".devops/openvino.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" }
+            { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" }
           ]
           JSON
 
@@ -135,7 +129,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ needs.create_tag.outputs.source_tag }}
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Set up QEMU
         if: ${{ contains(matrix.config.platforms, 'linux/amd64') }}
