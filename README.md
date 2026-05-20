@@ -121,14 +121,31 @@ Full mechanics + iteration log: [docs/finetune.md](docs/finetune.md).
 ---
 
 <details>
-<summary><h2>Build</h2></summary>
+<summary><h2>Deploy</h2></summary>
 
-Standard llama.cpp build — see the [upstream build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md). TurboQuant kernels are CUDA-only (sm_75+ tested on Turing; should work on Ampere/Ada/Hopper). The Vulkan backend is a work-in-progress on the `vulkan` branch.
+### CPU — Docker (no build)
+
+A CPU-only `linux/amd64` image is published to GHCR on every change:
 
 ```bash
-cmake -B build -DGGML_CUDA=ON
-cmake --build build -j2 --target llama-server llama-finetune
+docker pull ghcr.io/ll4nc33/llama-tq:server
+docker run -p 8080:8080 -v /path/to/models:/models \
+  ghcr.io/ll4nc33/llama-tq:server -m /models/your-model.gguf
 ```
+
+Tags: `:server` (HTTP server), `:full` (server + CLI + tools), `:light` (CLI only).
+
+### CUDA / TurboQuant — build from source
+
+TurboQuant kernels are CUDA-only (sm_75+ tested on Turing; should work on Ampere/Ada/Hopper), and the CUDA image is **not** published — compiling the TurboQuant template instances exceeds the free CI runner's time budget. Build it yourself instead:
+
+```bash
+git clone https://github.com/LL4nc33/llama-tq && cd llama-tq
+cmake -B build -DGGML_CUDA=ON
+cmake --build build -j"$(nproc)" --target llama-server llama-finetune
+```
+
+`-j"$(nproc)"` uses all cores — expect ~20-30 min on a typical multi-core machine. See the [upstream build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) for prerequisites. The Vulkan backend is a work-in-progress on the `vulkan` branch.
 
 </details>
 

@@ -67,15 +67,15 @@ jobs:
           # Keep all build targets in one place and derive merge targets from it.
           # Trimmed from the upstream 13-target matrix to the two targets this
           # fork actually ships. TurboQuant is CUDA-only (sm_75+), so the
-          # primary artifact is the CUDA amd64 image; the CPU amd64 image is a
-          # no-GPU fallback. arm64 / s390x / musa / intel / rocm / openvino /
-          # vulkan targets are dropped — arm64 CUDA in particular timed out the
-          # daily build (TurboQuant template instances are heavy), and none of
-          # them are part of the supported envelope. Re-add a row here if a
-          # platform becomes a real target.
+          # CPU amd64 only. The CUDA image was dropped from CI: compiling the
+          # TurboQuant template instances for full+light+server targets
+          # exceeds the free GitHub runner's time budget (>60 min, even pinned
+          # to sm_75/80/86/89 amd64-only). CUDA users build from source instead
+          # — see the README, it is ~20-30 min with `-j$(nproc)` on normal
+          # hardware. Re-add a CUDA row here if a beefier (self-hosted) runner
+          # becomes available.
           cat > build-matrix.json <<'JSON'
           [
-            { "tag": "cuda cuda12", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "12.8.1", "cuda_arch": "75-real;80-real;86-real;89-real", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
             { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" }
           ]
           JSON
