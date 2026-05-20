@@ -75,7 +75,7 @@ jobs:
           # platform becomes a real target.
           cat > build-matrix.json <<'JSON'
           [
-            { "tag": "cuda cuda12", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "12.8.1", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
+            { "tag": "cuda cuda12", "dockerfile": ".devops/cuda.Dockerfile", "cuda_version": "12.8.1", "cuda_arch": "75-real;80-real;86-real;89-real", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04" },
             { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" }
           ]
           JSON
@@ -212,6 +212,7 @@ jobs:
           build-args: |
             ${{ matrix.config.ubuntu_version && format('UBUNTU_VERSION={0}', matrix.config.ubuntu_version) || '' }}
             ${{ matrix.config.cuda_version && format('CUDA_VERSION={0}', matrix.config.cuda_version) || '' }}
+            ${{ matrix.config.cuda_arch && format('CUDA_DOCKER_ARCH={0}', matrix.config.cuda_arch) || '' }}
           # using github experimental cache
           #cache-from: type=gha
           #cache-to: type=gha,mode=max
@@ -236,6 +237,7 @@ jobs:
           build-args: |
             ${{ matrix.config.ubuntu_version && format('UBUNTU_VERSION={0}', matrix.config.ubuntu_version) || '' }}
             ${{ matrix.config.cuda_version && format('CUDA_VERSION={0}', matrix.config.cuda_version) || '' }}
+            ${{ matrix.config.cuda_arch && format('CUDA_DOCKER_ARCH={0}', matrix.config.cuda_arch) || '' }}
           # using github experimental cache
           #cache-from: type=gha
           #cache-to: type=gha,mode=max
@@ -260,6 +262,7 @@ jobs:
           build-args: |
             ${{ matrix.config.ubuntu_version && format('UBUNTU_VERSION={0}', matrix.config.ubuntu_version) || '' }}
             ${{ matrix.config.cuda_version && format('CUDA_VERSION={0}', matrix.config.cuda_version) || '' }}
+            ${{ matrix.config.cuda_arch && format('CUDA_DOCKER_ARCH={0}', matrix.config.cuda_arch) || '' }}
           # using github experimental cache
           #cache-from: type=gha
           #cache-to: type=gha,mode=max
