@@ -37,6 +37,28 @@ using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
 
+// how many output rows (logits/embeddings) a single batch can request; the
+// compute graph is reserved for this many rows instead of n_batch
+static uint32_t server_n_outputs_max(const common_params & params) {
+    const uint32_t n_batch = params.n_batch;
+
+    if (params.embedding ||
+            (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED && params.pooling_type != LLAMA_POOLING_TYPE_NONE)) {
+        return n_batch;
+    }
+
+    // speculative decoding verifies drafts and some modes (MTP, DFlash, Eagle3) read
+    // hidden states of every prompt token, so keep the full batch for all of them
+    const bool any_spec = std::any_of(params.speculative.types.begin(), params.speculative.types.end(),
+            [](common_speculative_type t) { return t != COMMON_SPECULATIVE_TYPE_NONE; });
+    if (any_spec) {
+        return n_batch;
+    }
+
+    // plain generation: one output row per sequence
+    return std::max<uint32_t>(1, std::min<uint32_t>(n_batch, params.n_parallel));
+}
+
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
     SLOT_STATE_IDLE,
@@ -651,6 +673,7 @@ private:
         SRV_INF("loading model '%s'\n", params.model.path.c_str());
 
         params_base = params;
+        params_base.n_outputs_max = server_n_outputs_max(params_base);
 
         llama_init = common_init_from_params(params_base);
 
