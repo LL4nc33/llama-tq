@@ -2853,7 +2853,21 @@ private:
             // Strategy: clear draft KV for sequences in this batch, then feed the full
             // prompt + token range up to current position. This avoids M-RoPE position
             // divergence after the prefill phase of the target.
-            (void)0; // draft mirror disabled — needs upstream spec_ckpt port to be correct.
+            // Sync draft KV cache via state_seq copy from target (preserves M-RoPE positions).
+            // This is the minimal port of upstream's slot.spec_ckpt.update_dft/load_dft pattern.
+            if (ctx_dft && ret == 0) {
+                for (server_slot & sl : slots) {
+                    if (!sl.is_processing() || !sl.spec) continue;
+                    const llama_seq_id sid = sl.id;
+                    const size_t sz = llama_state_seq_get_size_ext(ctx, sid, 0);
+                    if (sz == 0) continue;
+                    std::vector<uint8_t> buf(sz);
+                    const size_t got = llama_state_seq_get_data_ext(ctx, buf.data(), sz, sid, 0);
+                    if (got != sz) continue;
+                    llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sid, -1, -1);
+                    llama_state_seq_set_data_ext(ctx_dft.get(), buf.data(), sz, sid, 0);
+                }
+            }
 
             metrics.on_decoded(slots);
 
