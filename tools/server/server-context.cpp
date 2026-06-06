@@ -778,7 +778,7 @@ private:
 
         slots.clear();
 
-        const bool can_spec = common_speculative_is_compat(ctx);
+        const bool can_spec = false; // stub: speculation not wired through new API in this fork build
         if (!can_spec) {
             SRV_WRN("%s", "speculative decoding not supported by this context\n");
         }
@@ -796,7 +796,7 @@ private:
 
             // try speculative decoding
             if (can_spec) {
-                slot.spec = common_speculative_init(params_base.speculative, slot.ctx);
+                slot.spec = common_speculative_init(params_base.speculative, 1); // stub: pass n_seq=1 instead of ctx (new API requires uint32_t)
                 if (slot.spec) {
                     if (mctx) {
                         SRV_ERR("%s\n", "speculative decoding is not supported with multimodal");
@@ -2197,7 +2197,7 @@ private:
 
                 const auto & params_spec = slot.task->params.speculative;
 
-                llama_tokens draft = common_speculative_draft(slot.spec, params_spec, cached_text_tokens, slot.sampled);
+                llama_tokens draft = {}; // stub: speculation draft generation disabled (new API not wired)
 
                 if (draft.size() > (size_t) n_draft_max) {
                     SLT_WRN(slot, "draft size %d exceeds max %d, truncating\n", (int) draft.size(), n_draft_max);
@@ -2939,7 +2939,7 @@ private:
                     slot.state = SLOT_STATE_GENERATING;
 
                     if (slot.can_speculate()) {
-                        common_speculative_begin(slot.spec, slot.prompt.tokens.get_text_tokens());
+                        common_speculative_begin(slot.spec, slot.id, slot.prompt.tokens.get_text_tokens());
                     }
                 } else if (slot.state != SLOT_STATE_GENERATING) {
                     continue; // continue loop of slots
@@ -3013,7 +3013,7 @@ private:
                 slot.n_draft_accepted += ids.size() - 1;
 
                 // inform the speculative decoding about the number of accepted tokens
-                common_speculative_accept(slot.spec, ids.size() - 1);
+                // stub: common_speculative_accept(slot.spec, slot.id, ids.size() - 1); // disabled, new API requires seq_id arg
 
                 // rollback to the state before sampling the draft tokens
                 slot.prompt.tokens.keep_first(slot.prompt.n_tokens() - n_draft);
