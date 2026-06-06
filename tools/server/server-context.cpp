@@ -2849,6 +2849,12 @@ private:
 
             const int ret = llama_decode(ctx, batch_view);
 
+            // Mirror the same batch into the draft context to keep its KV cache in sync.
+            // Strategy: clear draft KV for sequences in this batch, then feed the full
+            // prompt + token range up to current position. This avoids M-RoPE position
+            // divergence after the prefill phase of the target.
+            (void)0; // draft mirror disabled — needs upstream spec_ckpt port to be correct.
+
             metrics.on_decoded(slots);
 
             if (ret != 0) {
