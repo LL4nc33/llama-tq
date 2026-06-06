@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <algorithm>
 #include <vector>
 #include <map>
 
@@ -170,9 +171,10 @@ enum common_params_sampling_config : uint64_t {
 
 enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_NONE,          // no speculative decoding
-    COMMON_SPECULATIVE_TYPE_DRAFT,         // draft model
-    COMMON_SPECULATIVE_TYPE_EAGLE3,        // eagle draft model
-    COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding
+    COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE,  // standalone draft model speculative decoding
+    COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3,  // Eagle3 speculative decoding
+    COMMON_SPECULATIVE_TYPE_DRAFT_MTP,     // Multi-token prediction
+    COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,  // simple self-speculative decoding based on n-grams
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,   // self-speculative decoding with n-gram keys only
     COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, // self-speculative decoding with n-gram keys and 4 m-gram values
     COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
@@ -309,52 +311,99 @@ struct common_params_model {
 
 struct common_ngram_mod;
 
-struct common_params_speculative {
-    common_speculative_type type = COMMON_SPECULATIVE_TYPE_NONE; // type of speculative decoding
+// draft-model-based speculative decoding parameters
+struct common_params_speculative_draft {
+    int32_t n_max = 16; // maximum number of tokens to draft during speculative decoding
+    int32_t n_min = 0;  // minimum number of draft tokens to use for speculative decoding
 
-    // general-purpose speculative decoding parameters
+    float p_split = 0.1f;  // speculative decoding split probability
+    float p_min   = 0.75f; // minimum speculative decoding probability (greedy) // TODO: change default to 0.0f
 
-    int32_t n_max   = 16; // maximum number of tokens to draft during speculative decoding
-    int32_t n_min   = 0; // minimum number of draft tokens to use for speculative decoding
-    float   p_split = 0.1f; // speculative decoding split probability
-    float   p_min   = 0.75f; // minimum speculative decoding probability (greedy)
+    common_params_model mparams;
 
-    // ngram-based speculative decoding
+    llama_context * ctx_tgt = nullptr;
+    llama_context * ctx_dft = nullptr;
 
-    uint16_t ngram_size_n     = 12; // ngram size for lookup
-    uint16_t ngram_size_m     = 48; // mgram size for speculative tokens
-    uint16_t ngram_min_hits   =  1; // minimum hits at ngram/mgram lookup for mgram to be proposed
-
-    std::shared_ptr<common_ngram_mod> ngram_mod;
-
-    std::string lookup_cache_static;  // path of static ngram cache file for lookup decoding           // NOLINT
-    std::string lookup_cache_dynamic; // path of dynamic ngram cache file for lookup decoding          // NOLINT
-
-    // draft-model speculative decoding
-
-    struct common_params_model mparams_dft;
-
-    llama_model * model_dft = nullptr; // a llama_model that can be shared by multiple speculative contexts
-
-    llama_context_params cparams_dft; // these are the parameters for the draft llama_context
-
-    int32_t n_ctx        = 0;  // draft context size
     int32_t n_gpu_layers = -1; // number of layers to store in VRAM for the draft model (-1 - use default)
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
-    struct cpu_params cpuparams;
-    struct cpu_params cpuparams_batch;
+    cpu_params cpuparams;
+    cpu_params cpuparams_batch;
 
     std::vector<ggml_backend_dev_t> devices; // devices to use for offloading
 
-    std::vector<std::pair<std::string, std::string>> replacements; // main to speculative model replacements
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+};
+
+struct common_params_speculative_ngram_mod {
+    int32_t n_match = 24;
+    int32_t n_max = 64;
+    int32_t n_min = 48;
+};
+
+struct common_params_speculative_ngram_map {
+    uint16_t size_n   = 12;
+    uint16_t size_m   = 48;
+    uint16_t min_hits = 1;
+};
+
+struct common_params_speculative_ngram_cache {
+    std::string lookup_cache_static;
+    std::string lookup_cache_dynamic;
+};
+
+struct common_params_speculative {
+    std::vector<enum common_speculative_type> types = { COMMON_SPECULATIVE_TYPE_NONE };
+
+    // used by Simple, MTP, Eagle3, etc. - all methods that require some kind of draft model
+    common_params_speculative_draft draft;
+
+    common_params_speculative_ngram_mod ngram_mod;
+    common_params_speculative_ngram_map ngram_simple;
+    common_params_speculative_ngram_map ngram_map_k;
+    common_params_speculative_ngram_map ngram_map_k4v;
+
+    common_params_speculative_ngram_cache ngram_cache;
 
     bool has_dft() const {
-        return !mparams_dft.path.empty() || !mparams_dft.hf_repo.empty();
+        return !draft.mparams.path.empty() || !draft.mparams.hf_repo.empty();
     }
+
+    uint32_t need_n_rs_seq() const {
+        bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+        });
+
+        return needs_rs_seq ? draft.n_max : 0u;
+    }
+
+    // === fork-compat: legacy flat fields preserved for arg.cpp handlers from pre-MTP era ===
+    // These mirror common_params_speculative_draft and are populated by old flag handlers.
+    // When draft.mparams is empty but legacy mparams_dft is set, callers fall back here.
+    common_speculative_type type = COMMON_SPECULATIVE_TYPE_NONE;
+    int32_t n_max   = 16;
+    int32_t n_min   = 0;
+    float   p_split = 0.1f;
+    float   p_min   = 0.75f;
+    int32_t n_ctx        = 0;
+    int32_t n_gpu_layers = -1;
+    uint16_t ngram_size_n   = 12;
+    uint16_t ngram_size_m   = 48;
+    uint16_t ngram_min_hits = 1;
+    std::string lookup_cache_static;
+    std::string lookup_cache_dynamic;
+    std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+    common_params_model mparams_dft;
+    llama_model * model_dft = nullptr;
+    llama_context_params cparams_dft;
+    cpu_params cpuparams;
+    cpu_params cpuparams_batch;
+    std::vector<std::pair<std::string,std::string>> replacements;
+    std::vector<ggml_backend_dev_t> devices;
+    ggml_type cache_type_k = GGML_TYPE_F16;
+    ggml_type cache_type_v = GGML_TYPE_F16;
 };
 
 struct common_params_vocoder {
