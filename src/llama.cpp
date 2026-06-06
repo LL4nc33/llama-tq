@@ -54,6 +54,23 @@ struct llama_sampler_chain_params llama_sampler_chain_default_params() {
     return result;
 }
 
+
+// Stub: full implementation lives in upstream commit fd1c0ec3f/cfe9838d2 which depends on
+// post-#22004 model-class API. TurboQuant fork keeps callers happy by returning success
+// without modifying any params (caller falls back to user-supplied values).
+extern "C" enum llama_params_fit_status llama_params_fit(
+    const char *,
+    struct llama_model_params *,
+    struct llama_context_params *,
+    float *,
+    struct llama_model_tensor_buft_override *,
+    size_t *,
+    uint32_t,
+    enum ggml_log_level
+) {
+    return LLAMA_PARAMS_FIT_STATUS_SUCCESS;
+}
+
 size_t llama_max_devices(void) {
     return 16;
 }
@@ -266,7 +283,7 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
 static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
         const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
     try {
-        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.use_mmap, params.use_direct_io,
+        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.use_mmap, params.mmap_huge, params.use_direct_io,
             params.check_tensors, params.no_alloc, params.kv_overrides, params.tensor_buft_overrides);
 
         ml.print_info();
