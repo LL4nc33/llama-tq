@@ -75,3 +75,10 @@ Two scheduler fixes were needed (both on `feature/phase-d-multigpu-lora`):
 - **Upstream sync.** Upstream `llama.cpp` fixes (CUDA, server, build) are cherry-picked when they apply cleanly. Larger upstream features (MTP, fusion infrastructure) are integrated case-by-case as they stabilise.
 - **Stability target.** TurboQuant kernels: CUDA sm_75+, daily-driven on Turing RTX 2060. Vulkan and HIP are experimental. macOS / Metal are upstream-stock.
 - **Regressions are blockers.** Each merge to `turboquant` (the default branch) must pass the local PPL + speed gates before landing.
+
+## Upstream integration log
+
+- 2026-06-06: Upstream CUDA fusion infrastructure integrated (PR 22468 refactor includes muls and relu+sqr fusion paths, PR 22478 SSM_CONV ADD SILU, PR 22667 snake activation, PR 22912 snake hardening). TurboQuant KTQ/VTQ kernels untouched, bench parity verified on 0.8B-Q8 and 35B-A3B-IQ2_XXS (PPL identical, TG/PP within plus-minus 0.6 percent).
+- 2026-06-06: Upstream targeted fixes (PR 23610 fattn-mma-f16 KQ-mask int64 overflow safety, PR 23893 cli model-params propagation, PR 23822 mtmd Gemma 4 projector pre_norm fix). KTQ2_1 plus VTQ2_1 PPL byte-identical to pre-pick baseline.
+- Deferred: MTP support (PR 22673 plus 32 follow-ups) upstream PR introduced concurrent model-system architectural refactor (llm_build_X to llama_model_X with nested graph and graph_mtp structs plus new llama_model_loader virtual interface). Forks TurboQuant cparams plus memory flags hang off the old model system. Integration requires multi-day model-system migration, scheduled as separate roadmap phase. No local MTP draft model available for runtime testing anyway.
+- Deferred: PR 24087 mul_mat_vec_q_moe pdl enrollment requires upstream PDL helper infrastructure (ggml_cuda_kernel_launch_params) not present in fork.
