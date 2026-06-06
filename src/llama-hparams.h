@@ -221,6 +221,7 @@ struct llama_hparams {
     enum llama_pooling_type      pooling_type            = LLAMA_POOLING_TYPE_NONE;
     enum llama_rope_type         rope_type               = LLAMA_ROPE_TYPE_NONE;
     enum llama_rope_scaling_type rope_scaling_type_train = LLAMA_ROPE_SCALING_TYPE_NONE;
+    float rope_scaling_alpha = 0.0f; // HunyuanVL
 
 
     // Step35: optional per-layer clamps for (Swi)GLU
