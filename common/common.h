@@ -337,6 +337,29 @@ struct common_params_speculative_draft {
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
 };
 
+struct common_prompt_checkpoint {
+    int64_t n_tokens = 0;
+
+    llama_pos pos_min = 0;
+    llama_pos pos_max = 0;
+
+    std::vector<uint8_t> data_tgt;
+    std::vector<uint8_t> data_dft;
+
+    size_t size() const;
+    bool empty() const;
+    void clear();
+
+    void update_pos(int64_t n_tokens, llama_pos pos_min, llama_pos pos_max);
+    void update_tgt(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags);
+    void update_dft(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags);
+    void load_tgt(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) const;
+    void load_dft(llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) const;
+    void clear_tgt();
+    void clear_dft();
+};
+
+
 struct common_params_speculative_ngram_mod {
     int32_t n_match = 24;
     int32_t n_max = 64;
