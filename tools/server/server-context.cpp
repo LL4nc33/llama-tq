@@ -778,7 +778,7 @@ private:
 
         slots.clear();
 
-        const bool can_spec = false; // stub: speculation not wired through new API in this fork build
+        const bool can_spec = params_base.speculative.has_dft();
         if (!can_spec) {
             SRV_WRN("%s", "speculative decoding not supported by this context\n");
         }
@@ -2197,7 +2197,19 @@ private:
 
                 const auto & params_spec = slot.task->params.speculative;
 
-                llama_tokens draft = {}; // stub: speculation draft generation disabled (new API not wired)
+                // Wire fork's per-slot pattern to upstream's per-seq_id draft_params API:
+                // configure draft_params, call draft(), read result.
+                llama_tokens draft;
+                {
+                    auto & dp = common_speculative_get_draft_params(slot.spec, slot.id);
+                    dp.drafting = true;
+                    dp.n_max    = std::min<int32_t>(params_spec.n_max, n_draft_max);
+                    dp.n_past   = slot.prompt.tokens.pos_next();
+                    dp.id_last  = slot.sampled;
+                    dp.prompt   = &cached_text_tokens;
+                    dp.result   = &draft;
+                    common_speculative_draft(slot.spec);
+                }
 
                 if (draft.size() > (size_t) n_draft_max) {
                     SLT_WRN(slot, "draft size %d exceeds max %d, truncating\n", (int) draft.size(), n_draft_max);
@@ -3013,7 +3025,7 @@ private:
                 slot.n_draft_accepted += ids.size() - 1;
 
                 // inform the speculative decoding about the number of accepted tokens
-                // stub: common_speculative_accept(slot.spec, slot.id, ids.size() - 1); // disabled, new API requires seq_id arg
+                common_speculative_accept(slot.spec, slot.id, ids.size() - 1);
 
                 // rollback to the state before sampling the draft tokens
                 slot.prompt.tokens.keep_first(slot.prompt.n_tokens() - n_draft);
