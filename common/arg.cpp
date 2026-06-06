@@ -2852,6 +2852,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "Same as --hf-repo, but for the draft model (default: unused)",
         [](common_params & params, const std::string & value) {
             params.speculative.mparams_dft.hf_repo = value;
+            params.speculative.draft.mparams.hf_repo = value;
+            // Register draft-simple speculation type (server-context will MTP-promote if head present)
+            if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                          COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) == params.speculative.types.end()) {
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
+            }
         }
     ).set_env("LLAMA_ARG_HFD_REPO"));
     add_opt(common_arg(
@@ -3762,6 +3771,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "draft model for speculative decoding (default: unused)",
         [](common_params & params, const std::string & value) {
             params.speculative.mparams_dft.path = value;
+            params.speculative.draft.mparams.path = value;
+            // Register draft-simple speculation type (server-context will MTP-promote if head present)
+            if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                          COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) == params.speculative.types.end()) {
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
+            }
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_MODEL_DRAFT"));
     add_opt(common_arg(
