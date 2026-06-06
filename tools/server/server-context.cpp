@@ -562,7 +562,8 @@ private:
 
     llama_batch batch {};
 
-    llama_model_ptr model_dft;
+    llama_model_ptr   model_dft;
+    llama_context_ptr ctx_dft;
 
     bool add_bos_token = true;
 
@@ -702,6 +703,17 @@ private:
 
             params_base.speculative.model_dft = model_dft.get();
             params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
+            params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
+
+            // Create draft model context and wire to new common_params_speculative_draft API
+            llama_context * ctx_dft_raw = llama_init_from_model(model_dft.get(), params_base.speculative.cparams_dft);
+            if (ctx_dft_raw == nullptr) {
+                SRV_ERR("%s\n", "failed to create draft model context");
+                return false;
+            }
+            ctx_dft.reset(ctx_dft_raw);
+            params_base.speculative.draft.ctx_tgt = ctx;
+            params_base.speculative.draft.ctx_dft = ctx_dft.get();
         }
 
         std::string & mmproj_path = params_base.mmproj.path;
@@ -796,7 +808,7 @@ private:
 
             // try speculative decoding
             if (can_spec) {
-                slot.spec = common_speculative_init(params_base.speculative, 1); // stub: pass n_seq=1 instead of ctx (new API requires uint32_t)
+                slot.spec = common_speculative_init(params_base.speculative, params_base.n_parallel);
                 if (slot.spec) {
                     if (mctx) {
                         SRV_ERR("%s\n", "speculative decoding is not supported with multimodal");
