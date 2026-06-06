@@ -368,7 +368,7 @@ struct common_params_speculative {
     common_params_speculative_ngram_cache ngram_cache;
 
     bool has_dft() const {
-        return !draft.mparams.path.empty() || !draft.mparams.hf_repo.empty();
+        return !draft.mparams.path.empty() || !draft.mparams.hf_repo.empty() || !mparams_dft.path.empty() || !mparams_dft.hf_repo.empty();
     }
 
     uint32_t need_n_rs_seq() const {
