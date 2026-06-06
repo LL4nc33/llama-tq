@@ -153,7 +153,7 @@ cmake --build build -j"$(nproc)" --target llama-server llama-finetune
 
 ## Maintenance &amp; roadmap
 
-This fork is actively maintained alongside its own roadmap. Upstream `llama.cpp` fixes (CUDA, server, build) are cherry-picked when they apply cleanly; larger features (MTP, fusion infrastructure) are integrated case-by-case. See [ROADMAP.md](ROADMAP.md) for what's working, what's in flight, and the path toward real capability gains in fine-tuning.
+This fork is actively maintained alongside its own roadmap. Upstream `llama.cpp` fixes (CUDA, server, build) are cherry-picked when they apply cleanly; larger features are integrated case-by-case. As of 2026-06: upstream CUDA fusion infrastructure is fully integrated, and the MTP foundation (model-class refactor + libllama MTP API) is integrated with bench parity verified on 0.8B-Q8 and 35B-A3B-IQ2_XXS — MTP runtime exposure in CLI/server is the next case-by-case port. See [ROADMAP.md](ROADMAP.md) for what's working, what's in flight, and the path toward real capability gains in fine-tuning.
 
 ---
 
