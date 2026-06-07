@@ -764,6 +764,12 @@ extern "C" {
 
     // Clear the memory contents
     // If data == true, the data buffers will also be cleared together with the metadata
+    // Backend-aware D2D snapshot of recurrent state — fast save/restore for spec ckpt.
+    LLAMA_API bool llama_memory_shadow_alloc(llama_memory_t mem);
+    LLAMA_API void llama_memory_shadow_save (llama_memory_t mem);
+    LLAMA_API void llama_memory_shadow_load (llama_memory_t mem);
+    LLAMA_API bool llama_memory_has_recurrent(llama_memory_t mem);
+
     LLAMA_API void llama_memory_clear(
             llama_memory_t mem,
                       bool data);
