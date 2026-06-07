@@ -1430,7 +1430,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
     auto * t_logits        = res->get_logits();
     auto * t_embd          = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
     auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm() : nullptr;
-    auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm() : nullptr; // reuses h_pre_norm slot in fork
+    auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_nextn() : nullptr;
 
     // extract logits
     if (logits.data && t_logits) {
@@ -1803,7 +1803,8 @@ int llama_context::decode(const llama_batch & batch_inp) {
         return -2;
     };
 
-    int64_t n_outputs_prev = 0;
+    int64_t n_outputs_prev      = 0;
+    int64_t ubatch_prev_n_tokens = 0;
 
     do {
         const auto & ubatch = mctx->get_ubatch();
@@ -1867,7 +1868,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         auto * t_logits        = res->get_logits();
         auto * t_embd          = cparams.embeddings          ? res->get_embd()        : nullptr;
         auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm()  : nullptr;
-        auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm()  : nullptr;
+        auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_nextn()  : nullptr;
 
         if (t_embd && res->get_embd_pooled()) {
             t_embd = res->get_embd_pooled();
@@ -1961,14 +1962,17 @@ int llama_context::decode(const llama_batch & batch_inp) {
             GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_pre_norm.size);
             ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_outputs*n_embd*sizeof(float));
         }
-        if (embd_nextn.data && t_h_nextn && n_outputs > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+        // h_nextn is dense per ubatch token (NOT row-selected by inp_out_ids), so write
+        // by ubatch position offset. Use n_tokens for the row-count and ubatch_prev_n_tokens
+        // to track the running offset across ubatch splits.
+        if (embd_nextn.data && t_h_nextn && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
             ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
             GGML_ASSERT(backend_h != nullptr);
             const uint32_t n_embd = hparams.n_embd;
-            float * embd_nextn_out = embd_nextn.data + n_outputs_prev*n_embd;
-            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-            GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_nextn.size);
-            ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_outputs*n_embd*sizeof(float));
+            const int64_t n_h_rows = t_h_nextn->ne[1];
+            float * embd_nextn_out = embd_nextn.data + ubatch_prev_n_tokens*n_embd;
+            GGML_ASSERT((ubatch_prev_n_tokens + n_h_rows)*n_embd <= (int64_t) embd_nextn.size);
+            ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_h_rows*n_embd*sizeof(float));
         }
 
         // Copy backend sampling output if this ubatch produced any sampling tensors.
@@ -1984,7 +1988,8 @@ int llama_context::decode(const llama_batch & batch_inp) {
             copy_tensor_async_candidates(res->t_candidates,     sampling.candidates, stride, sampling.candidates_count, seq_to_output_row, sched.get());
         }
 
-        n_outputs_prev += n_outputs;
+        n_outputs_prev      += n_outputs;
+        ubatch_prev_n_tokens += ubatch.n_tokens;
     } while (mctx->next());
 
     // set to total number of outputs in the batch, for use in llama_get_logits_ith
@@ -2081,7 +2086,11 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     embd.size          = has_embd          ? n_embd_out*n_outputs_max  : 0;
     embd_pre_norm.size = has_embd_pre_norm ? n_embd*n_outputs_max      : 0;
     const bool has_embd_nextn = cparams.embeddings_nextn;
-    const size_t nextn_n = cparams.embeddings_nextn_masked ? n_outputs_max : n_outputs_max; // we always reserve for n_outputs_max
+    // h_nextn is dense per ubatch token (not row-selected). Size must cover the maximum
+    // ubatch token-count, which is bounded by n_batch.
+    const size_t nextn_n = cparams.embeddings_nextn_masked
+                               ? (size_t) n_outputs_max
+                               : (size_t) std::max<int64_t>(n_outputs_max, (int64_t) n_batch);
     embd_nextn.size = has_embd_nextn ? n_embd*nextn_n : 0;
 
     // Allocate backend sampling output buffers if there are backend samplers configured.
