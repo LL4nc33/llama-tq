@@ -3157,9 +3157,12 @@ private:
 
                 static const bool prof_acc = std::getenv("FORK_MTP_PROFILE_ACC") != nullptr;
                 const int64_t t_acc_start = prof_acc ? ggml_time_us() : 0;
+                int64_t t_sample_us = 0, t_seqrm_us = 0, t_redecode_us = 0;
 
                 // the accepted tokens from the speculation
+                const int64_t t_s = prof_acc ? ggml_time_us() : 0;
                 const auto ids = common_sampler_sample_and_accept_n(slot.smpl.get(), ctx, slot.i_batch_dft, slot.drafted);
+                if (prof_acc) t_sample_us = ggml_time_us() - t_s;
                 slot.i_batch_dft.clear();
                 slot.drafted.clear();
 
@@ -3190,7 +3193,9 @@ private:
                 // target seq_rm fails we cannot recover rejected-draft positions in place,
                 // so we disable speculation for this slot. Generation continues on the
                 // target path without losing already-accepted tokens.
+                const int64_t t_rm = prof_acc ? ggml_time_us() : 0;
                 const bool tgt_rm_ok = llama_memory_seq_rm(llama_get_memory(ctx), slot.id, slot.prompt.n_tokens(), -1);
+                if (prof_acc) t_seqrm_us = ggml_time_us() - t_rm;
                 if (tgt_rm_ok) {
                     // success path
                 } else if (!slot.spec_ckpt.empty()) {
@@ -3230,13 +3235,17 @@ private:
                 }
 
                 if (prof_acc) {
-                    static int64_t prof_tot = 0, prof_n = 0;
-                    prof_tot += ggml_time_us() - t_acc_start;
-                    prof_n += 1;
-                    if (prof_n % 50 == 0) {
-                        SRV_WRN("ACCEPT+rollback profile (avg over %lld calls): %.2fms\n",
-                            (long long)prof_n, prof_tot/1000.0/prof_n);
+                    static int64_t pr_tot = 0, pr_smp = 0, pr_rm = 0, pr_n = 0;
+                    pr_tot += ggml_time_us() - t_acc_start;
+                    pr_smp += t_sample_us;
+                    pr_rm  += t_seqrm_us;
+                    pr_n   += 1;
+                    if (pr_n % 50 == 0) {
+                        SRV_WRN("ACCEPT profile (%lld): total=%.2fms sample=%.2fms seq_rm=%.2fms tgt_rm_ok=%d\n",
+                            (long long)pr_n, pr_tot/1000.0/pr_n, pr_smp/1000.0/pr_n, pr_rm/1000.0/pr_n,
+                            (int)tgt_rm_ok);
                     }
+                    (void)t_redecode_us;
                 }
 
                 for (size_t i = 0; i < ids.size(); ++i) {
