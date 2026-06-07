@@ -582,7 +582,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         const float * h_row = nullptr;
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
-        static const bool dbg_mtp = std::getenv("FORK_MTP_DEBUG") != nullptr;
+        static const bool dbg_mtp   = std::getenv("FORK_MTP_DEBUG") != nullptr;
+        static const bool prof_mtp  = std::getenv("FORK_MTP_PROFILE") != nullptr;
+        const int64_t t_draft_start = prof_mtp ? ggml_time_us() : 0;
+        int64_t t_setup = 0, t_decode = 0, t_ar = 0, t_sample = 0;
 
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             auto & dp = dparams[seq_id];
@@ -602,7 +605,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_row, row_bytes);
         }
 
+        if (prof_mtp) t_setup = ggml_time_us() - t_draft_start;
+        const int64_t t_decode_start = prof_mtp ? ggml_time_us() : 0;
         int ret = llama_decode(ctx_dft, batch);
+        if (prof_mtp) t_decode = ggml_time_us() - t_decode_start;
         if (ret != 0) {
             LOG_WRN("%s: llama_decode returned %d\n", __func__, ret);
             return;
@@ -676,7 +682,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
 
             // evaluate the drafted tokens on the draft model
+            const int64_t t_ar_decode_start = prof_mtp ? ggml_time_us() : 0;
             ret = llama_decode(ctx_dft, batch);
+            if (prof_mtp) t_ar += ggml_time_us() - t_ar_decode_start;
             if (ret != 0) {
                 LOG_WRN("%s: llama_decode[%d] returned %d\n", __func__, i, ret);
                 break;
@@ -696,6 +704,25 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
 
             last_n_drafted[seq_id] = (uint16_t) dp.result->size();
+        }
+
+        if (prof_mtp) {
+            static int64_t prof_total_setup = 0, prof_total_decode = 0, prof_total_ar = 0, prof_total_n = 0;
+            const int64_t total = ggml_time_us() - t_draft_start;
+            prof_total_setup  += t_setup;
+            prof_total_decode += t_decode;
+            prof_total_ar     += t_ar;
+            prof_total_n      += 1;
+            if (prof_total_n % 20 == 0) {
+                LOG_WRN("MTP draft profile (avg over %lld calls): setup=%.2fms decode=%.2fms ar=%.2fms total=%.2fms\n",
+                    (long long)prof_total_n,
+                    prof_total_setup/1000.0/prof_total_n,
+                    prof_total_decode/1000.0/prof_total_n,
+                    prof_total_ar/1000.0/prof_total_n,
+                    (prof_total_setup+prof_total_decode+prof_total_ar)/1000.0/prof_total_n);
+            }
+            (void)total;
+            (void)t_sample;
         }
     }
 
