@@ -2859,13 +2859,23 @@ private:
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
                     const llama_seq_id sid = sl.id;
-                    const size_t sz = llama_state_seq_get_size_ext(ctx, sid, 0);
+                    const llama_state_seq_flags flags = LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
+                    const size_t sz = llama_state_seq_get_size_ext(ctx, sid, flags);
                     if (sz == 0) continue;
                     std::vector<uint8_t> buf(sz);
-                    const size_t got = llama_state_seq_get_data_ext(ctx, buf.data(), sz, sid, 0);
+                    const size_t got = llama_state_seq_get_data_ext(ctx, buf.data(), sz, sid, flags);
                     if (got != sz) continue;
                     llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sid, -1, -1);
-                    llama_state_seq_set_data_ext(ctx_dft.get(), buf.data(), sz, sid, 0);
+                    llama_state_seq_set_data_ext(ctx_dft.get(), buf.data(), sz, sid, flags);
+                }
+            }
+
+            // MTP hook: feed target post-decode embeddings into spec state so DRAFT_MTP
+            // can pair (h_p, x_{p+1}) for next draft() call. No-op for DRAFT_SIMPLE / ngram.
+            if (ret == 0) {
+                for (server_slot & sl : slots) {
+                    if (!sl.is_processing() || !sl.spec) continue;
+                    common_speculative_process(sl.spec, batch_view);
                 }
             }
 
