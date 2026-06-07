@@ -7,7 +7,7 @@
 #include <vector>
 
 #define LLAMA_NGRAM_MIN    1
-#define LLAMA_NGRAM_MAX    4
+#define LLAMA_NGRAM_MAX    8
 #define LLAMA_NGRAM_STATIC 2
 
 // Data structures to map n-grams to empirical token probabilities:
