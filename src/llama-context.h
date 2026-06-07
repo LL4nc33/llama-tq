@@ -71,6 +71,7 @@ struct llama_context {
 
     float * get_embeddings_pre_norm();
     float * get_embeddings_pre_norm_ith(int32_t i);
+    float * get_embeddings_pre_norm_raw_ith(int32_t i);
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
