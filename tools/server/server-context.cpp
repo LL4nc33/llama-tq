@@ -2948,18 +2948,26 @@ private:
             // ctx_dft has no pending_h to pair with each chunk and process()/decode would
             // run with positions that conflict against ctx_dfts own MTP-graph advances.
             if (ret == 0) {
-                // FORK_MTP_SKIP_PROCESS=1: ablation flag to measure process() overhead.
-                // Skipping process() means pending_h stays stale from prior iter — only
-                // safe for benchmark experiments, NOT for correctness in production.
                 static const bool skip_process = std::getenv("FORK_MTP_SKIP_PROCESS") != nullptr;
+                static const bool prof_mtp     = std::getenv("FORK_MTP_PROFILE") != nullptr;
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
                     if (skip_process) continue;
+                    const int64_t t_proc_start = prof_mtp ? ggml_time_us() : 0;
                     if (shared_ctx_mode && batch_view.n_tokens > 0) {
                         const llama_pos p0 = batch_view.pos[0];
                         llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, p0, -1);
                     }
                     common_speculative_process(sl.spec, batch_view);
+                    if (prof_mtp) {
+                        static int64_t prof_total = 0, prof_n = 0;
+                        prof_total += ggml_time_us() - t_proc_start;
+                        prof_n += 1;
+                        if (prof_n % 20 == 0) {
+                            SRV_WRN("MTP process profile (avg over %lld calls): %.2fms\n",
+                                (long long)prof_n, prof_total/1000.0/prof_n);
+                        }
+                    }
                 }
             }
 
