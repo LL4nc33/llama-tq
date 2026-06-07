@@ -3716,6 +3716,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("minimum number of draft tokens to use for speculative decoding (default: %d)", params.speculative.n_min),
         [](common_params & params, int value) {
             params.speculative.n_min = value;
+            params.speculative.draft.n_min = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_MIN"));
     add_opt(common_arg(
@@ -3723,6 +3724,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("speculative decoding split probability (default: %.2f)", (double)params.speculative.p_split),
         [](common_params & params, const std::string & value) {
             params.speculative.p_split = std::stof(value);
+            params.speculative.draft.p_split = params.speculative.p_split;
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE}).set_env("LLAMA_ARG_DRAFT_P_SPLIT"));
     add_opt(common_arg(
@@ -3730,6 +3732,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("minimum speculative decoding probability (greedy) (default: %.2f)", (double)params.speculative.p_min),
         [](common_params & params, const std::string & value) {
             params.speculative.p_min = std::stof(value);
+            params.speculative.draft.p_min = params.speculative.p_min; // DRAFT_MTP reads from draft.*
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_P_MIN"));
     add_opt(common_arg(
