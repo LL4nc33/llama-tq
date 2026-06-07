@@ -3802,14 +3802,34 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NONE;
             } else if (value == "ngram-cache") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_CACHE;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_CACHE);
             } else if (value == "ngram-simple") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
             } else if (value == "ngram-map-k") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
             } else if (value == "ngram-map-k4v") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
             } else if (value == "ngram-mod") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
             } else if (value == "draft-simple") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE;
                 if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
