@@ -2729,11 +2729,17 @@ private:
                         }
 
                         // embedding requires all tokens in the batch to be output
+                        // MTP shared-ctx spec requires h_pre_norm at every prefill position so
+                        // common_speculative_process() can seed pending_h with the post-prefill
+                        // target hidden state. Force logits=1 on prefill tokens when MTP spec is active.
+                        const bool mtp_needs_h_per_token = slot.spec &&
+                            params_base.speculative.draft.ctx_dft == ctx_dft.get() &&
+                            llama_model_has_mtp(model);
                         common_batch_add(batch,
                             cur_tok,
                             slot.prompt.tokens.pos_next(),
                             { slot.id },
-                            slot.task->need_embd());
+                            slot.task->need_embd() || mtp_needs_h_per_token);
                         slot.prompt.tokens.push_back(cur_tok);
 
                         slot.n_prompt_tokens_processed++;
@@ -2941,7 +2947,10 @@ private:
             if (ret == 0) {
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
-                    if (sl.state != SLOT_STATE_GENERATING) continue;
+                    // Run process() in BOTH prefill and generating states for MTP shared-ctx mode:
+                    // prefill seeds pending_h (so first draft() has a valid h carryover) and
+                    // generating advances pending_h after each verify. With prefill tokens carrying
+                    // logits=1 (see mtp_needs_h_per_token above), embd_nextn is dense per position.
                     // Before process feeds the target batch into ctx_dft, clear ctx_dft KV
                     // from the targets last-decoded position onwards. Otherwise drafts
                     // written by the previous common_speculative_draft() call would clash
