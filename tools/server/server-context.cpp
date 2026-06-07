@@ -681,10 +681,13 @@ private:
                 params_spec.mparams_dft.path == params_base.model.path;
             const bool tgt_has_mtp = model && llama_model_has_mtp(model);
 
-            if (same_path && tgt_has_mtp) {
-                // SHARED-CTX MTP MODE: target model already has MTP heads.
-                // Create a second context on the SAME model with ctx_type=MTP,
-                // so the draft path runs only the MTP head subgraph (~free).
+            // Only enter shared-ctx mode when DRAFT_MTP is explicitly requested. With
+            // DRAFT_SIMPLE (default), the draft uses the regular decoder graph and we
+            // want a normal two-model spec setup (which on same path is still cheap
+            // because the second model load is mmap-shared by the OS).
+            const bool mtp_type_in_types = std::find(params_spec.types.begin(), params_spec.types.end(),
+                                                     COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_spec.types.end();
+            if (same_path && tgt_has_mtp && mtp_type_in_types) {
                 SRV_INF("%s\n", "MTP shared-ctx mode: reusing target model for draft path");
 
                 auto params_dft = params_base;
@@ -1924,12 +1927,12 @@ private:
                         (llama_model_n_swa(model) > 0 && !params_base.swa_full);
                     if (needs_ckpt && nwrite > 0) {
                         const size_t sz = llama_state_seq_get_size_ext(
-                            ctx, slot->id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                            ctx, slot->id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                         if (sz > 0) {
                             std::vector<uint8_t> buf(sz);
                             const size_t got = llama_state_seq_get_data_ext(
                                 ctx, buf.data(), sz, slot->id,
-                                LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                                (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                             if (got == sz) {
                                 const std::string ckpt_path = filepath + ".ckpt";
                                 FILE * fp = fopen(ckpt_path.c_str(), "wb");
@@ -2255,17 +2258,9 @@ private:
                     dp.id_last  = slot.sampled;
                     dp.prompt   = &cached_text_tokens;
                     dp.result   = &draft;
-                    // Save target KV checkpoint BEFORE draft so we can restore on partial accept.
-                    // Only needed on hybrid (recurrent) models where partial seq_rm is unsupported.
-                    // For non-hybrid models the post-verify seq_rm cleans up rejected positions cleanly.
-                    const bool save_ckpt_needed = llama_model_is_hybrid(model);
-                    if (save_ckpt_needed) {
-                        slot.spec_ckpt.update_pos(slot.prompt.n_tokens(), 0, slot.prompt.tokens.pos_next() - 1);
-                        slot.spec_ckpt.update_tgt(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                        if (ctx_dft) {
-                            slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                        }
-                    }
+                    // Always save ckpt before draft on hybrid models. PARTIAL_ONLY keeps
+                    // overhead low (just the small recurrent state portion).
+                    // ckpt save DISABLED — relying on draft-max=1 (all-or-nothing) to avoid partial-rm path
                     // Shared-ctx MTP: M-RoPE aggregates positions across 4 axes, so
                     // seq_pos_max returns inflated values. Clear ctx_dft KV before each
                     // draft() so the MTP-graph forward starts from empty cache.
@@ -2578,7 +2573,7 @@ private:
                                     if (!do_reset) {
                                         // restore the context checkpoint
                                         const size_t checkpoint_size = it->data.size();
-                                        const size_t n = llama_state_seq_set_data_ext(ctx, it->data.data(), checkpoint_size, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                                        const size_t n = llama_state_seq_set_data_ext(ctx, it->data.data(), checkpoint_size, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
 
                                         if (n != checkpoint_size) {
                                             SLT_ERR(slot, "failed to restore context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, (float) checkpoint_size / 1024 / 1024);
@@ -2828,7 +2823,7 @@ private:
                         }
 
                         const size_t checkpoint_size =
-                            llama_state_seq_get_size_ext(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                            llama_state_seq_get_size_ext(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
 
                         auto & cur = slot.prompt.checkpoints.emplace_back(server_prompt_checkpoint{
                             /*.pos_min  = */ pos_min,
@@ -2838,7 +2833,7 @@ private:
                         });
 
                         llama_state_seq_get_data_ext(ctx, cur.data.data(), checkpoint_size, slot.id,
-                                                     LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                                                     (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
 
                         SLT_WRN(slot,
                                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64
@@ -3157,12 +3152,28 @@ private:
                 // so we disable speculation for this slot. Generation continues on the
                 // target path without losing already-accepted tokens.
                 const bool tgt_rm_ok = llama_memory_seq_rm(llama_get_memory(ctx), slot.id, slot.prompt.n_tokens(), -1);
-                if (!tgt_rm_ok && !slot.spec_ckpt.empty()) {
+                if (tgt_rm_ok) {
+                    // success path
+                } else if (!slot.spec_ckpt.empty()) {
                     SLT_DBG(slot, "%s", "partial seq_rm failed - restoring ckpt and applying accepted-only batch\n");
-                    // Restore ctx_tgt to pre-draft state
                     llama_memory_seq_rm(llama_get_memory(ctx), slot.id, -1, -1);
-                    slot.spec_ckpt.load_tgt(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                    // Now apply accepted-only batch to advance ctx_tgt
+                    slot.spec_ckpt.load_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
+                    llama_batch tb = llama_batch_init((int) ids.size(), 0, 1);
+                    for (size_t k = 0; k < ids.size(); ++k) {
+                        const llama_pos pos = (llama_pos)(slot.prompt.n_tokens() - ids.size() + k);
+                        common_batch_add(tb, ids[k], pos, { slot.id }, k == ids.size() - 1);
+                    }
+                    llama_decode(ctx, tb);
+                    llama_batch_free(tb);
+                } else {
+                    // First partial-fail and no prior ckpt: disable spec for this slot to
+                    // avoid corruption. Generation continues on target path.
+                    SLT_WRN(slot, "%s", "partial seq_rm failed without ckpt - disabling speculation for this slot\n");
+                    if (slot.spec) {
+                        common_speculative_free(slot.spec);
+                        slot.spec = nullptr;
+                    }
+                    llama_memory_seq_rm(llama_get_memory(ctx), slot.id, -1, -1);
                     llama_batch tb = llama_batch_init((int) ids.size(), 0, 1);
                     for (size_t k = 0; k < ids.size(); ++k) {
                         const llama_pos pos = (llama_pos)(slot.prompt.n_tokens() - ids.size() + k);
