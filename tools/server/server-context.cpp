@@ -3171,12 +3171,20 @@ private:
                 const size_t n_draft = slot.drafted.size();
 
                 static const bool prof_acc = std::getenv("FORK_MTP_PROFILE_ACC") != nullptr;
+                static const bool spec_trace = std::getenv("FORK_SPEC_TRACE") != nullptr;
                 const int64_t t_acc_start = prof_acc ? ggml_time_us() : 0;
                 int64_t t_sample_us = 0, t_seqrm_us = 0, t_redecode_us = 0;
 
                 // the accepted tokens from the speculation
                 const int64_t t_s = prof_acc ? ggml_time_us() : 0;
                 const auto ids = common_sampler_sample_and_accept_n(slot.smpl.get(), ctx, slot.i_batch_dft, slot.drafted);
+                if (spec_trace) {
+                    std::string drafted_str, ids_str;
+                    for (auto t : slot.drafted) { drafted_str += std::to_string(t) + ","; }
+                    for (auto t : ids) { ids_str += std::to_string(t) + ","; }
+                    SRV_WRN("SPEC trace: sampled=%d drafted=[%s] ids=[%s] n_draft=%zu accept=%zu\n",
+                        (int)slot.sampled, drafted_str.c_str(), ids_str.c_str(), n_draft, ids.size()-1);
+                }
                 if (prof_acc) t_sample_us = ggml_time_us() - t_s;
                 slot.i_batch_dft.clear();
                 slot.drafted.clear();
