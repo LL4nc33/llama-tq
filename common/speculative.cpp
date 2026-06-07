@@ -429,11 +429,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             s.reset(common_sampler_init(llama_get_model(ctx_dft), sparams));
         }
 
-        llama_set_embeddings_pre_norm(ctx_tgt, true);
-        llama_set_embeddings_pre_norm(ctx_dft, true);
-        // ctx_tgt: dense nextn (all batch positions) so process() can index by raw i.
-        // ctx_dft: masked nextn (only logits=1 positions) — draft samples only the latest
-        // token per call. Mirrors upstream qwen35 MTP fix (#24025).
+        // DEBUG: skip pre_norm — only nextn is needed for MTP draft seed
+        // (upstream #24025 dropped pre_norm usage entirely from speculative.cpp)
+        // llama_set_embeddings_pre_norm(ctx_tgt, true);
+        // llama_set_embeddings_pre_norm(ctx_dft, true);
         llama_set_embeddings_nextn(ctx_tgt, true, false);
         llama_set_embeddings_nextn(ctx_dft, true, true);
 
