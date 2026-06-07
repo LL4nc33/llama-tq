@@ -913,6 +913,14 @@ float * llama_context::get_embeddings_pre_norm() {
     return embd_pre_norm.data;
 }
 
+float * llama_context::get_embeddings_pre_norm_raw_ith(int32_t i) {
+    output_reorder();
+    if (embd_pre_norm.data == nullptr) return nullptr;
+    const uint32_t n_embd = model.hparams.n_embd;
+    if (i < 0 || (size_t)(i + 1) * n_embd > embd_pre_norm.size) return nullptr;
+    return embd_pre_norm.data + (size_t) i * n_embd;
+}
+
 float * llama_context::get_embeddings_pre_norm_ith(int32_t i) {
     output_reorder();
 
@@ -3558,6 +3566,10 @@ float * llama_get_embeddings_pre_norm(llama_context * ctx) {
     ctx->synchronize();
 
     return ctx->get_embeddings_pre_norm();
+}
+
+float * llama_get_embeddings_pre_norm_raw_ith(llama_context * ctx, int32_t i) {
+    return ctx->get_embeddings_pre_norm_raw_ith(i);
 }
 
 float * llama_get_embeddings_pre_norm_ith(llama_context * ctx, int32_t i) {

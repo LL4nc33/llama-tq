@@ -208,11 +208,13 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     }
     cur = inpL;
 
-    cb(cur, "h_pre_norm", -1);
-    res->t_h_pre_norm = cur;
-
     // Final norm
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+
+    // h_pre_norm semantically means "hidden state pre-LM-head" but for MTP head
+    // input it must be the POST-output_norm hidden state (matches upstreams t_h_nextn).
+    cb(cur, "h_pre_norm", -1);
+    res->t_h_pre_norm = cur;
 
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
@@ -605,17 +607,16 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = ggml_add(ctx0, cur, ffn_residual);
     cb(cur, "mtp_post_ffn", il);
 
-    // Pre-norm hidden state: used by the AR draft loop to seed the next MTP step.
-    // (In the trunk graph this is `t_h_pre_norm`; the MTP head reuses the same slot.)
-    cb(cur, "h_pre_norm", -1);
-    res->t_h_pre_norm = cur;
-
     ggml_tensor * head_norm_w = layer.nextn.shared_head_norm
             ? layer.nextn.shared_head_norm
             : model.output_norm;
     GGML_ASSERT(head_norm_w && "QWEN35 MTP: missing both nextn.shared_head_norm and output_norm");
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
     cb(cur, "mtp_shared_head_norm", -1);
+
+    // Post-norm hidden state — seed for the next AR draft step. Matches upstreams t_h_nextn semantics.
+    cb(cur, "h_pre_norm", -1);
+    res->t_h_pre_norm = cur;
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
