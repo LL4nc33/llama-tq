@@ -2270,13 +2270,14 @@ private:
                             slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                         }
                     }
-                    // Shared-ctx MTP: M-RoPE aggregates positions across 4 axes, so
-                    // seq_pos_max returns inflated values. Clear ctx_dft KV before each
-                    // draft() so the MTP-graph forward starts from empty cache.
-                    if (ctx_dft && model && llama_model_has_mtp(model) &&
-                        params_base.speculative.model_dft == model) {
-                        llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), slot.id, -1, -1);
-                    }
+                    // No full clear of ctx_dft before draft():
+                    //   - process() already wrote the verified history up to (n_past - 1) and
+                    //     trimmed any stale draft tail via precise seq_rm. Wiping ctx_dft KV
+                    //     here would force the MTP block to draft with empty attention KV →
+                    //     garbage low-confidence predictions → low acceptance.
+                    //   - The defensive seq_rm(-1,-1) that used to live here was a worst-case
+                    //     guard against M-RoPE position aggregation inflating seq_pos_max.
+                    //     With cparams.n_rs_seq > 0 the rollback path is handled by accept().
                     common_speculative_draft(slot.spec);
                 }
 
