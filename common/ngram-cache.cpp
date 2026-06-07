@@ -57,10 +57,10 @@ static llama_token get_token(const std::vector<llama_token> & inp, const std::ve
 }
 
 // If sample size or percentage are below these thresholds the draft is aborted early:
-constexpr int    draft_min_sample_size_lax[LLAMA_NGRAM_MAX] = { 2,  2,  1,  1};
-constexpr int        draft_min_percent_lax[LLAMA_NGRAM_MAX] = {66, 50, 50, 50};
-constexpr int draft_min_sample_size_strict[LLAMA_NGRAM_MAX] = { 4,  3,  2,  2};
-constexpr int     draft_min_percent_strict[LLAMA_NGRAM_MAX] = {75, 66, 66, 66};
+constexpr int    draft_min_sample_size_lax[LLAMA_NGRAM_MAX] = { 2,  2,  1,  1,  1,  1,  1,  1};
+constexpr int        draft_min_percent_lax[LLAMA_NGRAM_MAX] = {66, 50, 50, 50, 50, 50, 50, 50};
+constexpr int draft_min_sample_size_strict[LLAMA_NGRAM_MAX] = { 4,  3,  2,  2,  2,  2,  2,  2};
+constexpr int     draft_min_percent_strict[LLAMA_NGRAM_MAX] = {75, 66, 66, 66, 66, 66, 66, 66};
 
 // Helper function that tries to draft a token from only the static ngram cache:
 static llama_token try_draft(common_ngram_cache & nc_static, const common_ngram ngram_static) {
