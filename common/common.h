@@ -407,11 +407,20 @@ struct common_params_speculative {
     }
 
     uint32_t need_n_rs_seq() const {
+        // Any spec type that drives target verify-batches with rejected drafts
+        // needs recurrent rollback support — otherwise the spec_ckpt fallback
+        // (PARTIAL_ONLY) silently wipes mem_attn on reject and corrupts output.
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
+                || t == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
         });
 
-        return needs_rs_seq ? draft.n_max : 0u;
+        return needs_rs_seq ? std::max<uint32_t>(draft.n_max, n_max) : 0u;
     }
 
     // === fork-compat: legacy flat fields preserved for arg.cpp handlers from pre-MTP era ===
