@@ -176,7 +176,13 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
         }
 
-        if (il == n_transformer_layers - 1 && inp_out_ids) {
+        // Row-select only if NOT producing dense per-token h_nextn for MTP.
+        // When cparams.embeddings_nextn is on without masked mode, we MUST keep cur dense
+        // through the final norm so res->t_h_pre_norm/t_h_nextn carries all n_tokens rows.
+        // Upstream qwen35.cpp matches this gating: ggml_get_rows is only done when
+        // embeddings_nextn_masked=true OR no nextn extraction is active.
+        const bool keep_dense_for_nextn = cparams.embeddings_nextn && !cparams.embeddings_nextn_masked;
+        if (il == n_transformer_layers - 1 && inp_out_ids && !keep_dense_for_nextn) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -213,8 +219,17 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     // h_pre_norm semantically means "hidden state pre-LM-head" but for MTP head
     // input it must be the POST-output_norm hidden state (matches upstreams t_h_nextn).
+    // MUST be assigned BEFORE the ggml_get_rows below so it stays dense per token.
     cb(cur, "h_pre_norm", -1);
     res->t_h_pre_norm = cur;
+
+    // Row-select to n_outputs for LM head + t_embd if not done earlier in the trunk
+    // (which is the case when cparams.embeddings_nextn && !embeddings_nextn_masked, see
+    // keep_dense_for_nextn above). Mirrors upstream qwen35.cpp ordering.
+    const bool keep_dense_for_nextn = cparams.embeddings_nextn && !cparams.embeddings_nextn_masked;
+    if (keep_dense_for_nextn && inp_out_ids) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
 
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
