@@ -431,8 +431,11 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         llama_set_embeddings_pre_norm(ctx_tgt, true);
         llama_set_embeddings_pre_norm(ctx_dft, true);
+        // ctx_tgt: dense nextn (all batch positions) so process() can index by raw i.
+        // ctx_dft: masked nextn (only logits=1 positions) — draft samples only the latest
+        // token per call. Mirrors upstream qwen35 MTP fix (#24025).
         llama_set_embeddings_nextn(ctx_tgt, true, false);
-        llama_set_embeddings_nextn(ctx_dft, true, false);
+        llama_set_embeddings_nextn(ctx_dft, true, true);
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 
