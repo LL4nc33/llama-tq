@@ -1295,6 +1295,12 @@ bool llama_memory_recurrent::shadow_alloc() {
 void llama_memory_recurrent::shadow_save() {
     if (!shadow_allocated) return;
     const uint32_t n_layer = hparams.n_layer;
+    // Snapshot metadata (cheap, host-side)
+    shadow_cells  = cells;
+    shadow_head   = head;
+    shadow_used   = used;
+    shadow_rs_idx = rs_idx;
+    // Snapshot tensor data (D2D)
     for (uint32_t il = 0; il < n_layer; ++il) {
         if (r_l[il] == nullptr || shadow_r_l[il] == nullptr) continue;
         ggml_backend_tensor_copy(r_l[il], shadow_r_l[il]);
@@ -1305,6 +1311,12 @@ void llama_memory_recurrent::shadow_save() {
 void llama_memory_recurrent::shadow_load() {
     if (!shadow_allocated) return;
     const uint32_t n_layer = hparams.n_layer;
+    // Restore metadata
+    cells  = shadow_cells;
+    head   = shadow_head;
+    used   = shadow_used;
+    rs_idx = shadow_rs_idx;
+    // Restore tensor data (D2D)
     for (uint32_t il = 0; il < n_layer; ++il) {
         if (r_l[il] == nullptr || shadow_r_l[il] == nullptr) continue;
         ggml_backend_tensor_copy(shadow_r_l[il], r_l[il]);

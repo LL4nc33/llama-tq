@@ -130,6 +130,12 @@ private:
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> shadow_ctxs_bufs;
     std::vector<ggml_tensor *> shadow_r_l;
     std::vector<ggml_tensor *> shadow_s_l;
+    // Metadata snapshot — needed alongside r_l/s_l tensor copies to correctly
+    // restore the recurrent state's position/cell tracking.
+    std::vector<mem_cell> shadow_cells;
+    uint32_t              shadow_head = 0;
+    uint32_t              shadow_used = 0;
+    std::vector<uint32_t> shadow_rs_idx;
 
     size_t total_size() const;
 
