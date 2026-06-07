@@ -2911,7 +2911,18 @@ private:
                 batch.logits   + i,
             };
 
+            static const bool prof_tgt = std::getenv("FORK_MTP_PROFILE_TGT") != nullptr;
+            const int64_t t_tgt_start = prof_tgt ? ggml_time_us() : 0;
             const int ret = llama_decode(ctx, batch_view);
+            if (prof_tgt) {
+                static int64_t prof_tot = 0, prof_n = 0;
+                prof_tot += ggml_time_us() - t_tgt_start;
+                prof_n += 1;
+                if (prof_n % 50 == 0) {
+                    SRV_WRN("TGT decode profile (avg over %lld calls, n_tokens=%d): %.2fms\n",
+                        (long long)prof_n, n_tokens, prof_tot/1000.0/prof_n);
+                }
+            }
 
             // Mirror the same batch into the draft context to keep its KV cache in sync.
             // Strategy: clear draft KV for sequences in this batch, then feed the full
@@ -3144,6 +3155,9 @@ private:
 
                 const size_t n_draft = slot.drafted.size();
 
+                static const bool prof_acc = std::getenv("FORK_MTP_PROFILE_ACC") != nullptr;
+                const int64_t t_acc_start = prof_acc ? ggml_time_us() : 0;
+
                 // the accepted tokens from the speculation
                 const auto ids = common_sampler_sample_and_accept_n(slot.smpl.get(), ctx, slot.i_batch_dft, slot.drafted);
                 slot.i_batch_dft.clear();
@@ -3213,6 +3227,16 @@ private:
                 }
                 if (ctx_dft) {
                     llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), slot.id, slot.prompt.n_tokens(), -1);
+                }
+
+                if (prof_acc) {
+                    static int64_t prof_tot = 0, prof_n = 0;
+                    prof_tot += ggml_time_us() - t_acc_start;
+                    prof_n += 1;
+                    if (prof_n % 50 == 0) {
+                        SRV_WRN("ACCEPT+rollback profile (avg over %lld calls): %.2fms\n",
+                            (long long)prof_n, prof_tot/1000.0/prof_n);
+                    }
                 }
 
                 for (size_t i = 0; i < ids.size(); ++i) {
