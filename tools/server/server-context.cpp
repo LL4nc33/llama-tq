@@ -671,49 +671,80 @@ private:
         add_bos_token = llama_vocab_get_add_bos(vocab);
 
         if (params_base.speculative.has_dft()) {
-            SRV_INF("loading draft model '%s'\n", params_base.speculative.mparams_dft.path.c_str());
-
             const auto & params_spec = params_base.speculative;
+            const bool same_path =
+                params_spec.mparams_dft.path.empty() ||
+                params_spec.mparams_dft.path == params_base.model.path;
+            const bool tgt_has_mtp = model && llama_model_has_mtp(model);
 
-            auto params_dft = params_base;
+            if (same_path && tgt_has_mtp) {
+                // SHARED-CTX MTP MODE: target model already has MTP heads.
+                // Create a second context on the SAME model with ctx_type=MTP,
+                // so the draft path runs only the MTP head subgraph (~free).
+                SRV_INF("%s\n", "MTP shared-ctx mode: reusing target model for draft path");
 
-            params_dft.n_parallel   = 1;
-            params_dft.n_ctx        = params_spec.n_ctx == 0 ? llama_n_ctx_seq(ctx) : params_spec.n_ctx;
-            params_dft.n_batch      = llama_n_ctx_seq(ctx);
-            params_dft.devices      = params_spec.devices;
-            params_dft.model        = params_spec.mparams_dft;
-            params_dft.n_gpu_layers = params_spec.n_gpu_layers;
-            params_dft.cache_type_k = params_spec.cache_type_k;
-            params_dft.cache_type_v = params_spec.cache_type_v;
+                auto params_dft = params_base;
+                params_dft.n_parallel       = 1;
+                params_dft.n_ctx            = params_spec.n_ctx == 0 ? llama_n_ctx_seq(ctx) : params_spec.n_ctx;
+                params_dft.n_batch          = llama_n_ctx_seq(ctx);
+                params_dft.cache_type_k     = params_spec.cache_type_k;
+                params_dft.cache_type_v     = params_spec.cache_type_v;
 
-            if (params_spec.cpuparams.n_threads > 0) {
-                params_dft.cpuparams.n_threads       = params_spec.cpuparams.n_threads;
-                params_dft.cpuparams_batch.n_threads = params_spec.cpuparams_batch.n_threads;
+                params_base.speculative.model_dft = model;  // SAME model
+                params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
+                params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
+                params_base.speculative.cparams_dft.ctx_type  = LLAMA_CONTEXT_TYPE_MTP;
+
+                llama_context * ctx_dft_raw = llama_init_from_model(model, params_base.speculative.cparams_dft);
+                if (ctx_dft_raw == nullptr) {
+                    SRV_ERR("%s\n", "failed to create MTP draft context on target model");
+                    return false;
+                }
+                ctx_dft.reset(ctx_dft_raw);
+                params_base.speculative.draft.ctx_tgt = ctx;
+                params_base.speculative.draft.ctx_dft = ctx_dft.get();
+            } else {
+                SRV_INF("loading draft model '%s'\n", params_base.speculative.mparams_dft.path.c_str());
+
+                auto params_dft = params_base;
+
+                params_dft.n_parallel   = 1;
+                params_dft.n_ctx        = params_spec.n_ctx == 0 ? llama_n_ctx_seq(ctx) : params_spec.n_ctx;
+                params_dft.n_batch      = llama_n_ctx_seq(ctx);
+                params_dft.devices      = params_spec.devices;
+                params_dft.model        = params_spec.mparams_dft;
+                params_dft.n_gpu_layers = params_spec.n_gpu_layers;
+                params_dft.cache_type_k = params_spec.cache_type_k;
+                params_dft.cache_type_v = params_spec.cache_type_v;
+
+                if (params_spec.cpuparams.n_threads > 0) {
+                    params_dft.cpuparams.n_threads       = params_spec.cpuparams.n_threads;
+                    params_dft.cpuparams_batch.n_threads = params_spec.cpuparams_batch.n_threads;
+                }
+
+                params_dft.tensor_buft_overrides = params_spec.tensor_buft_overrides;
+
+                auto mparams_dft = common_model_params_to_llama(params_dft);
+
+                model_dft.reset(llama_model_load_from_file(params_dft.model.path.c_str(), mparams_dft));
+                if (model_dft == nullptr) {
+                    SRV_ERR("failed to load draft model, '%s'\n", params_dft.model.path.c_str());
+                    return false;
+                }
+
+                params_base.speculative.model_dft = model_dft.get();
+                params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
+                params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
+
+                llama_context * ctx_dft_raw = llama_init_from_model(model_dft.get(), params_base.speculative.cparams_dft);
+                if (ctx_dft_raw == nullptr) {
+                    SRV_ERR("%s\n", "failed to create draft model context");
+                    return false;
+                }
+                ctx_dft.reset(ctx_dft_raw);
+                params_base.speculative.draft.ctx_tgt = ctx;
+                params_base.speculative.draft.ctx_dft = ctx_dft.get();
             }
-
-            params_dft.tensor_buft_overrides = params_spec.tensor_buft_overrides;
-
-            auto mparams_dft = common_model_params_to_llama(params_dft);
-
-            model_dft.reset(llama_model_load_from_file(params_dft.model.path.c_str(), mparams_dft));
-            if (model_dft == nullptr) {
-                SRV_ERR("failed to load draft model, '%s'\n", params_dft.model.path.c_str());
-                return false;
-            }
-
-            params_base.speculative.model_dft = model_dft.get();
-            params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
-            params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
-
-            // Create draft model context and wire to new common_params_speculative_draft API
-            llama_context * ctx_dft_raw = llama_init_from_model(model_dft.get(), params_base.speculative.cparams_dft);
-            if (ctx_dft_raw == nullptr) {
-                SRV_ERR("%s\n", "failed to create draft model context");
-                return false;
-            }
-            ctx_dft.reset(ctx_dft_raw);
-            params_base.speculative.draft.ctx_tgt = ctx;
-            params_base.speculative.draft.ctx_dft = ctx_dft.get();
         }
 
         std::string & mmproj_path = params_base.mmproj.path;
@@ -2855,11 +2886,23 @@ private:
             // divergence after the prefill phase of the target.
             // Sync draft KV cache via state_seq copy from target (preserves M-RoPE positions).
             // This is the minimal port of upstream's slot.spec_ckpt.update_dft/load_dft pattern.
+            // In shared-ctx MTP mode, ctx_dft has MTP-only layers (PARTIAL).
+            // Use PARTIAL_ONLY flag so layer-count check skips the trunk layers.
+            const bool shared_ctx_mode = (ctx_dft && model && llama_model_has_mtp(model) &&
+                                          params_base.speculative.model_dft == model);
             if (ctx_dft && ret == 0) {
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
                     const llama_seq_id sid = sl.id;
-                    const llama_state_seq_flags flags = LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
+                    const llama_state_seq_flags flags = shared_ctx_mode
+                        ? (LLAMA_STATE_SEQ_FLAGS_ON_DEVICE | LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)
+                        : LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
+                    // Position-aware sync: only mirror when target is strictly ahead of draft.
+                    // This avoids re-writing draft KV at positions it already covers, which
+                    // M-RoPE rejects with X<Y violation.
+                    const llama_pos tgt_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), sid);
+                    const llama_pos dft_pos = llama_memory_seq_pos_max(llama_get_memory(ctx_dft.get()), sid);
+                    if (tgt_pos <= dft_pos) continue;
                     const size_t sz = llama_state_seq_get_size_ext(ctx, sid, flags);
                     if (sz == 0) continue;
                     std::vector<uint8_t> buf(sz);
@@ -2872,7 +2915,10 @@ private:
 
             // MTP hook: feed target post-decode embeddings into spec state so DRAFT_MTP
             // can pair (h_p, x_{p+1}) for next draft() call. No-op for DRAFT_SIMPLE / ngram.
-            if (ret == 0) {
+            // Skip in shared-ctx mode: state_seq mirror already populated ctx_dft's KV
+            // from target's MTP partial layers, so an additional process()/decode is
+            // redundant AND would re-write KV at conflicting positions.
+            if (ret == 0 && !shared_ctx_mode) {
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
                     common_speculative_process(sl.spec, batch_view);
