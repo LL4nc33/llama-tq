@@ -211,9 +211,12 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     // Final norm
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
 
-    // h_pre_norm semantically means "hidden state pre-LM-head" but for MTP head
-    // input it must be the POST-output_norm hidden state (matches upstreams t_h_nextn).
-    cb(cur, "h_pre_norm", -1);
+    // h_nextn: dense per-position post-norm hidden state, used by MTP draft as h_p seed.
+    // Matches upstream's t_h_nextn semantics. MUST be the pre-row-select tensor so every
+    // ubatch position is extractable (see llama-context.cpp dense extraction path).
+    cb(cur, "h_nextn", -1);
+    res->t_h_nextn = cur;
+    // h_pre_norm: legacy alias. Keep the same tensor so embeddings_pre_norm extraction works.
     res->t_h_pre_norm = cur;
 
     cb(cur, "result_norm", -1);
