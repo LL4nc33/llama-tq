@@ -3182,8 +3182,8 @@ private:
                     std::string drafted_str, ids_str;
                     for (auto t : slot.drafted) { drafted_str += std::to_string(t) + ","; }
                     for (auto t : ids) { ids_str += std::to_string(t) + ","; }
-                    SRV_WRN("SPEC trace: sampled=%d drafted=[%s] ids=[%s] n_draft=%zu accept=%zu\n",
-                        (int)slot.sampled, drafted_str.c_str(), ids_str.c_str(), n_draft, ids.size()-1);
+                    SRV_WRN("SPEC trace: pre-prompt=%d sampled=%d drafted=[%s] ids=[%s] n_draft=%zu accept=%zu\n",
+                        (int)slot.prompt.n_tokens(), (int)slot.sampled, drafted_str.c_str(), ids_str.c_str(), n_draft, ids.size()-1);
                 }
                 if (prof_acc) t_sample_us = ggml_time_us() - t_s;
                 slot.i_batch_dft.clear();
@@ -3203,10 +3203,13 @@ private:
 
                 // rollback to the state before sampling the draft tokens
                 slot.prompt.tokens.keep_first(slot.prompt.n_tokens() - n_draft);
+                if (spec_trace) SRV_WRN("SPEC trace: after_keep_first=%d\n", (int)slot.prompt.n_tokens());
 
                 // add accepted tokens to the prompt
                 slot.prompt.tokens.insert({ids.begin(), ids.end() - 1});
                 slot.sampled = ids.back(); // last accepted token
+                if (spec_trace) SRV_WRN("SPEC trace: post-insert=%d new_sampled=%d\n",
+                    (int)slot.prompt.n_tokens(), (int)slot.sampled);
 
                 // Try partial seq_rm. On hybrid (recurrent) models partial removal is
                 // not supported and the call returns false. In that case rollback via full
