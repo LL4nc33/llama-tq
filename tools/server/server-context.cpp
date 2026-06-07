@@ -2953,12 +2953,14 @@ private:
                     // prefill seeds pending_h (so first draft() has a valid h carryover) and
                     // generating advances pending_h after each verify. With prefill tokens carrying
                     // logits=1 (see mtp_needs_h_per_token above), embd_nextn is dense per position.
-                    // Before process feeds the target batch into ctx_dft, clear ctx_dft KV
-                    // from the targets last-decoded position onwards. Otherwise drafts
-                    // written by the previous common_speculative_draft() call would clash
-                    // with process re-writes at the same positions (M-RoPE X<Y fail).
-                    if (shared_ctx_mode) {
-                        llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, -1, -1);
+                    // Before process feeds the target batch into ctx_dft, clear stale
+                    // draft KV rows from the previous common_speculative_draft() call.
+                    // Use a precise range starting at the first batch_view position
+                    // instead of seq_rm(-1, -1): full clear forces process() to rebuild
+                    // KV from scratch for the entire history, costing O(n) on long ctx.
+                    if (shared_ctx_mode && batch_view.n_tokens > 0) {
+                        const llama_pos p0 = batch_view.pos[0];
+                        llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, p0, -1);
                     }
                     common_speculative_process(sl.spec, batch_view);
                 }
