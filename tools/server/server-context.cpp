@@ -2263,8 +2263,16 @@ private:
                     // Save ckpt before draft for hybrid models (PARTIAL_ONLY keeps overhead low).
                     if (llama_model_is_hybrid(model)) {
                         slot.spec_ckpt.update_pos(slot.prompt.n_tokens(), 0, slot.prompt.tokens.pos_next() - 1);
-                        slot.spec_ckpt.update_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
+                        // Full state checkpoint (not PARTIAL_ONLY): on hybrid models we must
+                        // restore mem_attn KV after rejected drafts too, not just the recurrent
+                        // state. PARTIAL_ONLY discards mem_attn at save time, so a rollback
+                        // ended up with empty attention KV → target lost prompt context →
+                        // attractor lock-in on greedy decode.
+                        slot.spec_ckpt.update_tgt(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                         if (ctx_dft) {
+                            // ctx_dft still uses PARTIAL_ONLY: MTP draft context only has
+                            // the MTP block's KV, and shared-ctx mode clears it before each
+                            // draft anyway.
                             slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                         }
                     }
@@ -3172,9 +3180,11 @@ private:
                     // success path
                 } else if (!slot.spec_ckpt.empty()) {
                     SLT_DBG(slot, "%s", "partial seq_rm failed - restoring ctx from ckpt and re-decoding accepted\n");
-                    // Restore ctx_tgt KV to state-before-draft (pre-draft pos_max)
+                    // Restore ctx_tgt KV to state-before-draft (pre-draft pos_max).
+                    // Full state load (not PARTIAL_ONLY): mem_attn must be restored too,
+                    // otherwise prompt KV is lost and target predictions degenerate.
                     llama_memory_seq_rm(llama_get_memory(ctx), slot.id, -1, -1);
-                    slot.spec_ckpt.load_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
+                    slot.spec_ckpt.load_tgt(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
                     // Roll back prompt to ckpt size, then re-decode the accepted tokens.
                     // After this, prompt + ctx are consistent at slot.prompt.n_tokens().
                     slot.prompt.tokens.keep_first(slot.spec_ckpt.n_tokens);
