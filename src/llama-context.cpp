@@ -3661,6 +3661,40 @@ llama_memory_t llama_get_memory(const struct llama_context * ctx) {
     return ctx->get_memory();
 }
 
+#include "llama-memory-recurrent.h"
+#include "llama-memory-hybrid.h"
+#include "llama-memory-hybrid-iswa.h"
+
+static llama_memory_recurrent * get_recurrent(llama_memory_t mem) {
+    if (!mem) return nullptr;
+    auto * r = dynamic_cast<llama_memory_recurrent*>(mem);
+    if (r) return r;
+    auto * h = dynamic_cast<llama_memory_hybrid*>(mem);
+    if (h) return h->get_mem_recr();
+    auto * hi = dynamic_cast<llama_memory_hybrid_iswa*>(mem);
+    if (hi) return hi->get_mem_recr();
+    return nullptr;
+}
+
+bool llama_memory_has_recurrent(llama_memory_t mem) {
+    return get_recurrent(mem) != nullptr;
+}
+
+bool llama_memory_shadow_alloc(llama_memory_t mem) {
+    auto * r = get_recurrent(mem);
+    return r ? r->shadow_alloc() : false;
+}
+
+void llama_memory_shadow_save(llama_memory_t mem) {
+    auto * r = get_recurrent(mem);
+    if (r) r->shadow_save();
+}
+
+void llama_memory_shadow_load(llama_memory_t mem) {
+    auto * r = get_recurrent(mem);
+    if (r) r->shadow_load();
+}
+
 void llama_memory_clear(llama_memory_t mem, bool data) {
     if (!mem) {
         return;
