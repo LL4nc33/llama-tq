@@ -3806,6 +3806,24 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V;
             } else if (value == "ngram-mod") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+            } else if (value == "draft-simple") {
+                params.speculative.type = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE;
+                if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                              COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) == params.speculative.types.end()) {
+                    if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                        params.speculative.types.clear();
+                    }
+                    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
+                }
+            } else if (value == "draft-mtp") {
+                params.speculative.type = COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+                if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                              COMMON_SPECULATIVE_TYPE_DRAFT_MTP) == params.speculative.types.end()) {
+                    if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                        params.speculative.types.clear();
+                    }
+                    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+                }
             } else {
                 throw std::invalid_argument("unknown speculative decoding type without draft model");
             }
