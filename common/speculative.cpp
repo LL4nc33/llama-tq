@@ -634,6 +634,15 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
 
+                // only collect very high-confidence draft tokens (upstream DRAFT_MTP filter).
+                // Without this, low-probability drafts poison ctx_tgts KV at verify time
+                // and lock the target into attractors like 'the the the' on greedy decode.
+                if (cur_p->data[0].p < params.p_min) {
+                    drafting[seq_id] = false;
+                    n_drafting--;
+                    continue;
+                }
+
                 common_sampler_accept(smpl, id, true);
 
                 auto & dp = dparams.at(seq_id);
