@@ -77,6 +77,8 @@ llama_context::llama_context(
     cparams.yarn_beta_slow   = params.yarn_beta_slow   >= 0.0f ? params.yarn_beta_slow   : hparams.yarn_beta_slow;
     cparams.embeddings       = params.embeddings;
     cparams.embeddings_pre_norm = false;
+    cparams.embeddings_nextn = false;
+    cparams.embeddings_nextn_masked = false;
     cparams.offload_kqv      = params.offload_kqv;
     cparams.no_perf          = params.no_perf;
     cparams.pooling_type     = params.pooling_type;
@@ -913,6 +915,29 @@ float * llama_context::get_embeddings_pre_norm() {
     return embd_pre_norm.data;
 }
 
+float * llama_context::get_embeddings_nextn() {
+    output_reorder();
+    return embd_nextn.data;
+}
+
+float * llama_context::get_embeddings_nextn_ith(int32_t i) {
+    output_reorder();
+    if (embd_nextn.data == nullptr) return nullptr;
+    const uint32_t n_embd = model.hparams.n_embd;
+    if (!cparams.embeddings_nextn_masked) {
+        if (i < 0 || (size_t)(i + 1) * n_embd > embd_nextn.size) return nullptr;
+        return embd_nextn.data + (size_t) i * n_embd;
+    }
+    const int64_t j = output_resolve_row(i);
+    if (j < 0) return nullptr;
+    return embd_nextn.data + (size_t) j * n_embd;
+}
+
+void llama_context::set_embeddings_nextn(bool value, bool masked) {
+    cparams.embeddings_nextn        = value;
+    cparams.embeddings_nextn_masked = masked;
+}
+
 float * llama_context::get_embeddings_pre_norm_raw_ith(int32_t i) {
     output_reorder();
     if (embd_pre_norm.data == nullptr) return nullptr;
@@ -1405,6 +1430,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
     auto * t_logits        = res->get_logits();
     auto * t_embd          = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
     auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm() : nullptr;
+    auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm() : nullptr; // reuses h_pre_norm slot in fork
 
     // extract logits
     if (logits.data && t_logits) {
@@ -1478,6 +1504,13 @@ int llama_context::encode(const llama_batch & batch_inp) {
         const uint32_t n_embd = hparams.n_embd;
         GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_pre_norm.size);
         ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm.data, 0, n_tokens*n_embd*sizeof(float));
+    }
+    if (embd_nextn.data && t_h_nextn && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+        ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
+        GGML_ASSERT(backend_h != nullptr);
+        const uint32_t n_embd = hparams.n_embd;
+        GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_nextn.size);
+        ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn.data, 0, n_tokens*n_embd*sizeof(float));
     }
 
     // TODO: hacky solution
@@ -1834,6 +1867,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         auto * t_logits        = res->get_logits();
         auto * t_embd          = cparams.embeddings          ? res->get_embd()        : nullptr;
         auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm()  : nullptr;
+        auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm()  : nullptr;
 
         if (t_embd && res->get_embd_pooled()) {
             t_embd = res->get_embd_pooled();
@@ -1926,6 +1960,15 @@ int llama_context::decode(const llama_batch & batch_inp) {
             GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
             GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_pre_norm.size);
             ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_outputs*n_embd*sizeof(float));
+        }
+        if (embd_nextn.data && t_h_nextn && n_outputs > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+            ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
+            GGML_ASSERT(backend_h != nullptr);
+            const uint32_t n_embd = hparams.n_embd;
+            float * embd_nextn_out = embd_nextn.data + n_outputs_prev*n_embd;
+            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
+            GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_nextn.size);
+            ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_outputs*n_embd*sizeof(float));
         }
 
         // Copy backend sampling output if this ubatch produced any sampling tensors.
@@ -2037,6 +2080,9 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     logits.size        = has_logits        ? n_vocab*n_outputs_max     : 0;
     embd.size          = has_embd          ? n_embd_out*n_outputs_max  : 0;
     embd_pre_norm.size = has_embd_pre_norm ? n_embd*n_outputs_max      : 0;
+    const bool has_embd_nextn = cparams.embeddings_nextn;
+    const size_t nextn_n = cparams.embeddings_nextn_masked ? n_outputs_max : n_outputs_max; // we always reserve for n_outputs_max
+    embd_nextn.size = has_embd_nextn ? n_embd*nextn_n : 0;
 
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
@@ -2052,7 +2098,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;
     const size_t new_size  =
-        (logits.size + embd.size + embd_pre_norm.size + backend_float_count) * sizeof(float) +
+        (logits.size + embd.size + embd_pre_norm.size + embd_nextn.size + backend_float_count) * sizeof(float) +
         (                                               backend_token_count) * sizeof(llama_token);
 
     // alloc only when more than the current capacity is required
@@ -2100,6 +2146,8 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     embd_pre_norm = has_embd_pre_norm ? buffer_view<float>{(float *) (base + offset), embd_pre_norm.size} : buffer_view<float>{nullptr, 0};
     offset += embd_pre_norm.size * sizeof(float);
+    embd_nextn = has_embd_nextn ? buffer_view<float>{(float *) (base + offset), embd_nextn.size} : buffer_view<float>{nullptr, 0};
+    offset += embd_nextn.size * sizeof(float);
 
     if (has_sampling) {
         sampling.logits = {(float *) (base + offset), (size_t)(n_vocab*n_outputs_max)};
@@ -3566,6 +3614,18 @@ float * llama_get_embeddings_pre_norm(llama_context * ctx) {
     ctx->synchronize();
 
     return ctx->get_embeddings_pre_norm();
+}
+
+float * llama_get_embeddings_nextn(llama_context * ctx) {
+    return ctx->get_embeddings_nextn();
+}
+
+float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+    return ctx->get_embeddings_nextn_ith(i);
+}
+
+void llama_set_embeddings_nextn(llama_context * ctx, bool value, bool masked) {
+    ctx->set_embeddings_nextn(value, masked);
 }
 
 float * llama_get_embeddings_pre_norm_raw_ith(llama_context * ctx, int32_t i) {
