@@ -395,9 +395,14 @@ struct common_params_speculative {
             !mparams_dft.path.empty() || !mparams_dft.hf_repo.empty()) {
             return true;
         }
-        // Shared-ctx MTP: target serves as its own draft, no separate draft file.
+        // Shared-ctx MTP or any non-draft-model spec (ngram-*): target serves as own draft.
         return std::any_of(types.begin(), types.end(), [](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
         });
     }
 
