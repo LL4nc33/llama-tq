@@ -2260,7 +2260,14 @@ private:
                     dp.result   = &draft;
                     // Always save ckpt before draft on hybrid models. PARTIAL_ONLY keeps
                     // overhead low (just the small recurrent state portion).
-                    // ckpt save DISABLED — relying on draft-max=1 (all-or-nothing) to avoid partial-rm path
+                    // Save ckpt before draft for hybrid models (PARTIAL_ONLY keeps overhead low).
+                    if (llama_model_is_hybrid(model)) {
+                        slot.spec_ckpt.update_pos(slot.prompt.n_tokens(), 0, slot.prompt.tokens.pos_next() - 1);
+                        slot.spec_ckpt.update_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
+                        if (ctx_dft) {
+                            slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
+                        }
+                    }
                     // Shared-ctx MTP: M-RoPE aggregates positions across 4 axes, so
                     // seq_pos_max returns inflated values. Clear ctx_dft KV before each
                     // draft() so the MTP-graph forward starts from empty cache.
@@ -3155,29 +3162,33 @@ private:
                 if (tgt_rm_ok) {
                     // success path
                 } else if (!slot.spec_ckpt.empty()) {
-                    SLT_DBG(slot, "%s", "partial seq_rm failed - restoring ckpt and applying accepted-only batch\n");
+                    SLT_DBG(slot, "%s", "partial seq_rm failed - restoring ctx from ckpt and re-decoding accepted\n");
+                    // Restore ctx_tgt KV to state-before-draft (pre-draft pos_max)
                     llama_memory_seq_rm(llama_get_memory(ctx), slot.id, -1, -1);
                     slot.spec_ckpt.load_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
-                    llama_batch tb = llama_batch_init((int) ids.size(), 0, 1);
-                    for (size_t k = 0; k < ids.size(); ++k) {
-                        const llama_pos pos = (llama_pos)(slot.prompt.n_tokens() - ids.size() + k);
-                        common_batch_add(tb, ids[k], pos, { slot.id }, k == ids.size() - 1);
+                    // Roll back prompt to ckpt size, then re-decode the accepted tokens.
+                    // After this, prompt + ctx are consistent at slot.prompt.n_tokens().
+                    slot.prompt.tokens.keep_first(slot.spec_ckpt.n_tokens);
+                    slot.prompt.tokens.insert({ids.begin(), ids.end() - 1});
+                    // Re-decode accepted tokens to advance ctx_tgt to current prompt size
+                    llama_batch tb = llama_batch_init((int)(ids.size() - 1) + 1, 0, 1);
+                    const llama_pos start_pos = slot.spec_ckpt.pos_max + 1;
+                    for (size_t k = 0; k + 1 < ids.size(); ++k) {
+                        common_batch_add(tb, ids[k], start_pos + (llama_pos)k, { slot.id }, false);
                     }
-                    llama_decode(ctx, tb);
+                    // Last token sampled = ids.back(); its logits not needed here (already sampled in verify)
+                    if (tb.n_tokens > 0) {
+                        tb.logits[tb.n_tokens - 1] = true;
+                        llama_decode(ctx, tb);
+                    }
                     llama_batch_free(tb);
                 } else {
-                    // First partial-fail and no prior ckpt: disable spec for this slot to
-                    // avoid corruption. Generation continues on target path.
-                    SLT_WRN(slot, "%s", "partial seq_rm failed without ckpt - disabling speculation for this slot\n");
-                    if (slot.spec) {
-                        common_speculative_free(slot.spec);
-                        slot.spec = nullptr;
-                    }
-                    llama_memory_seq_rm(llama_get_memory(ctx), slot.id, -1, -1);
-                    llama_batch tb = llama_batch_init((int) ids.size(), 0, 1);
-                    for (size_t k = 0; k < ids.size(); ++k) {
-                        const llama_pos pos = (llama_pos)(slot.prompt.n_tokens() - ids.size() + k);
-                        common_batch_add(tb, ids[k], pos, { slot.id }, k == ids.size() - 1);
+                    SLT_WRN(slot, "%s", "partial seq_rm failed without ckpt - falling back to full reprefill\n");
+                    llama_memory_clear(llama_get_memory(ctx), true);
+                    const llama_tokens & all_tokens = slot.prompt.tokens.get_text_tokens();
+                    llama_batch tb = llama_batch_init((int) all_tokens.size(), 0, 1);
+                    for (size_t k = 0; k < all_tokens.size(); ++k) {
+                        common_batch_add(tb, all_tokens[k], (llama_pos)k, { slot.id }, k == all_tokens.size() - 1);
                     }
                     llama_decode(ctx, tb);
                     llama_batch_free(tb);

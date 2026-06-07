@@ -2091,3 +2091,51 @@ void common_prompt_checkpoint::clear_dft() {
     data_dft.clear();
 }
 
+common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx) {
+    auto * mem = llama_get_memory(ctx);
+    if (mem == nullptr) {
+        return COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+    }
+
+    common_context_seq_rm_type res = COMMON_CONTEXT_SEQ_RM_TYPE_PART;
+
+    llama_memory_clear(mem, true);
+
+    std::vector<llama_token> tmp;
+    tmp.push_back(0);
+    tmp.push_back(0);
+
+    int ret = llama_decode(ctx, llama_batch_get_one(tmp.data(), tmp.size()));
+    if (ret != 0) {
+        res = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+        goto done;
+    }
+
+    if (llama_n_rs_seq(ctx) > 0) {
+        res = COMMON_CONTEXT_SEQ_RM_TYPE_RS;
+        goto done;
+    }
+
+    if (!llama_memory_seq_rm(mem, 0, 1, -1)) {
+        res = COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+        goto done;
+    }
+
+done:
+    llama_memory_clear(mem, true);
+    llama_synchronize(ctx);
+    return res;
+}
+
+void common_context_seq_rm(llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+    llama_memory_seq_rm(llama_get_memory(ctx), seq_id, p0, p1);
+}
+
+void common_context_seq_cp(llama_context * ctx, llama_seq_id src, llama_seq_id dst, llama_pos p0, llama_pos p1) {
+    llama_memory_seq_cp(llama_get_memory(ctx), src, dst, p0, p1);
+}
+
+void common_context_seq_add(llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) {
+    llama_memory_seq_add(llama_get_memory(ctx), seq_id, p0, p1, delta);
+}
+
