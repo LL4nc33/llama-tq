@@ -2258,15 +2258,13 @@ private:
                     dp.id_last  = slot.sampled;
                     dp.prompt   = &cached_text_tokens;
                     dp.result   = &draft;
-                    // Always save ckpt before draft on hybrid models. PARTIAL_ONLY keeps
-                    // overhead low (just the small recurrent state portion).
-                    // Save ckpt before draft for hybrid models (PARTIAL_ONLY keeps overhead low).
-                    if (llama_model_is_hybrid(model)) {
+                    // Save ckpt before draft for hybrid models ONLY if recurrent rollback
+                    // via seq_rm is unavailable (cparams.n_rs_seq == 0). With n_rs_seq > 0
+                    // (set by need_n_rs_seq() for DRAFT_MTP), seq_rm covers the rollback
+                    // in-place — saving a ckpt would just be wasted D2H copy bandwidth.
+                    // This single skip saves ~5-15 ms per draft iteration on 35B models.
+                    if (llama_model_is_hybrid(model) && llama_n_rs_seq(ctx) == 0) {
                         slot.spec_ckpt.update_pos(slot.prompt.n_tokens(), 0, slot.prompt.tokens.pos_next() - 1);
-                        // PARTIAL_ONLY saves only the recurrent state (cheap). With
-                        // cparams.n_rs_seq > 0 the recurrent layers support per-token
-                        // partial rollback via seq_rm, so the attention KV does not need
-                        // to be checkpointed — seq_rm handles attention rollback in-place.
                         slot.spec_ckpt.update_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                         if (ctx_dft) {
                             slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
