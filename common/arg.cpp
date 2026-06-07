@@ -3817,6 +3817,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 }
             } else if (value == "draft-mtp") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+                // Explicit --spec-type draft-mtp means MTP-only: drop any DRAFT_SIMPLE
+                // that may have been auto-registered via -md (shared-ctx MTP mode reuses
+                // the target model and does not need a second token-level draft path).
+                params.speculative.types.erase(
+                    std::remove(params.speculative.types.begin(), params.speculative.types.end(),
+                                COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE),
+                    params.speculative.types.end());
                 if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
                               COMMON_SPECULATIVE_TYPE_DRAFT_MTP) == params.speculative.types.end()) {
                     if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {

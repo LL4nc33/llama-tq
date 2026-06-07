@@ -2251,6 +2251,13 @@ private:
                     dp.id_last  = slot.sampled;
                     dp.prompt   = &cached_text_tokens;
                     dp.result   = &draft;
+                    // Shared-ctx MTP: M-RoPE aggregates positions across 4 axes, so
+                    // seq_pos_max returns inflated values. Clear ctx_dft KV before each
+                    // draft() so the MTP-graph forward starts from empty cache.
+                    if (ctx_dft && model && llama_model_has_mtp(model) &&
+                        params_base.speculative.model_dft == model) {
+                        llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), slot.id, -1, -1);
+                    }
                     common_speculative_draft(slot.spec);
                 }
 
@@ -2890,19 +2897,14 @@ private:
             // Use PARTIAL_ONLY flag so layer-count check skips the trunk layers.
             const bool shared_ctx_mode = (ctx_dft && model && llama_model_has_mtp(model) &&
                                           params_base.speculative.model_dft == model);
-            if (ctx_dft && ret == 0) {
+            // State_seq mirror is only used in the legacy two-model path. In shared-ctx
+            // MTP mode, ctx_dft's KV is synced via common_speculative_process() which feeds
+            // the targets pre-norm embeddings into the MTP-graph forward.
+            if (ctx_dft && ret == 0 && !shared_ctx_mode) {
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
                     const llama_seq_id sid = sl.id;
-                    const llama_state_seq_flags flags = shared_ctx_mode
-                        ? (LLAMA_STATE_SEQ_FLAGS_ON_DEVICE | LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY)
-                        : LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
-                    // Position-aware sync: only mirror when target is strictly ahead of draft.
-                    // This avoids re-writing draft KV at positions it already covers, which
-                    // M-RoPE rejects with X<Y violation.
-                    const llama_pos tgt_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), sid);
-                    const llama_pos dft_pos = llama_memory_seq_pos_max(llama_get_memory(ctx_dft.get()), sid);
-                    if (tgt_pos <= dft_pos) continue;
+                    const llama_state_seq_flags flags = LLAMA_STATE_SEQ_FLAGS_ON_DEVICE;
                     const size_t sz = llama_state_seq_get_size_ext(ctx, sid, flags);
                     if (sz == 0) continue;
                     std::vector<uint8_t> buf(sz);
@@ -2915,12 +2917,21 @@ private:
 
             // MTP hook: feed target post-decode embeddings into spec state so DRAFT_MTP
             // can pair (h_p, x_{p+1}) for next draft() call. No-op for DRAFT_SIMPLE / ngram.
-            // Skip in shared-ctx mode: state_seq mirror already populated ctx_dft's KV
-            // from target's MTP partial layers, so an additional process()/decode is
-            // redundant AND would re-write KV at conflicting positions.
-            if (ret == 0 && !shared_ctx_mode) {
+            // Skip during prompt-prefill (when slot is still in prompt processing) — only
+            // call process() during the verify/generation phase. During chunked prefill the
+            // ctx_dft has no pending_h to pair with each chunk and process()/decode would
+            // run with positions that conflict against ctx_dfts own MTP-graph advances.
+            if (ret == 0) {
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
+                    if (sl.state != SLOT_STATE_GENERATING) continue;
+                    // Before process feeds the target batch into ctx_dft, clear ctx_dft KV
+                    // from the targets last-decoded position onwards. Otherwise drafts
+                    // written by the previous common_speculative_draft() call would clash
+                    // with process re-writes at the same positions (M-RoPE X<Y fail).
+                    if (shared_ctx_mode) {
+                        llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, -1, -1);
+                    }
                     common_speculative_process(sl.spec, batch_view);
                 }
             }
@@ -3123,6 +3134,13 @@ private:
                 slot.sampled = ids.back(); // last accepted token
 
                 llama_memory_seq_rm(llama_get_memory(ctx), slot.id, slot.prompt.n_tokens(), -1);
+                // Mirror the seq_rm into ctx_dft so its KV is in sync with target after
+                // accept. Required for DRAFT_MTP shared-ctx mode (each accept iteration
+                // rolls back rejected draft positions). For two-model mode this is a no-op
+                // safety net.
+                if (ctx_dft) {
+                    llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), slot.id, slot.prompt.n_tokens(), -1);
+                }
 
                 for (size_t i = 0; i < ids.size(); ++i) {
                     completion_token_output result;
