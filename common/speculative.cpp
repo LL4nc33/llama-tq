@@ -595,13 +595,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_row, row_bytes);
         }
 
-        // Hybrid M-RoPE workaround: pre-clear ctx_dft for drafting seqs.
-        for (llama_seq_id _sid = 0; _sid < (llama_seq_id) n_seq; ++_sid) {
-            if (drafting[_sid]) { llama_memory_seq_rm(llama_get_memory(ctx_dft), _sid, -1, -1); }
-        }
-        fprintf(stderr, "[DRAFT_MTP] OUTER pre-decode pos=%d batch_pos[0]=%d\n", (int)llama_memory_seq_pos_max(llama_get_memory(ctx_dft), 0), batch.n_tokens > 0 ? (int)batch.pos[0] : -1);
-        llama_memory_clear(llama_get_memory(ctx_dft), true);
-        fprintf(stderr, "[DRAFT_MTP] OUTER post-clear pos=%d\n", (int)llama_memory_seq_pos_max(llama_get_memory(ctx_dft), 0));
         int ret = llama_decode(ctx_dft, batch);
         if (ret != 0) {
             LOG_WRN("%s: llama_decode returned %d\n", __func__, ret);
@@ -659,13 +652,6 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
 
             // evaluate the drafted tokens on the draft model
-        // Hybrid M-RoPE workaround: pre-clear ctx_dft for drafting seqs.
-        for (llama_seq_id _sid = 0; _sid < (llama_seq_id) n_seq; ++_sid) {
-            if (drafting[_sid]) { llama_memory_seq_rm(llama_get_memory(ctx_dft), _sid, -1, -1); }
-        }
-        fprintf(stderr, "[DRAFT_MTP] LOOP pre-decode pos=%d batch_pos[0]=%d\n", (int)llama_memory_seq_pos_max(llama_get_memory(ctx_dft), 0), batch.n_tokens > 0 ? (int)batch.pos[0] : -1);
-        llama_memory_clear(llama_get_memory(ctx_dft), true);
-        fprintf(stderr, "[DRAFT_MTP] LOOP post-clear pos=%d\n", (int)llama_memory_seq_pos_max(llama_get_memory(ctx_dft), 0));
             ret = llama_decode(ctx_dft, batch);
             if (ret != 0) {
                 LOG_WRN("%s: llama_decode[%d] returned %d\n", __func__, i, ret);
