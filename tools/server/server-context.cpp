@@ -687,7 +687,22 @@ private:
             // because the second model load is mmap-shared by the OS).
             const bool mtp_type_in_types = std::find(params_spec.types.begin(), params_spec.types.end(),
                                                      COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_spec.types.end();
-            if (same_path && tgt_has_mtp && mtp_type_in_types) {
+            // ngram-* types operate without any external draft model — they generate
+            // drafts from a prompt n-gram table built on the target side. Skip the
+            // draft-model load entirely and let common_speculative_init wire them.
+            const bool ngram_only = !params_spec.mparams_dft.path.empty() ? false :
+                std::all_of(params_spec.types.begin(), params_spec.types.end(), [](auto t) {
+                    return t == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
+                        || t == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
+                        || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K
+                        || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V
+                        || t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+                }) && !params_spec.types.empty();
+            if (ngram_only) {
+                SRV_INF("%s\n", "ngram-only spec mode: no draft model load needed");
+                params_base.speculative.draft.ctx_tgt = ctx;
+                // ctx_dft stays nullptr — ngram impls do not use it
+            } else if (same_path && tgt_has_mtp && mtp_type_in_types) {
                 SRV_INF("%s\n", "MTP shared-ctx mode: reusing target model for draft path");
 
                 auto params_dft = params_base;
