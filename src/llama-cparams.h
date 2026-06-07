@@ -30,6 +30,8 @@ struct llama_cparams {
 
     bool embeddings;
     bool embeddings_pre_norm; // also extract the hidden state before the final output norm
+    bool embeddings_nextn;        // also extract MTP-input embeddings
+    bool embeddings_nextn_masked; // extract only rows where batch.logits != 0
     bool causal_attn;
     bool offload_kqv;
     bool flash_attn;
