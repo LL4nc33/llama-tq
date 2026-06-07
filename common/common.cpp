@@ -1529,6 +1529,13 @@ struct llama_context_params common_context_params_to_llama(const common_params &
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
+
+    // Number of recurrent-state rollback snapshots per sequence. Required for partial
+    // seq_rm on hybrid models like qwen35 — without it, rejected drafts cannot be
+    // rolled back from the recurrent state and force a full-prefill fallback.
+    // DRAFT_MTP needs draft.n_max snapshots; other paths set this to 0.
+    cparams.n_rs_seq = params.speculative.need_n_rs_seq();
+
     cparams.tq_protect_layers = params.tq_protect_layers;
     cparams.tq_protect_sinks  = params.tq_protect_sinks;
     cparams.tq_deferred_k     = params.tq_deferred_k;
