@@ -582,10 +582,13 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         const float * h_row = nullptr;
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
+        static const bool dbg_mtp = std::getenv("FORK_MTP_DEBUG") != nullptr;
+
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             auto & dp = dparams[seq_id];
 
             if (!dp.drafting) {
+                if (dbg_mtp) LOG_WRN("MTP draft: seq=%d skipped, dp.drafting=false\n", (int)seq_id);
                 continue;
             }
 
@@ -604,6 +607,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             LOG_WRN("%s: llama_decode returned %d\n", __func__, ret);
             return;
         }
+
+        if (dbg_mtp) LOG_WRN("MTP draft: starting AR loop, n_drafting=%d, p_min=%.3f, n_max=%d\n",
+                              n_drafting, (double)params.p_min, (int)params.n_max);
 
         int i = 0;
 
@@ -633,6 +639,11 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
+
+                if (dbg_mtp) LOG_WRN("MTP draft step %d seq=%d: top=%d p=%.4f (p_min=%.3f) %s\n",
+                                      i, (int)seq_id, (int)id, (double)cur_p->data[0].p,
+                                      (double)params.p_min,
+                                      (cur_p->data[0].p < params.p_min ? "DROPPED" : "keep"));
 
                 // only collect very high-confidence draft tokens (upstream DRAFT_MTP filter).
                 // Without this, low-probability drafts poison ctx_tgts KV at verify time
