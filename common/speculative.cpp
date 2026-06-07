@@ -1076,8 +1076,14 @@ struct common_speculative_impl_ngram_cache : public common_speculative_impl {
         }
     }
 
-    void begin(llama_seq_id /*seq_id*/, const llama_tokens & /*prompt*/) override {
-        // noop
+    void begin(llama_seq_id seq_id, const llama_tokens & /*prompt*/) override {
+        // Reset per-sequence ngram cache state on each new generation. Without this,
+        // the cumulative ngram_cache_context from a prior generation poisons the
+        // current draft predictions (acceptance plummets after the first request).
+        if (seq_id >= 0 && (size_t)seq_id < sinfos.size()) {
+            sinfos[seq_id].cache_size = 0;
+            sinfos[seq_id].ngram_cache_context.clear();
+        }
     }
 
     void draft_one(
