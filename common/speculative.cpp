@@ -431,6 +431,8 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
         llama_set_embeddings_pre_norm(ctx_tgt, true);
         llama_set_embeddings_pre_norm(ctx_dft, true);
+        llama_set_embeddings_nextn(ctx_tgt, true, false);
+        llama_set_embeddings_nextn(ctx_dft, true, false);
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 
@@ -513,7 +515,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         //                                                       ^--- this is a problem
         // TODO:this is generally true, but would be nice to assert it
         {
-            const float * h_tgt = llama_get_embeddings_pre_norm(ctx_tgt);
+            const float * h_tgt = llama_get_embeddings_nextn(ctx_tgt);
             std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, row_bytes * (n_tokens-1));
 
             //{
@@ -555,7 +557,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             verify_h[seq_id].resize((size_t) n_rows * n_embd);
 
             for (int32_t i = 0; i < n_rows; ++i) {
-                const float * h = llama_get_embeddings_pre_norm_raw_ith(ctx_tgt, i_batch_beg[seq_id] + i);
+                const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_batch_beg[seq_id] + i);
                 std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
             }
 
@@ -616,7 +618,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 auto * smpl = smpls[seq_id].get();
 
                 common_sampler_sample(smpl, ctx_dft, i_batch, true);
-                h_row = llama_get_embeddings_pre_norm_raw_ith(ctx_dft, i_batch);
+                h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_batch);
                 ++i_batch;
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);

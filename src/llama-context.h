@@ -72,6 +72,9 @@ struct llama_context {
     float * get_embeddings_pre_norm();
     float * get_embeddings_pre_norm_ith(int32_t i);
     float * get_embeddings_pre_norm_raw_ith(int32_t i);
+    float * get_embeddings_nextn();
+    float * get_embeddings_nextn_ith(int32_t i);
+    void    set_embeddings_nextn(bool value, bool masked);
 
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
@@ -271,6 +274,7 @@ private:
     // populated only when cparams.embeddings_pre_norm is enabled and the model graph
     // sets llm_graph_result::t_h_pre_norm
     buffer_view<float> embd_pre_norm = {nullptr, 0};
+    buffer_view<float> embd_nextn = {nullptr, 0};
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active
