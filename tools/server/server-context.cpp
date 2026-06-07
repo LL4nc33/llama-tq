@@ -58,6 +58,10 @@ struct server_slot {
     mtmd_context * mctx = nullptr;
 
     common_speculative * spec = nullptr;
+    // Pre-draft KV checkpoint used to restore ctx_tgt (and ctx_dft) when a partial
+    // draft acceptance would require partial seq_rm on a hybrid model that does not
+    // support it. Without this, partial accepts leave the cache in an unrecoverable state.
+    common_prompt_checkpoint spec_ckpt;
 
     // TODO: move members that belong to the task (such as `generated_text`, `has_new_line`) to task_results_state
     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
@@ -2251,6 +2255,17 @@ private:
                     dp.id_last  = slot.sampled;
                     dp.prompt   = &cached_text_tokens;
                     dp.result   = &draft;
+                    // Save target KV checkpoint BEFORE draft so we can restore on partial accept.
+                    // Only needed on hybrid (recurrent) models where partial seq_rm is unsupported.
+                    // For non-hybrid models the post-verify seq_rm cleans up rejected positions cleanly.
+                    const bool save_ckpt_needed = llama_model_is_hybrid(model);
+                    if (save_ckpt_needed) {
+                        slot.spec_ckpt.update_pos(slot.prompt.n_tokens(), 0, slot.prompt.tokens.pos_next() - 1);
+                        slot.spec_ckpt.update_tgt(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        if (ctx_dft) {
+                            slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        }
+                    }
                     // Shared-ctx MTP: M-RoPE aggregates positions across 4 axes, so
                     // seq_pos_max returns inflated values. Clear ctx_dft KV before each
                     // draft() so the MTP-graph forward starts from empty cache.
@@ -3133,11 +3148,29 @@ private:
                 slot.prompt.tokens.insert({ids.begin(), ids.end() - 1});
                 slot.sampled = ids.back(); // last accepted token
 
-                llama_memory_seq_rm(llama_get_memory(ctx), slot.id, slot.prompt.n_tokens(), -1);
-                // Mirror the seq_rm into ctx_dft so its KV is in sync with target after
-                // accept. Required for DRAFT_MTP shared-ctx mode (each accept iteration
-                // rolls back rejected draft positions). For two-model mode this is a no-op
-                // safety net.
+                // Try partial seq_rm. On hybrid (recurrent) models partial removal is
+                // not supported and the call returns false. In that case rollback via full
+                // memory_clear and force a prompt-reprocess on next iteration (slot state
+                // will be reset back to PROCESSING_PROMPT by the cache-miss path).
+                // On hybrid (recurrent) models partial seq_rm is unsupported. If the
+                // target seq_rm fails we cannot recover rejected-draft positions in place,
+                // so we disable speculation for this slot. Generation continues on the
+                // target path without losing already-accepted tokens.
+                const bool tgt_rm_ok = llama_memory_seq_rm(llama_get_memory(ctx), slot.id, slot.prompt.n_tokens(), -1);
+                if (!tgt_rm_ok && !slot.spec_ckpt.empty()) {
+                    SLT_DBG(slot, "%s", "partial seq_rm failed - restoring ckpt and applying accepted-only batch\n");
+                    // Restore ctx_tgt to pre-draft state
+                    llama_memory_seq_rm(llama_get_memory(ctx), slot.id, -1, -1);
+                    slot.spec_ckpt.load_tgt(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    // Now apply accepted-only batch to advance ctx_tgt
+                    llama_batch tb = llama_batch_init((int) ids.size(), 0, 1);
+                    for (size_t k = 0; k < ids.size(); ++k) {
+                        const llama_pos pos = (llama_pos)(slot.prompt.n_tokens() - ids.size() + k);
+                        common_batch_add(tb, ids[k], pos, { slot.id }, k == ids.size() - 1);
+                    }
+                    llama_decode(ctx, tb);
+                    llama_batch_free(tb);
+                }
                 if (ctx_dft) {
                     llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), slot.id, slot.prompt.n_tokens(), -1);
                 }
