@@ -2948,17 +2948,13 @@ private:
             // ctx_dft has no pending_h to pair with each chunk and process()/decode would
             // run with positions that conflict against ctx_dfts own MTP-graph advances.
             if (ret == 0) {
+                // FORK_MTP_SKIP_PROCESS=1: ablation flag to measure process() overhead.
+                // Skipping process() means pending_h stays stale from prior iter — only
+                // safe for benchmark experiments, NOT for correctness in production.
+                static const bool skip_process = std::getenv("FORK_MTP_SKIP_PROCESS") != nullptr;
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
-                    // Run process() in BOTH prefill and generating states for MTP shared-ctx mode:
-                    // prefill seeds pending_h (so first draft() has a valid h carryover) and
-                    // generating advances pending_h after each verify. With prefill tokens carrying
-                    // logits=1 (see mtp_needs_h_per_token above), embd_nextn is dense per position.
-                    // Before process feeds the target batch into ctx_dft, clear stale
-                    // draft KV rows from the previous common_speculative_draft() call.
-                    // Use a precise range starting at the first batch_view position
-                    // instead of seq_rm(-1, -1): full clear forces process() to rebuild
-                    // KV from scratch for the entire history, costing O(n) on long ctx.
+                    if (skip_process) continue;
                     if (shared_ctx_mode && batch_view.n_tokens > 0) {
                         const llama_pos p0 = batch_view.pos[0];
                         llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, p0, -1);
