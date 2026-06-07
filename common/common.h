@@ -1139,3 +1139,17 @@ ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std
 
 // "adamw" or "sgd" (case insensitive)
 enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
+
+// upstream parity: context seq_rm capability
+enum common_context_seq_rm_type {
+    COMMON_CONTEXT_SEQ_RM_TYPE_NO   = 0,
+    COMMON_CONTEXT_SEQ_RM_TYPE_PART = 1,
+    COMMON_CONTEXT_SEQ_RM_TYPE_FULL = 2,
+    COMMON_CONTEXT_SEQ_RM_TYPE_RS   = 3,
+};
+
+common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx);
+void common_context_seq_rm (llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1);
+void common_context_seq_cp (llama_context * ctx, llama_seq_id src, llama_seq_id dst, llama_pos p0, llama_pos p1);
+void common_context_seq_add(llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta);
+
