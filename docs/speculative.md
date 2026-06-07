@@ -181,3 +181,31 @@ statistics ngram_map_k: #calls(b,g,a) = 6 1690 26, #gen drafts = 26, #acc drafts
 - `#acc tokens`: number of tokens accepted by the main model
 - `dur(b,g,a): durations of begin (new prompt), generation and accumulation (process acceptance).
 
+## llama-tq fork recommendations (2026-06)
+
+Tested on RTX 2060 12 GB + Qwen3.5-9B-MTP-IQ4_XS (baseline 57.5 t/s):
+
+| Workload | Config | TG | Boost |
+|---|---|---|---|
+| Universal (default) | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 57-84 t/s | 1.0-1.46x |
+| Repeat-heavy (logs, lists) | same + `--draft-max 16` | up to 220 t/s | up to 3.8x |
+| Structured (JSON, code boilerplate) | same + `--draft-max 12` | 60-80 t/s | 1.05-1.40x |
+
+All configs above are **lossless** — output is byte-identical to baseline
+(verified via diff on first 140 chars of greedy outputs across multiple prompts).
+
+DRAFT_MTP is supported but on consumer single-GPU + 9B-class quantized models
+it consistently underperforms ngram-cache (~46 t/s vs 57.5 baseline) because the
+single-layer MTP head caps per-step acceptance at ~33% which doesn't amortise
+the spec overhead. DRAFT_MTP may be worth enabling on bandwidth-bound hardware
+(Jetson Orin) or with larger active-param models (>10B active).
+
+### Critical fix (commit 78216a941)
+
+Prior to 2026-06-08, ngram-* and draft-simple spec types silently corrupted
+output on hybrid-recurrent models (qwen35) because `need_n_rs_seq()` only
+returned a non-zero value for DRAFT_MTP. With `n_rs_seq = 0`, partial seq_rm
+on hybrid models fails and the server falls back to `spec_ckpt.load_tgt`
+with PARTIAL_ONLY which wipes mem_attn — destroying the target's prompt KV
+context. Fix in `common/common.h::need_n_rs_seq()` extends the check to all
+spec types that emit target-verifiable drafts.
