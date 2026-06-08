@@ -19,9 +19,12 @@
 set -euo pipefail
 
 PORT=${PORT:-8791}
-MODEL=${MODEL:-${HOME}/models/Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf}
-LLAMA_BIN=${LLAMA_BIN:-${HOME}/llama-tq-mtp-fusion/build-cuda/bin/llama-server}
-SLOTS=${SLOTS:-${HOME}/llama-slots/}
+# Override the following via env vars to match your local paths.
+MODELS_DIR=${MODELS_DIR:-${HOME}/models}
+WORK_DIR=${WORK_DIR:-${HOME}/llama-tq}
+MODEL=${MODEL:-${MODELS_DIR}/Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf}
+LLAMA_BIN=${LLAMA_BIN:-${WORK_DIR}/build-cuda/bin/llama-server}
+SLOTS=${SLOTS:-${WORK_DIR}/slots/}
 # Default 65k ctx when mmproj enabled (mmproj eats ~1GB extra),
 # 200k when text-only. Override via CTX=N.
 CTX=${CTX:-65536}
@@ -44,7 +47,7 @@ fi
 # Text-only requests still get full spec boost (2.5x repeat);
 # vision requests skip spec automatically and decode normally.
 # Set ENABLE_MMPROJ=1 + MMPROJ=path (or default path) to enable.
-MMPROJ=${MMPROJ:-${HOME}/models/Qwen3.6-35B-A3B-mmproj-F16.gguf}
+MMPROJ=${MMPROJ:-${MODELS_DIR}/Qwen3.6-35B-A3B-mmproj-F16.gguf}
 MMPROJ_ARGS=()
 if [[ "${ENABLE_MMPROJ:-1}" == "1" ]] && [[ -r "${MMPROJ}" ]]; then
   MMPROJ_ARGS+=(--mmproj "$MMPROJ" --image-max-tokens 1024)

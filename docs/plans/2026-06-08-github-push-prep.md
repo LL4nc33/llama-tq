@@ -10,15 +10,15 @@
 
 A grep over Phase 27-45 commits (`8f2754aa9^..HEAD`) found:
 
-| Pattern | Count | Where |
+| Pattern category | Count | Where |
 |---|---|---|
-| `${HOME}` | 9 | scripts/deploy-35b-*.sh (MODEL/MMPROJ defaults), docs/plans/* (examples) |
-| `${HOME}` | 12 | scripts/deploy-*.sh (LLAMA_BIN/SLOTS defaults), docs/plans/upstream-PR-* |
-| `gpu00.node` | 1 | docs/plans/upstream-PR-submission-guide.md (ssh hostname example) |
-| `192.168.178` | 0 | clean |
-| `claude#00` | 0 | clean |
-| `oidanice.at` | 0 | clean |
-| `dbg@local` | 0 | clean |
+| hardcoded `$HOME` paths (user A) | 9 | scripts/deploy-35b-*.sh (MODEL/MMPROJ defaults), docs/plans/* (examples) |
+| hardcoded `$HOME` paths (user B) | 12 | scripts/deploy-*.sh (LLAMA_BIN/SLOTS defaults), docs/plans/upstream-PR-* |
+| internal hostname | 1 | docs/plans/upstream-PR-submission-guide.md (ssh hostname example) |
+| internal IP ranges | 0 | clean |
+| internal creds patterns | 0 | clean |
+| internal domain | 0 | clean |
+| dev-only logins | 0 | clean |
 
 ## What needs to happen before any github-push
 
@@ -31,9 +31,9 @@ git filter-repo --force \
   --replace-text /tmp/scrub-rules.txt
 
 # scrub-rules.txt:
-# ${HOME} ==> /models
-# ${HOME} ==> /workspace
-# gpu00.node ==> SERVER
+# <user-A-home-path> ==> ${MODELS_DIR}
+# <user-B-home-path> ==> ${WORK_DIR}
+# <build-server-hostname> ==> ${BUILD_SERVER}
 
 git push --force origin feature/mtp-shared-ctx
 git push --force origin --tags

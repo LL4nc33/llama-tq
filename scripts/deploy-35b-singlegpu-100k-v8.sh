@@ -17,10 +17,13 @@ set -euo pipefail
 PORT=8791
 # bartowski quant ist ~5% schneller als unsloth UD-IQ2_XXS (Phase 37 messung)
 # UD: 82.6 t/s | bartowski: 86.6 t/s | bartowski+flags: 85.6 t/s server real-world
-MODEL=${MODEL:-${HOME}/models/Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf}
-MMPROJ=${MMPROJ:-${HOME}/models/Qwen3.6-35B-A3B-mmproj-F16.gguf}
-LLAMA_BIN=${LLAMA_BIN:-${HOME}/llama-tq-mtp-fusion/build-cuda/bin/llama-server}
-SLOTS=${SLOTS:-${HOME}/llama-slots/}
+# Override the following via env vars to match your local paths.
+MODELS_DIR=${MODELS_DIR:-${HOME}/models}
+WORK_DIR=${WORK_DIR:-${HOME}/llama-tq}
+MODEL=${MODEL:-${MODELS_DIR}/Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf}
+MMPROJ=${MMPROJ:-${MODELS_DIR}/Qwen3.6-35B-A3B-mmproj-F16.gguf}
+LLAMA_BIN=${LLAMA_BIN:-${WORK_DIR}/build-cuda/bin/llama-server}
+SLOTS=${SLOTS:-${WORK_DIR}/slots/}
 
 mkdir -p "$SLOTS"
 

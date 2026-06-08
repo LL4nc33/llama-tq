@@ -6,8 +6,8 @@ In `docs/plans/`:
 - `upstream-PR-server-spec-mmproj-coexistence.md` — internal draft (DO NOT copy verbatim)
 - `upstream-PR-server-spec-mmproj-coexistence.patch` — git format-patch ready to apply
 
-On gpu00:
-- `${HOME}/llama-cpp-upstream/` cloned fresh from ggml-org/llama.cpp master
+On the build server:
+- `${WORK_DIR}/llama-cpp-upstream/` cloned fresh from ggml-org/llama.cpp master
 - Branch `phase41b-spec-mmproj-coexistence` committed (commit f28bc3740)
 - Build verified clean, functional test passed
 
@@ -22,8 +22,8 @@ So before submitting, you (the human contributor) must:
 ### 1. Read the actual code change
 
 ```
-ssh claude@gpu00.node
-cd ${HOME}/llama-cpp-upstream
+ssh <build-server>
+cd ${WORK_DIR}/llama-cpp-upstream
 git checkout phase41b-spec-mmproj-coexistence
 git diff master
 ```
