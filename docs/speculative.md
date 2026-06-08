@@ -237,16 +237,23 @@ files trained with NGRAM_STATIC=2 must be regenerated. On IQ2 models the static
 cache helps mostly with structured prompts; creative prompts see <5% boost from
 static cache alone — the bottleneck is the model, not the lookup table.
 
-### Universal-2x ceiling
+### Universal-2x ceiling and Eagle3 path
 
 On consumer 2x12 GB hardware with IQ2 MoE models, **universal 2x speculation
-without quality regression is not achievable** with current draft-source options.
-Real 2x requires either:
+without quality regression is not achievable** with current draft-source options
+(single-layer MTP-head + ngram-cache). Real universal 2x requires either:
 1. Q4+ quantization (model doesn't fit in 24 GB at 27B+ context lengths)
-2. Multi-layer MTP head (Eagle3-style; no GGUF exists for Qwen3.6 yet)
+2. **Eagle3-style draft-head** with 3-hidden-state fusion + training-time-test
 3. Larger draft model (separate small GGUF; eats VRAM that's already maxed)
 
-Repeat-heavy workloads (lists, code boilerplate, log scanning) still hit 1.5-3.8x.
+Option 2 is the realistic next step. Community Eagle3 checkpoints exist for
+Qwen3-30B-A3B (`lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex`)
+and Qwen3-VL-30B-A3B. Implementation is a 3-5 week engineering project on
+top of the existing MTP infrastructure — see internal plan in
+`docs/plans/2026-06-08-eagle3-integration.md` (local-only, not pushed).
+
+Repeat-heavy workloads (lists, code boilerplate, log scanning) still hit
+1.5-3.8x today via ngram-cache and do not need Eagle3.
 
 ### Critical fix (commit 78216a941)
 
