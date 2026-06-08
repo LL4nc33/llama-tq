@@ -79,6 +79,7 @@ llama_context::llama_context(
     cparams.embeddings_pre_norm = false;
     cparams.embeddings_nextn = false;
     cparams.embeddings_nextn_masked = false;
+    cparams.embeddings_eagle3 = false;
     cparams.offload_kqv      = params.offload_kqv;
     cparams.no_perf          = params.no_perf;
     cparams.pooling_type     = params.pooling_type;
@@ -2084,6 +2085,12 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     const size_t nextn_n = cparams.embeddings_nextn_masked ? n_outputs_max : n_outputs_max; // we always reserve for n_outputs_max
     embd_nextn.size = has_embd_nextn ? n_embd*nextn_n : 0;
 
+    // Eagle3 multi-stream extraction needs 3 × (n_embd × n_outputs_max) floats.
+    const bool has_embd_eagle3 = cparams.embeddings_eagle3 && hparams.has_eagle3();
+    embd_eagle3_low.size  = has_embd_eagle3 ? n_embd*n_outputs_max : 0;
+    embd_eagle3_mid.size  = has_embd_eagle3 ? n_embd*n_outputs_max : 0;
+    embd_eagle3_high.size = has_embd_eagle3 ? n_embd*n_outputs_max : 0;
+
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
     if (has_sampling) {
@@ -2098,7 +2105,9 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     const size_t prev_size = buf_output ? ggml_backend_buffer_get_size(buf_output.get()) : 0;
     const size_t new_size  =
-        (logits.size + embd.size + embd_pre_norm.size + embd_nextn.size + backend_float_count) * sizeof(float) +
+        (logits.size + embd.size + embd_pre_norm.size + embd_nextn.size
+         + embd_eagle3_low.size + embd_eagle3_mid.size + embd_eagle3_high.size
+         + backend_float_count) * sizeof(float) +
         (                                               backend_token_count) * sizeof(llama_token);
 
     // alloc only when more than the current capacity is required
@@ -2148,6 +2157,13 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     offset += embd_pre_norm.size * sizeof(float);
     embd_nextn = has_embd_nextn ? buffer_view<float>{(float *) (base + offset), embd_nextn.size} : buffer_view<float>{nullptr, 0};
     offset += embd_nextn.size * sizeof(float);
+
+    embd_eagle3_low  = has_embd_eagle3 ? buffer_view<float>{(float *) (base + offset), embd_eagle3_low.size}  : buffer_view<float>{nullptr, 0};
+    offset += embd_eagle3_low.size * sizeof(float);
+    embd_eagle3_mid  = has_embd_eagle3 ? buffer_view<float>{(float *) (base + offset), embd_eagle3_mid.size}  : buffer_view<float>{nullptr, 0};
+    offset += embd_eagle3_mid.size * sizeof(float);
+    embd_eagle3_high = has_embd_eagle3 ? buffer_view<float>{(float *) (base + offset), embd_eagle3_high.size} : buffer_view<float>{nullptr, 0};
+    offset += embd_eagle3_high.size * sizeof(float);
 
     if (has_sampling) {
         sampling.logits = {(float *) (base + offset), (size_t)(n_vocab*n_outputs_max)};
