@@ -1,5 +1,5 @@
-From f28bc3740a1664bf06838a42153d3fb5d3ebe2bb Mon Sep 17 00:00:00 2001
-From: Lance <dev@example.com>
+From c40783afff93a2efb729d04ca4443c496b09690b Mon Sep 17 00:00:00 2001
+From: LL4nc33 <85998242+LL4nc33@users.noreply.github.com>
 Date: Mon, 8 Jun 2026 19:01:57 +0200
 Subject: [PATCH] server: enable spec-decoding + ctx_shift + cache_reuse for
  text-only requests on mmproj servers
