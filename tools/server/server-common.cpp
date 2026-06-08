@@ -379,7 +379,9 @@ void server_tokens::push_back(server_tokens & tokens) {
 }
 
 void server_tokens::insert(const llama_tokens & inp_tokens) {
-    GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
+    // Phase 41b: text-only requests on mmproj-loaded servers need to be able to
+    // insert tokens for spec-decode accept path. Only block if actual media is present.
+    GGML_ASSERT(!has_media());
     tokens.insert(tokens.end(), inp_tokens.begin(), inp_tokens.end());
 }
 
