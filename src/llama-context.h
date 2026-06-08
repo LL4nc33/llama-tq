@@ -276,6 +276,15 @@ private:
     buffer_view<float> embd_pre_norm = {nullptr, 0};
     buffer_view<float> embd_nextn = {nullptr, 0};
 
+    // Eagle3-style multi-stream hidden-state export. Three rows per output token,
+    // one per (low/mid/high) layer index from hparams. Used by an external Eagle3
+    // draft head that fuses the three streams via a 1-layer FC into its decoder.
+    // Only populated when cparams.embeddings_eagle3 is enabled and the model graph
+    // sets the corresponding t_h_eagle3_* tensors.
+    buffer_view<float> embd_eagle3_low  = {nullptr, 0};
+    buffer_view<float> embd_eagle3_mid  = {nullptr, 0};
+    buffer_view<float> embd_eagle3_high = {nullptr, 0};
+
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active
         std::map<llama_seq_id, llama_sampler *> samplers;
