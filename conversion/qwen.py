@@ -581,6 +581,16 @@ class _Qwen35MtpMixin:
         if (n := self.hparams.get("mtp_num_hidden_layers", 0)) > 0:
             self.gguf_writer.add_nextn_predict_layers(n)
 
+        # Eagle3: when the HF config carries the three hidden-state tap layer
+        # indices (low/mid/high), emit them to GGUF so the runtime knows to
+        # extract+feed the fusion path. The keys can live either at the
+        # top level (eagle3_layer_low/mid/high) or under an "eagle3" sub-dict.
+        eagle3 = self.hparams.get("eagle3") if isinstance(self.hparams.get("eagle3"), dict) else None
+        get = (lambda k: eagle3.get(k)) if eagle3 else (lambda k: self.hparams.get(f"eagle3_{k}"))
+        low, mid, high = get("layer_low"), get("layer_mid"), get("layer_high")
+        if low is not None and mid is not None and high is not None:
+            self.gguf_writer.add_eagle3_layer_indices(int(low), int(mid), int(high))
+
     def prepare_metadata(self, vocab_only: bool):
         from_dir = self.fname_out.is_dir()
         super().prepare_metadata(vocab_only=vocab_only)  # ty: ignore[unresolved-attribute]
@@ -612,6 +622,19 @@ class _Qwen35MtpMixin:
                 tmpl   = remapper[stem] + suffix
                 for b in range(n_layer, self.block_count):
                     yield from super().modify_tensors(data_torch, tmpl.format(bid=b), b)  # ty: ignore[unresolved-attribute]
+                return
+
+        # Eagle3 fusion FC: the HF checkpoint exposes it as `eagle3.fc.weight`
+        # (or `eagle3.fusion_fc.weight`). Map it onto each MTP block index so
+        # the runtime loader's per-block create_tensor() call picks it up.
+        if name.startswith("eagle3.") and (name.endswith(".weight") or name.endswith(".bias")):
+            stem = Path(name).stem
+            suffix = Path(name).suffix
+            if stem in ("eagle3.fc", "eagle3.fusion_fc"):
+                n_layer = self.hparams["num_hidden_layers"]
+                for b in range(n_layer, self.block_count):
+                    yield from super().modify_tensors(  # ty: ignore[unresolved-attribute]
+                        data_torch, f"model.layers.{b}.eagle3_fc{suffix}", b)
                 return
 
         yield from super().modify_tensors(data_torch, name, bid)  # ty: ignore[unresolved-attribute]
