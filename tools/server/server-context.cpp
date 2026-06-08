@@ -802,9 +802,11 @@ private:
                 SRV_WRN("%s\n", "cache_reuse is not supported by multimodal, it will be disabled");
             }
 
+            // Phase 41b: allow spec-decoding with mmproj loaded. Per-request skip happens
+            // in the draft-loop when slot.task->tokens.has_media() returns true (current
+            // input has vision/audio chunks). Text-only requests still benefit from spec.
             if (params_base.speculative.type != COMMON_SPECULATIVE_TYPE_NONE) {
-                params_base.speculative.type =  COMMON_SPECULATIVE_TYPE_NONE;
-                SRV_WRN("%s\n", "speculative decoding is not supported by multimodal, it will be disabled");
+                SRV_INF("%s\n", "speculative decoding allowed with multimodal; vision requests skip spec per-request");
             }
         }
 
@@ -863,10 +865,8 @@ private:
             if (can_spec) {
                 slot.spec = common_speculative_init(params_base.speculative, params_base.n_parallel);
                 if (slot.spec) {
-                    if (mctx) {
-                        SRV_ERR("%s\n", "speculative decoding is not supported with multimodal");
-                        return false;
-                    }
+                    // Phase 41b: spec init succeeds even with mmproj — draft-loop checks
+                    // per-request whether THIS input has vision tokens (skip if yes).
                     SLT_INF(slot, "%s", "speculative decoding context initialized\n");
                 } else {
                     SLT_INF(slot, "%s", "speculative decoding context not initialized\n");
@@ -2253,9 +2253,10 @@ private:
             //       perform the speculative drafting for all sequences at the same time in a single batch
             const int n_draft_max = slot.get_n_draft_max();
             if (n_draft_max > 0) {
-                if (mctx) {
-                    // we should never reach this, as speculative is automatically disabled if mmproj is loaded
-                    GGML_ABORT("not supported by multimodal");
+                // Phase 41b: skip draft only when THIS request contains actual vision/audio
+                // chunks. Text-only requests on the mmproj-loaded server still get spec.
+                if (mctx && slot.prompt.tokens.has_media()) {
+                    continue;
                 }
 
                 const llama_tokens & cached_text_tokens = slot.prompt.tokens.get_text_tokens();
