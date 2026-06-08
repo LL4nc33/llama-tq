@@ -208,6 +208,7 @@ struct llama_layer_nextn {
     struct ggml_tensor * hnorm            = nullptr;
     struct ggml_tensor * shared_head_head = nullptr;
     struct ggml_tensor * shared_head_norm = nullptr;
+    struct ggml_tensor * eagle3_fc        = nullptr;
 };
 
 struct llama_layer {
