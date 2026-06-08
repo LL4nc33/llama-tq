@@ -196,6 +196,13 @@ public:
 
     bool empty() const { return tokens.empty(); }
 
+    // Phase 41b: returns true if this request actually contains vision/audio chunks.
+    // Distinguished from has_mtmd (server-capability flag): a text-only request on an
+    // mmproj-loaded server has has_mtmd=true but has_media()=false. Lets the server
+    // enable speculative decoding for the text-only requests while still rejecting it
+    // for vision requests where the draft model has no image-encoder.
+    bool has_media() const { return !map_idx_to_media.empty(); }
+
     void clear() {
         map_idx_to_media.clear();
         tokens.clear();
