@@ -183,22 +183,70 @@ statistics ngram_map_k: #calls(b,g,a) = 6 1690 26, #gen drafts = 26, #acc drafts
 
 ## llama-tq fork recommendations (2026-06)
 
-Tested on RTX 2060 12 GB + Qwen3.5-9B-MTP-IQ4_XS (baseline 57.5 t/s):
+### Model-class config matrix
 
-| Workload | Config | TG | Boost |
+Tested on 2x RTX 2060 12 GB + KTQ/VTQ KV cache. Boost vs `--spec-type none` baseline.
+
+| Model | Quant | Baseline | Best spec config | Creative | Repeat |
+|---|---|---|---|---|---|
+| Qwen3.5-9B-MTP | IQ4_XS | 57.5 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.0-1.46x | up to 3.8x |
+| Qwen3.6-27B-MTP-A3B | IQ2_XXS | 18.0 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.05-1.10x | 3.65x |
+| Qwen3.6-35B-MTP-A3B | IQ2_XXS | 71.5 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.00-1.05x | 1.31x |
+| Ministral-3-3B | Q4_K_M | ~110 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.0x | 1.5-2x |
+
+All configs are **lossless** — output is byte-identical to baseline (verified via
+diff on first 140 chars of greedy outputs across multiple prompts).
+
+### DRAFT_MTP guidance
+
+DRAFT_MTP is supported and respects `--draft-p-min` (default 0.75). On consumer
+single-GPU + IQ2-class MoE models it consistently underperforms ngram-cache
+because the single-layer MTP head caps per-step confidence so position 1-3 of a
+dm=4 draft fail the p_min filter (observed: avg 1.30 tokens/draft, firing 32%
+of TG-iterations with the Phase 29 decay patch — still net-negative).
+
+When to enable DRAFT_MTP:
+- Q4 or higher quantization (the MTP head retains useful sharpness)
+- Bandwidth-bound hardware (Jetson Orin, M-series unified memory)
+- Larger active-param models (>10B active) where 1 extra token amortises the draft setup
+
+When NOT to enable DRAFT_MTP:
+- IQ2/IQ3 quantization (use ngram-cache instead)
+- Single GPU < 12 GB (compute-buffer fits but offers worse boost than ngram-cache)
+
+### Tuning knobs (env-gated)
+
+| Env var | Default | Range | Effect |
 |---|---|---|---|
-| Universal (default) | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 57-84 t/s | 1.0-1.46x |
-| Repeat-heavy (logs, lists) | same + `--draft-max 16` | up to 220 t/s | up to 3.8x |
-| Structured (JSON, code boilerplate) | same + `--draft-max 12` | 60-80 t/s | 1.05-1.40x |
+| `LLAMA_SPEC_RELAX` | 0 | 0..50 | Lower ngram-cache acceptance thresholds for noisier-quant models (Phase 28) |
+| `LLAMA_MTP_DECAY` | 0.70 | 0.30..1.00 | DRAFT_MTP per-position p_min decay; 1.0 = strict at every step (Phase 29) |
+| `FORK_MTP_PROFILE_ACC=1` | — | — | Print draft/accept stats per TG batch |
+| `FORK_SPEC_TRACE=1` | — | — | Verbose spec-flow log (very noisy, debug only) |
 
-All configs above are **lossless** — output is byte-identical to baseline
-(verified via diff on first 140 chars of greedy outputs across multiple prompts).
+### Static lookup-cache
 
-DRAFT_MTP is supported but on consumer single-GPU + 9B-class quantized models
-it consistently underperforms ngram-cache (~46 t/s vs 57.5 baseline) because the
-single-layer MTP head caps per-step acceptance at ~33% which doesn't amortise
-the spec overhead. DRAFT_MTP may be worth enabling on bandwidth-bound hardware
-(Jetson Orin) or with larger active-param models (>10B active).
+The `--lookup-cache-static FILE` flag works in the server. Train a cache with:
+
+```
+llama-lookup-create -m TARGET.gguf -f corpus.txt -ngl 0 \
+  --lookup-cache-static cache.bin
+```
+
+`LLAMA_NGRAM_STATIC` is set to 4 (was 2 upstream) for sharper keys. Static-cache
+files trained with NGRAM_STATIC=2 must be regenerated. On IQ2 models the static
+cache helps mostly with structured prompts; creative prompts see <5% boost from
+static cache alone — the bottleneck is the model, not the lookup table.
+
+### Universal-2x ceiling
+
+On consumer 2x12 GB hardware with IQ2 MoE models, **universal 2x speculation
+without quality regression is not achievable** with current draft-source options.
+Real 2x requires either:
+1. Q4+ quantization (model doesn't fit in 24 GB at 27B+ context lengths)
+2. Multi-layer MTP head (Eagle3-style; no GGUF exists for Qwen3.6 yet)
+3. Larger draft model (separate small GGUF; eats VRAM that's already maxed)
+
+Repeat-heavy workloads (lists, code boilerplate, log scanning) still hit 1.5-3.8x.
 
 ### Critical fix (commit 78216a941)
 
