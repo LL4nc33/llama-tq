@@ -19,6 +19,11 @@ void llama_model_qwen35moe::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
     GGML_ASSERT(hparams.nextn_predict_layers < hparams.n_layer && "nextn_predict_layers must be < n_layer");
 
+    // Eagle3 hidden-state extraction layer indices (1-based; 0 = disabled).
+    ml.get_key(LLM_KV_EAGLE3_LAYER_LOW,  hparams.eagle3_layer_low,  false);
+    ml.get_key(LLM_KV_EAGLE3_LAYER_MID,  hparams.eagle3_layer_mid,  false);
+    ml.get_key(LLM_KV_EAGLE3_LAYER_HIGH, hparams.eagle3_layer_high, false);
+
     // Mark recurrent layers (linear attention layers). MTP layers are dense
     // attention-only and must be flagged non-recurrent.
     {
