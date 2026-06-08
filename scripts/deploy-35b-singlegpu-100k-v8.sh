@@ -15,7 +15,9 @@
 set -euo pipefail
 
 PORT=8791
-MODEL=${MODEL:-/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf}
+# bartowski quant ist ~5% schneller als unsloth UD-IQ2_XXS (Phase 37 messung)
+# UD: 82.6 t/s | bartowski: 86.6 t/s | bartowski+flags: 85.6 t/s server real-world
+MODEL=${MODEL:-/models/Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf}
 MMPROJ=${MMPROJ:-/models/Qwen3.6-35B-A3B-mmproj-F16.gguf}
 LLAMA_BIN=${LLAMA_BIN:-$HOME/llama-tq-mtp-fusion/build-cuda/bin/llama-server}
 SLOTS=${SLOTS:-$HOME/llama-slots/}
@@ -35,6 +37,14 @@ echo "Mmproj: $MMPROJ"
 echo "Expected: tg128 ~82.9 t/s, ktq2/vtq3 V-cache 3.56 bpw lossless"
 echo
 
+# Phase 37 spec-decoding default-on: ngram-cache funktioniert auch auf non-MTP modellen
+# (bartowski hat kein MTP) und gibt 2.28x boost auf repeat-prompts, neutral auf creative.
+# Disable mit ENABLE_SPEC=0 wenn nicht gewünscht.
+SPEC_ARGS=()
+if [[ "${ENABLE_SPEC:-1}" == "1" ]]; then
+  SPEC_ARGS+=(--spec-type ngram-cache --draft-max 8 --draft-min 4)
+fi
+
 CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores \
   nohup "$LLAMA_BIN" \
   -m "$MODEL" \
@@ -46,6 +56,7 @@ CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cor
   --cache-reuse 25000 \
   --predict 16384 -ub 64 --reasoning off \
   --moe-pin-experts --backend-sampling \
+  "${SPEC_ARGS[@]}" \
   --slot-save-path "$SLOTS" \
   --anthropic-cache 1 \
   --anthropic-cache-ttl-default 300 \
