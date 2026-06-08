@@ -862,6 +862,10 @@ void llm_graph_result::reset() {
     t_logits      = nullptr;
     t_embd        = nullptr;
     t_embd_pooled = nullptr;
+    t_h_pre_norm  = nullptr;
+    t_h_eagle3_low  = nullptr;
+    t_h_eagle3_mid  = nullptr;
+    t_h_eagle3_high = nullptr;
     t_sampled.clear();
     t_sampled_probs.clear();
     t_sampled_logits.clear();
