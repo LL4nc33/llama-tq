@@ -2484,9 +2484,11 @@ private:
                                     size_t head_c = n_past; // cache
                                     size_t head_p = n_past; // current prompt
 
-                                    if (mctx) {
-                                        // we should never reach this
-                                        GGML_ABORT("not supported by multimodal");
+                                    // Phase 42: per-request gating. text-only requests can reuse.
+                                    if (mctx && slot.prompt.tokens.has_media()) {
+                                        // vision input — cache reuse not meaningful
+                                        n_past = 0;
+                                        break;
                                     }
 
                                     SLT_DBG(slot, "trying to reuse chunks with size > %d, n_past = %d\n", n_cache_reuse, n_past);
