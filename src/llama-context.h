@@ -76,6 +76,12 @@ struct llama_context {
     float * get_embeddings_nextn_ith(int32_t i);
     void    set_embeddings_nextn(bool value, bool masked);
 
+    // Eagle3 hidden-state extraction (three parallel streams).
+    float * get_embeddings_eagle3_low_ith(int32_t i);
+    float * get_embeddings_eagle3_mid_ith(int32_t i);
+    float * get_embeddings_eagle3_high_ith(int32_t i);
+    void    set_embeddings_eagle3(bool value);
+
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
 
