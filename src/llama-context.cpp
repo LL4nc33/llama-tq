@@ -934,6 +934,36 @@ float * llama_context::get_embeddings_nextn_ith(int32_t i) {
     return embd_nextn.data + (size_t) j * n_embd;
 }
 
+// Eagle3 multi-stream getters. Mirror get_embeddings_nextn_ith without the masked
+// variant (Eagle3 always extracts full n_tokens × n_embd rows).
+float * llama_context::get_embeddings_eagle3_low_ith(int32_t i) {
+    output_reorder();
+    if (embd_eagle3_low.data == nullptr) return nullptr;
+    const uint32_t n_embd = model.hparams.n_embd;
+    if (i < 0 || (size_t)(i + 1) * n_embd > embd_eagle3_low.size) return nullptr;
+    return embd_eagle3_low.data + (size_t) i * n_embd;
+}
+
+float * llama_context::get_embeddings_eagle3_mid_ith(int32_t i) {
+    output_reorder();
+    if (embd_eagle3_mid.data == nullptr) return nullptr;
+    const uint32_t n_embd = model.hparams.n_embd;
+    if (i < 0 || (size_t)(i + 1) * n_embd > embd_eagle3_mid.size) return nullptr;
+    return embd_eagle3_mid.data + (size_t) i * n_embd;
+}
+
+float * llama_context::get_embeddings_eagle3_high_ith(int32_t i) {
+    output_reorder();
+    if (embd_eagle3_high.data == nullptr) return nullptr;
+    const uint32_t n_embd = model.hparams.n_embd;
+    if (i < 0 || (size_t)(i + 1) * n_embd > embd_eagle3_high.size) return nullptr;
+    return embd_eagle3_high.data + (size_t) i * n_embd;
+}
+
+void llama_context::set_embeddings_eagle3(bool value) {
+    cparams.embeddings_eagle3 = value;
+}
+
 void llama_context::set_embeddings_nextn(bool value, bool masked) {
     cparams.embeddings_nextn        = value;
     cparams.embeddings_nextn_masked = masked;
@@ -1432,6 +1462,9 @@ int llama_context::encode(const llama_batch & batch_inp) {
     auto * t_embd          = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
     auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm() : nullptr;
     auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm() : nullptr; // reuses h_pre_norm slot in fork
+    auto * t_h_eagle3_low  = cparams.embeddings_eagle3 ? res->get_h_eagle3_low()  : nullptr;
+    auto * t_h_eagle3_mid  = cparams.embeddings_eagle3 ? res->get_h_eagle3_mid()  : nullptr;
+    auto * t_h_eagle3_high = cparams.embeddings_eagle3 ? res->get_h_eagle3_high() : nullptr;
 
     // extract logits
     if (logits.data && t_logits) {
@@ -1513,6 +1546,19 @@ int llama_context::encode(const llama_batch & batch_inp) {
         GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_nextn.size);
         ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn.data, 0, n_tokens*n_embd*sizeof(float));
     }
+
+    // Eagle3: extract three hidden-state streams (low/mid/high).
+    auto extract_eagle3_stream = [&](ggml_tensor * tensor, buffer_view<float> & buf) {
+        if (!buf.data || !tensor || cparams.pooling_type != LLAMA_POOLING_TYPE_NONE) return;
+        ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), tensor);
+        GGML_ASSERT(backend_h != nullptr);
+        const uint32_t n_embd = hparams.n_embd;
+        GGML_ASSERT(n_tokens*n_embd <= (int64_t) buf.size);
+        ggml_backend_tensor_get_async(backend_h, tensor, buf.data, 0, n_tokens*n_embd*sizeof(float));
+    };
+    extract_eagle3_stream(t_h_eagle3_low,  embd_eagle3_low);
+    extract_eagle3_stream(t_h_eagle3_mid,  embd_eagle3_mid);
+    extract_eagle3_stream(t_h_eagle3_high, embd_eagle3_high);
 
     // TODO: hacky solution
     if (model.arch == LLM_ARCH_T5 && t_embd) {
@@ -1869,6 +1915,9 @@ int llama_context::decode(const llama_batch & batch_inp) {
         auto * t_embd          = cparams.embeddings          ? res->get_embd()        : nullptr;
         auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm()  : nullptr;
         auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm()  : nullptr;
+        auto * t_h_eagle3_low  = cparams.embeddings_eagle3 ? res->get_h_eagle3_low()  : nullptr;
+        auto * t_h_eagle3_mid  = cparams.embeddings_eagle3 ? res->get_h_eagle3_mid()  : nullptr;
+        auto * t_h_eagle3_high = cparams.embeddings_eagle3 ? res->get_h_eagle3_high() : nullptr;
 
         if (t_embd && res->get_embd_pooled()) {
             t_embd = res->get_embd_pooled();
@@ -1971,6 +2020,21 @@ int llama_context::decode(const llama_batch & batch_inp) {
             GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_nextn.size);
             ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_outputs*n_embd*sizeof(float));
         }
+
+        // Eagle3: same multi-output pattern as embd_nextn, three times.
+        auto extract_eagle3_stream_multi = [&](ggml_tensor * tensor, buffer_view<float> & buf) {
+            if (!buf.data || !tensor || n_outputs <= 0 || cparams.pooling_type != LLAMA_POOLING_TYPE_NONE) return;
+            ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), tensor);
+            GGML_ASSERT(backend_h != nullptr);
+            const uint32_t n_embd = hparams.n_embd;
+            float * out = buf.data + n_outputs_prev*n_embd;
+            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
+            GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) buf.size);
+            ggml_backend_tensor_get_async(backend_h, tensor, out, 0, n_outputs*n_embd*sizeof(float));
+        };
+        extract_eagle3_stream_multi(t_h_eagle3_low,  embd_eagle3_low);
+        extract_eagle3_stream_multi(t_h_eagle3_mid,  embd_eagle3_mid);
+        extract_eagle3_stream_multi(t_h_eagle3_high, embd_eagle3_high);
 
         // Copy backend sampling output if this ubatch produced any sampling tensors.
         if (has_samplers && (!res->t_sampled.empty() || !res->t_sampled_probs.empty() || !res->t_sampled_logits.empty())) {
@@ -3642,6 +3706,22 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
 
 void llama_set_embeddings_nextn(llama_context * ctx, bool value, bool masked) {
     ctx->set_embeddings_nextn(value, masked);
+}
+
+void llama_set_embeddings_eagle3(llama_context * ctx, bool value) {
+    ctx->set_embeddings_eagle3(value);
+}
+
+float * llama_get_embeddings_eagle3_low_ith(llama_context * ctx, int32_t i) {
+    return ctx->get_embeddings_eagle3_low_ith(i);
+}
+
+float * llama_get_embeddings_eagle3_mid_ith(llama_context * ctx, int32_t i) {
+    return ctx->get_embeddings_eagle3_mid_ith(i);
+}
+
+float * llama_get_embeddings_eagle3_high_ith(llama_context * ctx, int32_t i) {
+    return ctx->get_embeddings_eagle3_high_ith(i);
 }
 
 float * llama_get_embeddings_pre_norm_raw_ith(llama_context * ctx, int32_t i) {
