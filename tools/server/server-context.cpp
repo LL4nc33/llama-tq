@@ -264,7 +264,10 @@ struct server_slot {
     }
 
     bool can_speculate() const {
-        return !!spec;
+        // Phase 41b: spec only when this request has no vision/audio chunks.
+        // Text-only requests on mmproj-loaded servers still get spec; vision
+        // requests skip spec (no image encoder in draft path).
+        return !!spec && !prompt.tokens.has_media();
     }
 
     void add_token(const completion_token_output & token) {
