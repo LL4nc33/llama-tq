@@ -133,6 +133,10 @@ public:
     ggml_tensor * tokens = nullptr; // I32 [n_batch]
     ggml_tensor * embd   = nullptr; // F32 [n_embd, n_batch]
     ggml_tensor * h      = nullptr; // F32 [n_embd, n_batch]
+    // Eagle3: three hidden states (low/mid/high layer taps) fused by a single FC
+    ggml_tensor * h_low  = nullptr; // F32 [n_embd, n_batch]
+    ggml_tensor * h_mid  = nullptr; // F32 [n_embd, n_batch]
+    ggml_tensor * h_high = nullptr; // F32 [n_embd, n_batch]
 
     const int64_t n_embd = 0;
 };
