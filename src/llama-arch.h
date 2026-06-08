@@ -557,6 +557,7 @@ enum llm_tensor {
     LLM_TENSOR_NEXTN_HNORM,
     LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD,
     LLM_TENSOR_NEXTN_SHARED_HEAD_NORM,
+    LLM_TENSOR_NEXTN_EAGLE3_FC,
 };
 
 enum llm_tensor_layer {
