@@ -206,27 +206,6 @@ void common_ngram_cache_draft(
         if (drafted_token == LLAMA_TOKEN_NULL) {
             drafted_token = try_draft(nc_static, ngram_static);
         }
-        // Phase 31: if all three lookups missed AND static cache is non-empty, try a longer-context
-        // static-only lookup using the FULL NGRAM_STATIC-sized window as a final fallback. This adds
-        // creative-prompt coverage that the context/dynamic-pathways miss in early generation.
-        if (drafted_token == LLAMA_TOKEN_NULL && !nc_static.empty() && part_static_it != nc_static.end()) {
-            // re-use part_static (already populated above) — try lowest-bar acceptance to surface
-            // any draft the strict pathway rejected.
-            int max_count_static = 0, sum_count_static = 0;
-            llama_token max_token = LLAMA_TOKEN_NULL;
-            for (auto const & token_count : part_static) {
-                if (token_count.second > max_count_static) {
-                    max_token        = token_count.first;
-                    max_count_static = token_count.second;
-                }
-                sum_count_static += token_count.second;
-            }
-            // very lax: 1+ sample, >=30% of distribution → emit. Target-verify catches misses.
-            const int min_pct = std::max(20, 30 - spec_relax_pct());
-            if (sum_count_static >= 1 && 100*max_count_static >= min_pct*sum_count_static) {
-                drafted_token = max_token;
-            }
-        }
 
         if (drafted_token == LLAMA_TOKEN_NULL) {
             break;
