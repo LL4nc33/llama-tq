@@ -22,7 +22,7 @@ PORT=${PORT:-8791}
 MODEL=${MODEL:-${HOME}/models/Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf}
 LLAMA_BIN=${LLAMA_BIN:-${HOME}/llama-tq-mtp-fusion/build-cuda/bin/llama-server}
 SLOTS=${SLOTS:-${HOME}/llama-slots/}
-CTX=${CTX:-65536}
+CTX=${CTX:-200000}
 
 mkdir -p "$SLOTS"
 
