@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
-# Single-GPU0 deploy: Qwen3.6-35B-A3B-IQ2_XXS bartowski + mmproj + 100k ctx (v8)
+# Single-GPU0 deploy: Qwen3.6-35B-A3B (non-MTP) UD-IQ2_XXS + mmproj + 100k ctx
 #
-# TurboQuant v8 Sweet Spot (2026-05-02 Triple-Goal Sweep):
-#   ktq2 (K) + vtq2 (V, = vtq2_2 trellis) — 2.78 bpw avg KV
-#   PPL: 7.1807 (-0.33% vs f16/f16)
-#   TG: 86.37 t/s @ ctx=2048 measured (+0.66% vs current prod 85.80)
-#   PP: 1195.31 t/s (+7.5% vs current prod 1111.59)
-#   VRAM: ~360 MB für KV @ 100k auf 35B-A3B
+# Optimale config nach Phase 35-36 messung (2026-06-08):
+#   non-MTP base + ktq2/vtq3 single-GPU0 → 82.9 t/s tg128
 #
-# Replaces legacy ktq2_1/vtq2_1 (3.0 bpw, +3.85% PPL drift, 85.80 TG).
+# vs MTP variant (77.2 t/s baseline): MTP-overhead +5.4 t/s kosten, spec-decoding
+# auf consumer 12GB IQ2 frisst seine eigenen gewinne wegen p_min filter +
+# compute-buffer OOM. Non-MTP ist auf dieser hardware-klasse die schnellere wahl.
 #
-# v8 Sweet Spot Improvements vs legacy:
-#   Accuracy: -4.18pp PPL drift improvement (was +3.85%, now -0.33%)
-#   Speed:    +0.66% TG, +7.5% PP
-#   VRAM:     -7% bpw (3.0 → 2.78)
+# Wer MTP-spec testen will: nutze --model …-MTP-… variant + dual-GPU (ts 12,12)
+# + ENABLE_SPEC=1 + ngram-cache dm=8 → bringt 3.8x auf repeat-prompts, ~1.0x
+# auf creative. Lossless garantiert.
 
 set -euo pipefail
 
 PORT=8791
-MODEL=/models/models/Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf
-MMPROJ=/models/models/Qwen3.6-35B-A3B-mmproj-F16.gguf
-LLAMA_BIN=/workspace/llama-tq/build/bin/llama-server
-SLOTS=/workspace/llama-slots/
+MODEL=${MODEL:-/home/lance/models/Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf}
+MMPROJ=${MMPROJ:-/home/lance/models/Qwen3.6-35B-A3B-mmproj-F16.gguf}
+LLAMA_BIN=${LLAMA_BIN:-/home/claude/llama-tq-mtp-fusion/build-cuda/bin/llama-server}
+SLOTS=${SLOTS:-/home/claude/llama-slots/}
 
 mkdir -p "$SLOTS"
 
@@ -32,11 +29,10 @@ if pgrep -f "llama-server.*--port $PORT" > /dev/null; then
   sleep 5
 fi
 
-echo "=== TurboQuant v8 Sweet-Spot Deploy: ktq2/vtq2+100k+mmproj ==="
+echo "=== Deploy: Qwen3.6-35B-A3B non-MTP ktq2/vtq3 single-GPU0 100k ==="
 echo "Model: $MODEL"
 echo "Mmproj: $MMPROJ"
-echo "Single-GPU0, parallel 1, ctx 100k"
-echo "v8 Sweet Spot: 2.78 bpw avg, PPL -0.33%, TG 86.37 t/s"
+echo "Expected: tg128 ~82.9 t/s, ktq2/vtq3 V-cache 3.56 bpw lossless"
 echo
 
 CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores \
@@ -46,7 +42,7 @@ CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cor
   --host 0.0.0.0 --port "$PORT" \
   --jinja --flash-attn on \
   -c 100000 -ngl 99 --no-mmap --parallel 1 \
-  --cache-type-k ktq2 --cache-type-v vtq2 \
+  --cache-type-k ktq2 --cache-type-v vtq3 \
   --cache-reuse 25000 \
   --predict 16384 -ub 64 --reasoning off \
   --moe-pin-experts --backend-sampling \
@@ -56,12 +52,11 @@ CUDA_VISIBLE_DEVICES=0 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cor
   --anthropic-cache-max-gb 32 \
   --temp 0.7 --top-p 0.95 --top-k 40 --min-p 0.05 --repeat-penalty 1.15 \
   --override-kv general.name=str:OidaNice-GPT-34B \
-  > /tmp/llama-server-35b-100k-v8.log 2>&1 &
+  > /tmp/llama-server-35b-100k.log 2>&1 &
 
 PID=$!
-echo "Server started PID=$PID, log: /tmp/llama-server-35b-100k-v8.log"
+echo "Server started PID=$PID, log: /tmp/llama-server-35b-100k.log"
 
-# Wait for ready
 echo "Waiting for server ready..."
 for i in $(seq 1 120); do
   if curl -s -m 2 http://localhost:$PORT/health 2>/dev/null | grep -q '"status":"ok"'; then
