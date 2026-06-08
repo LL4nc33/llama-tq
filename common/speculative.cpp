@@ -651,10 +651,28 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                                       (double)params.p_min,
                                       (cur_p->data[0].p < params.p_min ? "DROPPED" : "keep"));
 
-                // only collect very high-confidence draft tokens (upstream DRAFT_MTP filter).
+                // only collect high-confidence draft tokens (upstream DRAFT_MTP filter).
                 // Without this, low-probability drafts poison ctx_tgts KV at verify time
                 // and lock the target into attractors like 'the the the' on greedy decode.
-                if (cur_p->data[0].p < params.p_min) {
+                //
+                // Position-aware threshold: position 0 must clear full p_min (KV-poisoning guard),
+                // later positions decay (default decay 0.7) so quantized models (IQ2/IQ3) with flatter
+                // logits can still build dm=2..4 drafts. Target verifies every token, so a later weak
+                // draft costs only the draft compute — never quality.
+                //
+                // Env LLAMA_MTP_DECAY (default 0.70, clamped 0.30..1.00) tunes how fast threshold relaxes.
+                static const float mtp_decay = []() {
+                    const char * env = std::getenv("LLAMA_MTP_DECAY");
+                    float v = env ? std::atof(env) : 0.70f;
+                    if (v < 0.30f) v = 0.30f;
+                    if (v > 1.00f) v = 1.00f;
+                    return v;
+                }();
+                float p_min_pos = params.p_min;
+                for (int dec = 0; dec < i; ++dec) {
+                    p_min_pos *= mtp_decay;
+                }
+                if (cur_p->data[0].p < p_min_pos) {
                     drafting[seq_id] = false;
                     n_drafting--;
                     continue;
