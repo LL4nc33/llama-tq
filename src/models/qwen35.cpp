@@ -203,6 +203,30 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
 
+        // Eagle3 hidden-state taps: dup the residual stream at the configured
+        // layer indices so the external draft head can fuse them. ggml_dup
+        // (not view) keeps the tensor alive across the rest of the graph.
+        if (hparams.has_eagle3()) {
+            if ((uint32_t)il == hparams.eagle3_layer_low - 1) {
+                ggml_tensor * tap = ggml_dup(ctx0, cur);
+                cb(tap, "h_eagle3_low", il);
+                ggml_build_forward_expand(gf, tap);
+                res->t_h_eagle3_low = tap;
+            }
+            if ((uint32_t)il == hparams.eagle3_layer_mid - 1) {
+                ggml_tensor * tap = ggml_dup(ctx0, cur);
+                cb(tap, "h_eagle3_mid", il);
+                ggml_build_forward_expand(gf, tap);
+                res->t_h_eagle3_mid = tap;
+            }
+            if ((uint32_t)il == hparams.eagle3_layer_high - 1) {
+                ggml_tensor * tap = ggml_dup(ctx0, cur);
+                cb(tap, "h_eagle3_high", il);
+                ggml_build_forward_expand(gf, tap);
+                res->t_h_eagle3_high = tap;
+            }
+        }
+
         // Input for next layer
         inpL = cur;
     }
