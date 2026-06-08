@@ -868,6 +868,15 @@ class GGUFWriter:
     def add_nextn_predict_layers(self, count: int) -> None:
         self.add_uint32(Keys.LLM.NEXTN_PREDICT_LAYERS.format(arch=self.arch), count)
 
+    def add_eagle3_layer_indices(self, low: int, mid: int, high: int) -> None:
+        """Eagle3-style draft-head support: layer indices (1-based) from which
+        the base model exports residual-stream hidden states. Setting any of
+        these to 0 disables the corresponding tap; setting all three enables
+        the three-stream extraction path in llama-tq runtime."""
+        self.add_uint32(Keys.LLM.EAGLE3_LAYER_LOW.format(arch=self.arch),  low)
+        self.add_uint32(Keys.LLM.EAGLE3_LAYER_MID.format(arch=self.arch),  mid)
+        self.add_uint32(Keys.LLM.EAGLE3_LAYER_HIGH.format(arch=self.arch), high)
+
     def add_swin_norm(self, value: bool) -> None:
         self.add_bool(Keys.LLM.SWIN_NORM.format(arch=self.arch), value)
 
