@@ -2478,18 +2478,12 @@ private:
 
                                 // reuse chunks from the cached prompt by shifting their KV cache in the new position
                                 if (can_cache_reuse && n_cache_reuse > 0) {
-                                    // Phase 41b: gated by has_media() check on can_cache_reuse.
+                                    // Phase 42: can_cache_reuse already gates on !has_media() above (line ~2470),
+                                    // so vision requests never enter this branch. The assert reaffirms it for safety.
                                     GGML_ASSERT(!slot.prompt.tokens.has_media());
 
                                     size_t head_c = n_past; // cache
                                     size_t head_p = n_past; // current prompt
-
-                                    // Phase 42: per-request gating. text-only requests can reuse.
-                                    if (mctx && slot.prompt.tokens.has_media()) {
-                                        // vision input — cache reuse not meaningful
-                                        n_past = 0;
-                                        break;
-                                    }
 
                                     SLT_DBG(slot, "trying to reuse chunks with size > %d, n_past = %d\n", n_cache_reuse, n_past);
 
