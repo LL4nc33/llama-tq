@@ -795,14 +795,14 @@ private:
             }
             SRV_INF("loaded multimodal model, '%s'\n", mmproj_path.c_str());
 
+            // Phase 41b: ctx_shift + cache_reuse can stay enabled globally — per-request
+            // gating in the actual paths blocks them only for vision requests.
+            // (See line 2181 for the per-request ctx_shift gate.)
             if (params_base.ctx_shift) {
-                params_base.ctx_shift = false;
-                SRV_WRN("%s\n", "ctx_shift is not supported by multimodal, it will be disabled");
+                SRV_INF("%s\n", "ctx_shift with multimodal: enabled for text-only requests, skipped per-request for vision");
             }
-
             if (params_base.n_cache_reuse) {
-                params_base.n_cache_reuse = 0;
-                SRV_WRN("%s\n", "cache_reuse is not supported by multimodal, it will be disabled");
+                SRV_INF("%s\n", "cache_reuse with multimodal: enabled for text-only requests, gated per-request for vision");
             }
 
             // Phase 41b: allow spec-decoding with mmproj loaded. Per-request skip happens
@@ -2178,10 +2178,13 @@ private:
                     continue;
                 }
 
-                if (mctx) {
-                    // we should never reach this because params_base.ctx_shift is automatically disabled if mmproj is loaded
-                    // we don't support ctx_shift because an image chunk may contains multiple tokens
-                    GGML_ABORT("not supported by multimodal");
+                // Phase 41b: ctx_shift unsupported when current request has actual vision
+                // tokens (image chunks span multiple tokens, breaking the seq_add math).
+                // Text-only requests on an mmproj server can still ctx-shift safely.
+                if (mctx && slot.prompt.tokens.has_media()) {
+                    send_error(slot, "context shift not supported for multimodal input", ERROR_TYPE_SERVER);
+                    slot.release();
+                    continue;
                 }
 
                 if (slot.task->is_parent() || slot.task->is_child()) {
@@ -2210,7 +2213,8 @@ private:
                 // add generated tokens to cache
                 // ref: https://github.com/ggml-org/llama.cpp/pull/16818#discussion_r2473269481
                 {
-                    GGML_ASSERT(!slot.prompt.tokens.has_mtmd);
+                    // Phase 41b: gated by per-request has_media() check above (line 2181).
+                    GGML_ASSERT(!slot.prompt.tokens.has_media());
 
                     llama_tokens new_tokens = slot.prompt.tokens.get_text_tokens(); // copy
                     for (size_t i = n_keep + n_discard; i < new_tokens.size(); i++) {
@@ -2462,9 +2466,11 @@ private:
 
                                 const auto n_cache_reuse = slot.task->params.n_cache_reuse;
 
+                                // Phase 41b: per-request gating — text-only requests on
+                                // mmproj-loaded servers can still reuse cache.
                                 const bool can_cache_reuse =
                                     llama_memory_can_shift(llama_get_memory(ctx)) &&
-                                    !slot.prompt.tokens.has_mtmd;
+                                    !slot.prompt.tokens.has_media();
 
                                 if (!can_cache_reuse && n_cache_reuse > 0) {
                                     SLT_WRN(slot, "cache reuse is not supported - ignoring n_cache_reuse = %d\n", n_cache_reuse);
@@ -2472,7 +2478,8 @@ private:
 
                                 // reuse chunks from the cached prompt by shifting their KV cache in the new position
                                 if (can_cache_reuse && n_cache_reuse > 0) {
-                                    GGML_ASSERT(!slot.prompt.tokens.has_mtmd);
+                                    // Phase 41b: gated by has_media() check on can_cache_reuse.
+                                    GGML_ASSERT(!slot.prompt.tokens.has_media());
 
                                     size_t head_c = n_past; // cache
                                     size_t head_p = n_past; // current prompt
