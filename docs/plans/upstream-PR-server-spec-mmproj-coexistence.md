@@ -1,3 +1,31 @@
+# INTERNAL DRAFT — upstream-PR base material
+
+**⚠️ AI-disclosure (per ggml-org/llama.cpp CONTRIBUTING.md):**
+
+This document and the accompanying patch were drafted with AI assistance
+during fork development. Upstream policy explicitly rejects AI-predominant PRs
+and AI-written PR descriptions.
+
+Before submitting upstream, the human contributor must:
+
+1. Manually rewrite the PR title + description in their own words
+2. Read through every line of the patch and confirm understanding
+3. Disclose AI usage as a corrections/expansion tool only (not as primary author)
+4. Be prepared to answer maintainer questions about every line
+
+This file is internal reference material — DO NOT copy-paste into the actual PR.
+
+**Functional verification (Phase 44):**
+- Patch compiles cleanly on upstream HEAD (commit 0c6ee1cad)
+- Tested with Qwen3.5-9B-Q4_K_M + Qwen3.5-9B-mmproj on 2x RTX 2060 12GB
+- Text-only request with `--spec-type ngram-cache`: 51.28 t/s, spec active
+- Vision request: no crash, decodes normally (modal returns response per usual mmproj behavior)
+- Text request after vision: 51.28 t/s, spec re-engages
+- No regression for text-only deploys (Gemma 4 12B without mmproj: 39.42 t/s)
+- Log confirms: "cache_reuse with multimodal: enabled for text-only requests, gated per-request for vision"
+
+---
+
 # server: enable speculative decoding for text-only requests on mmproj-loaded servers
 
 ## Problem
