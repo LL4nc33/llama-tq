@@ -147,6 +147,9 @@ void llama_model_qwen35moe::load_arch_tensors(llama_model_loader & ml) {
         layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", il), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
         layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
         layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { n_embd },              TENSOR_NOT_REQUIRED);
+        // Eagle3 fusion FC: optional, only present in eagle3-trained checkpoints.
+        // Input is concat(h_low, h_mid, h_high) → [3*n_embd], projected to n_embd.
+        layer.nextn.eagle3_fc        = create_tensor(tn(LLM_TENSOR_NEXTN_EAGLE3_FC,        "weight", il), { 3 * n_embd, n_embd }, TENSOR_NOT_REQUIRED);
     };
 
     for (int i = 0; i < (int) n_main; ++i) {
@@ -613,6 +616,31 @@ llama_model_qwen35moe::graph_mtp::graph_mtp(const llama_model & model, const llm
     ggml_tensor * h_input  = inp->h;
     ggml_tensor * tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
     cb(tok_embd, "mtp_tok_embd", il);
+
+    // Eagle3: when the model carries a fusion FC + valid layer indices, take three
+    // hidden-state streams from the base pass (low/mid/high taps), concat along the
+    // embedding dim and project back to n_embd via eagle3_fc. The result replaces
+    // inp->h as the single hidden-state seed for the MTP block.
+    if (hparams.has_eagle3() && layer.nextn.eagle3_fc) {
+        inp->h_low = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+        ggml_set_input(inp->h_low);
+        ggml_set_name(inp->h_low, "mtp_h_low_input");
+
+        inp->h_mid = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+        ggml_set_input(inp->h_mid);
+        ggml_set_name(inp->h_mid, "mtp_h_mid_input");
+
+        inp->h_high = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+        ggml_set_input(inp->h_high);
+        ggml_set_name(inp->h_high, "mtp_h_high_input");
+
+        ggml_tensor * h_lm    = ggml_concat(ctx0, inp->h_low, inp->h_mid, /*dim=*/ 0);
+        ggml_tensor * h_three = ggml_concat(ctx0, h_lm, inp->h_high, /*dim=*/ 0);
+        cb(h_three, "mtp_eagle3_concat", il);
+
+        h_input = build_lora_mm(layer.nextn.eagle3_fc, h_three);
+        cb(h_input, "mtp_eagle3_fc", il);
+    }
 
     res->add_input(std::move(inp));
 
