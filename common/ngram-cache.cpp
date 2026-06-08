@@ -5,9 +5,26 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <thread>
 #include <algorithm>
+
+// LLAMA_SPEC_RELAX env var: 0..50, relaxes ngram-cache acceptance thresholds.
+// Lossless guarantee preserved because the target model verifies every drafted token.
+// Lower percent thresholds let more low-confidence drafts through — wins on quantized
+// (IQ2/IQ3) models where ngram statistics are noisier.
+static int spec_relax_pct() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char * env = std::getenv("LLAMA_SPEC_RELAX");
+        int v = env ? std::atoi(env) : 0;
+        if (v < 0)  v = 0;
+        if (v > 50) v = 50;
+        cached = v;
+    }
+    return cached;
+}
 
 void common_ngram_cache_update(common_ngram_cache & ngram_cache, int ngram_min, int ngram_max,
                               std::vector<llama_token> & inp, int nnew, bool print_progress) {
@@ -88,7 +105,8 @@ static llama_token try_draft(common_ngram_cache & nc_static, const common_ngram 
     if (sum_count_static < draft_min_sample_size_lax[LLAMA_NGRAM_STATIC-1]) {
         return LLAMA_TOKEN_NULL;
     }
-    if (100*max_count_static < draft_min_percent_lax[LLAMA_NGRAM_STATIC-1]*sum_count_static) {
+    const int relaxed_pct = std::max(20, draft_min_percent_lax[LLAMA_NGRAM_STATIC-1] - spec_relax_pct());
+    if (100*max_count_static < relaxed_pct*sum_count_static) {
         return LLAMA_TOKEN_NULL;
     }
     return max_token;
@@ -134,7 +152,8 @@ static llama_token try_draft(
         if (sum_count_primary < min_sample_size[i]) {
             continue;
         }
-        if (100*max_count_primary < min_percent[i]*sum_count_primary) {
+        const int relaxed_pct = std::max(20, min_percent[i] - spec_relax_pct());
+        if (100*max_count_primary < relaxed_pct*sum_count_primary) {
             continue;;
         }
         drafted_token = max_token;
