@@ -1252,6 +1252,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "path to static lookup cache to use for lookup decoding (not updated by generation)",
         [](common_params & params, const std::string & value) {
             params.speculative.lookup_cache_static = value;
+            // ngram-cache spec impl reads from ngram_cache.* — keep both in sync so server users
+            // don't need to know which struct field gets queried.
+            params.speculative.ngram_cache.lookup_cache_static = value;
         }
     ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
@@ -1259,6 +1262,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "path to dynamic lookup cache to use for lookup decoding (updated by generation)",
         [](common_params & params, const std::string & value) {
             params.speculative.lookup_cache_dynamic = value;
+            params.speculative.ngram_cache.lookup_cache_dynamic = value;
         }
     ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
