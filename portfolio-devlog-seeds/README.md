@@ -1,6 +1,6 @@
 # Portfolio Devlog Seeds
 
-Source markdown files für die `/devlog` section auf oidanice.at. Each file uses the format spec'd in `LEGION/portfolio-llamatq/2026-04-26_1118_devlog-section-collab.md`.
+Source markdown files for the maintainer's project devlog.
 
 ## Status der Seeds
 
