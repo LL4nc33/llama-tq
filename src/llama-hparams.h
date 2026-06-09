@@ -44,6 +44,7 @@ struct llama_hparams {
     uint32_t orig_n_ctx_train = 0; // stash for the model_saver — set by opt_init when fine-tuning
     uint32_t n_embd;
     uint32_t n_layer;
+    uint32_t n_layer_nextn = 0; // gemma4-assistant MTP draft layers (PR #23398)
     int32_t n_layer_kv_from_start = -1; // if non-negative, the first n_layer_kv_from_start layers have KV cache
     uint32_t n_expert = 0;
     uint32_t n_expert_used = 0;
@@ -190,6 +191,9 @@ struct llama_hparams {
 
     // output embedding dimension (0 = use n_embd)
     uint32_t n_embd_out_impl = 0;
+
+    // input embedding dimension override (0 = compute from n_embd + n_deepstack_layers)
+    uint32_t n_embd_inp_impl = 0;
 
     // llama4 smallthinker
     uint32_t n_moe_layer_step        = 0;
