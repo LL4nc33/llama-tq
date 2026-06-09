@@ -12,9 +12,9 @@
 # Run: bash deploy-ministral3-3b-gpu1.sh
 set -euo pipefail
 
-MODELS_DIR="${MODELS_DIR:-/models}"
-LLAMA_BIN="${LLAMA_BIN:-build/bin/llama-server}"
-SLOTS="${SLOTS:-$HOME/llama-slots-ministral3-gpu1/}"
+MODELS_DIR="${MODELS_DIR:-${HOME}/models}"
+LLAMA_BIN="${LLAMA_BIN:-${HOME}/llama-tq/build/bin/llama-server}"
+SLOTS="${SLOTS:-${HOME}/llama-slots-ministral3-gpu1/}"
 
 MODEL="$MODELS_DIR/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
 MMPROJ="$MODELS_DIR/Ministral-3-3B-Instruct-2512-BF16-mmproj.gguf"

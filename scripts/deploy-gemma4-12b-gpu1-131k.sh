@@ -11,9 +11,9 @@
 # Run: bash deploy-gemma4-12b-gpu1-131k.sh
 set -euo pipefail
 
-MODELS_DIR="${MODELS_DIR:-/models}"
-LLAMA_BIN="${LLAMA_BIN:-build/bin/llama-server}"
-SLOTS="${SLOTS:-/tmp/llama-slots-gpu1/}"
+MODELS_DIR="${MODELS_DIR:-${HOME}/models}"
+LLAMA_BIN="${LLAMA_BIN:-${HOME}/llama-tq/build/bin/llama-server}"
+SLOTS="${SLOTS:-${HOME}/llama-slots-gemma4-gpu1/}"
 
 MODEL="$MODELS_DIR/gemma-4-12b-it-Q4_K_M.gguf"
 

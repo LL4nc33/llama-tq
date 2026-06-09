@@ -11,9 +11,9 @@
 # Run: bash deploy-gemma4-12b-mtp-draft.sh
 set -euo pipefail
 
-MODELS_DIR="${MODELS_DIR:-/models}"
-LLAMA_BIN="${LLAMA_BIN:-build/bin/llama-server}"
-SLOTS="${SLOTS:-/tmp/llama-slots-mtp/}"
+MODELS_DIR="${MODELS_DIR:-${HOME}/models}"
+LLAMA_BIN="${LLAMA_BIN:-${HOME}/llama-tq/build/bin/llama-server}"
+SLOTS="${SLOTS:-${HOME}/llama-slots-gemma4-mtp/}"
 
 MODEL="$MODELS_DIR/gemma-4-12b-it-Q4_K_M.gguf"
 DRAFT="$MODELS_DIR/gemma-4-12B-it-qat-MTP-Q8_0.gguf"
