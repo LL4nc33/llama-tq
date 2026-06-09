@@ -25,6 +25,7 @@ public:
                      uint32_t   n_seq_max,
                      uint32_t   n_ubatch,
                      uint32_t   n_pad,
+               llama_memory_t   mem_other,
                      uint32_t   tq_protect_layers,
                      uint32_t   tq_protect_sinks,
                          bool   tq_deferred_k,
@@ -33,6 +34,7 @@ public:
                          bool   tq_no_deferred_v,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
+        const  layer_share_cb & share,
         const std::vector<ggml_type> & type_v_layers = {});
 
     ~llama_kv_cache_iswa() = default;
