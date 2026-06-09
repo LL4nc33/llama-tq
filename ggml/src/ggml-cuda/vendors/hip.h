@@ -90,6 +90,10 @@
 #define cudaMemcpyToSymbol hipMemcpyToSymbol
 #define cudaMemcpyPeerAsync hipMemcpyPeerAsync
 #define cudaMemcpy2DAsync hipMemcpy2DAsync
+#define cudaMemcpy3DAsync hipMemcpy3DAsync
+#define cudaMemcpy3DParms hipMemcpy3DParms
+#define make_cudaPitchedPtr make_hipPitchedPtr
+#define make_cudaExtent make_hipExtent
 #define cudaMemcpyDeviceToDevice hipMemcpyDeviceToDevice
 #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
 #define cudaMemcpyHostToDevice hipMemcpyHostToDevice

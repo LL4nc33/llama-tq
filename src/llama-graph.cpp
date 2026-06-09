@@ -97,6 +97,47 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
     return res;
 }
 
+void llm_graph_input_embd_h::set_input(const llama_ubatch * ubatch) {
+    const int64_t n_tokens = ubatch->n_tokens;
+
+    if (ubatch->token) {
+        ggml_backend_tensor_set(tokens, ubatch->token, 0, n_tokens*ggml_element_size(tokens));
+    } else {
+        GGML_ASSERT(ubatch->embd);
+        GGML_ASSERT(n_embd == embd->ne[0]);
+        ggml_backend_tensor_set(embd, ubatch->embd, 0, n_tokens*n_embd*ggml_element_size(h));
+    }
+
+    // Hidden state path. Two modes:
+    //   Eagle3 (h_low/h_mid/h_high present): ubatch->embd is the concatenation
+    //   low|mid|high of length 3*n_embd per token. Slice it back into three
+    //   inputs; the inp->h tensor is unused in this mode.
+    //   Single-stream (default, ref: upstream PR #23643): ubatch->embd carries
+    //   one n_embd hidden state per token, copied into inp->h.
+    if (h_low && h_mid && h_high && ubatch->embd) {
+        const size_t plane_bytes = (size_t) n_tokens * (size_t) n_embd * ggml_element_size(h_low);
+        const uint8_t * base = (const uint8_t *) ubatch->embd;
+        ggml_backend_tensor_set(h_low,  base + 0 * plane_bytes, 0, plane_bytes);
+        ggml_backend_tensor_set(h_mid,  base + 1 * plane_bytes, 0, plane_bytes);
+        ggml_backend_tensor_set(h_high, base + 2 * plane_bytes, 0, plane_bytes);
+    } else if (ubatch->embd) {
+        GGML_ASSERT(n_embd == h->ne[0]);
+        ggml_backend_tensor_set(h, ubatch->embd, 0, n_tokens*n_embd*ggml_element_size(h));
+    }
+}
+
+bool llm_graph_input_embd_h::can_reuse(const llm_graph_params & params) {
+    bool res = true;
+    res &= (!params.ubatch.token) || (tokens && tokens->ne[0] == params.ubatch.n_tokens);
+    res &= (!params.ubatch.embd)  || (embd   && embd->ne[1]   == params.ubatch.n_tokens);
+    res &= (!params.ubatch.embd)  || (h      && h->ne[1]      == params.ubatch.n_tokens);
+    if (h_low)  res &= h_low->ne[1]  == params.ubatch.n_tokens;
+    if (h_mid)  res &= h_mid->ne[1]  == params.ubatch.n_tokens;
+    if (h_high) res &= h_high->ne[1] == params.ubatch.n_tokens;
+    return res;
+}
+
+
 void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && pos) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -834,6 +875,10 @@ void llm_graph_result::reset() {
     t_logits      = nullptr;
     t_embd        = nullptr;
     t_embd_pooled = nullptr;
+    t_h_pre_norm  = nullptr;
+    t_h_eagle3_low  = nullptr;
+    t_h_eagle3_mid  = nullptr;
+    t_h_eagle3_high = nullptr;
     t_sampled.clear();
     t_sampled_probs.clear();
     t_sampled_logits.clear();

@@ -16,6 +16,13 @@ void llama_model_qwen35::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
     GGML_ASSERT(hparams.nextn_predict_layers < hparams.n_layer && "nextn_predict_layers must be < n_layer");
 
+    // Eagle3 hidden-state extraction layer indices (1-based; 0 = disabled).
+    // When non-zero, the base graph builder installs ggml_dup taps at the
+    // configured residual-stream positions for the external draft head.
+    ml.get_key(LLM_KV_EAGLE3_LAYER_LOW,  hparams.eagle3_layer_low,  false);
+    ml.get_key(LLM_KV_EAGLE3_LAYER_MID,  hparams.eagle3_layer_mid,  false);
+    ml.get_key(LLM_KV_EAGLE3_LAYER_HIGH, hparams.eagle3_layer_high, false);
+
     // Mark recurrent layers (linear attention layers). MTP layers are dense
     // attention-only and must be flagged non-recurrent.
     {
@@ -119,6 +126,9 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", il), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
         layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab },     TENSOR_NOT_REQUIRED);
         layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { n_embd },              TENSOR_NOT_REQUIRED);
+        // Eagle3 fusion FC: optional, only present in eagle3-trained checkpoints.
+        // Input is concat(h_low, h_mid, h_high) → [3*n_embd], projected to n_embd.
+        layer.nextn.eagle3_fc        = create_tensor(tn(LLM_TENSOR_NEXTN_EAGLE3_FC,        "weight", il), { 3 * n_embd, n_embd }, TENSOR_NOT_REQUIRED);
     };
 
     for (int i = 0; i < (int) n_main; ++i) {
@@ -203,16 +213,42 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
 
+        // Eagle3 hidden-state taps: dup the residual stream at the configured
+        // layer indices so the external draft head can fuse them. ggml_dup
+        // (not view) keeps the tensor alive across the rest of the graph.
+        if (hparams.has_eagle3()) {
+            if ((uint32_t)il == hparams.eagle3_layer_low - 1) {
+                ggml_tensor * tap = ggml_dup(ctx0, cur);
+                cb(tap, "h_eagle3_low", il);
+                ggml_build_forward_expand(gf, tap);
+                res->t_h_eagle3_low = tap;
+            }
+            if ((uint32_t)il == hparams.eagle3_layer_mid - 1) {
+                ggml_tensor * tap = ggml_dup(ctx0, cur);
+                cb(tap, "h_eagle3_mid", il);
+                ggml_build_forward_expand(gf, tap);
+                res->t_h_eagle3_mid = tap;
+            }
+            if ((uint32_t)il == hparams.eagle3_layer_high - 1) {
+                ggml_tensor * tap = ggml_dup(ctx0, cur);
+                cb(tap, "h_eagle3_high", il);
+                ggml_build_forward_expand(gf, tap);
+                res->t_h_eagle3_high = tap;
+            }
+        }
+
         // Input for next layer
         inpL = cur;
     }
     cur = inpL;
 
-    cb(cur, "h_pre_norm", -1);
-    res->t_h_pre_norm = cur;
-
     // Final norm
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+
+    // h_pre_norm semantically means "hidden state pre-LM-head" but for MTP head
+    // input it must be the POST-output_norm hidden state (matches upstreams t_h_nextn).
+    cb(cur, "h_pre_norm", -1);
+    res->t_h_pre_norm = cur;
 
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
@@ -503,18 +539,49 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     int sections[4];
     std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
-    auto inp = std::make_unique<llm_graph_input_embd>(hparams.n_embd);
+    auto inp = std::make_unique<llm_graph_input_embd_h>(hparams.n_embd);
 
     inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
     ggml_set_input(inp->tokens);
 
+    // separate hidden-state input (no longer reuses inp->embd)
+    inp->h = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+    ggml_set_input(inp->h);
+    ggml_set_name(inp->h, "mtp_h_input");
+
+    // embd is the token-embedding input slot — only needed for embedding-mode callers (mtmd/vision)
     inp->embd = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
     ggml_set_input(inp->embd);
-    ggml_set_name(inp->embd, "mtp_h_input");
+    ggml_set_name(inp->embd, "mtp_tok_embd_input");
 
     ggml_tensor * tok_embd_w = layer.nextn.embed_tokens ? layer.nextn.embed_tokens : model.tok_embd;
 
-    ggml_tensor * h_input  = inp->embd;
+    ggml_tensor * h_input = inp->h;
+
+    // Eagle3: when the model carries a fusion FC + valid layer indices, take three
+    // hidden-state streams from the base pass (low/mid/high taps), concat along the
+    // embedding dim and project back to n_embd via eagle3_fc. The result replaces
+    // inp->h as the single hidden-state seed for the MTP block.
+    if (hparams.has_eagle3() && layer.nextn.eagle3_fc) {
+        inp->h_low = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+        ggml_set_input(inp->h_low);
+        ggml_set_name(inp->h_low, "mtp_h_low_input");
+
+        inp->h_mid = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+        ggml_set_input(inp->h_mid);
+        ggml_set_name(inp->h_mid, "mtp_h_mid_input");
+
+        inp->h_high = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, hparams.n_embd, n_tokens);
+        ggml_set_input(inp->h_high);
+        ggml_set_name(inp->h_high, "mtp_h_high_input");
+
+        ggml_tensor * h_lm    = ggml_concat(ctx0, inp->h_low, inp->h_mid, /*dim=*/ 0);
+        ggml_tensor * h_three = ggml_concat(ctx0, h_lm, inp->h_high, /*dim=*/ 0);
+        cb(h_three, "mtp_eagle3_concat", il);
+
+        h_input = build_lora_mm(layer.nextn.eagle3_fc, h_three);
+        cb(h_input, "mtp_eagle3_fc", il);
+    }
     ggml_tensor * tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
     cb(tok_embd, "mtp_tok_embd", il);
 
@@ -605,17 +672,16 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = ggml_add(ctx0, cur, ffn_residual);
     cb(cur, "mtp_post_ffn", il);
 
-    // Pre-norm hidden state: used by the AR draft loop to seed the next MTP step.
-    // (In the trunk graph this is `t_h_pre_norm`; the MTP head reuses the same slot.)
-    cb(cur, "h_pre_norm", -1);
-    res->t_h_pre_norm = cur;
-
     ggml_tensor * head_norm_w = layer.nextn.shared_head_norm
             ? layer.nextn.shared_head_norm
             : model.output_norm;
     GGML_ASSERT(head_norm_w && "QWEN35 MTP: missing both nextn.shared_head_norm and output_norm");
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
     cb(cur, "mtp_shared_head_norm", -1);
+
+    // Post-norm hidden state — seed for the next AR draft step. Matches upstreams t_h_nextn semantics.
+    cb(cur, "h_pre_norm", -1);
+    res->t_h_pre_norm = cur;
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
