@@ -38,4 +38,6 @@ exec "$LLAMA_BIN" \
     --backend-sampling \
     --slot-save-path "$SLOTS" \
     --jinja \
-    --chat-template-kwargs '{"thinking":false}'
+    --chat-template-kwargs '{"thinking":false,"enable_thinking":false}' \
+    --reasoning off \
+    --reasoning-budget 0
