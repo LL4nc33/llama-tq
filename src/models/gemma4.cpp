@@ -239,7 +239,9 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
         }
 
         // TODO @ngxson : strip unused token right after the last KV layer to speed up prompt processing
-        if (il == n_layer - 1 && inp_out_ids) {
+        // PR #23398: keep all rows when extracting unmasked nextn embeddings
+        // (MTP target needs the hidden state for every token)
+        if (il == n_layer - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {
             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
         }
@@ -339,7 +341,7 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
             ggml_tensor * inp_this_layer = ggml_view_2d_slice(ctx0, inp_per_layer, il); // [n_embd_per_layer, n_tokens]
 
             // TODO @ngxson : improve this
-            if (il == n_layer - 1 && inp_out_ids) {
+            if (il == n_layer - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {
                 inp_this_layer = ggml_get_rows(ctx0, inp_this_layer, inp_out_ids);
             }
 
@@ -369,6 +371,17 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
     cur = build_norm(cur,
             model.output_norm, nullptr,
             LLM_NORM_RMS, -1);
+
+    // PR #23398: Expose the post-output-norm hidden state (the LM-head input feature)
+    // so that MTP draft contexts can read it via llama_get_embeddings_nextn_ith() as
+    // the recurrent h input. Matches reference (transformers/vLLM/SGLang), which feeds
+    // the drafter the target's post-final-norm hidden state.
+    cb(cur, "h_nextn", -1);
+    res->t_h_nextn = cur;
+
+    if (!cparams.embeddings_nextn_masked && inp_out_ids) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
 
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
