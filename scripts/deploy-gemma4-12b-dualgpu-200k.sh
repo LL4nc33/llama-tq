@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Gemma-4-12B dual-GPU deploy with 200k ctx, parallel=1, ngram-spec
+# Gemma-4-12B dual-GPU deploy — 256k ctx via YaRN rope-scale 2x, ub=1024
 #
-# Tested: gpu00 (2× RTX 2060 12 GB), Qwen-style hardware ceiling.
+# Tested: gpu00 (2× RTX 2060 12 GB).
 # KV combo: ktq2_1 + vtq3_v8 (v8 lossless tier).
-# Expected: ~37 t/s creative TG, boost on repeat via n-gram spec.
+# RoPE: YaRN factor=2 lifts ctx 131072 → 262144 (matches official Gemma-4 256k).
+# ngram-spec disabled: 0% acceptance on natural-language workloads.
 #
-# Memory at 200k ctx:
-#   GPU0: model split + KV 924 MiB + compute 1956 MiB ≈ 6.4 GB
-#   GPU1: model split + KV 836 MiB + compute 1355 MiB ≈ 5.7 GB
+# Memory at 256k ctx: KV ≈ 2.4 GB total (sliding window 1024 × 40 layers + 8 global).
 #
 # Run: bash deploy-gemma4-12b-dualgpu-200k.sh
 set -euo pipefail
@@ -17,7 +16,6 @@ LLAMA_BIN="${LLAMA_BIN:-${HOME}/llama-tq-mtp-fusion/build/bin/llama-server}"
 SLOTS="${SLOTS:-${HOME}/llama-slots-gemma4/}"
 
 MODEL="$MODELS_DIR/gemma-4-12b-it-Q4_K_M.gguf"
-MMPROJ="$MODELS_DIR/gemma-4-12b-mmproj-F16.gguf"
 
 mkdir -p "$SLOTS"
 
@@ -25,12 +23,12 @@ exec "$LLAMA_BIN" \
     -m "$MODEL" \
     --host 0.0.0.0 --port 8791 \
     -ngl 99 \
-    -c 200000 \
+    -c 262144 \
+    --rope-scaling yarn \
+    --rope-scale 2 \
+    --yarn-orig-ctx 131072 \
+    -ub 1024 \
     --parallel 1 \
-    --spec-type ngram-cache \
-    --draft-max 8 \
-    --draft-min 4 \
-    --cache-reuse 25000 \
     -fa 1 \
     -ts 1,1 \
     --cache-type-k ktq2 \
