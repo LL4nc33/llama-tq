@@ -3392,6 +3392,16 @@ void ggml_mul_mat_set_prec(
     ggml_set_op_params_i32(a, 0, prec_i32);
 }
 
+void ggml_mul_mat_set_hint(
+        struct ggml_tensor * a,
+        enum ggml_op_hint    hint) {
+    GGML_ASSERT(a->op == GGML_OP_MUL_MAT);
+
+    const int32_t hint_i32 = (int32_t) hint;
+
+    ggml_set_op_params_i32(a, 1, hint_i32);
+}
+
 // ggml_mul_mat_id
 
 /*
@@ -6777,13 +6787,12 @@ static void ggml_compute_backward(
         case GGML_OP_MUL_MAT_ID: {
             // src0 = as       [D_out, D_in, n_expert]
             // src1 = b        [D_in,  n_used_b, n_tokens]
-            // src2 = ids      [n_used, n_tokens]  i32
+            // src2 = ids      [n_used, n_tokens]  i32  (already bound above)
             // grad = grad_c   [D_out, n_used, n_tokens]
             //
             // grad_as = scatter_outer_product(grad, b, ids)
             // grad_b  = mul_mat_id(transpose(as), grad, ids)   (assumes n_used_b == n_used)
             // grad_ids = 0  (i32, discrete routing decisions)
-            struct ggml_tensor * src2 = tensor->src[2];
             if (src0_needs_grads) {
                 ggml_add_or_set(ctx, cgraph, isrc0,
                     ggml_mul_mat_id_grad_as(ctx, grad, src1, src2, src0->ne[2]));

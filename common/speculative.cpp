@@ -3,7 +3,7 @@
 #include "common.h"
 #include "ggml.h"
 #include "llama.h"
-#include "../src/llama-ext.h" // staging API: llama_set_embeddings_pre_norm / llama_get_embeddings_pre_norm_ith (used by MTP)
+#include "../src/llama-ext.h" // staging API: llama_set_embeddings_pre_norm / llama_get_embeddings_pre_norm_raw_ith (used by MTP)
 #include "log.h"
 #include "ngram-cache.h"
 #include "ngram-map.h"
@@ -424,13 +424,17 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         for (auto & s : smpls) {
             common_params_sampling sparams;
             sparams.no_perf  = false;
-            sparams.top_k    = 1; // TODO: re-enable top_k == 10 and utilize `p_min` spec param
+            sparams.top_k    = 10; // upstream parity: 10 candidates so p_min filter can cull low-confidence drafts
             sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
             s.reset(common_sampler_init(llama_get_model(ctx_dft), sparams));
         }
 
-        llama_set_embeddings_pre_norm(ctx_tgt, true);
-        llama_set_embeddings_pre_norm(ctx_dft, true);
+        // DEBUG: skip pre_norm — only nextn is needed for MTP draft seed
+        // (upstream #24025 dropped pre_norm usage entirely from speculative.cpp)
+        // llama_set_embeddings_pre_norm(ctx_tgt, true);
+        // llama_set_embeddings_pre_norm(ctx_dft, true);
+        llama_set_embeddings_nextn(ctx_tgt, true, false);
+        llama_set_embeddings_nextn(ctx_dft, true, true);
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 
@@ -513,7 +517,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         //                                                       ^--- this is a problem
         // TODO:this is generally true, but would be nice to assert it
         {
-            const float * h_tgt = llama_get_embeddings_pre_norm(ctx_tgt);
+            const float * h_tgt = llama_get_embeddings_nextn(ctx_tgt);
             std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, row_bytes * (n_tokens-1));
 
             //{
@@ -555,7 +559,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             verify_h[seq_id].resize((size_t) n_rows * n_embd);
 
             for (int32_t i = 0; i < n_rows; ++i) {
-                const float * h = llama_get_embeddings_pre_norm_ith(ctx_tgt, i_batch_beg[seq_id] + i);
+                const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_batch_beg[seq_id] + i);
                 std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
             }
 
@@ -578,10 +582,16 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         const float * h_row = nullptr;
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
+        static const bool dbg_mtp   = std::getenv("FORK_MTP_DEBUG") != nullptr;
+        static const bool prof_mtp  = std::getenv("FORK_MTP_PROFILE") != nullptr;
+        const int64_t t_draft_start = prof_mtp ? ggml_time_us() : 0;
+        int64_t t_setup = 0, t_decode = 0, t_ar = 0, t_sample = 0;
+
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             auto & dp = dparams[seq_id];
 
             if (!dp.drafting) {
+                if (dbg_mtp) LOG_WRN("MTP draft: seq=%d skipped, dp.drafting=false\n", (int)seq_id);
                 continue;
             }
 
@@ -595,11 +605,17 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_row, row_bytes);
         }
 
+        if (prof_mtp) t_setup = ggml_time_us() - t_draft_start;
+        const int64_t t_decode_start = prof_mtp ? ggml_time_us() : 0;
         int ret = llama_decode(ctx_dft, batch);
+        if (prof_mtp) t_decode = ggml_time_us() - t_decode_start;
         if (ret != 0) {
             LOG_WRN("%s: llama_decode returned %d\n", __func__, ret);
             return;
         }
+
+        if (dbg_mtp) LOG_WRN("MTP draft: starting AR loop, n_drafting=%d, p_min=%.3f, n_max=%d\n",
+                              n_drafting, (double)params.p_min, (int)params.n_max);
 
         int i = 0;
 
@@ -616,7 +632,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 auto * smpl = smpls[seq_id].get();
 
                 common_sampler_sample(smpl, ctx_dft, i_batch, true);
-                h_row = llama_get_embeddings_pre_norm_ith(ctx_dft, i_batch);
+                h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_batch);
                 ++i_batch;
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);
@@ -629,6 +645,38 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
                 // add drafted token for each sequence
                 const llama_token id = cur_p->data[0].id;
+
+                if (dbg_mtp) LOG_WRN("MTP draft step %d seq=%d: top=%d p=%.4f (p_min=%.3f) %s\n",
+                                      i, (int)seq_id, (int)id, (double)cur_p->data[0].p,
+                                      (double)params.p_min,
+                                      (cur_p->data[0].p < params.p_min ? "DROPPED" : "keep"));
+
+                // only collect high-confidence draft tokens (upstream DRAFT_MTP filter).
+                // Without this, low-probability drafts poison ctx_tgts KV at verify time
+                // and lock the target into attractors like 'the the the' on greedy decode.
+                //
+                // Position-aware threshold: position 0 must clear full p_min (KV-poisoning guard),
+                // later positions decay (default decay 0.7) so quantized models (IQ2/IQ3) with flatter
+                // logits can still build dm=2..4 drafts. Target verifies every token, so a later weak
+                // draft costs only the draft compute — never quality.
+                //
+                // Env LLAMA_MTP_DECAY (default 0.70, clamped 0.30..1.00) tunes how fast threshold relaxes.
+                static const float mtp_decay = []() {
+                    const char * env = std::getenv("LLAMA_MTP_DECAY");
+                    float v = env ? std::atof(env) : 0.70f;
+                    if (v < 0.30f) v = 0.30f;
+                    if (v > 1.00f) v = 1.00f;
+                    return v;
+                }();
+                float p_min_pos = params.p_min;
+                for (int dec = 0; dec < i; ++dec) {
+                    p_min_pos *= mtp_decay;
+                }
+                if (cur_p->data[0].p < p_min_pos) {
+                    drafting[seq_id] = false;
+                    n_drafting--;
+                    continue;
+                }
 
                 common_sampler_accept(smpl, id, true);
 
@@ -652,7 +700,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
 
             // evaluate the drafted tokens on the draft model
+            const int64_t t_ar_decode_start = prof_mtp ? ggml_time_us() : 0;
             ret = llama_decode(ctx_dft, batch);
+            if (prof_mtp) t_ar += ggml_time_us() - t_ar_decode_start;
             if (ret != 0) {
                 LOG_WRN("%s: llama_decode[%d] returned %d\n", __func__, i, ret);
                 break;
@@ -672,6 +722,25 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             }
 
             last_n_drafted[seq_id] = (uint16_t) dp.result->size();
+        }
+
+        if (prof_mtp) {
+            static int64_t prof_total_setup = 0, prof_total_decode = 0, prof_total_ar = 0, prof_total_n = 0;
+            const int64_t total = ggml_time_us() - t_draft_start;
+            prof_total_setup  += t_setup;
+            prof_total_decode += t_decode;
+            prof_total_ar     += t_ar;
+            prof_total_n      += 1;
+            if (prof_total_n % 20 == 0) {
+                LOG_WRN("MTP draft profile (avg over %lld calls): setup=%.2fms decode=%.2fms ar=%.2fms total=%.2fms\n",
+                    (long long)prof_total_n,
+                    prof_total_setup/1000.0/prof_total_n,
+                    prof_total_decode/1000.0/prof_total_n,
+                    prof_total_ar/1000.0/prof_total_n,
+                    (prof_total_setup+prof_total_decode+prof_total_ar)/1000.0/prof_total_n);
+            }
+            (void)total;
+            (void)t_sample;
         }
     }
 
@@ -1025,8 +1094,14 @@ struct common_speculative_impl_ngram_cache : public common_speculative_impl {
         }
     }
 
-    void begin(llama_seq_id /*seq_id*/, const llama_tokens & /*prompt*/) override {
-        // noop
+    void begin(llama_seq_id seq_id, const llama_tokens & /*prompt*/) override {
+        // Reset per-sequence ngram cache state on each new generation. Without this,
+        // the cumulative ngram_cache_context from a prior generation poisons the
+        // current draft predictions (acceptance plummets after the first request).
+        if (seq_id >= 0 && (size_t)seq_id < sinfos.size()) {
+            sinfos[seq_id].cache_size = 0;
+            sinfos[seq_id].ngram_cache_context.clear();
+        }
     }
 
     void draft_one(

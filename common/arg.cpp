@@ -1252,6 +1252,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "path to static lookup cache to use for lookup decoding (not updated by generation)",
         [](common_params & params, const std::string & value) {
             params.speculative.lookup_cache_static = value;
+            // ngram-cache spec impl reads from ngram_cache.* — keep both in sync so server users
+            // don't need to know which struct field gets queried.
+            params.speculative.ngram_cache.lookup_cache_static = value;
         }
     ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
@@ -1259,6 +1262,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "path to dynamic lookup cache to use for lookup decoding (updated by generation)",
         [](common_params & params, const std::string & value) {
             params.speculative.lookup_cache_dynamic = value;
+            params.speculative.ngram_cache.lookup_cache_dynamic = value;
         }
     ).set_examples({LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
@@ -3708,13 +3712,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("number of tokens to draft for speculative decoding (default: %d)", params.speculative.n_max),
         [](common_params & params, int value) {
             params.speculative.n_max = value;
+            params.speculative.draft.n_max = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_MAX"));
     add_opt(common_arg(
         {"--draft-min", "--draft-n-min"}, "N",
-        string_format("minimum number of draft tokens to use for speculative decoding (default: %d)", params.speculative.n_min),
+        string_format("minimum number of draft tokens to use for speculative decoding (default: %d; recommended: 4 for ngram-cache, 1 for draft-mtp)", params.speculative.n_min),
         [](common_params & params, int value) {
             params.speculative.n_min = value;
+            params.speculative.draft.n_min = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_MIN"));
     add_opt(common_arg(
@@ -3722,6 +3728,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("speculative decoding split probability (default: %.2f)", (double)params.speculative.p_split),
         [](common_params & params, const std::string & value) {
             params.speculative.p_split = std::stof(value);
+            params.speculative.draft.p_split = params.speculative.p_split;
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE}).set_env("LLAMA_ARG_DRAFT_P_SPLIT"));
     add_opt(common_arg(
@@ -3729,6 +3736,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format("minimum speculative decoding probability (greedy) (default: %.2f)", (double)params.speculative.p_min),
         [](common_params & params, const std::string & value) {
             params.speculative.p_min = std::stof(value);
+            params.speculative.draft.p_min = params.speculative.p_min; // DRAFT_MTP reads from draft.*
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_DRAFT_P_MIN"));
     add_opt(common_arg(
@@ -3798,14 +3806,59 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NONE;
             } else if (value == "ngram-cache") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_CACHE;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_CACHE);
             } else if (value == "ngram-simple") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
             } else if (value == "ngram-map-k") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
             } else if (value == "ngram-map-k4v") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
             } else if (value == "ngram-mod") {
                 params.speculative.type = COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                    params.speculative.types.clear();
+                }
+                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
+            } else if (value == "draft-simple") {
+                params.speculative.type = COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE;
+                if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                              COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) == params.speculative.types.end()) {
+                    if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                        params.speculative.types.clear();
+                    }
+                    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
+                }
+            } else if (value == "draft-mtp") {
+                params.speculative.type = COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+                // Explicit --spec-type draft-mtp means MTP-only: drop any DRAFT_SIMPLE
+                // that may have been auto-registered via -md (shared-ctx MTP mode reuses
+                // the target model and does not need a second token-level draft path).
+                params.speculative.types.erase(
+                    std::remove(params.speculative.types.begin(), params.speculative.types.end(),
+                                COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE),
+                    params.speculative.types.end());
+                if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                              COMMON_SPECULATIVE_TYPE_DRAFT_MTP) == params.speculative.types.end()) {
+                    if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                        params.speculative.types.clear();
+                    }
+                    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+                }
             } else {
                 throw std::invalid_argument("unknown speculative decoding type without draft model");
             }

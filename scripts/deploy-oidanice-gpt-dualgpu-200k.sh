@@ -28,6 +28,23 @@ echo "Mmproj: $MMPROJ"
 echo "Dual-GPU (ts 16,8), parallel 1, ctx 200k"
 echo
 
+# Phase 32 spec-decoding (opt-in): set ENABLE_SPEC=1 to enable ngram-cache
+# lookup speculation. Lossless guaranteed. Boost depends on prompt type:
+#   - Repeat-heavy (lists, code boilerplate, log scanning): up to 3.8x
+#   - Creative narrative on IQ2-quant MoE: ~1.0-1.10x (model ceiling)
+# Optional static cache: STATIC_CACHE=/path/to/cache.bin built via
+# llama-lookup-create on a representative corpus (NGRAM_STATIC=4).
+SPEC_ARGS=()
+if [[ "${ENABLE_SPEC:-0}" == "1" ]]; then
+  SPEC_ARGS+=(--spec-type ngram-cache --draft-max 8 --draft-min 4)
+  if [[ -n "${STATIC_CACHE:-}" ]] && [[ -r "${STATIC_CACHE}" ]]; then
+    SPEC_ARGS+=(--lookup-cache-static "${STATIC_CACHE}")
+    echo "spec: ngram-cache dm=8 + static cache ${STATIC_CACHE}"
+  else
+    echo "spec: ngram-cache dm=8 (no static cache)"
+  fi
+fi
+
 CUDA_VISIBLE_DEVICES=0,1 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=cores \
   GGML_MMAP_HUGEPAGE=1 \
   nohup "$LLAMA_BIN" \
@@ -41,6 +58,7 @@ CUDA_VISIBLE_DEVICES=0,1 OMP_WAIT_POLICY=active OMP_PROC_BIND=close OMP_PLACES=c
   --cache-reuse 25000 \
   --predict 16384 -ub 512 --reasoning off \
   --moe-pin-experts --backend-sampling \
+  "${SPEC_ARGS[@]}" \
   --slot-save-path "$SLOTS" \
   --anthropic-cache 1 \
   --anthropic-cache-ttl-default 300 \
