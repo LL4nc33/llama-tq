@@ -115,3 +115,8 @@ LLAMA_API void    llama_set_embeddings_eagle3(struct llama_context * ctx, bool v
 LLAMA_API float * llama_get_embeddings_eagle3_low_ith (struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_embeddings_eagle3_mid_ith (struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_embeddings_eagle3_high_ith(struct llama_context * ctx, int32_t i);
+
+//
+// Gemma4 MTP (PR #23398): secondary context (assistant/draft) accessor
+//
+LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
