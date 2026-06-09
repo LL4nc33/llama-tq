@@ -151,6 +151,22 @@ __device__ __constant__ static float VTQ_CUDA_CB_2BIT[4] = {
 #define VTQ_CUDA_CB_4BIT PQ_CUDA_CB_4BIT
 
 // ============================================================
+// Pre-scaled codebooks (× PQ_CUDA_CB_SCALE folded in).
+// Use these in dequant hot paths to eliminate one multiply per element.
+// Numerically identical to lookup * scale at fp32 precision.
+// ============================================================
+__device__ __constant__ static float VTQ_CUDA_CB_1BIT_SCALED[2] = {
+    -0.797885f * 0.17677669529663689f,
+     0.797885f * 0.17677669529663689f,
+};
+__device__ __constant__ static float VTQ_CUDA_CB_2BIT_SCALED[4] = {
+    -1.810000f * 0.17677669529663689f,
+    -0.395000f * 0.17677669529663689f,
+     0.395000f * 0.17677669529663689f,
+     1.810000f * 0.17677669529663689f,
+};
+
+// ============================================================
 // Philox 2x32 Counter-Based PRNG — O(1) random access
 // Each (counter, key) pair deterministically produces a random uint32.
 // No sequential state advance needed — thread j directly calls philox(j, seed).
@@ -1153,11 +1169,19 @@ static __device__ __forceinline__ void vtq_encode_4bit(uint8_t * qs, int j, int 
 // callers in fattn-tq.cuh that use them as constexpr non-type template
 // parameters from inside `__device__` functions (HIP-clang allows that).
 
+// Decoder functors for the READ path. Use pre-scaled codebooks where available
+// (saves one FMUL per element vs unscaled lookup × PQ_CUDA_CB_SCALE).
+// These MUST NOT be used in vtq_cuda_quantize_block — the norm-correction loop
+// there must stay in the unscaled space matching the encode-side codebook.
 struct VtqDecode1Bit {
-    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) { return vtq_decode_1bit(qs, j); }
+    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) {
+        return VTQ_CUDA_CB_1BIT_SCALED[(qs[j / 8] >> (j % 8)) & 0x1];
+    }
 };
 struct VtqDecode2Bit {
-    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) { return vtq_decode_2bit(qs, j); }
+    static __device__ __forceinline__ float decode(const uint8_t * qs, int j) {
+        return VTQ_CUDA_CB_2BIT_SCALED[(qs[j / 4] >> (2 * (j % 4))) & 0x3];
+    }
 };
 struct VtqDecode3Bit {
     static __device__ __forceinline__ float decode(const uint8_t * qs, int j) { return vtq_decode_3bit(qs, j); }
@@ -1262,13 +1286,18 @@ static void dequantize_row_vtq4_1_cuda(const void * vx, dst_t * y, const int64_t
 }
 
 // --- Generic VTQ NC (non-contiguous) dequant kernel ---
+// Multi-warp-per-CTA: each warp dequants one VTQ block independently.
+// threadIdx.y selects warp (= which block-in-row), threadIdx.x is the
+// tid within that block. Reduces gridDim.x by warps_per_cta → better SM
+// occupancy on small row-counts (D=128 → 4 blocks/row).
 template <typename block_t, typename Decoder, typename dst_t>
 static __global__ void k_dequantize_block_vtq_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
         const int64_t ne00, const int64_t ne01,
         const int64_t ne0203, const uint3 ne02_fdv,
         const int64_t s01, const int64_t s02, const int64_t s03) {
-    const int64_t ib_in_row = blockIdx.x;
-    const int tid = threadIdx.x;
+    const int warp = threadIdx.y;
+    const int tid  = threadIdx.x;
+    const int64_t ib_in_row = blockIdx.x * blockDim.y + warp;
     const int64_t nb_per_row = ne00 / QK_VTQ;
     if (ib_in_row >= nb_per_row) return;
     for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
@@ -1289,6 +1318,69 @@ static __global__ void k_dequantize_block_vtq_nc(const void * __restrict__ vx, d
     }
 }
 
+// --- VTQ2_1 specialized 4-outputs-per-thread kernel (NC) ---
+// Mirrors q4_0's pattern: 1 thread emits 4 elements. 8 threads × 4 elems = 32 elems = 1 VTQ block.
+// CTA layout: (blockDim.x=8, blockDim.y=warps_per_cta=4) → 1 warp = 4 VTQ blocks = 128 elems.
+// Reduces gridDim.x by 4× vs the generic kernel AND emits 4 outputs/thread (matching q4_0).
+template <typename dst_t>
+static __global__ void k_dequantize_block_vtq2_1_x4_nc(
+        const void * __restrict__ vx, dst_t * __restrict__ y,
+        const int64_t ne00, const int64_t ne01,
+        const int64_t ne0203, const uint3 ne02_fdv,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    const int byte_idx = threadIdx.x;            // 0..7 — which byte within the qs[] array
+    const int warp     = threadIdx.y;            // 0..3 — which VTQ block within the warp
+    const int64_t ib_in_row = blockIdx.x * blockDim.y + warp;
+    const int64_t nb_per_row = ne00 / QK_VTQ;
+    if (ib_in_row >= nb_per_row) return;
+
+    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
+        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
+            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
+            const int64_t ibx0 = dm.x*s03 + dm.y*s02 + i01*s01;
+            const block_vtq2_1 * x = (const block_vtq2_1 *) vx;
+            const int64_t ib = ibx0 + ib_in_row;
+            const float norm = (float)x[ib].d;
+            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ + byte_idx * 4;
+
+            if (norm < 1e-30f) {
+                #pragma unroll
+                for (int k = 0; k < 4; ++k) {
+                    if (ib_in_row * QK_VTQ + byte_idx * 4 + k < ne00) {
+                        y[out_base + k] = ggml_cuda_cast<dst_t>(0.0f);
+                    }
+                }
+                continue;
+            }
+
+            // Pre-scaled CB lookup + per-block norm fused into 4 register-resident floats.
+            const float cb0 = VTQ_CUDA_CB_2BIT_SCALED[0] * norm;
+            const float cb1 = VTQ_CUDA_CB_2BIT_SCALED[1] * norm;
+            const float cb2 = VTQ_CUDA_CB_2BIT_SCALED[2] * norm;
+            const float cb3 = VTQ_CUDA_CB_2BIT_SCALED[3] * norm;
+
+            const uint8_t b = x[ib].qs[byte_idx];
+            const int i0 = (b     ) & 0x3;
+            const int i1 = (b >> 2) & 0x3;
+            const int i2 = (b >> 4) & 0x3;
+            const int i3 = (b >> 6) & 0x3;
+
+            auto pick = [&](int i) -> float {
+                return (i == 0) ? cb0 : (i == 1) ? cb1 : (i == 2) ? cb2 : cb3;
+            };
+            const float v0 = pick(i0);
+            const float v1 = pick(i1);
+            const float v2 = pick(i2);
+            const float v3 = pick(i3);
+
+            if (ib_in_row * QK_VTQ + byte_idx * 4 + 0 < ne00) y[out_base + 0] = ggml_cuda_cast<dst_t>(v0);
+            if (ib_in_row * QK_VTQ + byte_idx * 4 + 1 < ne00) y[out_base + 1] = ggml_cuda_cast<dst_t>(v1);
+            if (ib_in_row * QK_VTQ + byte_idx * 4 + 2 < ne00) y[out_base + 2] = ggml_cuda_cast<dst_t>(v2);
+            if (ib_in_row * QK_VTQ + byte_idx * 4 + 3 < ne00) y[out_base + 3] = ggml_cuda_cast<dst_t>(v3);
+        }
+    }
+}
+
 // NC launcher (shared for all VTQ types)
 template <typename block_t, typename Decoder, typename dst_t>
 static void vtq_dequantize_nc_cuda(const void * vx, dst_t * y,
@@ -1298,8 +1390,12 @@ static void vtq_dequantize_nc_cuda(const void * vx, dst_t * y,
     const int64_t nb_per_row = ne00 / QK_VTQ;
     const int64_t ne0203 = ne02*ne03;
     const uint3 ne02_fdv = init_fastdiv_values(ne02);
-    const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    k_dequantize_block_vtq_nc<block_t, Decoder, dst_t><<<num_blocks, 32, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+    // 4 warps per CTA: 4× fewer launches, much better SM occupancy.
+    constexpr int warps_per_cta = 4;
+    const int64_t nb_in_x = (nb_per_row + warps_per_cta - 1) / warps_per_cta;
+    const dim3 num_blocks((int)nb_in_x, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+    const dim3 block_dim(32, warps_per_cta);
+    k_dequantize_block_vtq_nc<block_t, Decoder, dst_t><<<num_blocks, block_dim, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
 }
 
 // Concrete NC wrappers (signature matches convert.cu dispatcher)
@@ -1313,6 +1409,22 @@ template <typename dst_t>
 static void dequantize_block_vtq2_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    // Use specialized x4 kernel (4 outputs per thread) when nb_per_row >= 4,
+    // i.e. head_dim >= 128. Falls back to the generic 1-per-thread kernel for
+    // smaller head_dim (D=32, 64, 96) where the x4 layout wastes warps.
+    GGML_ASSERT(ne00 % QK_VTQ == 0);
+    const int64_t nb_per_row = ne00 / QK_VTQ;
+    if (nb_per_row >= 4) {
+        const int64_t ne0203 = ne02*ne03;
+        const uint3 ne02_fdv = init_fastdiv_values(ne02);
+        constexpr int warps_per_cta = 4;
+        const int64_t nb_in_x = (nb_per_row + warps_per_cta - 1) / warps_per_cta;
+        const dim3 num_blocks((int)nb_in_x, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
+        const dim3 block_dim(8, warps_per_cta);  // 8 threads × 4 warps = 32 threads, each emits 4 elements
+        k_dequantize_block_vtq2_1_x4_nc<dst_t><<<num_blocks, block_dim, 0, stream>>>(
+            vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+        return;
+    }
     vtq_dequantize_nc_cuda<block_vtq2_1, VtqDecode2Bit>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
