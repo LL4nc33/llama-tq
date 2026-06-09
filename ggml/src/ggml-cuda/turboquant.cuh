@@ -151,6 +151,22 @@ __device__ __constant__ static float VTQ_CUDA_CB_2BIT[4] = {
 #define VTQ_CUDA_CB_4BIT PQ_CUDA_CB_4BIT
 
 // ============================================================
+// Pre-scaled codebooks (× PQ_CUDA_CB_SCALE folded in).
+// Use these in dequant hot paths to eliminate one multiply per element.
+// Numerically identical to lookup * scale at fp32 precision.
+// ============================================================
+__device__ __constant__ static float VTQ_CUDA_CB_1BIT_SCALED[2] = {
+    -0.797885f * 0.17677669529663689f,
+     0.797885f * 0.17677669529663689f,
+};
+__device__ __constant__ static float VTQ_CUDA_CB_2BIT_SCALED[4] = {
+    -1.810000f * 0.17677669529663689f,
+    -0.395000f * 0.17677669529663689f,
+     0.395000f * 0.17677669529663689f,
+     1.810000f * 0.17677669529663689f,
+};
+
+// ============================================================
 // Philox 2x32 Counter-Based PRNG — O(1) random access
 // Each (counter, key) pair deterministically produces a random uint32.
 // No sequential state advance needed — thread j directly calls philox(j, seed).
