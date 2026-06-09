@@ -2,12 +2,12 @@
 # Gemma-4-12B single-GPU0 deploy — 131k ctx, GPU1 frei für andere services
 #
 # Tested: gpu00 (RTX 2060 12 GB, GPU0).
-# VRAM: ~11.3 GB / 12 GB (knapp aber stabil dank gemma-4 sliding window + ktq2/vtq3).
-# Throughput: ~36 t/s wallclock (gleich auf mit dual-GPU, kein pipeline overhead).
+# VRAM: ~11.0 GB / 12 GB (lossless K + lossy V, gemma-4 SWA saves the day).
+# Throughput: ~37.6 t/s wallclock (KV-sweep 2026-06-09: f16+vtq3 wins vs ktq2+vtq3).
 #
 # Memory breakdown @ 131072 ctx:
 #   model     : ~7.0 GiB
-#   KV cache  : ~0.85 GiB (SWA 1024×40 + global 131k×8)
+#   KV cache  : ~0.45 GiB (SWA 1024×40 + global 131k×8, f16 K + vtq3 V)
 #   compute   : ~2.6 GiB (ub=512)
 #   sampling  : ~0.1 GiB
 #
@@ -33,7 +33,7 @@ exec "$LLAMA_BIN" \
     -b 2048 \
     --parallel 1 \
     -fa 1 \
-    --cache-type-k ktq2 \
+    --cache-type-k f16 \
     --cache-type-v vtq3 \
     --backend-sampling \
     --slot-save-path "$SLOTS" \
