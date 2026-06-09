@@ -767,6 +767,12 @@ private:
                 params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
                 params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
 
+                // PR #23398: Gemma4-assistant (MTP draft) shares the target's KV cache.
+                // The draft context must reference the target context via ctx_other so
+                // create_memory() can borrow the shared layers. Harmless for other draft
+                // archs (they ignore ctx_other).
+                params_base.speculative.cparams_dft.ctx_other = ctx;
+
                 llama_context * ctx_dft_raw = llama_init_from_model(model_dft.get(), params_base.speculative.cparams_dft);
                 if (ctx_dft_raw == nullptr) {
                     SRV_ERR("%s\n", "failed to create draft model context");
