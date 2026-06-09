@@ -15,6 +15,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#  include <process.h>
+#  define _exit ::_exit
+#else
+#  include <unistd.h>
+#endif
+
 // Global hook so SIGINT/SIGTERM (e.g. timeout(1) sending SIGTERM at the
 // hard limit) can still flush the trained LoRA weights to disk before the
 // process dies. Without this, multi-hour runs lose all progress when the
