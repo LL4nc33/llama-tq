@@ -98,6 +98,7 @@ llama_kv_cache::llama_kv_cache(
                  uint32_t   n_pad,
                  uint32_t   n_swa,
            llama_swa_type   swa_type,
+           llama_memory_t   mem_other,
                  uint32_t   tq_protect_layers,
                  uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
@@ -106,6 +107,7 @@ llama_kv_cache::llama_kv_cache(
                      bool   tq_no_deferred_v,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
+    const  layer_share_cb & share,
     const std::vector<ggml_type> & type_v_layers,
                      bool   xquant_enabled) :
     model(model), hparams(model.hparams), v_trans(v_trans),
@@ -253,10 +255,25 @@ llama_kv_cache::llama_kv_cache(
 
     const bool is_mla = hparams.is_mla();
 
+    other = static_cast<llama_kv_cache *>(mem_other);
+
     for (uint32_t il = 0; il < hparams.n_layer; il++) {
         if (!hparams.has_kv(il)) {
             LLAMA_LOG_DEBUG("%s: layer %3d: does not have KV cache\n", __func__, il);
             continue;
+        }
+
+        if (share && other) {
+            const int32_t il_share = share(il);
+            if (il_share >= 0) {
+                const auto & layer_share = other->layers[other->map_layer_ids[il_share]];
+                LLAMA_LOG_WARN("%s: layer %3d: sharing with layer %d. k = %p, v = %p\n",
+                        __func__, il, il_share, (void *) layer_share.k->data, (void *) layer_share.v->data);
+                map_layer_ids[il] = layers.size();
+                layers.push_back(layer_share);
+                layers.back().il = il;
+                continue;
+            }
         }
 
         if (filter && !filter(il)) {
