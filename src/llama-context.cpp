@@ -3612,6 +3612,9 @@ uint32_t llama_n_rs_seq(const llama_context * ctx) {
 }
 
 const llama_model * llama_get_model(const llama_context * ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
     return &ctx->get_model();
 }
 
@@ -3840,6 +3843,9 @@ int32_t llama_set_adapter_cvec(
 //
 
 llama_memory_t llama_get_memory(const struct llama_context * ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
     return ctx->get_memory();
 }
 
@@ -4318,5 +4324,8 @@ void llama_opt_epoch(
 }
 
 llama_context * llama_get_ctx_other(struct llama_context * ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
     return ctx->get_cparams().ctx_other;
 }
