@@ -866,7 +866,12 @@ private:
 
             // try speculative decoding
             if (can_spec) {
-                slot.spec = common_speculative_init(params_base.speculative, params_base.n_parallel);
+                try {
+                    slot.spec = common_speculative_init(params_base.speculative, params_base.n_parallel);
+                } catch (const std::exception & e) {
+                    SLT_ERR(slot, "failed to initialize speculative decoding context: %s\n", e.what());
+                    slot.spec = nullptr;
+                }
                 if (slot.spec) {
                     // Phase 41b: spec init succeeds even with mmproj — draft-loop checks
                     // per-request whether THIS input has vision tokens (skip if yes).
