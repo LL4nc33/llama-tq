@@ -534,6 +534,10 @@ struct llama_model {
     struct ggml_tensor * output_b        = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
 
+    // NextN/MTP model-level projections
+    struct ggml_tensor * nextn_proj_pre  = nullptr;
+    struct ggml_tensor * nextn_proj_post = nullptr;
+
     // classifier
     struct ggml_tensor * cls       = nullptr;
     struct ggml_tensor * cls_b     = nullptr;
@@ -687,6 +691,7 @@ const char * llm_type_name(llm_type type);
 // note: cast to int64_t since we will use these for the tensor dimensions
 #define LLAMA_LOAD_LOCALS \
     const int     n_layer        = hparams.n_layer;          GGML_UNUSED(n_layer); \
+    const int     n_layer_nextn  = hparams.n_layer_nextn;    GGML_UNUSED(n_layer_nextn); \
     const int64_t n_head         = hparams.n_head();         GGML_UNUSED(n_head); \
     const int64_t n_head_kv      = hparams.n_head_kv();      GGML_UNUSED(n_head_kv); \
     const int64_t n_embd         = hparams.n_embd;           GGML_UNUSED(n_embd); \
