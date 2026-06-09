@@ -134,6 +134,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_gemma3n(params);
         case LLM_ARCH_GEMMA4:
             return new llama_model_gemma4(params);
+        case LLM_ARCH_GEMMA4_ASSISTANT:
+            return new llama_model_gemma4_assistant(params);
         case LLM_ARCH_GEMMA_EMBEDDING:
             return new llama_model_gemma_embedding(params);
         case LLM_ARCH_STARCODER2:
@@ -2032,8 +2034,9 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* filter_recr       */ std::move(filter_recr));
                     }
                 } else {
-                    llama_memory_i::layer_reuse_cb reuse = nullptr;
                     llama_kv_cache::layer_filter_cb filter = nullptr;
+                    llama_memory_i::layer_reuse_cb reuse = nullptr;
+                    llama_kv_cache::layer_share_cb share = nullptr;
 
                     if (arch == LLM_ARCH_GEMMA3N || arch == LLM_ARCH_GEMMA4) {
                         reuse = [&](int32_t il) {
@@ -2053,6 +2056,21 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
                         GGML_ASSERT(hparams.is_swa_any());
 
+                        llama_memory_t mem_other = nullptr;
+                        if (arch == LLM_ARCH_GEMMA4_ASSISTANT) {
+                            mem_other = llama_get_memory(cparams.ctx_other);
+
+                            share = [&](int32_t il) {
+                                const llama_model * model_other = llama_get_model(cparams.ctx_other);
+
+                                if (hparams.is_swa(il)) {
+                                    return llama_model_n_layer(model_other) - 2;
+                                }
+
+                                return llama_model_n_layer(model_other) - 1;
+                            };
+                        }
+
                         res = new llama_kv_cache_iswa(
                                 *this,
                                 params.type_k,
@@ -2065,6 +2083,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 cparams.n_seq_max,
                                 cparams.n_ubatch,
                                 1,
+                                mem_other,
                                 params.tq_protect_layers,
                                 params.tq_protect_sinks,
                                 params.tq_deferred_k,
@@ -2072,7 +2091,8 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 params.tq_no_deferred_k,
                                 params.tq_no_deferred_v,
                                 filter,
-                                reuse);
+                                reuse,
+                                share);
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
@@ -2088,6 +2108,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 1,
                                 hparams.n_swa,
                                 hparams.swa_type,
+                                nullptr,
                                 params.tq_protect_layers,
                                 params.tq_protect_sinks,
                                 params.tq_deferred_k,
@@ -2095,6 +2116,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 params.tq_no_deferred_k,
                                 params.tq_no_deferred_v,
                                 filter,
+                                nullptr,
                                 nullptr);
                     }
                 }
@@ -2332,6 +2354,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_GEMMA3:
         case LLM_ARCH_GEMMA3N:
         case LLM_ARCH_GEMMA4:
+        case LLM_ARCH_GEMMA4_ASSISTANT:
         case LLM_ARCH_GEMMA_EMBEDDING:
         case LLM_ARCH_STARCODER2:
         case LLM_ARCH_OPENELM:
