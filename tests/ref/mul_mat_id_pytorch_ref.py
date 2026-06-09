@@ -60,14 +60,16 @@ c.backward(grad_c)
 # In torch (n_expert, D_out, D_in) -> (n_expert, D_in, D_out).
 as_T = as_.detach().transpose(-1, -2).contiguous()
 
+
 def save(name, t):
     path = os.path.join(OUT_DIR, name + '.bin')
     arr = t.detach().contiguous().cpu().numpy()
     with open(path, 'wb') as f:
         f.write(arr.tobytes())
-    print(f'  {name:14s} shape={tuple(arr.shape)} dtype={arr.dtype} bytes={arr.nbytes}')
+    print(f'  {name:14s} shape={tuple(arr.shape)} dtype={arr.dtype} bytes={arr.nbytes}')  # noqa: NP100
 
-print('Saving to', OUT_DIR)
+
+print('Saving to', OUT_DIR)  # noqa: NP100
 save('as',      as_)
 save('as_T',    as_T)
 save('b',       b)
@@ -84,6 +86,6 @@ with open(os.path.join(OUT_DIR, 'meta.txt'), 'w') as f:
     f.write(f'n_used_b={n_used_b}\n')
     f.write(f'n_tokens={n_tokens}\n')
 
-print()
-print('grad_as sum:', float(as_.grad.sum()))
-print('grad_b  sum:', float(b.grad.sum()))
+print()  # noqa: NP100
+print('grad_as sum:', float(as_.grad.sum()))  # noqa: NP100
+print('grad_b  sum:', float(b.grad.sum()))  # noqa: NP100
