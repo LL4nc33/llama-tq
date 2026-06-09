@@ -349,6 +349,7 @@ if (GGML_VULKAN AND TARGET ggml-vulkan)
 
     add_executable(test-vulkan-tq-dequant test-vulkan-tq-dequant.cpp)
     add_dependencies(test-vulkan-tq-dequant test-vulkan-tq-dequant-shader)
+    target_compile_features(test-vulkan-tq-dequant PRIVATE cxx_std_17)
     target_link_libraries(test-vulkan-tq-dequant PRIVATE Vulkan::Vulkan)
     target_compile_definitions(test-vulkan-tq-dequant PRIVATE
         TQ_KTQ2_1_SPV_PATH="${_tq_shader_spv}")
