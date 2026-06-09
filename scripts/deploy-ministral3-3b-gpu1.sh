@@ -13,7 +13,7 @@
 set -euo pipefail
 
 MODELS_DIR="${MODELS_DIR:-${HOME}/models}"
-LLAMA_BIN="${LLAMA_BIN:-${HOME}/llama-tq-mtp-fusion/build/bin/llama-server}"
+LLAMA_BIN="${LLAMA_BIN:-${HOME}/llama-tq/build/bin/llama-server}"
 SLOTS="${SLOTS:-${HOME}/llama-slots-ministral3-gpu1/}"
 
 MODEL="$MODELS_DIR/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"
