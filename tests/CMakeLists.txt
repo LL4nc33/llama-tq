@@ -314,3 +314,52 @@ if (TARGET gguf-model-data)
     target_link_libraries(export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
+
+# ----------------------------------------------------------------------------
+# TurboQuant KTQ2_1 Vulkan dequant validation
+# Per spec-master.md §1.3 + §7 + §10 (Gate G1: max_abs_err ≤ 1e-3, mean ≤ 1e-5)
+#
+# Standalone harness (does not go through ggml-vulkan's GGML_OP_GET_ROWS path
+# yet — that wiring lives on the A-cpp-wiring agent's branch). Drives the
+# dequant_ktq2_1.comp pipeline directly via raw Vulkan, mirroring the Layer 3
+# POC (docs/plans/tq-vulkan-port/poc/{gen_fixture.c,poc_host.cpp}).
+#
+# Built only when GGML_VULKAN=ON. The shader is compiled to SPV at build time
+# via ${Vulkan_GLSLC_EXECUTABLE} and the resulting path is injected as a
+# compile-time macro so the test executable can locate it without needing
+# arguments at runtime.
+# ----------------------------------------------------------------------------
+if (GGML_VULKAN AND TARGET ggml-vulkan)
+    find_package(Vulkan COMPONENTS glslc REQUIRED)
+
+    set(_tq_shader_src ${CMAKE_CURRENT_SOURCE_DIR}/vulkan-tq-shaders/dequant_ktq2_1.comp)
+    set(_tq_shader_spv ${CMAKE_CURRENT_BINARY_DIR}/dequant_ktq2_1.spv)
+
+    add_custom_command(
+        OUTPUT  ${_tq_shader_spv}
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE}
+                -O --target-env=vulkan1.3
+                ${_tq_shader_src}
+                -o ${_tq_shader_spv}
+        DEPENDS ${_tq_shader_src}
+        COMMENT "glslc dequant_ktq2_1.comp -> dequant_ktq2_1.spv"
+        VERBATIM
+    )
+    add_custom_target(test-vulkan-tq-dequant-shader DEPENDS ${_tq_shader_spv})
+
+    add_executable(test-vulkan-tq-dequant test-vulkan-tq-dequant.cpp)
+    add_dependencies(test-vulkan-tq-dequant test-vulkan-tq-dequant-shader)
+    target_compile_features(test-vulkan-tq-dequant PRIVATE cxx_std_17)
+    target_link_libraries(test-vulkan-tq-dequant PRIVATE Vulkan::Vulkan)
+    target_compile_definitions(test-vulkan-tq-dequant PRIVATE
+        TQ_KTQ2_1_SPV_PATH="${_tq_shader_spv}")
+    if (LLAMA_TESTS_INSTALL)
+        install(TARGETS test-vulkan-tq-dequant RUNTIME)
+    endif()
+
+    add_test(
+        NAME    test-vulkan-tq-dequant
+        COMMAND $<TARGET_FILE:test-vulkan-tq-dequant>
+    )
+    set_property(TEST test-vulkan-tq-dequant PROPERTY LABELS "main;vulkan;turboquant")
+endif()

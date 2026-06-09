@@ -7,5 +7,7 @@ ggml-common.h
 !peg-parser
 !trellis-phase1/
 !trellis-phase1/results/
+!vulkan-tq-shaders/
+!vulkan-tq-shaders/*
 trellis-phase1/build/
 trellis-phase1/trellis_phase1
