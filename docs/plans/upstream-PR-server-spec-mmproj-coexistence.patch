@@ -1,0 +1,167 @@
+From c40783afff93a2efb729d04ca4443c496b09690b Mon Sep 17 00:00:00 2001
+From: LL4nc33 <85998242+LL4nc33@users.noreply.github.com>
+Date: Mon, 8 Jun 2026 19:01:57 +0200
+Subject: [PATCH] server: enable spec-decoding + ctx_shift + cache_reuse for
+ text-only requests on mmproj servers
+
+When mmproj is loaded, three features are currently disabled globally:
+ctx_shift, cache_reuse, and (via mid-execution asserts) speculative
+decoding. This forces users to choose vision OR these features.
+
+The blocks exist because vision requests contain image-chunks that
+occupy multiple tokens, breaking the math in those paths. But text-only
+requests on the same server can safely use all three features.
+
+Distinguish slot-capability (has_mtmd, set when mmproj is loaded) from
+per-request content (new has_media() accessor that returns
+!map_idx_to_media.empty()).
+
+Changes:
+- server_tokens::has_media() new accessor
+- get_tokens() + set_token() assertions: has_mtmd -> has_media()
+- can_speculate(): gate on !prompt.tokens.has_media()
+- init: stop globally disabling ctx_shift/cache_reuse/spec for mmproj
+- ctx_shift abort path: send_error + slot.release() for vision requests
+- cache_reuse abort path: continue for vision requests
+- 2x GGML_ASSERT in shift/reuse paths: has_mtmd -> has_media()
+
+Effect: text-only requests on mmproj-loaded servers get the same feature
+set as text-only deploys. Vision requests skip those features per-request
+and fail gracefully (no server crash). No regression for non-mmproj
+deploys.
+
+Tested with Qwen3.6-35B-A3B + mmproj: text-only 80 t/s with spec active,
+vision returns correct answer, mixed sequences stable, no crashes.
+---
+ tools/server/server-common.cpp  |  7 +++++--
+ tools/server/server-common.h    |  7 +++++++
+ tools/server/server-context.cpp | 34 +++++++++++++++++++--------------
+ 3 files changed, 32 insertions(+), 16 deletions(-)
+
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 21c843c0d..d8fc60997 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -395,7 +395,9 @@ void server_tokens::insert(const llama_tokens & inp_tokens) {
+ }
+ 
+ const llama_tokens & server_tokens::get_tokens() const {
+-    GGML_ASSERT(!has_mtmd);
++    // Per-request check: text-only requests on mmproj-loaded servers can safely
++    // return the raw token vector for speculative decoding.
++    GGML_ASSERT(!has_media());
+     return tokens;
+ }
+ 
+@@ -411,7 +413,8 @@ llama_tokens server_tokens::get_text_tokens() const {
+ }
+ 
+ void server_tokens::set_token(llama_pos pos, llama_token id) {
+-    GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
++    // Per-request check: only block when this slot has actual media chunks.
++    GGML_ASSERT(!has_media());
+     tokens[pos] = id;
+ }
+ 
+diff --git a/tools/server/server-common.h b/tools/server/server-common.h
+index 4681f9c51..bcf5e8caa 100644
+--- a/tools/server/server-common.h
++++ b/tools/server/server-common.h
+@@ -201,6 +201,13 @@ public:
+ 
+     bool empty() const { return tokens.empty(); }
+ 
++    // Returns true if this request actually contains vision/audio chunks.
++    // Distinguished from has_mtmd (server-capability flag): a text-only request on an
++    // mmproj-loaded server has has_mtmd=true but has_media()=false. Lets the server
++    // enable speculative decoding for the text-only requests while still rejecting it
++    // for vision requests where the draft model has no image-encoder.
++    bool has_media() const { return !map_idx_to_media.empty(); }
++
+     void clear() {
+         map_idx_to_media.clear();
+         tokens.clear();
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 08ff1e362..ab6535899 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -290,7 +290,10 @@ struct server_slot {
+     }
+ 
+     bool can_speculate() const {
+-        return !!spec;
++        // Spec only when this request has no vision/audio chunks. Text-only requests
++        // on mmproj-loaded servers still get spec; vision requests skip spec (no image
++        // encoder in draft path).
++        return !!spec && !prompt.tokens.has_media();
+     }
+ 
+     void add_token(const completion_token_output & token) {
+@@ -828,14 +831,14 @@ private:
+             }
+             SRV_INF("loaded multimodal model, '%s'\n", mmproj_path.c_str());
+ 
++            // ctx_shift + cache_reuse can stay enabled globally — per-request gating
++            // in the actual paths blocks them only for vision requests.
+             if (params_base.ctx_shift) {
+-                params_base.ctx_shift = false;
+-                SRV_WRN("%s\n", "ctx_shift is not supported by multimodal, it will be disabled");
++                SRV_INF("%s\n", "ctx_shift with multimodal: enabled for text-only requests, gated per-request for vision");
+             }
+ 
+             if (params_base.n_cache_reuse) {
+-                params_base.n_cache_reuse = 0;
+-                SRV_WRN("%s\n", "cache_reuse is not supported by multimodal, it will be disabled");
++                SRV_INF("%s\n", "cache_reuse with multimodal: enabled for text-only requests, gated per-request for vision");
+             }
+         }
+ 
+@@ -2160,10 +2163,13 @@ private:
+                     continue;
+                 }
+ 
+-                if (mctx) {
+-                    // we should never reach this because params_base.ctx_shift is automatically disabled if mmproj is loaded
+-                    // we don't support ctx_shift because an image chunk may contains multiple tokens
+-                    GGML_ABORT("not supported by multimodal");
++                // ctx_shift unsupported when current request has actual vision tokens
++                // (image chunks span multiple tokens, breaking the seq_add math).
++                // Text-only requests on an mmproj server can still ctx-shift safely.
++                if (mctx && slot.prompt.tokens.has_media()) {
++                    send_error(slot, "context shift not supported for multimodal input", ERROR_TYPE_SERVER);
++                    slot.release();
++                    continue;
+                 }
+ 
+                 if (slot.task->is_parent() || slot.task->is_child()) {
+@@ -2192,7 +2198,7 @@ private:
+                 // add generated tokens to cache
+                 // ref: https://github.com/ggml-org/llama.cpp/pull/16818#discussion_r2473269481
+                 {
+-                    GGML_ASSERT(!slot.prompt.tokens.has_mtmd);
++                    GGML_ASSERT(!slot.prompt.tokens.has_media());
+ 
+                     llama_tokens new_tokens = slot.prompt.tokens.get_tokens(); // copy
+                     for (size_t i = n_keep + n_discard; i < new_tokens.size(); i++) {
+@@ -2367,14 +2373,14 @@ private:
+ 
+                                 // reuse chunks from the cached prompt by shifting their KV cache in the new position
+                                 if (can_cache_reuse && n_cache_reuse > 0) {
+-                                    GGML_ASSERT(!slot.prompt.tokens.has_mtmd);
++                                    GGML_ASSERT(!slot.prompt.tokens.has_media());
+ 
+                                     size_t head_c = n_past; // cache
+                                     size_t head_p = n_past; // current prompt
+ 
+-                                    if (mctx) {
+-                                        // we should never reach this
+-                                        GGML_ABORT("not supported by multimodal");
++                                    if (mctx && slot.prompt.tokens.has_media()) {
++                                        // cache reuse with vision input not supported — skip
++                                        continue;
+                                     }
+ 
+                                     SLT_DBG(slot, "trying to reuse chunks with size > %d, n_past = %d\n", n_cache_reuse, n_past);
+-- 
+2.43.0
+

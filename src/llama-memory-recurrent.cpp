@@ -1254,3 +1254,73 @@ int32_t llama_memory_recurrent_context::s_copy(int i) const {
     }
     return (int32_t)(idx * mem->size) + src0;
 }
+
+bool llama_memory_recurrent::shadow_alloc() {
+    if (shadow_allocated) return true;
+    const uint32_t n_layer = hparams.n_layer;
+    shadow_r_l.resize(n_layer, nullptr);
+    shadow_s_l.resize(n_layer, nullptr);
+    std::map<ggml_backend_buffer_type_t, ggml_context_ptr> ctx_map;
+    auto ctx_for_buft = [&ctx_map](ggml_backend_buffer_type_t buft) -> ggml_context * {
+        auto it = ctx_map.find(buft);
+        if (it == ctx_map.end()) {
+            ggml_init_params p = { ggml_tensor_overhead() * 2 * 256, nullptr, true };
+            ggml_context_ptr ctx{ ggml_init(p) };
+            if (!ctx) return nullptr;
+            ctx_map.emplace(buft, std::move(ctx));
+            return ctx_map[buft].get();
+        }
+        return it->second.get();
+    };
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (r_l[il] == nullptr) continue;
+        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(r_l[il]->buffer);
+        ggml_context * ctx = ctx_for_buft(buft);
+        if (!ctx) return false;
+        shadow_r_l[il] = ggml_dup_tensor(ctx, r_l[il]);
+        shadow_s_l[il] = ggml_dup_tensor(ctx, s_l[il]);
+        ggml_format_name(shadow_r_l[il], "shadow_r_l%d", (int)il);
+        ggml_format_name(shadow_s_l[il], "shadow_s_l%d", (int)il);
+    }
+    for (auto & [buft, ctx] : ctx_map) {
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
+        if (!buf) return false;
+        ggml_backend_buffer_clear(buf, 0);
+        shadow_ctxs_bufs.emplace_back(std::move(ctx), buf);
+    }
+    shadow_allocated = true;
+    return true;
+}
+
+void llama_memory_recurrent::shadow_save() {
+    if (!shadow_allocated) return;
+    const uint32_t n_layer = hparams.n_layer;
+    // Snapshot metadata (cheap, host-side)
+    shadow_cells  = cells;
+    shadow_head   = head;
+    shadow_used   = used;
+    shadow_rs_idx = rs_idx;
+    // Snapshot tensor data (D2D)
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (r_l[il] == nullptr || shadow_r_l[il] == nullptr) continue;
+        ggml_backend_tensor_copy(r_l[il], shadow_r_l[il]);
+        ggml_backend_tensor_copy(s_l[il], shadow_s_l[il]);
+    }
+}
+
+void llama_memory_recurrent::shadow_load() {
+    if (!shadow_allocated) return;
+    const uint32_t n_layer = hparams.n_layer;
+    // Restore metadata
+    cells  = shadow_cells;
+    head   = shadow_head;
+    used   = shadow_used;
+    rs_idx = shadow_rs_idx;
+    // Restore tensor data (D2D)
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (r_l[il] == nullptr || shadow_r_l[il] == nullptr) continue;
+        ggml_backend_tensor_copy(shadow_r_l[il], r_l[il]);
+        ggml_backend_tensor_copy(shadow_s_l[il], s_l[il]);
+    }
+}
+

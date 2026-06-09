@@ -64,6 +64,12 @@ public:
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+
+    // Backend-aware D2D snapshot of the current recurrent state for fast spec_ckpt save/restore.
+    bool shadow_alloc();
+    void shadow_save();
+    void shadow_load();
+    bool shadow_has() const { return shadow_allocated; }
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
     uint32_t head = 0; // the location where the batch will be placed in the cache (see find_slot())
@@ -119,6 +125,17 @@ private:
 
     // ggml contexts for the KV cache along with the allocated backend buffers:
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
+
+    bool shadow_allocated = false;
+    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> shadow_ctxs_bufs;
+    std::vector<ggml_tensor *> shadow_r_l;
+    std::vector<ggml_tensor *> shadow_s_l;
+    // Metadata snapshot — needed alongside r_l/s_l tensor copies to correctly
+    // restore the recurrent state's position/cell tracking.
+    std::vector<mem_cell> shadow_cells;
+    uint32_t              shadow_head = 0;
+    uint32_t              shadow_used = 0;
+    std::vector<uint32_t> shadow_rs_idx;
 
     size_t total_size() const;
 

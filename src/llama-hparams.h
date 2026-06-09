@@ -95,6 +95,18 @@ struct llama_hparams {
 
     bool kv_only_nextn = false; // if true, only the last nextn_predict_layers blocks have a KV cache (MTP head arches)
 
+    // Eagle3-style multi-stream draft-head support. The base model can be asked
+    // to expose three hidden states (low/mid/high) so an external draft head
+    // (trained separately) can fuse them via a 1-layer FC into its decoder input.
+    // 0 means feature is disabled; set by Eagle3-arch loader from GGUF KV.
+    uint32_t eagle3_layer_low  = 0;
+    uint32_t eagle3_layer_mid  = 0;
+    uint32_t eagle3_layer_high = 0;
+
+    bool has_eagle3() const {
+        return (eagle3_layer_low | eagle3_layer_mid | eagle3_layer_high) != 0;
+    }
+
     float f_norm_eps;
     float f_norm_rms_eps;
     float f_norm_group_eps;

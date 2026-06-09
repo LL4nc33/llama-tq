@@ -15,6 +15,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#  include <process.h>
+#  define _exit ::_exit
+#else
+#  include <unistd.h>
+#endif
+
 // Global hook so SIGINT/SIGTERM (e.g. timeout(1) sending SIGTERM at the
 // hard limit) can still flush the trained LoRA weights to disk before the
 // process dies. Without this, multi-hour runs lose all progress when the
@@ -23,7 +30,7 @@ static llama_adapter_lora * g_lora_adapter_for_signal = nullptr;
 static std::string          g_adapter_out_for_signal;
 static volatile sig_atomic_t g_signal_save_done = 0;
 
-static void finetune_save_adapter_on_signal(int signum) {
+[[noreturn]] static void finetune_save_adapter_on_signal(int signum) {
     if (g_signal_save_done || !g_lora_adapter_for_signal || g_adapter_out_for_signal.empty()) {
         _exit(128 + signum);
     }

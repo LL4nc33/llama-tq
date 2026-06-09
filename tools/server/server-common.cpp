@@ -379,17 +379,22 @@ void server_tokens::push_back(server_tokens & tokens) {
 }
 
 void server_tokens::insert(const llama_tokens & inp_tokens) {
-    GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
+    // Phase 41b: text-only requests on mmproj-loaded servers need to be able to
+    // insert tokens for spec-decode accept path. Only block if actual media is present.
+    GGML_ASSERT(!has_media());
     tokens.insert(tokens.end(), inp_tokens.begin(), inp_tokens.end());
 }
 
 const llama_tokens & server_tokens::get_text_tokens() const {
-    GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
+    // Phase 41b: relax to per-request check. Slot-level has_mtmd is true whenever
+    // mmproj is loaded, but text-only requests have no media chunks and can safely
+    // return the raw token vector for speculative decoding.
+    GGML_ASSERT(!has_media());
     return tokens;
 }
 
 void server_tokens::set_token(llama_pos pos, llama_token id) {
-    GGML_ASSERT(!has_mtmd); // only allow this if mtmd is disabled
+    GGML_ASSERT(!has_media());
     tokens[pos] = id;
 }
 

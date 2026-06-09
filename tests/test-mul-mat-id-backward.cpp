@@ -89,6 +89,14 @@ bool tensors_close(const float * got, const float * ref, size_t n, float atol, f
 
 int main() {
     const std::string dir = "/tmp/mul_mat_id_ref/";
+    {
+        std::ifstream probe(dir + "meta.txt");
+        if (!probe) {
+            fprintf(stderr, "skipped: %smeta.txt not present\n", dir.c_str());
+            fprintf(stderr, "  (run tests/ref/mul_mat_id_pytorch_ref.py to generate)\n");
+            return 0;
+        }
+    }
     const ref_meta meta = read_meta(dir + "meta.txt");
 
     fprintf(stderr, "D_out=%lld D_in=%lld n_expert=%lld n_used=%lld n_used_b=%lld n_tokens=%lld\n",

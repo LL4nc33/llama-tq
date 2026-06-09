@@ -158,6 +158,11 @@ docs/plans/*
 !docs/plans/2026-04-25-roadmap.md
 !docs/plans/2026-04-25-phase1-vrows-results.md
 !docs/plans/2026-04-25-ktq3-research.md
+!docs/plans/upstream-PR-server-spec-mmproj-coexistence.md
+!docs/plans/upstream-PR-server-spec-mmproj-coexistence.patch
+!docs/plans/upstream-PR-submission-guide.md
+!docs/plans/2026-06-08-github-push-prep.md
+!docs/plans/2026-06-08-eagle3-phase-b-hidden-states.md
 autoresearch/
 
 # Fork-private development directories — recursive guards (added 2026-05-05)

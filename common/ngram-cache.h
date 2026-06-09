@@ -7,8 +7,13 @@
 #include <vector>
 
 #define LLAMA_NGRAM_MIN    1
-#define LLAMA_NGRAM_MAX    4
-#define LLAMA_NGRAM_STATIC 2
+#define LLAMA_NGRAM_MAX    8
+// LLAMA_NGRAM_STATIC: size of the keys stored in the static cache (--lookup-cache-static).
+// 2 was upstream default — too uneindeutig on quantized models because most 2-grams
+// have multiple plausible followers (50% threshold rarely met). 4 gives sharper keys
+// and dramatically improves static-cache hit rate on creative prompts.
+// Note: static cache files trained with a different NGRAM_STATIC are NOT loadable.
+#define LLAMA_NGRAM_STATIC 4
 
 // Data structures to map n-grams to empirical token probabilities:
 
