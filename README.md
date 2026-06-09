@@ -15,6 +15,7 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork with two independent a
 - **Long context on small GPUs.** A 35B-class MoE with 100k context and vision on a single 12 GB GPU. 200k parallel slots × 2 on a dual-12 GB setup.
 - **Multi-tenant on cheap hardware.** Four concurrent 65k slots on a 20B-class MoE on a single 12 GB GPU.
 - **2.28× decode boost on repeated prompts.** MTP + n-gram hybrid speculative decoding, integrated end-to-end (model-class refactor, libllama MTP API, CLI draft flags, server speculation wiring, static n-gram cache pretraining). Live on the prod 35B-A3B-IQ2_XXS deploy: 80 t/s creative, 176 t/s repeat on 2× RTX 2060 12 GB. (Updated 2026-06-08.)
+- **Eagle3 draft head infrastructure.** Hidden-state extraction at three layer taps (low/mid/high), GGUF KV plumbing, head graph fusion (`build_eagle3_fusion`), `LLM_TENSOR_NEXTN_EAGLE3_FC` tensor type, loader, and Python converter for HF eagle3 checkpoints. Runtime is dormant until a trained head is loaded (in flight); existing single-stream MTP path unchanged. (Added 2026-06-09.)
 - **Fine-tuning hybrid MoE architectures directly in IQ2 quant.** Full LoRA training of the MoE expert weights (`ffn_*_exps`) on Qwen3.6-A35B-IQ2_XXS, on a single 12 GB GPU. Train → save (.lora.gguf) → load via `--lora` → inference all green. No dequantization roundtrip to BF16/FP16. (Updated 2026-05-18.)
 - **Drop-in upgrade.** Two extra flags (`--cache-type-k ktq2 --cache-type-v vtq2`); the rest of the llama.cpp CLI is unchanged.
 
@@ -154,7 +155,7 @@ cmake --build build -j"$(nproc)" --target llama-server llama-finetune
 
 ## Maintenance &amp; roadmap
 
-This fork is actively maintained alongside its own roadmap. Upstream `llama.cpp` fixes (CUDA, server, build) are cherry-picked when they apply cleanly; larger features are integrated case-by-case. As of 2026-06: upstream CUDA fusion infrastructure is fully integrated, and MTP is integrated through the full stack — model-class refactor, libllama MTP API, CLI draft flags, and server speculation wiring — with bench parity verified on 0.8B-Q8 and 35B-A3B-IQ2_XXS. See [ROADMAP.md](ROADMAP.md) for what's working, what's in flight, and the path toward real capability gains in fine-tuning.
+This fork is actively maintained alongside its own roadmap. Upstream `llama.cpp` fixes (CUDA, server, build) are cherry-picked when they apply cleanly; larger features are integrated case-by-case. As of 2026-06: upstream CUDA fusion infrastructure is fully integrated; MTP is integrated through the full stack — model-class refactor, libllama MTP API, CLI draft flags, server speculation wiring, n-gram cache hybrid; mmproj coexists with spec via per-request gating (upstream-PR ready); Eagle3 draft-head infrastructure (hidden-state extraction + head graph + converter) is code-complete, with head training in flight. Bench parity verified on 0.8B-Q8 and 35B-A3B-IQ2_XXS. See [ROADMAP.md](ROADMAP.md) for what's working, what's in flight, and the path toward real capability gains in fine-tuning.
 
 ---
 
