@@ -11,8 +11,8 @@ extern "C" {
 #define RPC_PROTO_PATCH_VERSION    2
 
 #ifdef  __cplusplus
-// llama-tq fork has one extra op (GGML_OP_QUANTIZE_DEQUANTIZE_FAKE, Stage-4 QAT).
-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
+// llama-tq fork has extra ops beyond upstream (Stage-4 QAT + others).
+static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
 #endif
 
 #define GGML_RPC_MAX_SERVERS       16
