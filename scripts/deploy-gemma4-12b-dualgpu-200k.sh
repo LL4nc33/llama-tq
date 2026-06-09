@@ -37,4 +37,5 @@ exec "$LLAMA_BIN" \
     --cache-type-v vtq3 \
     --backend-sampling \
     --slot-save-path "$SLOTS" \
-    --jinja
+    --jinja \
+    --chat-template-kwargs '{"thinking":false}'
