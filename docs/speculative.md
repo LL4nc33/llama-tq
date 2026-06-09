@@ -181,3 +181,86 @@ statistics ngram_map_k: #calls(b,g,a) = 6 1690 26, #gen drafts = 26, #acc drafts
 - `#acc tokens`: number of tokens accepted by the main model
 - `dur(b,g,a): durations of begin (new prompt), generation and accumulation (process acceptance).
 
+## llama-tq fork recommendations (2026-06)
+
+### Model-class config matrix
+
+Tested on 2x RTX 2060 12 GB + KTQ/VTQ KV cache. Boost vs `--spec-type none` baseline.
+
+| Model | Quant | Baseline | Best spec config | Creative | Repeat |
+|---|---|---|---|---|---|
+| Qwen3.5-9B-MTP | IQ4_XS | 57.5 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.0-1.46x | up to 3.8x |
+| Qwen3.6-27B-MTP-A3B | IQ2_XXS | 18.0 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.05-1.10x | 3.65x |
+| Qwen3.6-35B-MTP-A3B | IQ2_XXS | 71.5 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.00-1.05x | 1.31x |
+| Ministral-3-3B | Q4_K_M | ~110 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.0x | 1.5-2x |
+
+All configs are **lossless** — output is byte-identical to baseline (verified via
+diff on first 140 chars of greedy outputs across multiple prompts).
+
+### DRAFT_MTP guidance
+
+DRAFT_MTP is supported and respects `--draft-p-min` (default 0.75). On consumer
+single-GPU + IQ2-class MoE models it consistently underperforms ngram-cache
+because the single-layer MTP head caps per-step confidence so position 1-3 of a
+dm=4 draft fail the p_min filter (observed: avg 1.30 tokens/draft, firing 32%
+of TG-iterations with the Phase 29 decay patch — still net-negative).
+
+When to enable DRAFT_MTP:
+- Q4 or higher quantization (the MTP head retains useful sharpness)
+- Bandwidth-bound hardware (Jetson Orin, M-series unified memory)
+- Larger active-param models (>10B active) where 1 extra token amortises the draft setup
+
+When NOT to enable DRAFT_MTP:
+- IQ2/IQ3 quantization (use ngram-cache instead)
+- Single GPU < 12 GB (compute-buffer fits but offers worse boost than ngram-cache)
+
+### Tuning knobs (env-gated)
+
+| Env var | Default | Range | Effect |
+|---|---|---|---|
+| `LLAMA_SPEC_RELAX` | 0 | 0..50 | Lower ngram-cache acceptance thresholds for noisier-quant models (Phase 28) |
+| `LLAMA_MTP_DECAY` | 0.70 | 0.30..1.00 | DRAFT_MTP per-position p_min decay; 1.0 = strict at every step (Phase 29) |
+| `FORK_MTP_PROFILE_ACC=1` | — | — | Print draft/accept stats per TG batch |
+| `FORK_SPEC_TRACE=1` | — | — | Verbose spec-flow log (very noisy, debug only) |
+
+### Static lookup-cache
+
+The `--lookup-cache-static FILE` flag works in the server. Train a cache with:
+
+```
+llama-lookup-create -m TARGET.gguf -f corpus.txt -ngl 0 \
+  --lookup-cache-static cache.bin
+```
+
+`LLAMA_NGRAM_STATIC` is set to 4 (was 2 upstream) for sharper keys. Static-cache
+files trained with NGRAM_STATIC=2 must be regenerated. On IQ2 models the static
+cache helps mostly with structured prompts; creative prompts see <5% boost from
+static cache alone — the bottleneck is the model, not the lookup table.
+
+### Universal-2x ceiling and Eagle3 path
+
+On consumer 2x12 GB hardware with IQ2 MoE models, **universal 2x speculation
+without quality regression is not achievable** with current draft-source options
+(single-layer MTP-head + ngram-cache). Real universal 2x requires either:
+1. Q4+ quantization (model doesn't fit in 24 GB at 27B+ context lengths)
+2. **Eagle3-style draft-head** with 3-hidden-state fusion + training-time-test
+3. Larger draft model (separate small GGUF; eats VRAM that's already maxed)
+
+Option 2 is the realistic next step. Community Eagle3 checkpoints exist for
+Qwen3-30B-A3B (`lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex`)
+and Qwen3-VL-30B-A3B. Implementation is a 3-5 week engineering project on
+top of the existing MTP infrastructure — see internal plan in
+`docs/plans/2026-06-08-eagle3-integration.md` (local-only, not pushed).
+
+Repeat-heavy workloads (lists, code boilerplate, log scanning) still hit
+1.5-3.8x today via ngram-cache and do not need Eagle3.
+
+### Critical fix (commit 78216a941)
+
+Prior to 2026-06-08, ngram-* and draft-simple spec types silently corrupted
+output on hybrid-recurrent models (qwen35) because `need_n_rs_seq()` only
+returned a non-zero value for DRAFT_MTP. With `n_rs_seq = 0`, partial seq_rm
+on hybrid models fails and the server falls back to `spec_ckpt.load_tgt`
+with PARTIAL_ONLY which wipes mem_attn — destroying the target's prompt KV
+context. Fix in `common/common.h::need_n_rs_seq()` extends the check to all
+spec types that emit target-verifiable drafts.

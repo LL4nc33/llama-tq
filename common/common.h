@@ -391,15 +391,36 @@ struct common_params_speculative {
     common_params_speculative_ngram_cache ngram_cache;
 
     bool has_dft() const {
-        return !draft.mparams.path.empty() || !draft.mparams.hf_repo.empty() || !mparams_dft.path.empty() || !mparams_dft.hf_repo.empty();
+        if (!draft.mparams.path.empty() || !draft.mparams.hf_repo.empty() ||
+            !mparams_dft.path.empty() || !mparams_dft.hf_repo.empty()) {
+            return true;
+        }
+        // Shared-ctx MTP or any non-draft-model spec (ngram-*): target serves as own draft.
+        return std::any_of(types.begin(), types.end(), [](auto t) {
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+        });
     }
 
     uint32_t need_n_rs_seq() const {
+        // Any spec type that drives target verify-batches with rejected drafts
+        // needs recurrent rollback support — otherwise the spec_ckpt fallback
+        // (PARTIAL_ONLY) silently wipes mem_attn on reject and corrupts output.
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
+                || t == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V
+                || t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
         });
 
-        return needs_rs_seq ? draft.n_max : 0u;
+        return needs_rs_seq ? std::max<uint32_t>(draft.n_max, n_max) : 0u;
     }
 
     // === fork-compat: legacy flat fields preserved for arg.cpp handlers from pre-MTP era ===
@@ -1139,3 +1160,17 @@ ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std
 
 // "adamw" or "sgd" (case insensitive)
 enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
+
+// upstream parity: context seq_rm capability
+enum common_context_seq_rm_type {
+    COMMON_CONTEXT_SEQ_RM_TYPE_NO   = 0,
+    COMMON_CONTEXT_SEQ_RM_TYPE_PART = 1,
+    COMMON_CONTEXT_SEQ_RM_TYPE_FULL = 2,
+    COMMON_CONTEXT_SEQ_RM_TYPE_RS   = 3,
+};
+
+common_context_seq_rm_type common_context_can_seq_rm(llama_context * ctx);
+void common_context_seq_rm (llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1);
+void common_context_seq_cp (llama_context * ctx, llama_seq_id src, llama_seq_id dst, llama_pos p0, llama_pos p1);
+void common_context_seq_add(llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta);
+

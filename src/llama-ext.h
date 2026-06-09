@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <cstdint>
+#include <map>
 
 // Reserve a new compute graph. It is valid until the next call to llama_graph_reserve.
 LLAMA_API struct ggml_cgraph * llama_graph_reserve(
@@ -101,3 +102,16 @@ LLAMA_API float * llama_get_embeddings_pre_norm(struct llama_context * ctx);
 // mirrors:
 // LLAMA_API float * llama_get_embeddings_ith(struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_embeddings_pre_norm_ith(struct llama_context * ctx, int32_t i);
+LLAMA_API float * llama_get_embeddings_pre_norm_raw_ith(struct llama_context * ctx, int32_t i);
+LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
+LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int32_t i);
+LLAMA_API void    llama_set_embeddings_nextn(struct llama_context * ctx, bool value, bool masked);
+
+// Eagle3 multi-stream hidden-state extraction.
+// Set value=true to enable; the model must have been loaded with non-zero
+// eagle3_layer_{low,mid,high} hparams. Returns one row of n_embd floats per
+// token, captured AFTER the configured base-model layer's full block.
+LLAMA_API void    llama_set_embeddings_eagle3(struct llama_context * ctx, bool value);
+LLAMA_API float * llama_get_embeddings_eagle3_low_ith (struct llama_context * ctx, int32_t i);
+LLAMA_API float * llama_get_embeddings_eagle3_mid_ith (struct llama_context * ctx, int32_t i);
+LLAMA_API float * llama_get_embeddings_eagle3_high_ith(struct llama_context * ctx, int32_t i);
