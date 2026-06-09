@@ -31,7 +31,10 @@ else()
     add_subdirectory(simple)
     add_subdirectory(simple-chat)
     add_subdirectory(speculative)
-    add_subdirectory(speculative-simple)
+    # speculative-simple disabled: upstream's reference example tracks the new
+    # `params.speculative.draft.*` API, while the fork keeps the older shape.
+    # Re-enable after porting the example to the fork's common_speculative API.
+    # add_subdirectory(speculative-simple)
     add_subdirectory(gen-docs)
     add_subdirectory(training)
     add_subdirectory(diffusion)
