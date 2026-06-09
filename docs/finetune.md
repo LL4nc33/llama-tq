@@ -199,15 +199,17 @@ loader path is healthy.
 - Loss curve: 5.44 → 1.40
 - Output: rewritten GGUF, loads cleanly in `llama-server`
 
-## Stage-4 (QAT) op — work in progress
+## Stage-4 (QAT) op
 
 `GGML_OP_QUANTIZE_DEQUANTIZE_FAKE` is wired into ggml: forward round-trips an
-F32 tensor through `target_quant` (Q4_0, IQ2_XXS, …) to bake the quantisation
-error into the activation; backward is a Straight-Through Estimator
-(identity). CPU compute path and autograd are in place. The `--qat-target-quant`
-CLI flag and the LoRA-graph integration (wrapping `ab_cur` or `W_eff` in the
-fake-quant op) are queued — once landed, the LoRA adapter can be trained to
-compensate for the base-model's quantisation error.
+F32 tensor through `target_quant` (Q4_0, IQ2_XXS, KTQ2_1, …) to bake the
+quantisation error into the activation; backward is a Straight-Through
+Estimator (identity). CPU compute path and autograd are in place. The
+`--qat-target-quant TYPE` CLI flag is wired through `common_params`. The
+remaining wire-up is the LoRA-graph integration (wrapping `ab_cur` / `W_eff`
+in the fake-quant op inside `build_lora_mm` / `build_lora_mm_id`); once
+landed, the LoRA adapter can be trained to compensate for the base-model's
+quantisation error.
 
 ## Upstream issue references
 
