@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <cstdint>
+#include <map>
 
 // Reserve a new compute graph. It is valid until the next call to llama_graph_reserve.
 LLAMA_API struct ggml_cgraph * llama_graph_reserve(
