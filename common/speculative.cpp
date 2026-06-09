@@ -528,6 +528,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
             // TODO:this is generally true, but would be nice to assert it
             {
                 const float * h_tgt = llama_get_embeddings_nextn(ctx_tgt);
+                if (h_tgt == nullptr) {
+                    std::memset(batch.embd + (size_t) 1 * n_embd, 0, row_bytes * (n_tokens-1));
+                } else
                 std::memcpy(batch.embd + (size_t) 1 * n_embd, h_tgt, row_bytes * (n_tokens-1));
 
                 //{
@@ -571,6 +574,14 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
             for (int32_t i = 0; i < n_rows; ++i) {
                 const float * h = llama_get_embeddings_nextn_ith(ctx_tgt, i_batch_beg[seq_id] + i);
+                if (h == nullptr) {
+                    // target produced no nextn embedding for this row (e.g. masked
+                    // output or index past the extracted range) — zero-fill so the
+                    // draft sees a defined (if neutral) hidden state instead of
+                    // dereferencing a null pointer.
+                    std::memset(verify_h[seq_id].data() + (size_t) i * n_embd, 0, row_bytes);
+                    continue;
+                }
                 std::memcpy(verify_h[seq_id].data() + (size_t) i * n_embd, h, row_bytes);
             }
 
