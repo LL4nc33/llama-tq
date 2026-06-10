@@ -60,6 +60,7 @@ static std::initializer_list<enum llama_example> mmproj_examples = {
     LLAMA_EXAMPLE_MTMD,
     LLAMA_EXAMPLE_SERVER,
     LLAMA_EXAMPLE_CLI,
+    LLAMA_EXAMPLE_DIFFUSION,
 };
 
 static std::string read_file(const std::string & fname) {
@@ -2421,7 +2422,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.image.emplace_back(item);
             }
         }
-    ).set_examples({LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_CLI}));
+    ).set_examples({LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_DIFFUSION}));
     add_opt(common_arg(
         {"--image-min-tokens"}, "N",
         "minimum number of tokens each image can take, only used by vision models with dynamic resolution (default: read from model)",
@@ -3952,6 +3953,21 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--diffusion-visual"},
         string_format("enable visual diffusion mode (show progressive generation) (default: %s)", params.diffusion.visual_mode ? "true" : "false"),
         [](common_params & params) { params.diffusion.visual_mode = true; }
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    add_opt(common_arg(
+        {"--top-k-start"}, "N",
+        "block-diffusion: anneal top-k from N at the first (high-entropy) denoising step (with --top-k-end)",
+        [](common_params & params, int value) { params.diffusion.top_k_start = value; }
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    add_opt(common_arg(
+        {"--top-k-end"}, "N",
+        "block-diffusion: anneal top-k to N at the last denoising step (with --top-k-start)",
+        [](common_params & params, int value) { params.diffusion.top_k_end = value; }
+    ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
+    add_opt(common_arg(
+        {"--top-k-tail-correction"},
+        "block-diffusion: use the exact full-vocab entropy (logsumexp) for the accept/stop signal under top-k",
+        [](common_params & params) { params.diffusion.top_k_tail_correction = true; }
     ).set_examples({ LLAMA_EXAMPLE_DIFFUSION }));
     add_opt(common_arg(
         {"--diffusion-eps"}, "F",
