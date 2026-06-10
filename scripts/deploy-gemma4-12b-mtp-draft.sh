@@ -5,17 +5,24 @@
 # Draft:  gemma-4-12B-it-qat-assistant-MTP-Q8_0 (443 MB, 4-layer MTP head)
 # Spec:   draft-mtp (shared KV cache between target + draft)
 #
-# Tuning (2026-06-10, RTX 2060, code prompt):
-#   --draft-max 2     → 58% acceptance, 38.1 t/s (best; max 3 = 35, max 4 = 32)
-#   --draft-p-min 0.0 → REQUIRED. Default 0.75 drops every draft (MTP head
-#                       confidence is 0.28-0.51). Rejection-sampling keeps it lossless.
-#   f16 K + f16 V     → REQUIRED. The draft reads K/V from the shared cache;
-#                       vtq3/ktq2 quantization corrupts draft attention → 0.5% accept.
-#                       This trades KV size for draft acceptance.
+# Tuning sweep (2026-06-10, RTX 2060, BST code prompt, 300 tok):
+#   q8_0/q8_0  draft-max 2 min 2 → 63% acc, 41.67 t/s  ← BEST (+13% vs 37 baseline)
+#   f16/f16    draft-max 2 min 1 → 58% acc, 39.70 t/s  (+7%)
+#   f16/f16    draft-max 3 min 2 → 44% acc, 35.06 t/s  (worse — more draft overhead)
+#   ktq2/vtq3  (any, +protect)   → 0.3% acc, 17.5 t/s  ← DEAD (2-3 bit KV too coarse
+#                                                         for the MTP draft attention;
+#                                                         tq-protect-layers does not
+#                                                         cover gemma-4 SWA global layers)
 #
-# Speedup is modest (+3% on code, ~0% on prose) because the 4-layer MTP draft
-# overhead is relatively expensive on a dense 12B target + RTX 2060. The point
-# is that MTP works correctly and losslessly; f16-vs-quantized-KV is the big lever.
+# Key settings:
+#   --draft-p-min 0.0 → REQUIRED. Default 0.75 drops every draft (MTP head conf 0.28-0.51).
+#   --draft-max 2     → sweet spot. 3/4 add draft overhead without enough extra acceptance.
+#   q8_0 KV           → best of both: 8-bit is precise enough for the draft AND saves VRAM
+#                       vs f16. KTQ/VTQ (2-3 bit) breaks the draft — separate code task to
+#                       give the draft its own f16 cache for shared layers (#176).
+#
+# Real +13% speedup on code (41.67 vs 37), modest on prose (acceptance drops with
+# less predictable text). Lossless (rejection-sampled).
 #
 # Run: bash deploy-gemma4-12b-mtp-draft.sh
 set -euo pipefail
@@ -36,7 +43,7 @@ exec "$LLAMA_BIN" \
     --model-draft "$DRAFT" \
     --spec-type draft-mtp \
     --draft-max 2 \
-    --draft-min 1 \
+    --draft-min 2 \
     --draft-p-min 0.0 \
     --host 0.0.0.0 --port 8791 \
     -ngl 99 \
@@ -45,8 +52,8 @@ exec "$LLAMA_BIN" \
     -b 2048 \
     --parallel 1 \
     -fa 1 \
-    --cache-type-k f16 \
-    --cache-type-v f16 \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
     --backend-sampling \
     --slot-save-path "$SLOTS" \
     --jinja \
