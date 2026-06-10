@@ -23,6 +23,7 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
                  uint32_t   n_seq_max,
                  uint32_t   n_ubatch,
                  uint32_t   n_pad,
+           llama_memory_t   mem_other,
                  uint32_t   tq_protect_layers,
                  uint32_t   tq_protect_sinks,
                      bool   tq_deferred_k,
@@ -31,6 +32,7 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
                      bool   tq_no_deferred_v,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse,
+    const  layer_share_cb & share,
     const std::vector<ggml_type> & type_v_layers) : hparams(model.hparams), unified(unified) {
 
     // chain filters
@@ -66,17 +68,27 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
 
     LLAMA_LOG_INFO("%s: creating non-SWA KV cache, size = %u cells\n", __func__, size_base);
 
+    llama_memory_t mem_other_base = nullptr;
+    if (mem_other) {
+        mem_other_base = static_cast<llama_kv_cache_iswa *>(mem_other)->get_base();
+    }
+
+    llama_memory_t mem_other_swa = nullptr;
+    if (mem_other) {
+        mem_other_swa = static_cast<llama_kv_cache_iswa *>(mem_other)->get_swa();
+    }
+
     kv_base = std::make_unique<llama_kv_cache>(
             model, type_k, type_v,
             v_trans, offload, unified, size_base, n_seq_max, n_pad,
-            0, LLAMA_SWA_TYPE_NONE, tq_protect_layers, tq_protect_sinks, tq_deferred_k, tq_deferred_v, tq_no_deferred_k, tq_no_deferred_v, filter_base, reuse, type_v_layers);
+            0, LLAMA_SWA_TYPE_NONE, mem_other_base, tq_protect_layers, tq_protect_sinks, tq_deferred_k, tq_deferred_v, tq_no_deferred_k, tq_no_deferred_v, filter_base, reuse, share, type_v_layers);
 
     LLAMA_LOG_INFO("%s: creating     SWA KV cache, size = %u cells\n", __func__, size_swa);
 
     kv_swa = std::make_unique<llama_kv_cache>(
             model, type_k, type_v,
             v_trans, offload, unified, size_swa, n_seq_max, n_pad,
-            hparams.n_swa, hparams.swa_type, tq_protect_layers, tq_protect_sinks, tq_deferred_k, tq_deferred_v, tq_no_deferred_k, tq_no_deferred_v, filter_swa, reuse, type_v_layers);
+            hparams.n_swa, hparams.swa_type, mem_other_swa, tq_protect_layers, tq_protect_sinks, tq_deferred_k, tq_deferred_v, tq_no_deferred_k, tq_no_deferred_v, filter_swa, reuse, share, type_v_layers);
 }
 
 void llama_kv_cache_iswa::clear(bool data) {

@@ -189,3 +189,4 @@ autoresearch/
 !docs/plans/2026-05-05-v6-roadmap.md
 !docs/plans/tq-vulkan-port/
 !docs/plans/tq-vulkan-port/**
+*.bundle
