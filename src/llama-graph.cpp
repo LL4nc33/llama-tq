@@ -2009,6 +2009,10 @@ ggml_tensor * llm_graph_context::build_inp_attn_scale() const {
 }
 
 ggml_tensor * llm_graph_context::build_inp_out_ids() const {
+    if (diffusion && diffusion->decoder_phase && n_outputs == n_tokens) {
+        return nullptr;
+    }
+
     // note: when all tokens are output, we could skip this optimization to spare the ggml_get_rows() calls,
     //       but this would make the graph topology depend on the number of output tokens, which can interfere with
     //       features that require constant topology such as pipeline parallelism
@@ -2077,6 +2081,39 @@ ggml_tensor * llm_graph_context::build_inp_cross_embd() const {
     res->add_input(std::move(inp));
 
     return cur;
+}
+
+ggml_tensor * llm_graph_context::build_inp_diffusion_self_cond(int64_t n_vocab) const {
+    auto inp = std::make_unique<llm_graph_input_diffusion_self_cond>(diffusion);
+
+    auto & cur = inp->probs;
+
+    cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_vocab, n_tokens);
+    ggml_set_input(cur);
+    set_diffusion_input_backend(cur);
+
+    res->add_input(std::move(inp));
+
+    return cur;
+}
+
+llm_graph_input_diffusion_self_cond_topk * llm_graph_context::build_inp_diffusion_self_cond_topk(int64_t k) const {
+    auto inp = std::make_unique<llm_graph_input_diffusion_self_cond_topk>(diffusion);
+
+    // ids are flat [k*n_tokens] (ggml_get_rows treats higher dims of the index tensor as batch
+    // dims that must match the data tensor; a flat index list gathers into [n_embd, k*n_tokens]).
+    inp->ids = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, k * n_tokens);
+    ggml_set_input(inp->ids);
+    set_diffusion_input_backend(inp->ids);
+
+    inp->probs = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, k, n_tokens);
+    ggml_set_input(inp->probs);
+    set_diffusion_input_backend(inp->probs);
+
+    auto * ptr = inp.get();
+    res->add_input(std::move(inp));
+
+    return ptr;
 }
 
 ggml_tensor * llm_graph_context::build_inp_pos_bucket_enc() const {
@@ -2286,6 +2323,21 @@ llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache() con
     }
 
     return (llm_graph_input_attn_no_cache *) res->add_input(std::move(inp));
+}
+
+llm_graph_input_attn_no_cache_prefix * llm_graph_context::build_attn_inp_no_cache_prefix(int64_t n_prompt) const {
+    auto inp = std::make_unique<llm_graph_input_attn_no_cache_prefix>(hparams, cparams, n_prompt);
+
+    inp->self_kq_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_tokens, n_tokens, 1, 1);
+    ggml_set_input(inp->self_kq_mask);
+    set_diffusion_input_backend(inp->self_kq_mask, 128);
+    inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask, GGML_TYPE_F16) : inp->self_kq_mask;
+
+    // sliding-window layers reuse the same prefix mask (valid while n_tokens <= sliding_window)
+    inp->self_kq_mask_swa     = inp->self_kq_mask;
+    inp->self_kq_mask_swa_cnv = inp->self_kq_mask_cnv;
+
+    return (llm_graph_input_attn_no_cache_prefix *) res->add_input(std::move(inp));
 }
 
 ggml_tensor * llm_graph_context::build_attn(
