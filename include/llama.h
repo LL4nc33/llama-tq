@@ -1045,6 +1045,89 @@ extern "C" {
     // If set to true, the model will only attend to the past tokens
     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
 
+    // Set diffusion self-conditioning: the previous denoising step's per-token probability
+    // distribution (softmax of the processed logits), as a [n_vocab * n_tokens] row-major
+    // float array. The decoder forms soft-embeddings (probs @ token_embd * embed_scale) and
+    // adds them to the input embeddings. Pass probs=NULL or n_tokens=0 to clear (-> zeros,
+    // i.e. the first denoising step). Used by diffusion_gemma.
+    LLAMA_API void llama_set_diffusion_self_cond(
+            struct llama_context * ctx,
+                     const float * probs,
+                         int64_t   n_vocab,
+                         int64_t   n_tokens);
+
+    // Diffusion prompt conditioning: set the length of the causal prompt prefix in the
+    // [prompt ; canvas] sequence. The prompt tokens attend causally among themselves; the
+    // canvas attends to everything. Pass 0 for unconditioned generation. Used by diffusion_gemma.
+    LLAMA_API void llama_set_diffusion_prompt_len(struct llama_context * ctx, int64_t n_prompt);
+
+    // Diffusion KV-cache reuse phase selector (block-diffusion, e.g. diffusion_gemma):
+    //   false = encoder phase: plain token embeddings, no self-conditioning; the decoded
+    //           tokens' KV is committed to the cache (prompt prefill / finalized-canvas
+    //           commit). Use with llama_set_causal_attn(ctx, true).
+    //   true  = decoder phase: self-conditioned canvas input that reads the cached prefix;
+    //           the caller rolls back the canvas KV (llama_memory_seq_rm) after reading the
+    //           logits. Use with llama_set_causal_attn(ctx, false).
+    LLAMA_API void llama_set_diffusion_decoder_phase(struct llama_context * ctx, bool decoder_phase);
+
+    // Sparse (top-k) self-conditioning for block diffusion: instead of the dense per-token probs
+    // (llama_set_diffusion_self_cond), feed only the top-k token ids + their probabilities per
+    // position. The graph then gathers just those k token embeddings and blends them, avoiding the
+    // full-vocab soft-embedding matmul and the [n_vocab x n_tokens] input. ids and probs are each
+    // [k * n_tokens] (token-major: position outer, k inner). Pass k=0 to clear.
+    LLAMA_API void llama_set_diffusion_self_cond_topk(
+            struct llama_context * ctx,
+                   const int32_t * ids,
+                     const float * probs,
+                         int64_t   k,
+                         int64_t   n_tokens);
+
+    struct llama_diffusion_sample_params {
+        int32_t  n_tokens;
+        int32_t  top_k;
+        int32_t  self_cond_top_k;
+        float    temperature;
+        uint32_t seed;
+        uint32_t step;
+        bool     top_k_tail_correction;
+    };
+
+    struct llama_diffusion_sample_result {
+        llama_token * sampled;
+        llama_token * argmax;
+        float       * entropy;
+        // Optional host outputs for self-conditioning. If both are null, the CUDA fast path writes
+        // sparse self-conditioning directly into the reused decoder graph input tensors.
+        int32_t     * self_cond_ids;
+        float       * self_cond_probs;
+        // Optional device-resident denoise update. When update_canvas_on_device is true, the CUDA
+        // fast path performs entropy accept/renoise and writes the next canvas into the reused
+        // decoder token input tensor. final_tokens is copied only when requested, typically on
+        // the final denoising step.
+        llama_token * final_tokens;
+        // Optional host stop flag for device-loop early stopping. When requested, CUDA computes
+        // the stable+confident condition on device and copies only this flag plus final_tokens.
+        int32_t     * stop;
+        float         entropy_bound;
+        float         confidence_threshold;
+        int32_t       stability_threshold;
+        bool          update_canvas_on_device;
+        bool          update_stop_state_on_device;
+        bool          check_stop_on_device;
+        bool          reset_stop_state;
+    };
+
+    // CUDA-only fast path for block-diffusion sampling. When enabled, llama_decode()
+    // keeps the dense diffusion logits on the backend and does not copy them to the
+    // host output buffer. Call llama_diffusion_sample_topk() after llama_decode() to
+    // sample the most recent logits tensor and retrieve compact row results.
+    LLAMA_API bool llama_diffusion_sample_topk_supported(struct llama_context * ctx);
+    LLAMA_API void llama_set_diffusion_gpu_sampling(struct llama_context * ctx, bool enabled);
+    LLAMA_API bool llama_diffusion_sample_topk(
+            struct llama_context * ctx,
+            const struct llama_diffusion_sample_params * params,
+            struct llama_diffusion_sample_result * result);
+
     // Set whether the model is in warmup mode or not
     // If true, all model tensors are activated during llama_decode() to load and cache their weights.
     LLAMA_API void llama_set_warmup(struct llama_context * ctx, bool warmup);
