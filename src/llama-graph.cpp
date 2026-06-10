@@ -13,6 +13,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <sstream>
@@ -397,6 +398,66 @@ void llm_graph_input_cross_embd::set_input(const llama_ubatch * ubatch) {
         assert(cross_embd->type == GGML_TYPE_F32);
 
         ggml_backend_tensor_set(cross_embd, cross->v_embd.data(), 0, ggml_nbytes(cross_embd));
+    }
+}
+
+void llm_graph_input_diffusion_self_cond::set_input(const llama_ubatch * ubatch) {
+    GGML_UNUSED(ubatch);
+
+    if (!probs) {
+        return;
+    }
+    assert(probs->type == GGML_TYPE_F32);
+
+    const size_t n_bytes = ggml_nbytes(probs);
+    if (diffusion && diffusion->probs.size() * sizeof(float) == n_bytes) {
+        ggml_backend_tensor_set(probs, diffusion->probs.data(), 0, n_bytes);
+    } else {
+        // no self-conditioning this step (e.g. first denoising step) -> zeros
+        std::vector<uint8_t> zeros(n_bytes, 0);
+        ggml_backend_tensor_set(probs, zeros.data(), 0, n_bytes);
+    }
+}
+
+void llm_graph_input_diffusion_self_cond_topk::set_input(const llama_ubatch * ubatch) {
+    GGML_UNUSED(ubatch);
+
+    if (!ids || !probs) {
+        return;
+    }
+    assert(ids->type   == GGML_TYPE_I32);
+    assert(probs->type == GGML_TYPE_F32);
+
+    const size_t n_id_bytes = ggml_nbytes(ids);
+    const size_t n_pr_bytes = ggml_nbytes(probs);
+
+    const bool have_device = diffusion
+        && diffusion->sc_topk > 0
+        && diffusion->sc_topk_device_ready
+        && diffusion->sc_topk_device_ids_data    == ids->data
+        && diffusion->sc_topk_device_probs_data  == probs->data
+        && diffusion->sc_topk_device_ids_bytes   == n_id_bytes
+        && diffusion->sc_topk_device_probs_bytes == n_pr_bytes;
+
+    if (have_device) {
+        return;
+    }
+
+    const bool have = diffusion
+        && diffusion->sc_topk > 0
+        && diffusion->sc_topk_ids.size()   * sizeof(int32_t) == n_id_bytes
+        && diffusion->sc_topk_probs.size() * sizeof(float)   == n_pr_bytes;
+
+    if (have) {
+        ggml_backend_tensor_set(ids,   diffusion->sc_topk_ids.data(),   0, n_id_bytes);
+        ggml_backend_tensor_set(probs, diffusion->sc_topk_probs.data(), 0, n_pr_bytes);
+    } else {
+        // no self-conditioning this step (e.g. first denoising step):
+        // ids -> 0 (any valid row), probs -> 0 so the gathered embeddings contribute nothing
+        std::vector<uint8_t> zeros_id(n_id_bytes, 0);
+        std::vector<uint8_t> zeros_pr(n_pr_bytes, 0);
+        ggml_backend_tensor_set(ids,   zeros_id.data(), 0, n_id_bytes);
+        ggml_backend_tensor_set(probs, zeros_pr.data(), 0, n_pr_bytes);
     }
 }
 
@@ -980,6 +1041,16 @@ llm_graph_input_i * llm_graph_result::add_input(llm_graph_input_ptr input) {
     return inputs.back().get();
 }
 
+llm_graph_input_diffusion_self_cond_topk * llm_graph_result::get_inp_diffusion_self_cond_topk() const {
+    for (auto & input : inputs) {
+        if (auto * topk = dynamic_cast<llm_graph_input_diffusion_self_cond_topk *>(input.get())) {
+            return topk;
+        }
+    }
+
+    return nullptr;
+}
+
 void llm_graph_result::set_params(const llm_graph_params & params) {
     this->params = params;
 }
@@ -1025,6 +1096,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     loras            (params.loras),
     mctx             (params.mctx),
     cross            (params.cross),
+    diffusion        (params.diffusion),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -1036,6 +1108,35 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
 void llm_graph_context::cb(ggml_tensor * cur, const char * name, int il) const {
     if (cb_func) {
         cb_func(ubatch, cur, name, il);
+    }
+}
+
+void llm_graph_context::set_diffusion_input_backend(ggml_tensor * tensor, uint32_t group) const {
+    if (!diffusion || !diffusion->decoder_phase || !sched || !tensor) {
+        return;
+    }
+
+    static const uint32_t enabled_groups = [] {
+        const char * env = getenv("DG_GPU_INPUT_GROUPS");
+        // Keep the default to inputs used by the fixed diffusion decoder graph:
+        // canvas/self-cond, positions, attention scale, KV indices, masks and
+        // rotary helpers. Mark them as outputs too, matching ggml-backend's
+        // existing copy-tensor convention, so the allocator will not overwrite
+        // them between denoising replays.
+        return env ? (uint32_t) strtoul(env, nullptr, 0) : 63u; // 1|2|4|8|16|32
+    }();
+    if ((enabled_groups & group) == 0) {
+        return;
+    }
+
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+        if (backend && backend != backend_cpu &&
+            ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            ggml_set_output(tensor);
+            ggml_backend_sched_set_tensor_backend(sched, tensor, backend);
+            break;
+        }
     }
 }
 
