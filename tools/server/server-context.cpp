@@ -13,6 +13,11 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include "ggml-cpp.h"
+
+// TODO: tmp until the mtmd draft processing is refactored [TAG_MTMD_DRAFT_PROCESSING]
+#include "../../src/llama-ext.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cinttypes>
@@ -719,6 +724,7 @@ private:
                 params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
                 params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
                 params_base.speculative.cparams_dft.ctx_type  = LLAMA_CONTEXT_TYPE_MTP;
+                params_base.speculative.cparams_dft.ctx_other = ctx;
 
                 llama_context * ctx_dft_raw = llama_init_from_model(model, params_base.speculative.cparams_dft);
                 if (ctx_dft_raw == nullptr) {
@@ -760,6 +766,12 @@ private:
                 params_base.speculative.model_dft = model_dft.get();
                 params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
                 params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
+
+                // PR #23398: Gemma4-assistant (MTP draft) shares the target's KV cache.
+                // The draft context must reference the target context via ctx_other so
+                // create_memory() can borrow the shared layers. Harmless for other draft
+                // archs (they ignore ctx_other).
+                params_base.speculative.cparams_dft.ctx_other = ctx;
 
                 llama_context * ctx_dft_raw = llama_init_from_model(model_dft.get(), params_base.speculative.cparams_dft);
                 if (ctx_dft_raw == nullptr) {

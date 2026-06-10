@@ -98,6 +98,18 @@ llama_context::llama_context(
 
     cparams.ctx_type          = params.ctx_type;
 
+    cparams.ctx_other = nullptr;
+
+    // TODO: more generic
+    if (model.arch == LLM_ARCH_GEMMA4_ASSISTANT) {
+        if (params.ctx_other == nullptr) {
+            // TODO: change from runtime_error to llama_exception to avoid printing error message
+            throw std::runtime_error("Gemma4Assistant requires ctx_other to be set (this is normal during memory fitting)");
+        }
+
+        cparams.ctx_other = params.ctx_other;
+    }
+
     // Initialize backend samplers here so they are part of the sampling graph
     // before the reserve passes run later in this function. This avoids a later
     // re-reserve when graph nodes change.
@@ -328,6 +340,7 @@ llama_context::llama_context(
             /*.tq_no_deferred_v    =*/ params.tq_no_deferred_v,
             /*.xquant_enabled      =*/ params.xquant_enabled,
             /*.ctx_type            =*/ cparams.ctx_type,
+            /*.mem_other           =*/ llama_get_memory(cparams.ctx_other),
         };
 
         memory.reset(model.create_memory(params_mem, cparams));
@@ -924,7 +937,7 @@ float * llama_context::get_embeddings_nextn() {
 float * llama_context::get_embeddings_nextn_ith(int32_t i) {
     output_reorder();
     if (embd_nextn.data == nullptr) return nullptr;
-    const uint32_t n_embd = model.hparams.n_embd;
+    const uint32_t n_embd = model.hparams.n_embd_out();
     if (!cparams.embeddings_nextn_masked) {
         if (i < 0 || (size_t)(i + 1) * n_embd > embd_nextn.size) return nullptr;
         return embd_nextn.data + (size_t) i * n_embd;
@@ -3402,6 +3415,7 @@ llama_context_params llama_context_default_params() {
         /*.kv_unified                  =*/ false,
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
+        /*.ctx_other                   =*/ nullptr,
     };
 
     return result;
@@ -3598,6 +3612,9 @@ uint32_t llama_n_rs_seq(const llama_context * ctx) {
 }
 
 const llama_model * llama_get_model(const llama_context * ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
     return &ctx->get_model();
 }
 
@@ -3826,6 +3843,9 @@ int32_t llama_set_adapter_cvec(
 //
 
 llama_memory_t llama_get_memory(const struct llama_context * ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
     return ctx->get_memory();
 }
 
@@ -4301,4 +4321,11 @@ void llama_opt_epoch(
         idata_split,
         callback_train,
         callback_eval);
+}
+
+llama_context * llama_get_ctx_other(struct llama_context * ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
+    return ctx->get_cparams().ctx_other;
 }

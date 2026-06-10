@@ -15,7 +15,7 @@ This file tracks what works, what's in flight, and what's on the wishlist. Maint
 
 ## 🚧 In flight
 
-- **MTP (Multi-Token Prediction).** Upstream change has landed; integration into TurboQuant FA dispatch is pending non-trivial merge resolution (large conflict surface).
+- **MTP (Multi-Token Prediction).** gemma4-assistant MTP draft fully ported from upstream PR #23398 (`feature/gemma4-mtp-23398`, 31 commits, 4 crash fixes). Gemma-4-12B + assistant Q8 draft gives **+13 % lossless** on code (q8_0 KV, draft-max 2, draft-p-min 0). Findings: MTP-draft only pays off with a *separate cheap draft head* + expensive target — gemma-4 is the only one of the daily models that ships one; Qwen self-MTP (2× full-model load) and Ministral (no MTP, 3B-draft too costly) regress on this hardware. KTQ/VTQ on the shared draft cache kills acceptance (vtq3-V → 0.3 %); q8_0 is the working KV because gemma-4's SWA keeps the cache tiny regardless. Merge-ready for gemma-4; Qwen ngram-spec prod path unaffected.
 - **Vulkan backend.** KTQ/VTQ kernel port lives on branches `tq-vulkan-port-cpp` (origin) and `tq-vulkan-port-tests` (gitea). PP parity reached; TG -23 % gap remaining (upstream IQ-decode shader path).
 - **MMQ + GLU fusion experiment.** Tracked on gitea branch `feature/mmq-glu-fusion`.
 - **MMA-inline KTQ/VTQ.** Tensor-core path WIP on `feature/ktq-vtq-mma-inline`.

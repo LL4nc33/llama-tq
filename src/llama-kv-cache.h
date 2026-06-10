@@ -112,6 +112,7 @@ public:
                      uint32_t   n_pad,
                      uint32_t   n_swa,
                llama_swa_type   swa_type,
+               llama_memory_t   mem_other,
                      uint32_t   tq_protect_layers,
                      uint32_t   tq_protect_sinks,
                          bool   tq_deferred_k,
@@ -120,6 +121,7 @@ public:
                          bool   tq_no_deferred_v,
         const layer_filter_cb & filter,
         const  layer_reuse_cb & reuse,
+        const  layer_share_cb & share,
         const std::vector<ggml_type> & type_v_layers = {},
                          bool   xquant_enabled = false);
 
@@ -330,6 +332,9 @@ private:
     // the current index from where we start searching for a free slot in the ring buffer of KV cells (see find_slot())
     // note: this is not part of the KV state and it's only used to speed-up the find_slot() method
     std::vector<uint32_t> v_heads;
+
+    // TODO: temporary until we refactor to be able to share the same cells between 2 kv caches [TAG_KV_CACHE_SHARE_CELLS]
+    llama_kv_cache * other = nullptr;
 
     std::vector<llama_kv_cells> v_cells;
 
