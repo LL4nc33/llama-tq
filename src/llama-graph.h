@@ -74,6 +74,47 @@ struct llama_cross {
     std::vector<std::set<llama_seq_id>> seq_ids_enc;
 };
 
+// diffusion self-conditioning: the previous denoising step's per-token probability
+// distribution (softmax of the processed logits). The decoder turns this into
+// soft-embeddings (probs @ token_embd * embed_scale) that are added to the input
+// embeddings. Set per-decode via llama_set_diffusion_self_cond(); empty -> zeros.
+struct llama_diffusion_cond {
+    int64_t n_vocab  = 0;
+    int64_t n_tokens = 0;
+    int64_t n_prompt = 0;     // length of the (causal) prompt prefix; 0 = unconditioned
+    std::vector<float> probs; // [n_vocab * n_tokens], row-major per token (dense self-cond path)
+
+    // Sparse (top-k) self-conditioning: the previous step's top-k token ids + probabilities per
+    // position. When sc_topk > 0 the graph gathers only these k embedding rows and blends them,
+    // instead of the full-vocab `probs @ token_embd` matmul. ids/probs are [sc_topk * n_tokens]
+    // (token-major: positions outer, k inner). Set via llama_set_diffusion_self_cond_topk().
+    int64_t sc_topk = 0;
+    std::vector<int32_t> sc_topk_ids;
+    std::vector<float>   sc_topk_probs;
+    bool     sc_topk_device_ready      = false;
+    void   * sc_topk_device_ids_data   = nullptr;
+    void   * sc_topk_device_probs_data = nullptr;
+    size_t   sc_topk_device_ids_bytes  = 0;
+    size_t   sc_topk_device_probs_bytes = 0;
+
+    bool     canvas_tokens_device_ready = false;
+    void   * canvas_tokens_device_data  = nullptr;
+    size_t   canvas_tokens_device_bytes = 0;
+
+    // KV-cache reuse phase selector (block-diffusion):
+    //   false (encoder phase) = plain token embeddings, no self-conditioning; KV is
+    //          committed to the cache (prompt prefill / finalized-canvas commit).
+    //   true  (decoder phase) = self-conditioned canvas input that reads the cached
+    //          prefix read-only; its own KV is written then rolled back by the caller.
+    // Causality is controlled separately via llama_set_causal_attn (encoder: causal,
+    // decoder: bidirectional).
+    //
+    // Defaults to true (decoder) so the init-time graph reserve builds the worst-case
+    // superset graph (the decoder adds the self-conditioning input + block on top of the
+    // encoder graph). The caller sets the actual phase before every decode.
+    bool decoder_phase = true;
+};
+
 struct llm_graph_params;
 
 //
@@ -108,7 +149,8 @@ using llm_graph_input_ptr = std::unique_ptr<llm_graph_input_i>;
 
 class llm_graph_input_embd : public llm_graph_input_i {
 public:
-    llm_graph_input_embd(int64_t n_embd) : n_embd(n_embd) {}
+    llm_graph_input_embd(int64_t n_embd, const llama_diffusion_cond * diffusion = nullptr) :
+        diffusion(diffusion), n_embd(n_embd) {}
     virtual ~llm_graph_input_embd() = default;
 
     void set_input(const llama_ubatch * ubatch) override;
@@ -117,6 +159,8 @@ public:
 
     ggml_tensor * tokens = nullptr; // I32 [n_batch]
     ggml_tensor * embd   = nullptr; // F32 [n_embd, n_batch]
+
+    const llama_diffusion_cond * diffusion = nullptr;
 
     const int64_t n_embd = 0;
 };
@@ -285,6 +329,35 @@ public:
     const llama_cross * cross;
 };
 
+// diffusion self-conditioning probabilities input (see struct llama_diffusion_cond)
+class llm_graph_input_diffusion_self_cond : public llm_graph_input_i {
+public:
+    llm_graph_input_diffusion_self_cond(const llama_diffusion_cond * diffusion) : diffusion(diffusion) {}
+    virtual ~llm_graph_input_diffusion_self_cond() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * probs; // F32 [n_vocab, n_tokens]
+
+    const llama_diffusion_cond * diffusion;
+};
+
+// sparse (top-k) diffusion self-conditioning input: top-k token ids + probabilities per position.
+// Feeds [k, n_tokens] ids (I32) and probs (F32) so the graph gathers only k embedding rows per
+// position instead of the dense full-vocab probs (see struct llama_diffusion_cond, sc_topk).
+class llm_graph_input_diffusion_self_cond_topk : public llm_graph_input_i {
+public:
+    llm_graph_input_diffusion_self_cond_topk(const llama_diffusion_cond * diffusion) : diffusion(diffusion) {}
+    virtual ~llm_graph_input_diffusion_self_cond_topk() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * ids;   // I32 [k*n_tokens] (flat; gathered into [n_embd, k*n_tokens])
+    ggml_tensor * probs; // F32 [k, n_tokens]
+
+    const llama_diffusion_cond * diffusion;
+};
+
 class llm_graph_input_attn_no_cache : public llm_graph_input_i {
 public:
     llm_graph_input_attn_no_cache(const llama_hparams & hparams, const llama_cparams & cparams) :
@@ -306,6 +379,24 @@ public:
 
     const llama_hparams hparams;
     const llama_cparams cparams;
+};
+
+// prefix attention mask (no KV cache), used by block-diffusion models over a
+// [prompt(0..n_prompt-1) ; canvas(n_prompt..n_tokens-1)] sequence:
+//   - prompt queries attend causally to the prompt only (no canvas)
+//   - canvas queries attend to all positions (bidirectional + cross to prompt)
+// Valid while n_tokens <= sliding_window (sliding == full); the swa mask reuses the
+// same prefix mask. n_prompt = 0 reduces to a fully-bidirectional mask.
+class llm_graph_input_attn_no_cache_prefix : public llm_graph_input_attn_no_cache {
+public:
+    llm_graph_input_attn_no_cache_prefix(const llama_hparams & hparams, const llama_cparams & cparams, int64_t n_prompt) :
+        llm_graph_input_attn_no_cache(hparams, cparams), n_prompt(n_prompt) {
+    }
+    ~llm_graph_input_attn_no_cache_prefix() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    const int64_t n_prompt;
 };
 
 class llm_graph_input_attn_kv : public llm_graph_input_i {
@@ -570,6 +661,7 @@ struct llm_graph_params {
     const llama_adapter_loras    * loras;
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
+    const llama_diffusion_cond   * diffusion;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -674,6 +766,7 @@ public:
     // PR #23398: Gemma4 MTP post-output-norm hidden-state slot (LM-head input feature).
     // Distinct from t_h_pre_norm; populated by gemma4 graph builder.
     ggml_tensor * get_h_nextn()     const { return t_h_nextn ? t_h_nextn : t_h_pre_norm; }
+    llm_graph_input_diffusion_self_cond_topk * get_inp_diffusion_self_cond_topk() const;
     ggml_tensor * get_h_eagle3_low()  const { return t_h_eagle3_low; }
     ggml_tensor * get_h_eagle3_mid()  const { return t_h_eagle3_mid; }
     ggml_tensor * get_h_eagle3_high() const { return t_h_eagle3_high; }
@@ -805,6 +898,7 @@ struct llm_graph_context {
     const llama_adapter_loras    * loras;
     const llama_memory_context_i * mctx;
     const llama_cross            * cross;
+    const llama_diffusion_cond   * diffusion;
 
     std::map<llama_seq_id, llama_sampler *> samplers;
 
@@ -819,6 +913,7 @@ struct llm_graph_context {
     virtual ~llm_graph_context() = default;
 
     void cb(ggml_tensor * cur, const char * name, int il) const;
+    void set_diffusion_input_backend(ggml_tensor * tensor, uint32_t group = 1) const;
 
     //
     // common
@@ -925,6 +1020,9 @@ struct llm_graph_context {
     //
 
     ggml_tensor * build_inp_embd(ggml_tensor * tok_embd) const;
+    ggml_tensor * build_inp_diffusion_self_cond(int64_t n_vocab) const; // F32 [n_vocab, n_tokens]
+    // sparse self-cond: returns the input object exposing ->ids (I32 [k,n_tokens]) and ->probs (F32 [k,n_tokens])
+    llm_graph_input_diffusion_self_cond_topk * build_inp_diffusion_self_cond_topk(int64_t k) const;
     ggml_tensor * build_inp_pos() const;
     ggml_tensor * build_inp_attn_scale() const;
     ggml_tensor * build_inp_out_ids() const;
@@ -953,6 +1051,7 @@ struct llm_graph_context {
             ggml_tensor * sibling_k = nullptr) const;  // XQuant Phase 3b: dominant layer K for paired dispatch
 
     llm_graph_input_attn_no_cache * build_attn_inp_no_cache() const;
+    llm_graph_input_attn_no_cache_prefix * build_attn_inp_no_cache_prefix(int64_t n_prompt) const;
 
     ggml_tensor * build_attn(
             llm_graph_input_attn_no_cache * inp,
