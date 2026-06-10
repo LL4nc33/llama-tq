@@ -671,6 +671,9 @@ public:
     ggml_tensor * get_embd()        const { return t_embd; }
     ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
     ggml_tensor * get_h_pre_norm()  const { return t_h_pre_norm; }
+    // PR #23398: Gemma4 MTP post-output-norm hidden-state slot (LM-head input feature).
+    // Distinct from t_h_pre_norm; populated by gemma4 graph builder.
+    ggml_tensor * get_h_nextn()     const { return t_h_nextn ? t_h_nextn : t_h_pre_norm; }
     ggml_tensor * get_h_eagle3_low()  const { return t_h_eagle3_low; }
     ggml_tensor * get_h_eagle3_mid()  const { return t_h_eagle3_mid; }
     ggml_tensor * get_h_eagle3_high() const { return t_h_eagle3_high; }
@@ -703,6 +706,11 @@ public:
     ggml_tensor * t_embd        = nullptr;
     ggml_tensor * t_embd_pooled = nullptr;
     ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state before final output norm
+
+    // PR #23398: Gemma4 MTP post-output-norm hidden-state (LM-head input feature),
+    // distinct from t_h_pre_norm. Populated by gemma4 graph builder; falls back to
+    // t_h_pre_norm via get_h_nextn() when null (other models keep Eagle3 behavior).
+    ggml_tensor * t_h_nextn     = nullptr;
 
     // Eagle3-style draft-head taps. Populated by base-model graph builders when
     // hparams.has_eagle3() is true. Each is [n_embd, n_outputs] residual-stream
@@ -761,6 +769,7 @@ struct llm_graph_context {
 
     const int64_t n_embd;
     const int64_t n_layer;
+    const int64_t n_layer_nextn;
     const int64_t n_rot;
     const int64_t n_ctx;       // user-specified context size (can be different from n_ctx_train)
     const int64_t n_head;

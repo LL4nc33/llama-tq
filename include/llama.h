@@ -406,6 +406,10 @@ extern "C" {
         // note: the samplers must be sampler chains (i.e. use llama_sampler_chain_init)
         struct llama_sampler_seq_config * samplers;
         size_t                            n_samplers;
+
+        // a source/target/parent context
+        // can be utilized in various ways, for example by sharing results or llama_memory between 2 contexts
+        struct llama_context * ctx_other;
     };
 
     struct llama_model_tensor_override {
@@ -588,6 +592,7 @@ extern "C" {
 
     LLAMA_API const struct llama_model * llama_get_model   (const struct llama_context * ctx);
     LLAMA_API           llama_memory_t   llama_get_memory  (const struct llama_context * ctx);
+    LLAMA_API     struct llama_context * llama_get_ctx_other(struct llama_context * ctx);
     LLAMA_API  enum llama_pooling_type   llama_pooling_type(const struct llama_context * ctx); // TODO: rename to llama_get_pooling_type
 
     LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
