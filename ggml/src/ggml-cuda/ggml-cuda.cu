@@ -22,6 +22,7 @@
 #include "ggml-cuda/cumsum.cuh"
 #include "ggml-cuda/diagmask.cuh"
 #include "ggml-cuda/diag.cuh"
+#include "ggml-cuda/diffusion-sampling.cuh"
 #include "ggml-cuda/fattn.cuh"
 #include "ggml-cuda/getrows.cuh"
 #include "ggml-cuda/im2col.cuh"
@@ -5447,6 +5448,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    if (strcmp(name, "ggml_backend_cuda_diffusion_sample_topk") == 0) {
+        return (void *)ggml_cuda_diffusion_sample_topk;
     }
     if (strcmp(name, "ggml_cuda_pin_host_range") == 0) {
         return (void *)ggml_cuda_pin_host_range;
