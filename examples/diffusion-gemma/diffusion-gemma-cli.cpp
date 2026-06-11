@@ -22,13 +22,21 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+// imatrix activation collector (Stats / IMatrixCollector / g_collector / ik_collect_imatrix).
+// Used only when DG_DUMP_IMATRIX is set, to gather an importance matrix from the real denoise
+// (decoder) forward passes instead of the causal encoder prefill.
+#include "imatrix-collector.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <numeric>
 #include <random>
+#include <sstream>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -64,57 +72,33 @@ static std::string format_chat(llama_model * model, const std::string & prompt) 
     return common_chat_templates_apply(tmpls.get(), inputs).prompt;
 }
 
-int main(int argc, char ** argv) {
-    common_params params;
-    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_DIFFUSION)) {
-        return 1;
-    }
-    common_init();
+// per-run diffusion config (parsed once in main(), shared by every prompt of an imatrix run).
+struct dg_config {
+    int   canvas_length;
+    int   n_steps;
+    int   max_canvases;
+    float entropy_bound;
+    int   topk_fixed;
+    int   topk_start;
+    int   topk_end;
+    int   topk_tail;
+    bool  collect_imatrix; // DG_DUMP_IMATRIX set: bracket the denoise decode with g_collector
+};
 
-    // diffusion config (env-overridable for quick CPU testing)
-    // canvas_length is fixed at the trained block size (256); overriding it is for experiments only.
-    const int   canvas_length = env_int("DG_CANVAS", DEF_CANVAS_LENGTH);
-    const int   n_steps       = env_int("DG_STEPS", DEF_MAX_DENOISE_STEPS);
-    // number of autoregressive canvas blocks = ceil(-n / canvas_length), i.e. -n is the total
-    // number of tokens to generate (e.g. -n 256 -> 1 canvas, -n 512 -> 2, -n 1024 -> 4). The
-    // model may stop earlier on an EOG token. DG_MAX_CANVASES overrides; default (no -n) is 1.
-    const int   blocks_from_n = params.n_predict > 0 ? (params.n_predict + canvas_length - 1) / canvas_length : 1;
-    const int   max_canvases  = std::max(env_int("DG_MAX_CANVASES", blocks_from_n), 1); // autoregressive blocks
-    const float entropy_bound = ENTROPY_BOUND;
-
-    // top-k host sampling (CLI flags; default = full softmax over the whole vocab):
-    //   --top-k k                 : top-k logits per position for softmax/sample/self-cond (0 = full).
-    //   --top-k-start/--top-k-end : anneal k from START (first/high-entropy step) to END (last step).
-    //   --top-k-tail-correction   : exact full-vocab entropy (logsumexp) for the accept/stop signal,
-    //                               instead of the under-estimating top-k entropy.
-    // --top-k uses its own "0 = disabled" convention and is applied only when explicitly passed.
-    const int topk_fixed = (params.sampling.user_sampling_config & common_params_sampling_config::COMMON_PARAMS_SAMPLING_CONFIG_TOP_K)
-                         ? params.sampling.top_k
-                         : 0;
-    const int topk_start = params.diffusion.top_k_start;
-    const int topk_end   = params.diffusion.top_k_end;
-    const int topk_tail  = params.diffusion.top_k_tail_correction ? 1 : 0;
-
-    llama_backend_init();
-
-    llama_model_params model_params = llama_model_default_params();
-    // Offload all layers to the GPU by default (when built with a GPU backend, e.g.
-    // -DGGML_CUDA=ON). Pass -ngl N to limit offload, or -ngl 0 to force CPU. With a
-    // CPU-only build this has no effect. (params.n_gpu_layers defaults to -1 = auto.)
-    model_params.n_gpu_layers = params.n_gpu_layers >= 0 ? params.n_gpu_layers : 999;
-    model_params.devices      = params.devices.data();
-    model_params.use_mmap     = params.use_mmap;
-
-    llama_model * model = llama_model_load_from_file(params.model.path.c_str(), model_params);
-    if (!model) {
-        LOG_ERR("error: failed to load model '%s'\n", params.model.path.c_str());
-        return 1;
-    }
-    if (!llama_model_is_diffusion(model)) {
-        LOG_ERR("error: not a diffusion model\n");
-        llama_model_free(model);
-        return 1;
-    }
+// Run one prompt end-to-end: prefill the prefix, denoise the canvas block(s), print the answer.
+// The caller owns `model` (shared across prompts) and frees it; this frees only the per-prompt
+// context + batch. Returns 0 on success, 1 on error. When cfg.collect_imatrix is set, the denoise
+// (decoder) forward passes feed g_collector; the encoder prefill and canvas-commit decodes do not.
+static int run_one_prompt(llama_model * model, const common_params & params, const dg_config & cfg,
+                          const std::string & prompt_text) {
+    const int   canvas_length = cfg.canvas_length;
+    const int   n_steps       = cfg.n_steps;
+    const int   max_canvases  = cfg.max_canvases;
+    const float entropy_bound = cfg.entropy_bound;
+    const int   topk_fixed    = cfg.topk_fixed;
+    const int   topk_start    = cfg.topk_start;
+    const int   topk_end      = cfg.topk_end;
+    const int   topk_tail     = cfg.topk_tail;
 
     const llama_vocab * vocab   = llama_model_get_vocab(model);
     const int           n_vocab = llama_vocab_n_tokens(vocab);
@@ -137,8 +121,7 @@ int main(int argc, char ** argv) {
         mctx_vision.reset(mtmd_init_from_file(params.mmproj.path.c_str(), model, mparams));
         if (!mctx_vision) {
             LOG_ERR("error: failed to load mmproj '%s'\n", params.mmproj.path.c_str());
-            llama_model_free(model);
-            return 1;
+            return 1; // caller owns + frees the shared model
         }
 
         // load image(s) and build one media marker per image
@@ -149,8 +132,7 @@ int main(int argc, char ** argv) {
             mtmd::bitmap bmp(mtmd_helper_bitmap_init_from_file(mctx_vision.get(), img.c_str()));
             if (!bmp.ptr) {
                 LOG_ERR("error: failed to load image '%s'\n", img.c_str());
-                llama_model_free(model);
-                return 1;
+                return 1; // caller owns + frees the shared model
             }
             bitmaps.entries.push_back(std::move(bmp));
             markers += mtmd_default_marker();
@@ -158,7 +140,7 @@ int main(int argc, char ** argv) {
         }
 
         // chat-format with the image marker(s) prepended to the user content
-        const std::string formatted = format_chat(model, markers + params.prompt);
+        const std::string formatted = format_chat(model, markers + prompt_text);
         LOG_INF("formatted prompt: %s\n", formatted.c_str());
 
         mtmd_input_text text;
@@ -168,14 +150,13 @@ int main(int argc, char ** argv) {
         auto bmp_c = bitmaps.c_ptr();
         if (mtmd_tokenize(mctx_vision.get(), mm_chunks.ptr.get(), &text, bmp_c.data(), bmp_c.size()) != 0) {
             LOG_ERR("error: mtmd_tokenize failed\n");
-            llama_model_free(model);
-            return 1;
+            return 1; // caller owns + frees the shared model
         }
         prefix_len = (int) mtmd_helper_get_n_pos(mm_chunks.ptr.get());
     } else {
         // text-only: chat-format and tokenize (turn/channel special tokens)
-        if (!params.prompt.empty()) {
-            const std::string formatted = format_chat(model, params.prompt);
+        if (!prompt_text.empty()) {
+            const std::string formatted = format_chat(model, prompt_text);
             LOG_INF("formatted prompt: %s\n", formatted.c_str());
             prompt_tokens = common_tokenize(vocab, formatted, /*add_special*/ false, /*parse_special*/ true);
         }
@@ -200,12 +181,18 @@ int main(int argc, char ** argv) {
     ctx_params.type_k      = params.cache_type_k;
     ctx_params.type_v      = params.cache_type_v;
     ctx_params.flash_attn_type = params.flash_attn_type;
+    // Register the imatrix activation collector when dumping a decoder-path imatrix. The collector
+    // stays gated (m_enabled=false) and is only enabled around the denoise decode below, so the
+    // encoder prefill / canvas-commit decodes don't contribute. No-op when collect_imatrix is off.
+    if (cfg.collect_imatrix) {
+        ctx_params.cb_eval           = ik_collect_imatrix;
+        ctx_params.cb_eval_user_data = nullptr;
+    }
 
     llama_context * ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {
         LOG_ERR("error: failed to create context\n");
-        llama_model_free(model);
-        return 1;
+        return 1; // caller owns + frees the shared model
     }
     llama_set_n_threads(ctx, params.cpuparams.n_threads, params.cpuparams_batch.n_threads);
     llama_set_diffusion_prompt_len(ctx, prefix_len);
@@ -263,8 +250,7 @@ int main(int argc, char ** argv) {
             LOG_ERR("error: multimodal prefill failed\n");
             llama_batch_free(batch);
             llama_free(ctx);
-            llama_model_free(model);
-            return 1;
+            return 1; // caller owns + frees the shared model
         }
         n_past = (int) new_n_past; // prompt + image K/V is now the committed read-only prefix
     } else if (prefix_len > 0) {
@@ -281,8 +267,7 @@ int main(int argc, char ** argv) {
             LOG_ERR("error: prompt prefill (encoder) decode failed\n");
             llama_batch_free(batch);
             llama_free(ctx);
-            llama_model_free(model);
-            return 1;
+            return 1; // caller owns + frees the shared model
         }
         n_past = prefix_len; // prompt K/V is now the committed read-only prefix
     }
@@ -352,7 +337,17 @@ int main(int argc, char ** argv) {
             batch.logits[j]    = 1;
         }
         const auto t_decode_start = std::chrono::steady_clock::now();
-        if (llama_decode(ctx, batch) != 0) {
+        // collect imatrix activations from THIS (decoder/denoise) forward pass only. Bracketing the
+        // decode keeps the collector off for the encoder prefill and the canvas-commit decodes, so
+        // the imatrix reflects exactly the non-causal, self-conditioned denoise path.
+        if (cfg.collect_imatrix) {
+            g_collector.enable();
+        }
+        const int decode_rc = llama_decode(ctx, batch);
+        if (cfg.collect_imatrix) {
+            g_collector.disable();
+        }
+        if (decode_rc != 0) {
             LOG_ERR("error: llama_decode failed at step %d\n", cur_step);
             break;
         }
@@ -731,9 +726,7 @@ int main(int argc, char ** argv) {
 
     if (failed) {
         llama_free(ctx);
-        llama_model_free(model);
-        llama_backend_free();
-        return 1;
+        return 1; // caller owns + frees the shared model and the backend
     }
 
     // the full denoised canvas (thought channel + response), for reference
@@ -785,7 +778,157 @@ int main(int argc, char ** argv) {
     }
 
     llama_free(ctx);
+    return 0; // caller owns + frees the shared model and the backend
+}
+
+// split a prompt file into one prompt per non-empty line (trailing CR/whitespace trimmed). Used in
+// imatrix-collection mode so a single run denoises many diverse prompts, accumulating the imatrix.
+static std::vector<std::string> split_prompts_by_line(const std::string & text) {
+    std::vector<std::string> prompts;
+    std::istringstream ss(text);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        const size_t a = line.find_first_not_of(" \t");
+        if (a == std::string::npos) {
+            continue; // blank line
+        }
+        const size_t b = line.find_last_not_of(" \t");
+        prompts.push_back(line.substr(a, b - a + 1));
+    }
+    return prompts;
+}
+
+int main(int argc, char ** argv) {
+    common_params params;
+    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_DIFFUSION)) {
+        return 1;
+    }
+    common_init();
+
+    // diffusion config (env-overridable for quick CPU testing)
+    // canvas_length is fixed at the trained block size (256); overriding it is for experiments only.
+    const int   canvas_length = env_int("DG_CANVAS", DEF_CANVAS_LENGTH);
+    const int   n_steps       = env_int("DG_STEPS", DEF_MAX_DENOISE_STEPS);
+    // number of autoregressive canvas blocks = ceil(-n / canvas_length), i.e. -n is the total
+    // number of tokens to generate (e.g. -n 256 -> 1 canvas, -n 512 -> 2, -n 1024 -> 4). The
+    // model may stop earlier on an EOG token. DG_MAX_CANVASES overrides; default (no -n) is 1.
+    const int   blocks_from_n = params.n_predict > 0 ? (params.n_predict + canvas_length - 1) / canvas_length : 1;
+    const int   max_canvases  = std::max(env_int("DG_MAX_CANVASES", blocks_from_n), 1); // autoregressive blocks
+    const float entropy_bound = ENTROPY_BOUND;
+
+    // top-k host sampling (CLI flags; default = full softmax over the whole vocab):
+    //   --top-k k                 : top-k logits per position for softmax/sample/self-cond (0 = full).
+    //   --top-k-start/--top-k-end : anneal k from START (first/high-entropy step) to END (last step).
+    //   --top-k-tail-correction   : exact full-vocab entropy (logsumexp) for the accept/stop signal,
+    //                               instead of the under-estimating top-k entropy.
+    // --top-k uses its own "0 = disabled" convention and is applied only when explicitly passed.
+    const int topk_fixed = (params.sampling.user_sampling_config & common_params_sampling_config::COMMON_PARAMS_SAMPLING_CONFIG_TOP_K)
+                         ? params.sampling.top_k
+                         : 0;
+    const int topk_start = params.diffusion.top_k_start;
+    const int topk_end   = params.diffusion.top_k_end;
+    const int topk_tail  = params.diffusion.top_k_tail_correction ? 1 : 0;
+
+    // DG_DUMP_IMATRIX=<path>: collect an importance matrix from the real denoise (decoder) forward
+    // passes and write it to <path> at the end. Unset (default) => no eval callback, no overhead,
+    // behaviour identical to before. Prefer .gguf (else pass --output-format dat for legacy .dat).
+    const char * imatrix_path = getenv("DG_DUMP_IMATRIX");
+    const bool   collect_imatrix = imatrix_path != nullptr && imatrix_path[0] != '\0';
+
+    llama_backend_init();
+
+    llama_model_params model_params = llama_model_default_params();
+    // Offload all layers to the GPU by default (when built with a GPU backend, e.g.
+    // -DGGML_CUDA=ON). Pass -ngl N to limit offload, or -ngl 0 to force CPU. With a
+    // CPU-only build this has no effect. (params.n_gpu_layers defaults to -1 = auto.)
+    model_params.n_gpu_layers = params.n_gpu_layers >= 0 ? params.n_gpu_layers : 999;
+    model_params.devices      = params.devices.data();
+    model_params.use_mmap     = params.use_mmap;
+
+    llama_model * model = llama_model_load_from_file(params.model.path.c_str(), model_params);
+    if (!model) {
+        LOG_ERR("error: failed to load model '%s'\n", params.model.path.c_str());
+        llama_backend_free();
+        return 1;
+    }
+    if (!llama_model_is_diffusion(model)) {
+        LOG_ERR("error: not a diffusion model\n");
+        llama_model_free(model);
+        llama_backend_free();
+        return 1;
+    }
+
+    const dg_config cfg = {
+        /* .canvas_length   = */ canvas_length,
+        /* .n_steps         = */ n_steps,
+        /* .max_canvases    = */ max_canvases,
+        /* .entropy_bound   = */ entropy_bound,
+        /* .topk_fixed      = */ topk_fixed,
+        /* .topk_start      = */ topk_start,
+        /* .topk_end        = */ topk_end,
+        /* .topk_tail       = */ topk_tail,
+        /* .collect_imatrix = */ collect_imatrix,
+    };
+
+    // Build the list of prompts to run. Normal use = the single --prompt / -p (or -f file content).
+    // In imatrix mode with a -f prompt file, each non-empty line is a separate prompt (a separate
+    // denoise loop); the imatrix accumulates across all of them for a more representative matrix.
+    std::vector<std::string> prompts;
+    if (collect_imatrix && !params.prompt_file.empty()) {
+        prompts = split_prompts_by_line(params.prompt);
+        if (prompts.empty()) {
+            LOG_ERR("error: DG_DUMP_IMATRIX set but prompt file '%s' has no prompts\n", params.prompt_file.c_str());
+            llama_model_free(model);
+            llama_backend_free();
+            return 1;
+        }
+        LOG_INF("diffusion-gemma: imatrix collection over %zu prompt(s) from '%s' -> %s\n",
+                prompts.size(), params.prompt_file.c_str(), imatrix_path);
+    } else {
+        prompts.push_back(params.prompt);
+        if (collect_imatrix) {
+            LOG_INF("diffusion-gemma: imatrix collection over 1 prompt -> %s\n", imatrix_path);
+            LOG_INF("diffusion-gemma: for more coverage pass a -f prompt file (one prompt per line) "
+                    "or re-run with --in-file %s to merge across runs\n", imatrix_path);
+        }
+    }
+
+    // set up the imatrix collector before any context is created: register the backend eval
+    // callback (so it fires on the denoise decodes) and point save_imatrix() at the output path.
+    // The collector starts DISABLED; run_one_prompt enables it only around the denoise decode.
+    if (collect_imatrix) {
+        common_params imat_params = params;
+        imat_params.out_file   = imatrix_path;
+        // chunk accounting uses n_ctx / n_parallel; the canvas denoise decodes a single
+        // canvas_length ubatch per step, so model these as one "sequence" of canvas_length tokens.
+        imat_params.n_parallel = 1;
+        imat_params.n_ctx      = canvas_length;
+        g_collector.set_params(imat_params);
+        params.cb_eval           = ik_collect_imatrix;
+        params.cb_eval_user_data = nullptr;
+    }
+
+    int rc = 0;
+    for (size_t i = 0; i < prompts.size(); ++i) {
+        if (prompts.size() > 1) {
+            LOG_INF("\n=== prompt %zu/%zu ===\n", i + 1, prompts.size());
+        }
+        if (run_one_prompt(model, params, cfg, prompts[i]) != 0) {
+            rc = 1;
+            break; // still write whatever imatrix data was collected so far (below)
+        }
+    }
+
+    // write the accumulated decoder-path imatrix (gguf or legacy dat per --output-format).
+    if (collect_imatrix) {
+        LOG_INF("diffusion-gemma: saving denoise-path imatrix to '%s'\n", imatrix_path);
+        g_collector.save_imatrix();
+    }
+
     llama_model_free(model);
     llama_backend_free();
-    return 0;
+    return rc;
 }
