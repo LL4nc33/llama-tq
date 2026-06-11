@@ -77,6 +77,12 @@ static float env_float(const char * name, float def) {
 // OUTPUT FORMAT (consumed by the Python self_cond_mlp training script):
 //   <path>.in.bin   raw little-endian float32, row-major append of [n_tokens][n_embd] per step.
 //   <path>.out.bin  raw little-endian float32, same layout, ALIGNED 1:1 with .in.bin per step.
+//   <path>.idx      raw little-endian int32 pairs (block_idx, cur_step) per collected step, ALIGNED
+//                   1:1 with the .in/.out records. Lets the trainer form consecutive-step pairs
+//                   (pre_{t-1}, pre_t) for the contraction-hinge loss WITHOUT crossing a block
+//                   boundary (each block resets self-cond to zero — pairing across it is invalid).
+//                   cur_step counts DOWN n_steps..1 within a block, so adjacency is |Δcur_step|==1
+//                   AND same block_idx.
 //   <path>.meta     one text line: "n_embd=<E> n_tokens=<T> n_steps=<S> dtype=float32 layout=row-major(token,embd)"
 //                   written at the end (once the final step count is known).
 //
@@ -85,24 +91,29 @@ static float env_float(const char * name, float def) {
 // steps, reshape each to [S, T, E]; x = in[s,t,:], y = out[s,t,:] is one training pair.
 //
 // Subsampling + cap (keeps the file from exploding; ~2.9 MB per tensor per step at E=2816,T=256):
-//   DG_DUMP_SELFCOND_STRIDE   collect only every Nth denoise step (default 4).
+//   DG_DUMP_SELFCOND_STRIDE   collect only every Nth denoise step (default 1 — consecutive steps,
+//                             required for the contraction-hinge pairing; raise only for the old
+//                             single-step distill where adjacency does not matter).
 //   DG_DUMP_SELFCOND_MAX_STEPS hard cap on collected steps total across all prompts (default 2000).
 // Default (DG_DUMP_SELFCOND unset): callback never registered, zero overhead, behaviour unchanged.
 struct selfcond_dumper {
     bool        enabled_path = false; // DG_DUMP_SELFCOND set (callback registered)
     bool        gate         = false; // true only around the denoise decode (enable/disable bracket)
     std::string path;
-    int         stride       = 4;     // collect every Nth eligible step
+    int         stride       = 1;     // collect every Nth eligible step (1 = consecutive, for hinge)
     int         max_steps    = 2000;  // hard cap on collected steps (across prompts)
 
     std::ofstream in_f;
     std::ofstream out_f;
+    std::ofstream idx_f;              // (block_idx, cur_step) int32 pairs, 1:1 with in/out records
 
     int     eligible_seen = 0;        // denoise steps seen (gate flips per step)
     int     steps_written = 0;        // steps actually dumped (capped by max_steps)
     bool    want_this_step= false;    // this step passes the stride+cap filter
     bool    wrote_in      = false;    // exactly one "in" written this step
     bool    wrote_out     = false;    // exactly one "out" written this step
+    int32_t cur_block     = 0;        // set by the loop before each step (for the .idx sidecar)
+    int32_t cur_step      = 0;        // set by the loop before each step (counts down n_steps..1)
     int64_t n_embd        = 0;        // captured from the first tensor (for the .meta file)
     int64_t n_tokens      = 0;
     std::vector<float> scratch;       // host staging for GPU tensors
@@ -111,8 +122,12 @@ struct selfcond_dumper {
         path = p; stride = std::max(1, s); max_steps = std::max(0, m);
         in_f.open(path + ".in.bin",  std::ios::binary | std::ios::trunc);
         out_f.open(path + ".out.bin", std::ios::binary | std::ios::trunc);
-        enabled_path = in_f.good() && out_f.good();
+        idx_f.open(path + ".idx",     std::ios::binary | std::ios::trunc);
+        enabled_path = in_f.good() && out_f.good() && idx_f.good();
     }
+    // the loop calls this right before enable() each step, so the .idx record (and any pairing
+    // logic) knows which (block, step) this collected record belongs to.
+    void set_step(int32_t block, int32_t step) { cur_block = block; cur_step = step; }
     // call enable() right before a denoise llama_decode, disable() right after. enable() decides
     // (once per step) whether this step is collected; that bracket guarantees one in + one out.
     void enable() {
@@ -122,8 +137,12 @@ struct selfcond_dumper {
         wrote_out = false;
     }
     void disable() {
-        // count one collected step iff both halves landed (defensive: only advance when aligned)
+        // count one collected step iff both halves landed (defensive: only advance when aligned).
+        // Write the (block, step) index in the SAME order as the in/out records so the trainer can
+        // reconstruct adjacency without guessing.
         if (gate && want_this_step && wrote_in && wrote_out) {
+            const int32_t rec[2] = { cur_block, cur_step };
+            idx_f.write((const char *) rec, sizeof(rec));
             ++steps_written;
         }
         ++eligible_seen;
@@ -132,11 +151,11 @@ struct selfcond_dumper {
     }
     void finalize() {
         if (!enabled_path) return;
-        in_f.flush(); out_f.flush();
+        in_f.flush(); out_f.flush(); idx_f.flush();
         std::ofstream meta(path + ".meta", std::ios::trunc);
         meta << "n_embd=" << n_embd << " n_tokens=" << n_tokens
              << " n_steps=" << steps_written
-             << " dtype=float32 layout=row-major(token,embd)\n";
+             << " dtype=float32 layout=row-major(token,embd) idx=int32(block,cur_step)\n";
     }
 };
 
@@ -479,6 +498,7 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
             g_collector.enable();
         }
         if (cfg.collect_selfcond) {
+            g_selfcond.set_step(block, cur_step); // (block, cur_step) for the .idx sidecar pairing
             g_selfcond.enable();
         }
         const int decode_rc = llama_decode(ctx, batch);
@@ -1091,7 +1111,7 @@ int main(int argc, char ** argv) {
     // and read the stride/cap knobs. The dumper starts gated off; run_one_prompt enables it only
     // around the denoise decode. Mutually exclusive with the imatrix collector (DG_DUMP_SELFCOND won above).
     if (collect_selfcond) {
-        const int sc_stride = env_int("DG_DUMP_SELFCOND_STRIDE", 4);
+        const int sc_stride = env_int("DG_DUMP_SELFCOND_STRIDE", 1);
         const int sc_max    = env_int("DG_DUMP_SELFCOND_MAX_STEPS", 2000);
         g_selfcond.open(selfcond_path, sc_stride, sc_max);
         if (!g_selfcond.enabled_path) {
