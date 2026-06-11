@@ -203,7 +203,11 @@ int main(int argc, char ** argv) {
 
     const int topk_max_requested =
         (topk_start > 0 && topk_end > 0) ? std::max(topk_start, topk_end) : topk_fixed;
-    const bool gpu_sampling_requested = env_int("DG_GPU_SAMPLING", 1) != 0;
+    // GPU/device sampling defaults OFF in this fork: the device self-cond and device-loop paths
+    // require the canvas/self-cond inputs to live on a CUDA buffer (set_diffusion_input_backend),
+    // a GPU-input-placement perf pass not yet wired here. The host (CPU) sampling path is correct
+    // and coherent. Re-enable per env once that pass lands: DG_GPU_SAMPLING / DG_DEVICE_* = 1.
+    const bool gpu_sampling_requested = env_int("DG_GPU_SAMPLING", 0) != 0;
     const bool gpu_sampling_topk_ok = topk_max_requested <= 0 || topk_max_requested <= GPU_SAMPLING_MAX_TOP_K;
     const bool use_gpu_sampling = gpu_sampling_requested &&
                                   gpu_sampling_topk_ok &&
