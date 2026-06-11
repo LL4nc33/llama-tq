@@ -140,13 +140,14 @@ int main(int argc, char ** argv) {
         mtmd::bitmaps bitmaps;
         std::string markers;
         for (const auto & img : params.image) {
-            auto bmp_res = mtmd_helper_bitmap_init_from_file(mctx_vision.get(), img.c_str(), false);
-            if (!bmp_res.bitmap) {
+            // fork mtmd API: 2-arg helper returning mtmd_bitmap* directly (no result struct)
+            mtmd::bitmap bmp(mtmd_helper_bitmap_init_from_file(mctx_vision.get(), img.c_str()));
+            if (!bmp.ptr) {
                 LOG_ERR("error: failed to load image '%s'\n", img.c_str());
                 llama_model_free(model);
                 return 1;
             }
-            bitmaps.entries.emplace_back(bmp_res.bitmap);
+            bitmaps.entries.push_back(std::move(bmp));
             markers += mtmd_default_marker();
             markers += "\n";
         }
