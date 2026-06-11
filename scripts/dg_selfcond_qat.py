@@ -61,15 +61,21 @@ def load_trajectory(path):
     return pre[:S], post[:S], idx[:S], E, T
 
 
-def adjacent_step_pairs(idx):
+def adjacent_step_pairs(idx, step_lo=0, step_hi=0):
     """Indices (a, b) into the step axis where step b immediately follows step a within the
     SAME block. cur_step counts DOWN n_steps..1, so the next step has cur_step - 1. Pairing
-    across a block boundary is invalid (self-cond resets to zero each block)."""
+    across a block boundary is invalid (self-cond resets to zero each block).
+    Optional phase filter: keep only pairs whose later step b has step_lo <= cur_step <= step_hi
+    (0 disables that bound). Used to target the MID denoise phase where IQ2 loop-gain originates."""
     pairs = []
     for s in range(len(idx) - 1):
         blk_a, st_a = int(idx[s, 0]),   int(idx[s, 1])
         blk_b, st_b = int(idx[s + 1, 0]), int(idx[s + 1, 1])
         if blk_a == blk_b and st_a - st_b == 1:   # consecutive within the same block
+            if step_lo and st_b < step_lo:
+                continue
+            if step_hi and st_b > step_hi:
+                continue
             pairs.append((s, s + 1))
     return pairs
 
@@ -144,6 +150,13 @@ def main():
                     help="weight of the contraction hinge relu(||f(pre_t)-f(pre_{t-1})|| - rho*||pre_t-pre_{t-1}||)^2")
     ap.add_argument("--hinge-rho", type=float, default=0.9,
                     help="target contraction factor (<1). The map may expand up to rho before being penalized")
+    ap.add_argument("--hinge-step-lo", type=int, default=0,
+                    help="only pair steps with cur_step >= this (phase-aware hinge; 0 = no lower bound)")
+    ap.add_argument("--hinge-step-hi", type=int, default=0,
+                    help="only pair steps with cur_step <= this (phase-aware hinge; 0 = no upper bound). "
+                         "The rho diagnostic showed IQ2 loop-gain originates in the MID phase "
+                         "(cur_step ~17-32); restricting the hinge there avoids suppressing the "
+                         "teacher's healthy late-commit expansion (cur_step <=16).")
     ap.add_argument("--rho-diag", action="store_true",
                     help="print the empirical step-contraction rho of the trajectory and exit (no training)")
     args = ap.parse_args()
@@ -175,9 +188,10 @@ def main():
     pa = pb = None
     if args.hinge_lambda > 0:
         pre, _post, idx, _E, T = load_trajectory(args.data)
-        pairs = adjacent_step_pairs(idx)
+        pairs = adjacent_step_pairs(idx, args.hinge_step_lo, args.hinge_step_hi)
         if not pairs:
-            sys.exit("--hinge-lambda > 0 but no consecutive-step pairs found (need stride-1 .idx dump)")
+            sys.exit("--hinge-lambda > 0 but no consecutive-step pairs found (need stride-1 .idx dump, "
+                     "or the phase filter --hinge-step-lo/-hi excluded everything)")
         a_blocks = np.concatenate([pre[a] for (a, b) in pairs], axis=0)  # [P, E] = pre_{t-1} per token
         b_blocks = np.concatenate([pre[b] for (a, b) in pairs], axis=0)  # [P, E] = pre_t     per token
         pa = torch.tensor(a_blocks, device=dev)
