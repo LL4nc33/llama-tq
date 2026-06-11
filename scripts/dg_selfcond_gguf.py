@@ -90,13 +90,49 @@ def merge(args):
     print(f"wrote {args.out}")
 
 
+def inject(args):
+    """Write trained f32 self_cond weights into a copy of a HIGH-PRECISION source GGUF
+    (BF16/F16), storing them as F16. Everything else is copied verbatim. The result is
+    meant to be fed straight into llama-quantize, which applies the real IQ2 codebook
+    (gguf-py cannot quantize IQ2). This is the path to deploy QAT-trained self_cond at
+    a low bit-width: train -> inject into BF16 -> llama-quantize --tensor-type self_cond_*=iq2_xxs."""
+    r = GGUFReader(args.gguf)
+    trained = {
+        "self_cond_gate.weight": np.load(f"{args.weights}.gate.npy").astype(np.float16),
+        "self_cond_up.weight":   np.load(f"{args.weights}.up.npy").astype(np.float16),
+        "self_cond_down.weight": np.load(f"{args.weights}.down.npy").astype(np.float16),
+    }
+    arch = None
+    for f in r.fields.values():
+        if f.name == "general.architecture":
+            arch = bytes(f.parts[f.data[-1]]).decode()
+    w = GGUFWriter(args.out, arch or "diffusion-gemma")
+    for key, field in r.fields.items():
+        if key in ("GGUF.version", "GGUF.tensor_count", "GGUF.kv_count"):
+            continue
+        try:
+            w.add_key_value(field.name, field.contents(), field.types[0])
+        except Exception:
+            pass
+    for t in r.tensors:
+        if t.name in trained:
+            w.add_tensor(t.name, trained[t.name])  # raw F16, no raw_dtype -> writer infers F16
+            print(f"  injected {t.name} (F16, trained)")
+        else:
+            w.add_tensor(t.name, t.data, raw_dtype=t.tensor_type)
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file()
+    w.close()
+    print(f"wrote {args.out}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("extract"); e.add_argument("--gguf", required=True); e.add_argument("--out", required=True)
     m = sub.add_parser("merge"); m.add_argument("--gguf", required=True); m.add_argument("--weights", required=True); m.add_argument("--out", required=True)
+    j = sub.add_parser("inject"); j.add_argument("--gguf", required=True); j.add_argument("--weights", required=True); j.add_argument("--out", required=True)
     args = ap.parse_args()
-    (extract if args.cmd == "extract" else merge)(args)
+    {"extract": extract, "merge": merge, "inject": inject}[args.cmd](args)
 
 
 if __name__ == "__main__":
