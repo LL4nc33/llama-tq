@@ -407,6 +407,7 @@ enum llm_tensor {
     LLM_TENSOR_ATTN_K_NORM,
     LLM_TENSOR_LAYER_OUT_NORM,
     LLM_TENSOR_LAYER_OUT_SCALE,
+    LLM_TENSOR_ENC_LAYER_OUT_SCALE,  // diffusion-gemma (encoder-phase per-layer output scale)
     LLM_TENSOR_SELF_COND_NORM,   // diffusion-gemma
     LLM_TENSOR_SELF_COND_GATE,   // diffusion-gemma
     LLM_TENSOR_SELF_COND_UP,     // diffusion-gemma

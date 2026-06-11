@@ -488,6 +488,9 @@ struct llama_layer {
     // gemma4 layer output scale
     struct ggml_tensor * out_scale = nullptr;
 
+    // diffusion-gemma encoder-phase per-layer output scale (decoder reuses out_scale)
+    struct ggml_tensor * out_scale_enc = nullptr;
+
     struct llama_layer_posnet posnet;
 
     struct llama_layer_convnext convnext;

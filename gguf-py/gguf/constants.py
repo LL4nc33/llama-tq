@@ -569,6 +569,7 @@ class MODEL_TENSOR(IntEnum):
     ATTN_K_NORM          = auto()
     LAYER_OUT_NORM       = auto()
     LAYER_OUT_SCALE      = auto()
+    ENC_LAYER_OUT_SCALE  = auto() # diffusion-gemma (encoder-phase per-layer output scale)
     SELF_COND_NORM       = auto() # diffusion-gemma (self-conditioning pre-norm)
     SELF_COND_GATE       = auto() # diffusion-gemma
     SELF_COND_UP         = auto() # diffusion-gemma
@@ -1062,6 +1063,7 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.MOE_LATENT_UP:             "blk.{bid}.ffn_latent_up",        # nemotron 3 super
     MODEL_TENSOR.LAYER_OUT_NORM:            "blk.{bid}.layer_output_norm",
     MODEL_TENSOR.LAYER_OUT_SCALE:           "blk.{bid}.layer_output_scale",
+    MODEL_TENSOR.ENC_LAYER_OUT_SCALE:       "blk.{bid}.enc_layer_output_scale", # diffusion-gemma
     MODEL_TENSOR.SELF_COND_NORM:            "self_cond_norm",                 # diffusion-gemma
     MODEL_TENSOR.SELF_COND_GATE:            "self_cond_gate",                 # diffusion-gemma
     MODEL_TENSOR.SELF_COND_UP:              "self_cond_up",                   # diffusion-gemma
@@ -2448,6 +2450,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_POST_NORM_1,
         MODEL_TENSOR.FFN_POST_NORM_2,
         MODEL_TENSOR.LAYER_OUT_SCALE,
+        MODEL_TENSOR.ENC_LAYER_OUT_SCALE,
         MODEL_TENSOR.SELF_COND_NORM,
         MODEL_TENSOR.SELF_COND_GATE,
         MODEL_TENSOR.SELF_COND_UP,

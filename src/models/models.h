@@ -830,8 +830,9 @@ struct llama_model_diffusion_gemma : public llama_model_gemma4 {
             llm_graph_context(params), model(model) {}
         // scaled input embeddings; if is_decoder, apply the self-conditioning transform
         ggml_tensor * build_input(bool is_decoder);
-        // run the per-layer block over inpL (cached iswa attention) and emit logits
-        void build_transformer(ggml_tensor * inpL);
+        // run the per-layer block over inpL (cached iswa attention) and emit logits.
+        // is_decoder selects the per-layer output scale (decoder: out_scale, encoder: out_scale_enc)
+        void build_transformer(ggml_tensor * inpL, bool is_decoder);
     };
 
     // Variant A ("single encoder/decoder block"): one graph that branches on the phase.

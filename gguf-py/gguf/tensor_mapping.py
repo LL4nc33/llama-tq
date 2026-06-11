@@ -712,6 +712,10 @@ class TensorNameMap:
             "model.layers.{bid}.layer_scalar", # gemma4
         ),
 
+        MODEL_TENSOR.ENC_LAYER_OUT_SCALE: (
+            "model.encoder.layers.{bid}.layer_scalar", # diffusion-gemma (encoder phase)
+        ),
+
         MODEL_TENSOR.SELF_COND_NORM: (
             "model.self_conditioning.pre_norm", # diffusion-gemma
         ),

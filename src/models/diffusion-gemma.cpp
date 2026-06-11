@@ -36,6 +36,13 @@ void llama_model_diffusion_gemma::load_arch_tensors(llama_model_loader & ml) {
     self_cond_gate = create_tensor(tn(LLM_TENSOR_SELF_COND_GATE, "weight"), {n_embd,  n_ff_sc}, 0);
     self_cond_up   = create_tensor(tn(LLM_TENSOR_SELF_COND_UP,   "weight"), {n_embd,  n_ff_sc}, 0);
     self_cond_down = create_tensor(tn(LLM_TENSOR_SELF_COND_DOWN, "weight"), {n_ff_sc, n_embd},  0);
+
+    // Per-layer encoder-phase output scale. The checkpoint carries a separate scale for the
+    // causal encoder (prompt prefill) alongside the decoder scale (layer_output_scale, loaded
+    // as layer.out_scale by the gemma4 base). build_transformer selects between them per phase.
+    for (int i = 0; i < n_layer; ++i) {
+        layers[i].out_scale_enc = create_tensor(tn(LLM_TENSOR_ENC_LAYER_OUT_SCALE, "weight", i), {1u}, 0);
+    }
 }
 
 llama_model_diffusion_gemma::~llama_model_diffusion_gemma() {
@@ -243,22 +250,23 @@ ggml_tensor * llama_model_diffusion_gemma::graph_base::build_input(bool is_decod
 // Variant A: single graph, phase chosen at runtime from the diffusion cond.
 llama_model_diffusion_gemma::graph::graph(const llama_model & model, const llm_graph_params & params) :
         graph_base(model, params) {
-    build_transformer(build_input(diffusion && diffusion->decoder_phase));
+    const bool is_decoder = diffusion && diffusion->decoder_phase;
+    build_transformer(build_input(is_decoder), is_decoder);
 }
 
 // Variant B: separate encoder / decoder graphs (shared weight tensors).
 llama_model_diffusion_gemma::graph_encoder::graph_encoder(const llama_model & model, const llm_graph_params & params) :
         graph_base(model, params) {
-    build_transformer(build_input(/*is_decoder=*/false));
+    build_transformer(build_input(/*is_decoder=*/false), /*is_decoder=*/false);
 }
 
 llama_model_diffusion_gemma::graph_decoder::graph_decoder(const llama_model & model, const llm_graph_params & params) :
         graph_base(model, params) {
-    build_transformer(build_input(/*is_decoder=*/true));
+    build_transformer(build_input(/*is_decoder=*/true), /*is_decoder=*/true);
 }
 
 // Run the reused gemma4 decoder block over the input embeddings and emit logits.
-void llama_model_diffusion_gemma::graph_base::build_transformer(ggml_tensor * inpL) {
+void llama_model_diffusion_gemma::graph_base::build_transformer(ggml_tensor * inpL, bool is_decoder) {
     ggml_tensor * cur;
 
     ggml_tensor * inp_pos = build_inp_pos();
@@ -401,9 +409,13 @@ void llama_model_diffusion_gemma::graph_base::build_transformer(ggml_tensor * in
 
         cur = ggml_add(ctx0, cur, attn_out);
 
-        // layer_scalar
-        if (model.layers[il].out_scale) {
-            cur = ggml_mul(ctx0, cur, model.layers[il].out_scale);
+        // layer_scalar: decoder (canvas) uses out_scale; encoder (prompt prefill) uses
+        // the dedicated out_scale_enc. Fall back to out_scale if the encoder scale is absent.
+        ggml_tensor * out_scale = (!is_decoder && model.layers[il].out_scale_enc)
+                                      ? model.layers[il].out_scale_enc
+                                      : model.layers[il].out_scale;
+        if (out_scale) {
+            cur = ggml_mul(ctx0, cur, out_scale);
             cb(cur, "out_scaled", il);
         }
 
