@@ -307,6 +307,13 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
     // Sampling/entropy/argmax are untouched. <= 0 or unset => use the sampling temperature (no-op).
     const float sc_temp_env = env_float("DG_SC_TEMP", 0.0f);
     const bool  use_sc_temp = sc_temp_env > 0.0f;
+    // DG_DITHER: stochastic-resonance dithering on the self-conditioning probs only. Adds decaying
+    // Gaussian noise (sigma_t = DG_DITHER * cur_step/n_steps) to the stored spr values, then clamps
+    // to >= 0 and renormalizes per position. Early steps inject more noise (search/escape from a
+    // chaotic attractor where 2-bit quant repeats neighbouring tokens), late steps ~0 (converge).
+    // Composes after sc_temp normalization. <= 0 or unset => exact previous behaviour (no overhead).
+    const float dither_base = env_float("DG_DITHER", 0.0f);
+    std::normal_distribution<float> ndist(0.0f, 1.0f);
     double decode_enqueue_s = 0.0;
     double sample_sync_s    = 0.0;
     double host_loop_s      = 0.0;
@@ -429,6 +436,10 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
 
         bool sampled_ok = true;
         const auto t_sample_start = std::chrono::steady_clock::now();
+        // decaying stochastic-resonance sigma for this step (computed once, applied per position
+        // to the self-cond probs in both host paths below). cur_step runs n_steps..1, so sigma
+        // starts at dither_base and decays to ~0. <= 0 => disabled, no per-position overhead.
+        const float dither_sigma = dither_base > 0.0f ? dither_base * ((float) cur_step / (float) n_steps) : 0.0f;
         if (use_gpu_sampling) {
             llama_diffusion_sample_params sample_params = {
                 /* .n_tokens              = */ canvas_length,
@@ -526,6 +537,18 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
                         ++slot;
                     }
                 }
+                // stochastic-resonance dithering: perturb the finished spr distribution, clamp to
+                // >= 0, then renormalize over the stored slots so it stays a valid distribution.
+                if (dither_sigma > 0.0f) {
+                    float dsum = 0.0f;
+                    for (int i = 0; i < slot; ++i) {
+                        float p = spr[i] + dither_sigma * ndist(rng);
+                        if (p < 0.0f) p = 0.0f;
+                        spr[i] = p;
+                        dsum += p;
+                    }
+                    if (dsum > 0.0f) { const float inv = 1.0f / dsum; for (int i = 0; i < slot; ++i) spr[i] *= inv; }
+                }
                 entropy[j]       = ent;
                 sampled[j]       = tok;
                 argmax_canvas[j] = amax;
@@ -610,6 +633,18 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
                         sid[i] = heap[i].second;
                         spr[i] = expf(lg[heap[i].second] * inv_sc - max_sc) / sum_sc;
                     }
+                }
+                // stochastic-resonance dithering: perturb the finished spr distribution, clamp to
+                // >= 0, then renormalize over the stored slots so it stays a valid distribution.
+                if (dither_sigma > 0.0f) {
+                    float dsum = 0.0f;
+                    for (int i = 0; i < n_sc; ++i) {
+                        float p = spr[i] + dither_sigma * ndist(rng);
+                        if (p < 0.0f) p = 0.0f;
+                        spr[i] = p;
+                        dsum += p;
+                    }
+                    if (dsum > 0.0f) { const float inv = 1.0f / dsum; for (int i = 0; i < n_sc; ++i) spr[i] *= inv; }
                 }
                 entropy[j]       = ent;
                 sampled[j]       = tok;
