@@ -30,8 +30,10 @@ def extract(args):
     found = {}
     for t in r.tensors:
         if t.name in SC_NAMES:
-            # dequantize to f32 regardless of stored type
-            arr = dequantize(t.data, t.tensor_type) if t.tensor_type.name not in ("F32", "F16", "BF16") else t.data.astype(np.float32)
+            # dequantize to f32. NOTE: for F16/BF16, t.data is a raw uint8 byte
+            # array (2x element count), so it must go through dequantize() too —
+            # only genuine F32 storage is already a usable float view.
+            arr = t.data.astype(np.float32) if t.tensor_type.name == "F32" else dequantize(t.data, t.tensor_type)
             arr = np.asarray(arr, dtype=np.float32).reshape(tuple(int(x) for x in t.shape[::-1]))  # gguf shape is reversed
             found[t.name] = arr
             print(f"  {t.name}: type={t.tensor_type.name} shape={arr.shape}")
