@@ -47,6 +47,11 @@ static int env_int(const char * name, int def) {
     return v ? atoi(v) : def;
 }
 
+static float env_float(const char * name, float def) {
+    const char * v = getenv(name);
+    return v ? strtof(v, nullptr) : def;
+}
+
 // apply the model's chat template to the user prompt (this is a chat-trained model)
 static std::string format_chat(llama_model * model, const std::string & prompt) {
     auto tmpls = common_chat_templates_init(model, "");
@@ -311,6 +316,12 @@ int main(int argc, char ** argv) {
     int n_steps_total = 0;
     const auto t_gen_start = std::chrono::steady_clock::now();
     const bool log_step_timing = env_int("DG_TIMING", 0) != 0;
+    // DG_SC_TEMP: separate (typically lower) temperature for the self-conditioning probabilities
+    // only. Sharpening the self-cond distribution feeds fewer noise tokens back into the next
+    // denoise step, which stabilizes the loop on aggressively quantized (e.g. 2-bit) logits.
+    // Sampling/entropy/argmax are untouched. <= 0 or unset => use the sampling temperature (no-op).
+    const float sc_temp_env = env_float("DG_SC_TEMP", 0.0f);
+    const bool  use_sc_temp = sc_temp_env > 0.0f;
     double decode_enqueue_s = 0.0;
     double sample_sync_s    = 0.0;
     double host_loop_s      = 0.0;
@@ -500,7 +511,26 @@ int main(int argc, char ** argv) {
                 int32_t * sid = sc_ids.data()   + (size_t) j * SC_K;
                 float   * spr = sc_probs.data() + (size_t) j * SC_K;
                 int slot = 0;
-                for (auto & h : scheap) { sid[slot] = h.second; spr[slot] = expf(h.first - maxl) / sum; ++slot; }
+                if (!use_sc_temp) {
+                    for (auto & h : scheap) { sid[slot] = h.second; spr[slot] = expf(h.first - maxl) / sum; ++slot; }
+                } else {
+                    // separate sc_temp for the self-cond probs: recompute the softmax over the
+                    // scheap (top-SC_K) entries from the RAW logits at sc_temp. scheap stores
+                    // {lg[v]/temp, v}, so the raw logit is h.first * temp. We normalize over the
+                    // scheap set only (not the full vocab): the self-cond gather uses just these
+                    // top-SC_K tokens and the dropped tail carries negligible embedding weight
+                    // (absorbed by the post RMS norm), as noted above for the full-softmax path.
+                    const float inv_sc = 1.0f / sc_temp_env;
+                    float max_sc = -INFINITY;
+                    for (auto & h : scheap) { const float xs = (h.first * temp) * inv_sc; if (xs > max_sc) max_sc = xs; }
+                    float sum_sc = 0.0f;
+                    for (auto & h : scheap) { sum_sc += expf((h.first * temp) * inv_sc - max_sc); }
+                    for (auto & h : scheap) {
+                        sid[slot] = h.second;
+                        spr[slot] = expf((h.first * temp) * inv_sc - max_sc) / sum_sc;
+                        ++slot;
+                    }
+                }
                 entropy[j]       = ent;
                 sampled[j]       = tok;
                 argmax_canvas[j] = amax;
@@ -570,7 +600,22 @@ int main(int argc, char ** argv) {
                 int32_t * sid = sc_ids.data()   + (size_t) j * SC_K;
                 float   * spr = sc_probs.data() + (size_t) j * SC_K;
                 const int n_sc = std::min(k_step, SC_K);
-                for (int i = 0; i < n_sc; ++i) { sid[i] = heap[i].second; spr[i] = heap[i].first / Zk; }
+                if (!use_sc_temp) {
+                    for (int i = 0; i < n_sc; ++i) { sid[i] = heap[i].second; spr[i] = heap[i].first / Zk; }
+                } else {
+                    // separate sc_temp for the self-cond probs: heap[i].first now holds the
+                    // sampling-temp exp value, so recompute from the RAW logits lg[idx] at sc_temp,
+                    // renormalized over the same top-n_sc tokens (matching the top-k path semantics).
+                    const float inv_sc = 1.0f / sc_temp_env;
+                    float max_sc = -INFINITY;
+                    for (int i = 0; i < n_sc; ++i) { const float xs = lg[heap[i].second] * inv_sc; if (xs > max_sc) max_sc = xs; }
+                    float sum_sc = 0.0f;
+                    for (int i = 0; i < n_sc; ++i) { sum_sc += expf(lg[heap[i].second] * inv_sc - max_sc); }
+                    for (int i = 0; i < n_sc; ++i) {
+                        sid[i] = heap[i].second;
+                        spr[i] = expf(lg[heap[i].second] * inv_sc - max_sc) / sum_sc;
+                    }
+                }
                 entropy[j]       = ent;
                 sampled[j]       = tok;
                 argmax_canvas[j] = amax;
