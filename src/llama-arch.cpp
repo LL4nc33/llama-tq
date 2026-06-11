@@ -387,7 +387,7 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_ATTN_QKV,                               "blk.%d.attn_qkv" },
     { LLM_TENSOR_LAYER_OUT_NORM,                         "blk.%d.layer_output_norm" },
     { LLM_TENSOR_LAYER_OUT_SCALE,                        "blk.%d.layer_output_scale" },
-    { LLM_TENSOR_SELF_COND_NORM,                         "self_cond_norm" },
+    { LLM_TENSOR_SELF_COND_NORM,                         "self_cond_pre_norm" },
     { LLM_TENSOR_SELF_COND_GATE,                         "self_cond_gate" },
     { LLM_TENSOR_SELF_COND_UP,                           "self_cond_up" },
     { LLM_TENSOR_SELF_COND_DOWN,                         "self_cond_down" },
