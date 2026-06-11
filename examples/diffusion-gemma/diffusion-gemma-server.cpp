@@ -730,7 +730,9 @@ int main(int argc, char ** argv) {
 
     const int topk_max_requested =
         (srv.topk_start > 0 && srv.topk_end > 0) ? std::max(srv.topk_start, srv.topk_end) : srv.topk_fixed;
-    const bool gpu_sampling_requested = env_int("DG_GPU_SAMPLING", 1) != 0;
+    // GPU/device sampling defaults OFF in this fork (host path is correct; device path needs the
+    // not-yet-wired GPU-input-placement pass — see diffusion-gemma-cli.cpp). Re-enable via env.
+    const bool gpu_sampling_requested = env_int("DG_GPU_SAMPLING", 0) != 0;
     srv.use_gpu_sampling = gpu_sampling_requested &&
                            llama_diffusion_sample_topk_supported(srv.ctx);
     srv.use_device_self_cond = srv.use_gpu_sampling && env_int("DG_DEVICE_SELFCOND", 1) != 0;
