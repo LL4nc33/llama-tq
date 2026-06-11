@@ -724,6 +724,10 @@ int main(int argc, char ** argv) {
     ctx_params.n_batch  = srv.n_ub;
     ctx_params.n_ubatch = srv.n_ub;
     ctx_params.no_perf  = params.no_perf;
+    // Honor --cache-type-k/-v (ktq2_1/vtq2_1 etc.) + flash-attention; otherwise K/V stay f16.
+    ctx_params.type_k      = params.cache_type_k;
+    ctx_params.type_v      = params.cache_type_v;
+    ctx_params.flash_attn_type = params.flash_attn_type;
 
     srv.ctx = llama_init_from_model(srv.model, ctx_params);
     if (!srv.ctx) {
