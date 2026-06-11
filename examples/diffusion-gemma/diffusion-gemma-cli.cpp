@@ -190,6 +190,11 @@ int main(int argc, char ** argv) {
     ctx_params.n_batch  = n_ub;
     ctx_params.n_ubatch = n_ub;
     ctx_params.no_perf  = params.no_perf;
+    // Honor the KV-cache quantization + flash-attention flags (ktq2_1/vtq2_1 etc.); the default
+    // ctx params would otherwise pin K/V to f16 regardless of --cache-type-k/-v.
+    ctx_params.type_k      = params.cache_type_k;
+    ctx_params.type_v      = params.cache_type_v;
+    ctx_params.flash_attn_type = params.flash_attn_type;
 
     llama_context * ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {
