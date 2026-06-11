@@ -240,6 +240,17 @@ ggml_tensor * llama_model_diffusion_gemma::graph_base::build_input(bool is_decod
                 dmodel.self_cond_gate, nullptr, nullptr,
                 dmodel.self_cond_down, nullptr, nullptr,
                 nullptr, LLM_FFN_GELU, LLM_FFN_PAR, -1);
+        // Optional self-conditioning damping (DG_SELF_COND_SCALE, default 1.0). The denoise loop
+        // feeds back softmax(prev_logits)@embd through this gated MLP; at low bit-width the feedback
+        // can amplify quant noise into divergence. Scaling sc<1 reduces the loop gain — a diagnostic
+        // + rescue knob for low-bit (IQ2/IQ3) coherence. 1.0 = unchanged upstream behaviour.
+        {
+            const char * env = getenv("DG_SELF_COND_SCALE");
+            const float scs = env ? strtof(env, nullptr) : 1.0f;
+            if (scs != 1.0f) {
+                sc = ggml_scale(ctx0, sc, scs);
+            }
+        }
         inpL = ggml_rms_norm(ctx0, ggml_add(ctx0, inpL, sc), hparams.f_norm_rms_eps); // scale-less post_norm
         cb(inpL, "self_cond_input", -1);
     }
