@@ -159,6 +159,11 @@ def main():
                          "teacher's healthy late-commit expansion (cur_step <=16).")
     ap.add_argument("--rho-diag", action="store_true",
                     help="print the empirical step-contraction rho of the trajectory and exit (no training)")
+    ap.add_argument("--map-rho", action="store_true",
+                    help="measure the trained MLP's own map-contraction ||f(pre_t)-f(pre_{t-1})|| / "
+                         "||pre_t-pre_{t-1}|| over the (phase-filtered) trajectory pairs, with fake-quant "
+                         "if --fake-quant. Loads weights from --gate/--up/--down. The cheap pre-quantize "
+                         "gate: does QAT actually make the map contractive in the targeted phase?")
     args = ap.parse_args()
 
     # rho diagnostic: cheapest honest test of the Lipschitz>1 hypothesis. No training, no quantize.
@@ -171,6 +176,30 @@ def main():
             mean, med, n = r
             print(f"rho-diag: empirical step-contraction over {n} consecutive triples: "
                   f"mean={mean:.4f} median={med:.4f}  ({'CONTRACTIVE <1' if mean < 1 else 'EXPANDING >=1 (loop-gain)'})")
+        return
+
+    # map-rho: measure the loaded MLP's OWN Lipschitz ratio on consecutive pairs (no quantize, no loop).
+    if args.map_rho:
+        pre, _post, idx, E, T = load_trajectory(args.data)
+        pairs = adjacent_step_pairs(idx, args.hinge_step_lo, args.hinge_step_hi)
+        if not pairs:
+            print("map-rho: no pairs in the requested phase window"); return
+        dev = torch.device(args.device)
+        gate = np.load(args.gate); up = np.load(args.up); down = np.load(args.down)
+        model = SelfCondMLP(gate, up, down, fake_quant=args.fake_quant, n_bits=args.n_bits).to(dev)
+        ratios = []
+        with torch.no_grad():
+            for (a, b) in pairs:
+                pa = torch.tensor(pre[a], device=dev); pb = torch.tensor(pre[b], device=dev)
+                fa = model(pa); fb = model(pb)
+                out_d = torch.linalg.vector_norm((fb - fa).reshape(-1)).item()
+                in_d  = torch.linalg.vector_norm((pb - pa).reshape(-1)).item()
+                if in_d > 1e-6:
+                    ratios.append(out_d / in_d)
+        ratios = np.array(ratios)
+        print(f"map-rho (fake_quant={args.fake_quant}, phase[{args.hinge_step_lo or '-'},{args.hinge_step_hi or '-'}], "
+              f"{len(ratios)} pairs): mean={ratios.mean():.4f} median={np.median(ratios):.4f} "
+              f"p90={np.percentile(ratios,90):.4f}  ({'CONTRACTIVE' if ratios.mean()<1 else 'EXPANDING'})")
         return
 
     x, y, E = load_pairs(args.data)
