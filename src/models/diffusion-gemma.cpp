@@ -235,11 +235,13 @@ ggml_tensor * llama_model_diffusion_gemma::graph_base::build_input(bool is_decod
         soft = ggml_scale(ctx0, soft, sqrtf((float) n_embd));
         cb(soft, "self_cond_soft_embd", -1);
         ggml_tensor * scn = build_norm(soft, dmodel.self_cond_norm, nullptr, LLM_NORM_RMS, -1);
+        cb(scn, "self_cond_mlp_in", -1);  // QAT distillation tap: input to the self_cond gated FFN
         ggml_tensor * sc  = build_ffn(scn,
                 dmodel.self_cond_up,   nullptr, nullptr,
                 dmodel.self_cond_gate, nullptr, nullptr,
                 dmodel.self_cond_down, nullptr, nullptr,
                 nullptr, LLM_FFN_GELU, LLM_FFN_PAR, -1);
+        cb(sc, "self_cond_mlp_out", -1);  // QAT distillation tap: f16-teacher target = MLP output
         // Optional self-conditioning damping (DG_SELF_COND_SCALE, default 1.0). The denoise loop
         // feeds back softmax(prev_logits)@embd through this gated MLP; at low bit-width the feedback
         // can amplify quant noise into divergence. Scaling sc<1 reduces the loop gain — a diagnostic

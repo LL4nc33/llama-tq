@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <numeric>
@@ -60,6 +61,128 @@ static float env_float(const char * name, float def) {
     return v ? strtof(v, nullptr) : def;
 }
 
+// -----------------------------------------------------------------------------------------------
+// self_cond_mlp activation dumper (DG_DUMP_SELFCOND) — QAT distillation data collector.
+//
+// Collects aligned (x_in, y_target) pairs for isolated self_cond_mlp distillation training. The
+// graph (src/models/diffusion-gemma.cpp) tags two tensors via cb(), present ONLY in the decoder
+// (denoise) phase, both shape {n_embd, n_tokens}:
+//   * "self_cond_mlp_in"  — rms-normed soft-embed fed into the self_cond gated FFN  (= x_in)
+//   * "self_cond_mlp_out" — output of that FFN (the f16/Q4-teacher target)          (= y_target)
+//
+// This is a small dedicated eval callback (NOT the imatrix collector). It is registered via
+// ctx_params.cb_eval and gated by enable()/disable() exactly around the denoise llama_decode, so
+// the encoder prefill / canvas-commit decodes contribute nothing (the tensors don't exist there).
+//
+// OUTPUT FORMAT (consumed by the Python self_cond_mlp training script):
+//   <path>.in.bin   raw little-endian float32, row-major append of [n_tokens][n_embd] per step.
+//   <path>.out.bin  raw little-endian float32, same layout, ALIGNED 1:1 with .in.bin per step.
+//   <path>.meta     one text line: "n_embd=<E> n_tokens=<T> n_steps=<S> dtype=float32 layout=row-major(token,embd)"
+//                   written at the end (once the final step count is known).
+//
+// Both files grow by exactly T*E floats per collected step, and in[step] aligns with out[step]
+// (same forward, same shape, same write order). Reader: open both files, read S = filesize/(T*E*4)
+// steps, reshape each to [S, T, E]; x = in[s,t,:], y = out[s,t,:] is one training pair.
+//
+// Subsampling + cap (keeps the file from exploding; ~2.9 MB per tensor per step at E=2816,T=256):
+//   DG_DUMP_SELFCOND_STRIDE   collect only every Nth denoise step (default 4).
+//   DG_DUMP_SELFCOND_MAX_STEPS hard cap on collected steps total across all prompts (default 2000).
+// Default (DG_DUMP_SELFCOND unset): callback never registered, zero overhead, behaviour unchanged.
+struct selfcond_dumper {
+    bool        enabled_path = false; // DG_DUMP_SELFCOND set (callback registered)
+    bool        gate         = false; // true only around the denoise decode (enable/disable bracket)
+    std::string path;
+    int         stride       = 4;     // collect every Nth eligible step
+    int         max_steps    = 2000;  // hard cap on collected steps (across prompts)
+
+    std::ofstream in_f;
+    std::ofstream out_f;
+
+    int     eligible_seen = 0;        // denoise steps seen (gate flips per step)
+    int     steps_written = 0;        // steps actually dumped (capped by max_steps)
+    bool    want_this_step= false;    // this step passes the stride+cap filter
+    bool    wrote_in      = false;    // exactly one "in" written this step
+    bool    wrote_out     = false;    // exactly one "out" written this step
+    int64_t n_embd        = 0;        // captured from the first tensor (for the .meta file)
+    int64_t n_tokens      = 0;
+    std::vector<float> scratch;       // host staging for GPU tensors
+
+    void open(const std::string & p, int s, int m) {
+        path = p; stride = std::max(1, s); max_steps = std::max(0, m);
+        in_f.open(path + ".in.bin",  std::ios::binary | std::ios::trunc);
+        out_f.open(path + ".out.bin", std::ios::binary | std::ios::trunc);
+        enabled_path = in_f.good() && out_f.good();
+    }
+    // call enable() right before a denoise llama_decode, disable() right after. enable() decides
+    // (once per step) whether this step is collected; that bracket guarantees one in + one out.
+    void enable() {
+        gate = true;
+        want_this_step = enabled_path && (steps_written < max_steps) && (eligible_seen % stride == 0);
+        wrote_in = false;
+        wrote_out = false;
+    }
+    void disable() {
+        // count one collected step iff both halves landed (defensive: only advance when aligned)
+        if (gate && want_this_step && wrote_in && wrote_out) {
+            ++steps_written;
+        }
+        ++eligible_seen;
+        gate = false;
+        want_this_step = false;
+    }
+    void finalize() {
+        if (!enabled_path) return;
+        in_f.flush(); out_f.flush();
+        std::ofstream meta(path + ".meta", std::ios::trunc);
+        meta << "n_embd=" << n_embd << " n_tokens=" << n_tokens
+             << " n_steps=" << steps_written
+             << " dtype=float32 layout=row-major(token,embd)\n";
+    }
+};
+
+static selfcond_dumper g_selfcond;
+
+// dedicated eval callback: interested ONLY in the two self_cond_mlp taps, ONLY while gated to a
+// denoise decode that passed the stride/cap filter. Writes raw float32 to the .in / .out files.
+static bool dg_collect_selfcond(struct ggml_tensor * t, bool ask, void * user_data) {
+    GGML_UNUSED(user_data);
+    if (!g_selfcond.gate || !g_selfcond.want_this_step) {
+        return false; // not in a collected denoise step: report no interest, materialize nothing
+    }
+    const bool is_in  = strcmp(t->name, "self_cond_mlp_in")  == 0;
+    const bool is_out = strcmp(t->name, "self_cond_mlp_out") == 0;
+    if (!is_in && !is_out) {
+        return false;
+    }
+    if (ask) {
+        // already-have-this-half guard: never write a tensor twice in one step
+        return is_in ? !g_selfcond.wrote_in : !g_selfcond.wrote_out;
+    }
+
+    // ask == false: the data is ready. Shape is {n_embd, n_tokens}; ggml is column-major so the
+    // contiguous layout is exactly [n_tokens][n_embd] floats (token-major, embd-minor) — the row-
+    // major (token,embd) layout documented above. Copy from GPU if needed, else read t->data.
+    const int64_t E = t->ne[0]; // n_embd
+    const int64_t T = t->ne[1]; // n_tokens
+    if (g_selfcond.n_embd == 0) { g_selfcond.n_embd = E; g_selfcond.n_tokens = T; }
+
+    const size_t nbytes = ggml_nbytes(t);
+    const float * data;
+    if (ggml_backend_buffer_is_host(t->buffer)) {
+        data = (const float *) t->data;
+    } else {
+        g_selfcond.scratch.resize(nbytes / sizeof(float));
+        ggml_backend_tensor_get(t, g_selfcond.scratch.data(), 0, nbytes);
+        data = g_selfcond.scratch.data();
+    }
+
+    std::ofstream & f = is_in ? g_selfcond.in_f : g_selfcond.out_f;
+    f.write((const char *) data, (std::streamsize) ((size_t) E * (size_t) T * sizeof(float)));
+    if (is_in)  g_selfcond.wrote_in  = true;
+    else        g_selfcond.wrote_out = true;
+    return true;
+}
+
 // apply the model's chat template to the user prompt (this is a chat-trained model)
 static std::string format_chat(llama_model * model, const std::string & prompt) {
     auto tmpls = common_chat_templates_init(model, "");
@@ -82,7 +205,8 @@ struct dg_config {
     int   topk_start;
     int   topk_end;
     int   topk_tail;
-    bool  collect_imatrix; // DG_DUMP_IMATRIX set: bracket the denoise decode with g_collector
+    bool  collect_imatrix;  // DG_DUMP_IMATRIX set: bracket the denoise decode with g_collector
+    bool  collect_selfcond; // DG_DUMP_SELFCOND set: bracket the denoise decode with g_selfcond
 };
 
 // Run one prompt end-to-end: prefill the prefix, denoise the canvas block(s), print the answer.
@@ -181,10 +305,14 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
     ctx_params.type_k      = params.cache_type_k;
     ctx_params.type_v      = params.cache_type_v;
     ctx_params.flash_attn_type = params.flash_attn_type;
-    // Register the imatrix activation collector when dumping a decoder-path imatrix. The collector
-    // stays gated (m_enabled=false) and is only enabled around the denoise decode below, so the
-    // encoder prefill / canvas-commit decodes don't contribute. No-op when collect_imatrix is off.
-    if (cfg.collect_imatrix) {
+    // Register a decoder-path eval callback. ctx_params.cb_eval holds exactly ONE callback, so the
+    // self_cond dumper and the imatrix collector are mutually exclusive; DG_DUMP_SELFCOND wins (the
+    // warning is emitted once in main()). Both stay gated and only fire around the denoise decode
+    // below, so the encoder prefill / canvas-commit decodes don't contribute. No-op when neither set.
+    if (cfg.collect_selfcond) {
+        ctx_params.cb_eval           = dg_collect_selfcond;
+        ctx_params.cb_eval_user_data = nullptr;
+    } else if (cfg.collect_imatrix) {
         ctx_params.cb_eval           = ik_collect_imatrix;
         ctx_params.cb_eval_user_data = nullptr;
     }
@@ -350,9 +478,15 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
         if (cfg.collect_imatrix) {
             g_collector.enable();
         }
+        if (cfg.collect_selfcond) {
+            g_selfcond.enable();
+        }
         const int decode_rc = llama_decode(ctx, batch);
         if (cfg.collect_imatrix) {
             g_collector.disable();
+        }
+        if (cfg.collect_selfcond) {
+            g_selfcond.disable();
         }
         if (decode_rc != 0) {
             LOG_ERR("error: llama_decode failed at step %d\n", cur_step);
@@ -871,7 +1005,19 @@ int main(int argc, char ** argv) {
     // passes and write it to <path> at the end. Unset (default) => no eval callback, no overhead,
     // behaviour identical to before. Prefer .gguf (else pass --output-format dat for legacy .dat).
     const char * imatrix_path = getenv("DG_DUMP_IMATRIX");
-    const bool   collect_imatrix = imatrix_path != nullptr && imatrix_path[0] != '\0';
+    bool         collect_imatrix = imatrix_path != nullptr && imatrix_path[0] != '\0';
+
+    // DG_DUMP_SELFCOND=<path>: collect aligned self_cond_mlp (in, out) pairs from the denoise
+    // (decoder) forward passes for isolated self_cond_mlp distillation. Writes <path>.in.bin,
+    // <path>.out.bin, <path>.meta (see selfcond_dumper above). Unset (default) => no callback,
+    // no overhead. Mutually exclusive with DG_DUMP_IMATRIX (one cb_eval slot); selfcond wins.
+    const char * selfcond_path = getenv("DG_DUMP_SELFCOND");
+    const bool   collect_selfcond = selfcond_path != nullptr && selfcond_path[0] != '\0';
+    if (collect_selfcond && collect_imatrix) {
+        LOG_WRN("diffusion-gemma: DG_DUMP_SELFCOND and DG_DUMP_IMATRIX both set; only one eval "
+                "callback is supported — DG_DUMP_SELFCOND takes precedence, imatrix disabled\n");
+        collect_imatrix = false;
+    }
 
     llama_backend_init();
 
@@ -904,31 +1050,59 @@ int main(int argc, char ** argv) {
         /* .topk_fixed      = */ topk_fixed,
         /* .topk_start      = */ topk_start,
         /* .topk_end        = */ topk_end,
-        /* .topk_tail       = */ topk_tail,
-        /* .collect_imatrix = */ collect_imatrix,
+        /* .topk_tail        = */ topk_tail,
+        /* .collect_imatrix  = */ collect_imatrix,
+        /* .collect_selfcond = */ collect_selfcond,
     };
 
     // Build the list of prompts to run. Normal use = the single --prompt / -p (or -f file content).
     // In imatrix mode with a -f prompt file, each non-empty line is a separate prompt (a separate
     // denoise loop); the imatrix accumulates across all of them for a more representative matrix.
+    const bool multi_prompt_mode = collect_imatrix || collect_selfcond;
     std::vector<std::string> prompts;
-    if (collect_imatrix && !params.prompt_file.empty()) {
+    if (multi_prompt_mode && !params.prompt_file.empty()) {
         prompts = split_prompts_by_line(params.prompt);
         if (prompts.empty()) {
-            LOG_ERR("error: DG_DUMP_IMATRIX set but prompt file '%s' has no prompts\n", params.prompt_file.c_str());
+            LOG_ERR("error: collection mode set but prompt file '%s' has no prompts\n", params.prompt_file.c_str());
             llama_model_free(model);
             llama_backend_free();
             return 1;
         }
-        LOG_INF("diffusion-gemma: imatrix collection over %zu prompt(s) from '%s' -> %s\n",
-                prompts.size(), params.prompt_file.c_str(), imatrix_path);
+        if (collect_selfcond) {
+            LOG_INF("diffusion-gemma: self_cond collection over %zu prompt(s) from '%s' -> %s.{in,out}.bin\n",
+                    prompts.size(), params.prompt_file.c_str(), selfcond_path);
+        } else {
+            LOG_INF("diffusion-gemma: imatrix collection over %zu prompt(s) from '%s' -> %s\n",
+                    prompts.size(), params.prompt_file.c_str(), imatrix_path);
+        }
     } else {
         prompts.push_back(params.prompt);
         if (collect_imatrix) {
             LOG_INF("diffusion-gemma: imatrix collection over 1 prompt -> %s\n", imatrix_path);
             LOG_INF("diffusion-gemma: for more coverage pass a -f prompt file (one prompt per line) "
                     "or re-run with --in-file %s to merge across runs\n", imatrix_path);
+        } else if (collect_selfcond) {
+            LOG_INF("diffusion-gemma: self_cond collection over 1 prompt -> %s.{in,out}.bin\n", selfcond_path);
+            LOG_INF("diffusion-gemma: for more coverage pass a -f prompt file (one prompt per line)\n");
         }
+    }
+
+    // set up the self_cond dumper before any context is created: open the .in/.out append files
+    // and read the stride/cap knobs. The dumper starts gated off; run_one_prompt enables it only
+    // around the denoise decode. Mutually exclusive with the imatrix collector (DG_DUMP_SELFCOND won above).
+    if (collect_selfcond) {
+        const int sc_stride = env_int("DG_DUMP_SELFCOND_STRIDE", 4);
+        const int sc_max    = env_int("DG_DUMP_SELFCOND_MAX_STEPS", 2000);
+        g_selfcond.open(selfcond_path, sc_stride, sc_max);
+        if (!g_selfcond.enabled_path) {
+            LOG_ERR("error: DG_DUMP_SELFCOND set but could not open '%s.in.bin' / '%s.out.bin' for writing\n",
+                    selfcond_path, selfcond_path);
+            llama_model_free(model);
+            llama_backend_free();
+            return 1;
+        }
+        LOG_INF("diffusion-gemma: self_cond dumper: stride=%d (every Nth step) max_steps=%d\n",
+                sc_stride, sc_max);
     }
 
     // set up the imatrix collector before any context is created: register the backend eval
@@ -961,6 +1135,15 @@ int main(int argc, char ** argv) {
     if (collect_imatrix) {
         LOG_INF("diffusion-gemma: saving denoise-path imatrix to '%s'\n", imatrix_path);
         g_collector.save_imatrix();
+    }
+
+    // flush the self_cond .in/.out files and write the .meta sidecar (now that the step count is known).
+    if (collect_selfcond) {
+        g_selfcond.finalize();
+        LOG_INF("diffusion-gemma: self_cond dumper wrote %d step(s) (n_embd=%lld n_tokens=%lld) to "
+                "'%s.{in,out}.bin' (+ .meta)\n",
+                g_selfcond.steps_written, (long long) g_selfcond.n_embd, (long long) g_selfcond.n_tokens,
+                selfcond_path);
     }
 
     llama_model_free(model);
