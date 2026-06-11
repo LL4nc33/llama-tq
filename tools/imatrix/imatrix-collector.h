@@ -25,6 +25,7 @@
 #include "gguf.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <map>
