@@ -562,6 +562,42 @@ void llm_graph_input_attn_no_cache::set_input(const llama_ubatch * ubatch) {
     }
 }
 
+void llm_graph_input_attn_no_cache_prefix::set_input(const llama_ubatch * ubatch) {
+    // block-diffusion prefix mask over [prompt(0..P-1) ; canvas(P..n_tokens-1)]:
+    //   - prompt queries attend causally to the prompt only (no canvas)
+    //   - canvas queries attend to everything (bidirectional + cross to the prompt)
+    const int64_t n_kv     = ubatch->n_tokens;
+    const int64_t n_tokens = ubatch->n_tokens;
+    const int64_t P        = n_prompt; // causal prompt prefix length
+
+    GGML_ASSERT(self_kq_mask);
+    GGML_ASSERT(ggml_backend_buffer_is_host(self_kq_mask->buffer));
+
+    float * data = (float *) self_kq_mask->data;
+    std::fill(data, data + ggml_nelements(self_kq_mask), -INFINITY);
+
+    for (int64_t i1 = 0; i1 < n_tokens; ++i1) {          // query
+        const llama_seq_id s1 = ubatch->seq_id[i1][0];
+        const uint64_t idst = i1*n_kv;
+        for (int64_t i0 = 0; i0 < n_tokens; ++i0) {      // key
+            if (ubatch->seq_id[i0][0] != s1) {
+                continue;
+            }
+            bool allow;
+            if (i1 < P) {
+                // prompt query: causal, prompt keys only (no canvas)
+                allow = (i0 < P) && (i0 <= i1);
+            } else {
+                // canvas query: attend to everything (bidirectional + cross to prompt)
+                allow = true;
+            }
+            if (allow) {
+                data[idst + i0] = 0.0f;
+            }
+        }
+    }
+}
+
 void llm_graph_input_attn_kv::set_input(const llama_ubatch * ubatch) {
     mctx->set_input_k_idxs(self_k_idxs, ubatch);
     mctx->set_input_v_idxs(self_v_idxs, ubatch);
