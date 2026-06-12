@@ -65,6 +65,14 @@ export interface ChatMessageTimings {
 	prompt_ms?: number;
 	prompt_n?: number;
 	agentic?: ChatMessageAgenticTimings;
+	// Text-diffusion (DiffusionGemma) throughput; present only for diffusion models.
+	diffusion?: {
+		n_steps?: number;
+		canvas_tokens?: number;
+		ms_per_step?: number;
+		steps_per_second?: number;
+		canvas_tokens_per_second?: number;
+	};
 }
 
 export interface ChatMessageAgenticTimings {

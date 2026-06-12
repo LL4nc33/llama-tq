@@ -16,6 +16,10 @@
 		isProcessingPrompt?: boolean;
 		initialView?: ChatMessageStatsView;
 		agenticTimings?: ChatMessageAgenticTimings;
+		// Text-diffusion (DiffusionGemma): canvas throughput. When present, the
+		// speed badge reports canvas tok/s — the meaningful metric for a denoise
+		// model — instead of the misleading answer-tokens/s.
+		canvasTokensPerSecond?: number;
 		onActiveViewChange?: (view: ChatMessageStatsView) => void;
 		hideSummary?: boolean;
 	}
@@ -29,6 +33,7 @@
 		isProcessingPrompt = false,
 		initialView = ChatMessageStatsView.GENERATION,
 		agenticTimings,
+		canvasTokensPerSecond,
 		onActiveViewChange,
 		hideSummary = false
 	}: Props = $props();
@@ -66,8 +71,15 @@
 			predictedMs > 0
 	);
 
+	// For diffusion models report canvas throughput — the whole canvas is denoised
+	// in parallel, so answer-tokens/s drastically understates the real speed.
+	let isDiffusion = $derived(canvasTokensPerSecond !== undefined && canvasTokensPerSecond > 0);
 	let tokensPerSecond = $derived(
-		hasGenerationStats ? (predictedTokens! / predictedMs!) * MS_PER_SECOND : 0
+		isDiffusion
+			? canvasTokensPerSecond!
+			: hasGenerationStats
+				? (predictedTokens! / predictedMs!) * MS_PER_SECOND
+				: 0
 	);
 	let formattedTime = $derived(
 		predictedMs !== undefined ? formatPerformanceTime(predictedMs) : DEFAULT_PERFORMANCE_TIME
@@ -232,8 +244,8 @@
 			<BadgeChatStatistic
 				class="bg-transparent"
 				icon={Gauge}
-				value="{tokensPerSecond.toFixed(2)} t/s"
-				tooltipLabel="Generation speed"
+				value="{tokensPerSecond.toFixed(2)} {isDiffusion ? 'canvas t/s' : 't/s'}"
+				tooltipLabel={isDiffusion ? 'Denoise speed (canvas tokens/s)' : 'Generation speed'}
 			/>
 		{:else if activeView === ChatMessageStatsView.TOOLS && hasAgenticStats}
 			<BadgeChatStatistic

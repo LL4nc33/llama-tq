@@ -286,6 +286,13 @@ export interface ApiChatCompletionStreamChunk {
 		predicted_n?: number;
 		predicted_ms?: number;
 		cache_n?: number;
+		diffusion?: {
+			n_steps?: number;
+			canvas_tokens?: number;
+			ms_per_step?: number;
+			steps_per_second?: number;
+			canvas_tokens_per_second?: number;
+		};
 	};
 	prompt_progress?: ChatMessagePromptProgress;
 }

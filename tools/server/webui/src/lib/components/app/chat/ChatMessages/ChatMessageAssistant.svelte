@@ -365,6 +365,7 @@
 						promptMs={agentic ? agentic.llm.prompt_ms : message.timings.prompt_ms}
 						predictedTokens={agentic ? agentic.llm.predicted_n : message.timings.predicted_n}
 						predictedMs={agentic ? agentic.llm.predicted_ms : message.timings.predicted_ms}
+						canvasTokensPerSecond={message.timings.diffusion?.canvas_tokens_per_second}
 						agenticTimings={agentic}
 						onActiveViewChange={handleStatsViewChange}
 					/>
