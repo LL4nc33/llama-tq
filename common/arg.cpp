@@ -2208,7 +2208,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) {
             params.tq_no_deferred_k = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_NO_TQ_DEFERRED_K"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH, LLAMA_EXAMPLE_DIFFUSION}).set_env("LLAMA_ARG_NO_TQ_DEFERRED_K"));
     add_opt(common_arg(
         {"--no-tq-deferred-v"},
         "OPT-OUT: disable deferred V staging even for VTQ_2/_3/_v8 trellis types.\n"
@@ -2218,7 +2218,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) {
             params.tq_no_deferred_v = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_NO_TQ_DEFERRED_V"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH, LLAMA_EXAMPLE_DIFFUSION}).set_env("LLAMA_ARG_NO_TQ_DEFERRED_V"));
     // Trick 2 PR2: per-layer mixed precision V-cache (OPT-IN gate)
     add_opt(common_arg(
         {"--tq-mixed-v"},

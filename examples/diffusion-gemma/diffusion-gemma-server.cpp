@@ -731,7 +731,17 @@ int main(int argc, char ** argv) {
     // Honor --cache-type-k/-v (ktq2_1/vtq2_1 etc.) + flash-attention; otherwise K/V stay f16.
     ctx_params.type_k      = params.cache_type_k;
     ctx_params.type_v      = params.cache_type_v;
+    ctx_params.type_k_swa  = params.cache_type_k_swa;
+    ctx_params.type_v_swa  = params.cache_type_v_swa;
     ctx_params.flash_attn_type = params.flash_attn_type;
+    // TurboQuant tuning (see cli): boundary protection + no-deferred opt-out (drops f16 staging
+    // buffer to fit full ctx on small-VRAM GPUs).
+    ctx_params.tq_protect_layers = params.tq_protect_layers;
+    ctx_params.tq_protect_sinks  = params.tq_protect_sinks;
+    ctx_params.tq_deferred_k     = params.tq_deferred_k;
+    ctx_params.tq_deferred_v     = params.tq_deferred_v;
+    ctx_params.tq_no_deferred_k  = params.tq_no_deferred_k;
+    ctx_params.tq_no_deferred_v  = params.tq_no_deferred_v;
 
     srv.ctx = llama_init_from_model(srv.model, ctx_params);
     if (!srv.ctx) {

@@ -330,7 +330,18 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
     // ctx params would otherwise pin K/V to f16 regardless of --cache-type-k/-v.
     ctx_params.type_k      = params.cache_type_k;
     ctx_params.type_v      = params.cache_type_v;
+    ctx_params.type_k_swa  = params.cache_type_k_swa;
+    ctx_params.type_v_swa  = params.cache_type_v_swa;
     ctx_params.flash_attn_type = params.flash_attn_type;
+    // TurboQuant tuning: boundary-layer protection + the no-deferred opt-out that drops the
+    // f16 staging buffer (needed to fit full ctx on small-VRAM GPUs — the global layers are
+    // the only 256k-deep ones, so their staging buffer dominates at long context).
+    ctx_params.tq_protect_layers = params.tq_protect_layers;
+    ctx_params.tq_protect_sinks  = params.tq_protect_sinks;
+    ctx_params.tq_deferred_k     = params.tq_deferred_k;
+    ctx_params.tq_deferred_v     = params.tq_deferred_v;
+    ctx_params.tq_no_deferred_k  = params.tq_no_deferred_k;
+    ctx_params.tq_no_deferred_v  = params.tq_no_deferred_v;
     // Register a decoder-path eval callback. ctx_params.cb_eval holds exactly ONE callback, so the
     // self_cond dumper and the imatrix collector are mutually exclusive; DG_DUMP_SELFCOND wins (the
     // warning is emitted once in main()). Both stay gated and only fire around the denoise decode
