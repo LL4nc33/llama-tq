@@ -319,6 +319,13 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
     ctx_params.n_batch  = n_ub;
     ctx_params.n_ubatch = n_ub;
     ctx_params.no_perf  = params.no_perf;
+    // llama_context_default_params() defaults swa_full=true (upstream choice for chat LLMs,
+    // avoids SWA-cache defrag). For DiffusionGemma this is catastrophic: it sizes ALL 25
+    // sliding-window layers to the FULL context instead of the n_swa=1024 window, so a 256k
+    // context allocates ~24 GB of SWA cache that is never read (the window drops it) and OOMs.
+    // Cap the SWA cache to its window — only the 5 global layers then scale with context.
+    // Set DG_SWA_FULL=1 to restore the old behaviour for debugging.
+    ctx_params.swa_full = (std::getenv("DG_SWA_FULL") != nullptr);
     // Honor the KV-cache quantization + flash-attention flags (ktq2_1/vtq2_1 etc.); the default
     // ctx params would otherwise pin K/V to f16 regardless of --cache-type-k/-v.
     ctx_params.type_k      = params.cache_type_k;

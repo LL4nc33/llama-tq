@@ -724,6 +724,10 @@ int main(int argc, char ** argv) {
     ctx_params.n_batch  = srv.n_ub;
     ctx_params.n_ubatch = srv.n_ub;
     ctx_params.no_perf  = params.no_perf;
+    // See diffusion-gemma-cli.cpp: default swa_full=true sizes all 25 SWA layers to the full
+    // context (~24 GB at 256k) and OOMs. Cap to the window; only the 5 global layers scale.
+    // DG_SWA_FULL=1 restores the old behaviour for debugging.
+    ctx_params.swa_full = (std::getenv("DG_SWA_FULL") != nullptr);
     // Honor --cache-type-k/-v (ktq2_1/vtq2_1 etc.) + flash-attention; otherwise K/V stay f16.
     ctx_params.type_k      = params.cache_type_k;
     ctx_params.type_v      = params.cache_type_v;
