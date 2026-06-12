@@ -218,3 +218,42 @@ quantisation error.
 - ggml-org/llama.cpp#15090 — Hybrid model fine-tuning request
 - ggml-org/llama.cpp#14424 — Sparse training proposal
 - ggml-org/llama.cpp#9674 — Saver rejects modern architectures
+
+## Roadmap — toward full-capability fine-tuning
+
+Where we stand on the capability surfaces (2026-05-18):
+
+| Component | Today | Needed for capability training |
+|-----------|-------|--------------------------------|
+| Token embeddings | trainable | extends vocab, but no new skills |
+| LM head | trainable | only output distribution shift |
+| Attention | frozen | **required** for reasoning + context tracking |
+| MoE experts (`MUL_MAT_ID`) | **trainable via LoRA** (2026-05-18) | unlocks domain knowledge |
+| Mamba / SSM | frozen | sequential state — nice-to-have |
+
+### ✅ Phase A — MUL_MAT_ID backward (done 2026-05-18)
+
+`ggml_mul_mat_id_grad_as` implemented on CPU + CUDA for the `as`-gradient. The `b`-broadcast case used by Qwen3.6-A35B (`n_used_b=1, n_used=8`) is dropped with a one-time warning — mathematically safe for the LoRA setup because the base weight is frozen and the LoRA path flows via `grad_as`. The strided `cont(transpose(W_q))` path that would otherwise force a multi-GiB block-copy of the quantised weight is gated out for quantised `src0`. Full LoRA training of `ffn_*_exps` converges on a single 12 GB GPU.
+
+### Phase B — Attention backward without FlashAttn
+
+Either port FA backward to CUDA or fall back to standard attention backward (exists but memory-expensive). Unlocks full block-level (attention + FFN) LoRA training in addition to the current expert-only path. Not started.
+
+### Phase C — Research-grade
+
+- **Stage-4 QAT — wire-up.** The ggml op is in. Remaining work: `--qat-target-quant` CLI flag, `common_params.qat_target_quant` field, and the `ab_cur` wrap in `build_lora_mm` / `build_lora_mm_id`. Once landed, the LoRA adapter can be trained to compensate for the base-model's quantisation error.
+- **Dense LoRA gradient flow through quantised activations.** The autograd currently skips `MUL_MAT_ID grad_b` when `src0` is quantised. A dequant-on-the-fly path would let deeper LoRA stacks see end-to-end gradients through activations. Open research.
+- **SSM_SCAN / SSM_CONV backward** for Mamba state training (mathematically non-trivial — selective state spaces).
+- **Periodic mid-training checkpoint** — flush adapter every N steps so a crash mid-batch keeps progress. Currently flushes only at epoch boundary and on SIGTERM/SIGINT.
+
+### Phase D — Multi-GPU LoRA training on quantised base (2026-05-19: FUNCTIONAL)
+
+Layer-split (`-sm layer -ts a,b`) for the LoRA-on-quantised path is now **functional** on 2× RTX 2060 12 GB. Smoke: Qwen3.6-A35B-IQ2_XXS, `-ts 1,1`, 222 steps SGD, loss 3.247 → 1.379, acc 31% → 64%, ~5 GB peak per GPU. Same numerical trajectory as the single-GPU path.
+
+Two scheduler fixes were needed (both on `feature/phase-d-multigpu-lora`):
+- `9d136dee5` — `sched->graph_inputs[]` is now a dynamic array. The previous fixed-size `GGML_SCHED_MAX_SPLIT_INPUTS=30` cap fits inference but is overrun by training graphs (forward + backward + per-param `OPT_STEP`) on a layer-split MoE.
+- `93388f61d` — new `ggml_backend_sched_invalidate_prev_backend_ids()` plus a sentinel-aware comparator. The scheduler previously cached `prev_node_backend_ids` from the prior shape; on a `gf → gb_grad → gb_opt` switch it missed the change, skipped the reserve-and-retry path, and segfaulted at `init_tensor` on a stale `buffer_id`. The invalidate helper is called from `ggml_opt_alloc` on every graph-shape change and forces the realloc path.
+
+**Caveat — dual-GPU is not a speedup for fitted workloads.** Layer-split is sequential, and on consumer dual-2060 rigs without working P2P/NVLink, the cross-device sync cost (asymmetric PCIe x16+x4) outweighs the compute parallelism. Measured: ~0.35 step/s dual vs ~0.50 step/s single (~44% slower per step). Use dual-GPU when the workload does not fit single-GPU (200k+ ctx, higher rank, AdamW momenta), not as a free speedup. See `docs/phase-d-smoke-results.md`.
+
+**Next step.** rank=4 + AdamW reachable now that VRAM doubles, which addresses the SGD-only drift seen in the earlier 10335-sample run. Validation pending.
