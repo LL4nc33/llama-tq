@@ -148,6 +148,11 @@ a.out.*
 LEGION/
 DISCUSSION_POST.md
 
+# HuggingFace release staging — model card + GGUF upload tooling.
+# Lives only locally + on HuggingFace. NEVER goes to GitHub or gitea
+# (keeps the HF model artifacts cleanly separate from the fork's source code).
+hf-release/
+
 # Local-only: development plans, devlogs, design docs
 # Private development notes — never push to remote
 docs/plans/*
