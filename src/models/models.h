@@ -819,7 +819,7 @@ struct llama_model_diffusion_gemma : public llama_model_gemma4 {
     // token embeddings per position each decoder step (the CLI feeds the top-N ids+probs, zero-
     // padding unused slots), independent of the sampling k. 256 captures effectively all the
     // softmax mass of a converged diffusion step, so the soft-embedding blend is near-exact.
-    static constexpr int64_t N_SC_TOPK = 128;
+    static constexpr int64_t N_SC_TOPK = 64;
 
     // Shared transformer body for both KV-cache-reuse variants. The reused gemma4 decoder
     // block (layers + final norm + tied lm_head + softcapping) is identical across phases;
