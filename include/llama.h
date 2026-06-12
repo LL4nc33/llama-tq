@@ -367,6 +367,14 @@ extern "C" {
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
 
+        // Per-stream KV type for sliding-window-attention (SWA) layers [EXPERIMENTAL].
+        // SWA layers (e.g. Gemma-family head_dim=256) carry large per-channel outliers
+        // that low-bit KV quant clips, breaking local coherence. These let the SWA
+        // stream stay at a higher precision than the (few, 256k-deep) global layers.
+        // GGML_TYPE_COUNT means "inherit type_k / type_v" (backward compatible).
+        enum ggml_type type_k_swa;
+        enum ggml_type type_v_swa;
+
         // Trick 2 PR2: per-layer mixed precision V-cache [EXPERIMENTAL]
         // If type_v_layers_count > 0, type_v_layers[il] overrides type_v for layer il.
         // Otherwise type_v is used uniformly (backward compatible).

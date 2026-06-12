@@ -17,6 +17,8 @@ public:
             const llama_model & model,
                     ggml_type   type_k,
                     ggml_type   type_v,
+                    ggml_type   type_k_swa, // GGML_TYPE_COUNT = inherit type_k
+                    ggml_type   type_v_swa, // GGML_TYPE_COUNT = inherit type_v
                          bool   v_trans,
                          bool   offload,
                          bool   swa_full,

@@ -649,6 +649,12 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
+    // KV cache type for sliding-window-attention (SWA) layers. GGML_TYPE_COUNT = inherit
+    // cache_type_k / cache_type_v (backward compatible). Set higher than the base type to
+    // keep SWA layers (head_dim=256 outliers) coherent while global layers stay quantised.
+    ggml_type cache_type_k_swa = GGML_TYPE_COUNT;
+    ggml_type cache_type_v_swa = GGML_TYPE_COUNT;
+
     uint32_t tq_protect_layers = 0; // boundary layer protection: first/last N layers use q8_0 instead of TQ
     uint32_t tq_protect_sinks  = 0; // attention-sink protection: force layer-0 V-cache to f16 when > 0 (StreamingLLM)
     bool tq_deferred_k = false;     // defer K quantization until prefill->decode transition

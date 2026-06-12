@@ -19,6 +19,10 @@ struct llama_memory_params {
     ggml_type type_k;
     ggml_type type_v;
 
+    // KV type for the sliding-window-attention stream. GGML_TYPE_COUNT = inherit type_k / type_v.
+    ggml_type type_k_swa;
+    ggml_type type_v_swa;
+
     // use full-size SWA cache
     bool swa_full;
 
