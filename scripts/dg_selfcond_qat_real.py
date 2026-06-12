@@ -122,7 +122,10 @@ class Adam:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shim", required=True, help="path to libquant_roundtrip.so")
-    ap.add_argument("--qtype", default="q2_K", help="ggml quant type name for the real roundtrip")
+    ap.add_argument("--qtype", default="q2_K", help="ggml quant type for gate/up (n_per_row=2816, %256==0)")
+    ap.add_argument("--qtype-down", default="q4_0",
+                    help="ggml quant type for down (n_per_row=2112, %256!=0 so k-quants produce nan; "
+                         "use a 32-block type. Matches the real deploy fallback: down was Q4_0).")
     ap.add_argument("--data", required=True)
     ap.add_argument("--gate", required=True); ap.add_argument("--up", required=True); ap.add_argument("--down", required=True)
     ap.add_argument("--out", required=True)
@@ -138,9 +141,10 @@ def main():
 
     lib = load_shim(args.shim)
     type_id = lib.qrt_type_by_name(args.qtype.encode())
-    if type_id < 0:
-        sys.exit(f"unknown ggml type '{args.qtype}'")
-    print(f"real-codebook QAT: qtype={args.qtype} (id={type_id})")
+    type_id_down = lib.qrt_type_by_name(args.qtype_down.encode())
+    if type_id < 0 or type_id_down < 0:
+        sys.exit(f"unknown ggml type '{args.qtype}' / '{args.qtype_down}'")
+    print(f"real-codebook QAT: gate/up={args.qtype} (id={type_id})  down={args.qtype_down} (id={type_id_down})")
 
     pre, post, idx, E, T = load_trajectory(args.data)
     X = pre.reshape(-1, E); Y = post.reshape(-1, E)
@@ -163,7 +167,7 @@ def main():
         print(f"hinge: {len(pairs)} step-pairs -> {pa.shape[0]} token-pairs, lambda={args.hinge_lambda} rho={args.hinge_rho}")
 
     def quant_all(g, u, d):
-        return roundtrip(lib, type_id, g), roundtrip(lib, type_id, u), roundtrip(lib, type_id, d)
+        return roundtrip(lib, type_id, g), roundtrip(lib, type_id, u), roundtrip(lib, type_id_down, d)
 
     # baseline MSE with teacher weights under the REAL codebook
     gq, uq, dq = quant_all(gate, up, down)
