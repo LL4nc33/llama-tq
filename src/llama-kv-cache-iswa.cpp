@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 
 //
 // llama_kv_cache_iswa
@@ -83,10 +84,26 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
             v_trans, offload, unified, size_base, n_seq_max, n_pad,
             0, LLAMA_SWA_TYPE_NONE, mem_other_base, tq_protect_layers, tq_protect_sinks, tq_deferred_k, tq_deferred_v, tq_no_deferred_k, tq_no_deferred_v, filter_base, reuse, share, type_v_layers);
 
+    // The sliding-window-attention layers (head_dim=256 on Gemma-family models)
+    // carry large per-channel outliers that low-bit KV quantisation (KTQ/VTQ)
+    // clips, which destroys local positional precision and produces token-doubling.
+    // Setting DG_SWA_KV_F16=1 keeps the SWA stream in f16 while the (few, but
+    // 256k-deep) global-attention layers stay quantised. This is a temporary
+    // probe for the proper --cache-type-{k,v}-swa flags. The SWA cache only
+    // buffers n_swa tokens, so f16 here costs almost no VRAM.
+    ggml_type type_k_swa = type_k;
+    ggml_type type_v_swa = type_v;
+    if (const char * e = std::getenv("DG_SWA_KV_F16"); e && e[0] == '1') {
+        type_k_swa = GGML_TYPE_F16;
+        type_v_swa = GGML_TYPE_F16;
+        LLAMA_LOG_WARN("%s: DG_SWA_KV_F16=1 -> forcing SWA KV cache to f16 (base stays %d/%d)\n",
+                __func__, (int) type_k, (int) type_v);
+    }
+
     LLAMA_LOG_INFO("%s: creating     SWA KV cache, size = %u cells\n", __func__, size_swa);
 
     kv_swa = std::make_unique<llama_kv_cache>(
-            model, type_k, type_v,
+            model, type_k_swa, type_v_swa,
             v_trans, offload, unified, size_swa, n_seq_max, n_pad,
             hparams.n_swa, hparams.swa_type, mem_other_swa, tq_protect_layers, tq_protect_sinks, tq_deferred_k, tq_deferred_v, tq_no_deferred_k, tq_no_deferred_v, filter_swa, reuse, share, type_v_layers);
 }
