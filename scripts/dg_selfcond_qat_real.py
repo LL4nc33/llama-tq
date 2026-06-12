@@ -140,6 +140,9 @@ def main():
     ap.add_argument("--hinge-step-lo", type=int, default=0)
     ap.add_argument("--hinge-step-hi", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--preload", action="store_true",
+                    help="load X/Y fully into RAM (~5GB) instead of memmap — much faster matmuls, "
+                         "but only safe for a single run with ample free RAM (check free -g first)")
     args = ap.parse_args()
 
     # single-instance guard: two concurrent runs each memmap+touch ~5 GB and can swap-lock the box
@@ -164,7 +167,13 @@ def main():
     pre, post, idx, E, T = load_trajectory(args.data)
     X = pre.reshape(-1, E); Y = post.reshape(-1, E)
     n = len(X)
-    print(f"loaded {n} (pre,post) pairs, n_embd={E}")
+    # --preload pulls X/Y fully into RAM (~5 GB) — fine for a SINGLE lock-guarded run with free
+    # RAM; makes the matmuls memory- not disk-bound (memmap slices page-fault per batch = ~4s/fwd).
+    # Default stays memmap (host-safe). Only preload when you've checked free RAM >> 5 GB.
+    if args.preload:
+        print("preloading X/Y into RAM...", flush=True)
+        X = np.ascontiguousarray(X); Y = np.ascontiguousarray(Y)
+    print(f"loaded {n} (pre,post) pairs, n_embd={E} (preload={args.preload})")
 
     gate = np.load(args.gate).astype(np.float32)
     up   = np.load(args.up).astype(np.float32)
