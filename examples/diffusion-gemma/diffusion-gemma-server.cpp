@@ -82,8 +82,17 @@ struct diffusion_request {
     int      topk_end      = 0;
     bool     topk_tail     = false;
     bool     ignore_eos    = false; // run all max_canvases blocks (don't stop at end-of-text)
+    bool     stream_steps  = false; // emit per-denoise-step canvas previews over SSE (Mercury-style "diffusing")
     uint32_t seed          = 1234;
 };
+
+// Per-denoise-step preview callback. Returns false to abort generation (e.g. client disconnected).
+// canvas:  the current argmax canvas for this step (canvas_length tokens)
+// settled: per-token settle step (>=1 once a token has been accepted, 0 while still masked/noisy)
+//          — lets the UI colour tokens by how early they locked in (confidence heatmap).
+using diffusion_step_cb = std::function<bool(int step, int total_steps, int block,
+                                             const std::vector<llama_token> & canvas,
+                                             const std::vector<int> & settled)>;
 
 struct diffusion_result {
     std::string answer;            // final response text (post channel-split / eog truncation)
@@ -208,8 +217,12 @@ struct diffusion_server {
     }
 
     // run the block-diffusion denoising loop for one request (mirrors diffusion-gemma-cli.cpp)
-    diffusion_result generate(const std::vector<llama_token> & prompt_tokens, const diffusion_request & rq) {
+    // step_cb (optional): invoked once per denoise step with the current canvas for live previews.
+    diffusion_result generate(const std::vector<llama_token> & prompt_tokens, const diffusion_request & rq,
+                              const diffusion_step_cb & step_cb = nullptr) {
         diffusion_result out;
+        // per-token settle step (0 = not yet accepted); reset per block, reported for the heatmap.
+        std::vector<int> settled(canvas_length, 0);
         const int prefix_len = (int) prompt_tokens.size();
         int n_decode = 0;
 
@@ -260,6 +273,7 @@ struct diffusion_server {
             ++n_blocks_run;
             for (auto & t : canvas) t = rand_tok(rng);
             std::fill(prev_argmax.begin(), prev_argmax.end(), -1);
+            std::fill(settled.begin(), settled.end(), 0);
             llama_set_diffusion_self_cond_topk(ctx, nullptr, nullptr, 0, 0);
 
             for (int cur_step = n_steps; cur_step >= 1; --cur_step) {
@@ -478,6 +492,18 @@ struct diffusion_server {
                 }
                 for (int i = 0; i < canvas_length; ++i) if (accept_mask[i]) accepted[i] = sampled[i];
 
+                // live preview: record settle step for newly-accepted tokens, emit this step's canvas.
+                if (step_cb) {
+                    const int step_no = n_steps - cur_step + 1;   // 1-based, ascending for the UI
+                    for (int i = 0; i < canvas_length; ++i) {
+                        if (accept_mask[i] && settled[i] == 0) settled[i] = step_no;
+                    }
+                    if (!step_cb(step_no, n_steps, block, argmax_canvas, settled)) {
+                        out.error = "client disconnected";
+                        return out;   // abort cleanly when the SSE sink is gone
+                    }
+                }
+
                 const float mean_ent = std::accumulate(entropy.begin(), entropy.end(), 0.0f) / canvas_length;
                 const bool stable    = (STABILITY_THRESHOLD == 0) || (argmax_canvas == prev_argmax);
                 const bool confident = mean_ent < CONFIDENCE_THRESHOLD;
@@ -637,6 +663,9 @@ static diffusion_request request_from_body(const json & body, const diffusion_se
     }
     if (body.contains("seed")  && body["seed"].is_number_integer()) rq.seed = (uint32_t) body["seed"].get<int64_t>();
     if (body.contains("ignore_eos") && body["ignore_eos"].is_boolean()) rq.ignore_eos = body["ignore_eos"].get<bool>();
+    // "diffusing": true (Mercury-style) opts into per-step canvas previews; alias "stream_steps".
+    if (body.contains("diffusing")    && body["diffusing"].is_boolean())    rq.stream_steps = body["diffusing"].get<bool>();
+    if (body.contains("stream_steps") && body["stream_steps"].is_boolean()) rq.stream_steps = body["stream_steps"].get<bool>();
     return rq;
 }
 
@@ -1024,6 +1053,63 @@ int main(int argc, char ** argv) {
         catch (const std::exception & e) { res.status = 400; res.set_content(error_json(std::string("failed to format messages: ") + e.what(), "invalid_request_error", 400).dump(), "application/json"); return; }
         const std::vector<llama_token> prompt_tokens = common_tokenize(srv.vocab, prompt, false, true);
         const bool stream = body.value("stream", false);
+        const diffusion_request preview_rq = request_from_body(body, srv, default_seed);
+
+        // ---- live denoise preview: stream:true + diffusing:true → run generation inside the SSE provider,
+        //      emitting one canvas frame per denoise step (REPLACE, not append). ----
+        if (stream && preview_rq.stream_steps) {
+            const std::string id = gen_id("chatcmpl");
+            const int64_t created = (int64_t) std::time(nullptr);
+            const std::string model_id = srv.model_id;
+            res.set_chunked_content_provider("text/event-stream",
+                [&srv, id, created, model_id, prompt_tokens, preview_rq](size_t, httplib::DataSink & sink) {
+                    auto send = [&](const json & c) { std::string s = "data: " + c.dump() + "\n\n"; return sink.write(s.data(), s.size()); };
+                    auto delta_chunk = [&](const json & delta, const char * finish, const json * extra) {
+                        json c{{"id", id}, {"object", "chat.completion.chunk"}, {"created", created}, {"model", model_id},
+                               {"choices", json::array({ json{{"index", 0}, {"delta", delta}, {"finish_reason", finish ? json(finish) : json(nullptr)}} })}};
+                        if (extra) c["timings"] = *extra;
+                        return send(c);
+                    };
+                    if (!delta_chunk(json{{"role", "assistant"}}, nullptr, nullptr)) return false;
+
+                    // per-step preview callback: detokenize the canvas and emit a "diffusion_canvas" delta.
+                    auto step_cb = [&](int step, int total, int block,
+                                       const std::vector<llama_token> & canvas, const std::vector<int> & settled) -> bool {
+                        std::string canvas_text = common_detokenize(srv.vocab, canvas, false);
+                        json delta{
+                            {"diffusion_canvas", canvas_text},
+                            {"diffusion_step",   step},
+                            {"diffusion_total",  total},
+                            {"diffusion_block",  block},
+                            {"diffusion_settled", settled},
+                        };
+                        return delta_chunk(delta, nullptr, nullptr);
+                    };
+
+                    srv.metrics.n_processing.fetch_add(1);
+                    std::unique_lock<std::mutex> lock(srv.gen_mutex);
+                    diffusion_result r = srv.generate(prompt_tokens, preview_rq, step_cb);
+                    lock.unlock();
+                    srv.metrics.n_processing.fetch_sub(1);
+                    if (r.ok) { srv.metrics.add(r); log_timings(r); }
+
+                    if (!r.ok) {
+                        // client gone or generation failed — close the stream gracefully.
+                        delta_chunk(json::object(), "stop", nullptr);
+                        sink.done();
+                        return true;
+                    }
+                    // final: emit the clean answer text, then close.
+                    const json timings = timings_json(r);
+                    if (!delta_chunk(json{{"content", r.answer}}, nullptr, nullptr)) return false;
+                    if (!delta_chunk(json::object(), "stop", &timings))             return false;
+                    const std::string done = "data: [DONE]\n\n";
+                    sink.write(done.data(), done.size());
+                    sink.done();
+                    return true;
+                });
+            return;
+        }
 
         const diffusion_result r = run_for_body(body, prompt_tokens);
         if (!r.ok) { res.status = 500; res.set_content(error_json(r.error, "server_error", 500).dump(), "application/json"); return; }
