@@ -453,7 +453,7 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
     // gather: the decoder gathers just these SC_K embedding rows and blends them, instead of a
     // dense full-vocab probs @ token_embd matmul). Zero probs => no self-conditioning (step 1).
     // SC_K must match llama_model_diffusion_gemma::N_SC_TOPK (the graph's fixed gather width).
-    const int SC_K = 64;
+    const int SC_K = 128;
     std::vector<int32_t> sc_ids ((size_t) SC_K * canvas_length, 0);
     std::vector<float>   sc_probs((size_t) SC_K * canvas_length, 0.0f);
 

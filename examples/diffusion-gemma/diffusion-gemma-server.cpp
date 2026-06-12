@@ -62,7 +62,7 @@ static constexpr float TEMP_MIN             = 0.4f;
 static constexpr float TEMP_MAX             = 0.8f;
 static constexpr float CONFIDENCE_THRESHOLD = 0.005f;
 static constexpr int   STABILITY_THRESHOLD  = 1;
-static constexpr int   SC_K                 = 64; // must match llama_model_diffusion_gemma::N_SC_TOPK
+static constexpr int   SC_K                 = 128; // must match llama_model_diffusion_gemma::N_SC_TOPK
 static constexpr int   GPU_SAMPLING_MAX_TOP_K = 1024; // CUDA diffusion sampler limit
 
 static int env_int(const char * name, int def) {
