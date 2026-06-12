@@ -16,6 +16,8 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
         const llama_model & model,
                 ggml_type   type_k,
                 ggml_type   type_v,
+                ggml_type   type_k_swa_arg,
+                ggml_type   type_v_swa_arg,
                      bool   v_trans,
                      bool   offload,
                      bool   swa_full,
@@ -87,17 +89,23 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
     // The sliding-window-attention layers (head_dim=256 on Gemma-family models)
     // carry large per-channel outliers that low-bit KV quantisation (KTQ/VTQ)
     // clips, which destroys local positional precision and produces token-doubling.
-    // Setting DG_SWA_KV_F16=1 keeps the SWA stream in f16 while the (few, but
-    // 256k-deep) global-attention layers stay quantised. This is a temporary
-    // probe for the proper --cache-type-{k,v}-swa flags. The SWA cache only
-    // buffers n_swa tokens, so f16 here costs almost no VRAM.
-    ggml_type type_k_swa = type_k;
-    ggml_type type_v_swa = type_v;
+    // --cache-type-{k,v}-swa lets the SWA stream stay at a higher precision than
+    // the (few, but 256k-deep) global-attention layers. GGML_TYPE_COUNT means
+    // "inherit type_k / type_v". The SWA cache only buffers n_swa tokens, so a
+    // higher-precision SWA stream costs almost no VRAM.
+    ggml_type type_k_swa = (type_k_swa_arg == GGML_TYPE_COUNT) ? type_k : type_k_swa_arg;
+    ggml_type type_v_swa = (type_v_swa_arg == GGML_TYPE_COUNT) ? type_v : type_v_swa_arg;
+
+    // Back-compat env override (predates the flags); forces the SWA stream to f16.
     if (const char * e = std::getenv("DG_SWA_KV_F16"); e && e[0] == '1') {
         type_k_swa = GGML_TYPE_F16;
         type_v_swa = GGML_TYPE_F16;
-        LLAMA_LOG_WARN("%s: DG_SWA_KV_F16=1 -> forcing SWA KV cache to f16 (base stays %d/%d)\n",
-                __func__, (int) type_k, (int) type_v);
+    }
+
+    if (type_k_swa != type_k || type_v_swa != type_v) {
+        LLAMA_LOG_INFO("%s: SWA stream uses %s/%s (global layers stay %s/%s)\n", __func__,
+                ggml_type_name(type_k_swa), ggml_type_name(type_v_swa),
+                ggml_type_name(type_k), ggml_type_name(type_v));
     }
 
     LLAMA_LOG_INFO("%s: creating     SWA KV cache, size = %u cells\n", __func__, size_swa);

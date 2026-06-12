@@ -2066,6 +2066,32 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
+        {"-ctks", "--cache-type-k-swa"}, "TYPE",
+        string_format(
+            "KV cache data type for K on sliding-window-attention layers\n"
+            "(default: inherit --cache-type-k). Keep this higher-precision (e.g. f16)\n"
+            "than the base type: SWA layers (head_dim=256 outliers) lose coherence\n"
+            "under low-bit KV quant, while only the few global layers are 256k-deep.\n"
+            "allowed values: %s",
+            get_all_kv_cache_types().c_str()
+        ),
+        [](common_params & params, const std::string & value) {
+            params.cache_type_k_swa = kv_cache_type_from_str(value);
+        }
+    ).set_env("LLAMA_ARG_CACHE_TYPE_K_SWA"));
+    add_opt(common_arg(
+        {"-ctvs", "--cache-type-v-swa"}, "TYPE",
+        string_format(
+            "KV cache data type for V on sliding-window-attention layers\n"
+            "(default: inherit --cache-type-v). See --cache-type-k-swa.\n"
+            "allowed values: %s",
+            get_all_kv_cache_types().c_str()
+        ),
+        [](common_params & params, const std::string & value) {
+            params.cache_type_v_swa = kv_cache_type_from_str(value);
+        }
+    ).set_env("LLAMA_ARG_CACHE_TYPE_V_SWA"));
+    add_opt(common_arg(
         {"--tq-protect-layers"}, "N",
         string_format(
             "TurboQuant boundary layer protection: use q8_0 for first/last N layers\n"

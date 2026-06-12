@@ -43,6 +43,8 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
         model,
         type_k,
         type_v,
+        GGML_TYPE_COUNT,      // type_k_swa: inherit type_k (hybrid models don't use SWA-split yet)
+        GGML_TYPE_COUNT,      // type_v_swa: inherit type_v
         v_trans,
         offload,
         swa_full,

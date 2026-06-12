@@ -1530,6 +1530,10 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
 
+    // SWA-layer KV type: GGML_TYPE_COUNT means "inherit type_k / type_v" (backward compatible).
+    cparams.type_k_swa = params.cache_type_k_swa;
+    cparams.type_v_swa = params.cache_type_v_swa;
+
     // Number of recurrent-state rollback snapshots per sequence. Required for partial
     // seq_rm on hybrid models like qwen35 — without it, rejected drafts cannot be
     // rolled back from the recurrent state and force a full-prefill fallback.
