@@ -210,6 +210,8 @@ export interface ApiChatCompletionRequest {
 	model?: string;
 	return_progress?: boolean;
 	tools?: ApiChatCompletionTool[];
+	// Text-diffusion (DiffusionGemma): stream per-denoise-step canvas previews
+	diffusing?: boolean;
 	// Reasoning parameters
 	reasoning_format?: string;
 	// Generation parameters
@@ -268,6 +270,13 @@ export interface ApiChatCompletionStreamChunk {
 			reasoning_content?: string;
 			model?: string;
 			tool_calls?: ApiChatCompletionToolCallDelta[];
+			// DiffusionGemma live denoise preview (opt-in via diffusing:true).
+			// diffusion_canvas REPLACES the shown text each step (not append).
+			diffusion_canvas?: string;
+			diffusion_step?: number;
+			diffusion_total?: number;
+			diffusion_block?: number;
+			diffusion_settled?: number[]; // per-token settle step (0=masked) for the heatmap
 		};
 		finish_reason?: string | null;
 	}>;

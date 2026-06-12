@@ -105,6 +105,15 @@ export interface ChatMessageToolCallTiming {
 export interface ChatStreamCallbacks {
 	onChunk?: (chunk: string) => void;
 	onReasoningChunk?: (chunk: string) => void;
+	// DiffusionGemma live denoise preview: each call REPLACES the preview text
+	// (the canvas refines in place over the denoise steps).
+	onDiffusionStep?: (preview: {
+		canvas: string;
+		step: number;
+		total: number;
+		block: number;
+		settled?: number[];
+	}) => void;
 	onToolCallsStreaming?: (toolCalls: ApiChatCompletionToolCall[]) => void;
 	onAttachments?: (messageId: string, extras: DatabaseMessageExtra[]) => void;
 	onModel?: (model: string) => void;

@@ -602,6 +602,20 @@ class ChatStore {
 				streamedContent += chunk;
 				updateStreamingUI();
 			},
+			onDiffusionStep: (preview) => {
+				// Live denoise preview: REPLACE the in-progress view with this step's
+				// canvas. Kept in a separate field so the final `content` (which arrives
+				// as a normal chunk at the end) cleanly takes over.
+				const idx = conversationsStore.findMessageIndex(currentMessageId);
+				conversationsStore.updateMessageAtIndex(idx, {
+					diffusionPreview: {
+						canvas: preview.canvas,
+						step: preview.step,
+						total: preview.total,
+						settled: preview.settled
+					}
+				});
+			},
 			onReasoningChunk: (chunk: string) => {
 				streamedReasoningContent += chunk;
 				// Update UI to show reasoning is being received
@@ -792,6 +806,7 @@ class ChatStore {
 				stream: true,
 				onChunk: streamCallbacks.onChunk,
 				onReasoningChunk: streamCallbacks.onReasoningChunk,
+				onDiffusionStep: streamCallbacks.onDiffusionStep,
 				onModel: streamCallbacks.onModel,
 				onTimings: streamCallbacks.onTimings,
 				onComplete: async (
@@ -814,7 +829,9 @@ class ChatStore {
 					const uiUpdate: Partial<DatabaseMessage> = {
 						content,
 						reasoningContent: reasoning || undefined,
-						toolCalls: toolCalls || ''
+						toolCalls: toolCalls || '',
+						// clear the denoise preview — the final content takes over
+						diffusionPreview: undefined
 					};
 					if (timings) uiUpdate.timings = timings;
 					if (resolvedModel) uiUpdate.model = resolvedModel;

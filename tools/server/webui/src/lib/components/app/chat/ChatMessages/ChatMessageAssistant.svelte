@@ -6,6 +6,7 @@
 		ModelBadge,
 		ModelsSelector
 	} from '$lib/components/app';
+	import DiffusionCanvas from './DiffusionCanvas.svelte';
 	import { getMessageEditContext } from '$lib/contexts';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
@@ -301,6 +302,9 @@
 			</div>
 		</div>
 	{:else if message.role === MessageRole.ASSISTANT}
+		{#if message.diffusionPreview}
+			<DiffusionCanvas preview={message.diffusionPreview} />
+		{/if}
 		{#if showRawOutput}
 			<pre class="raw-output">{rawOutputContent || ''}</pre>
 		{:else}
