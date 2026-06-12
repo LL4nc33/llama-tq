@@ -8,7 +8,8 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for **long conte
 ## Highlights
 
 - **TurboQuant KV cache** — KTQ × VTQ at 2.78 bpw, f16-equivalent quality. Drop in: `--cache-type-k ktq2 --cache-type-v vtq2`. Details in [docs/turboquant.md](docs/turboquant.md).
-- **Speculation stack** — full MTP integration + n-gram hybrid + mmproj+spec coexistence. Prod: 80 t/s creative / 176 t/s repeat on Qwen3.6-35B-A3B-IQ2_XXS at 200k ctx (2.28× boost).
+- **Speculation stack** — full MTP integration + n-gram hybrid + mmproj+spec coexistence. 80 t/s creative / 176 t/s repeat on Qwen3.6-35B-A3B-IQ2_XXS at 200k ctx (2.28× boost). Details in [docs/speculative.md](docs/speculative.md).
+- **2-bit text diffusion** — DiffusionGemma (26B-A4B) running coherently at ~2-bit on a single 12 GB GPU: mixed-precision quant, decoder-path imatrix, position-dependent KV (f16 canvas / quantised history), embedded WebUI. Details in [docs/diffusion-gemma.md](docs/diffusion-gemma.md).
 - **Eagle3 draft-head infra** — hidden-state extraction, GGUF plumbing, head graph fusion, HF converter. Dormant until a trained head loads; single-stream MTP unaffected.
 - **MoE LoRA on quantised** — fine-tune `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS in 12 GB. Adapter saves as `.lora.gguf`. Mechanics in [docs/finetune.md](docs/finetune.md).
 
