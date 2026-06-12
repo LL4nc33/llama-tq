@@ -54,10 +54,13 @@ def read_meta(path):
     return int(kv["n_embd"]), int(kv["n_tokens"])
 
 def load_trajectory(path):
+    # memmap (NOT fromfile): the .in/.out files are ~2.6 GB each; loading both fully into RAM
+    # per process (×N concurrent runs) can exhaust host memory and swap-lock the box. memmap
+    # keeps them on disk; only the touched batch rows page in. idx is tiny -> load it for real.
     E, T = read_meta(path)
-    pre  = np.fromfile(path + ".in.bin",  np.float32).reshape(-1, T, E)
-    post = np.fromfile(path + ".out.bin", np.float32).reshape(-1, T, E)
-    idx  = np.fromfile(path + ".idx",     np.int32).reshape(-1, 2)
+    pre  = np.memmap(path + ".in.bin",  dtype=np.float32, mode="r").reshape(-1, T, E)
+    post = np.memmap(path + ".out.bin", dtype=np.float32, mode="r").reshape(-1, T, E)
+    idx  = np.fromfile(path + ".idx",   np.int32).reshape(-1, 2)
     S = min(len(pre), len(post), len(idx))
     return pre[:S], post[:S], idx[:S], E, T
 
@@ -138,6 +141,18 @@ def main():
     ap.add_argument("--hinge-step-hi", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1234)
     args = ap.parse_args()
+
+    # single-instance guard: two concurrent runs each memmap+touch ~5 GB and can swap-lock the box
+    # (this actually happened). A stale lock older than 2h is ignored.
+    import os, time as _time
+    lock = "/tmp/dg_qat_real.lock"
+    if os.path.exists(lock):
+        age = _time.time() - os.path.getmtime(lock)
+        if age < 7200:
+            sys.exit(f"another dg_selfcond_qat_real run holds {lock} (age {age:.0f}s); refuse to "
+                     f"run concurrently (host swap-lock risk). rm the lock if it's stale.")
+    open(lock, "w").write(str(os.getpid()))
+    import atexit; atexit.register(lambda: os.path.exists(lock) and os.remove(lock))
 
     lib = load_shim(args.shim)
     type_id = lib.qrt_type_by_name(args.qtype.encode())
