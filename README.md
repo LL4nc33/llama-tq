@@ -40,23 +40,34 @@ every KV-cache choice — which combo, why, and what each flag does.
 table, bit widths, kernels, and benchmarks) lives in
 [docs/turboquant.md](docs/turboquant.md).
 
-## Build
+## Install
 
-CUDA / TurboQuant — build from source (~20-30 min on a multi-core machine; the KV
-quant kernels are template-heavy and exceed CI budget, so there is no prebuilt CUDA image):
+No compile needed — prebuilt CUDA artifacts ship with TurboQuant baked in, for
+**sm_75 / sm_86 / sm_89** (Turing, Ampere, Ada — the 12 GB cards this fork targets).
+
+**CUDA Docker image** (GPU passthrough, `llama-server` ready to serve):
+
+```bash
+docker pull ghcr.io/ll4nc33/llama-tq:server-cuda
+docker run --gpus all -p 8080:8080 -v /path/to/models:/models \
+  ghcr.io/ll4nc33/llama-tq:server-cuda -m /models/your-model.gguf -ngl 99
+```
+
+`full-cuda` (all tools incl. `llama-finetune`, `llama-quantize`) and `light-cuda`
+(`llama-cli`) are published alongside it. CPU-only images drop the `-cuda` suffix
+(`:server`, `:full`, `:light`) — no TurboQuant, runs anywhere.
+
+**Standalone binaries** — every [Release](https://github.com/LL4nc33/llama-tq/releases)
+ships a `llama-*-bin-ubuntu-cuda-*-x64.tar.gz` with `llama-server`, `llama-finetune`,
+`llama-quantize` and the rest. Unpack and run, no toolchain required.
+
+**Build from source** (other arches, or to hack on it — ~20-30 min, the KV-quant
+kernels are template-heavy):
 
 ```bash
 git clone https://github.com/LL4nc33/llama-tq && cd llama-tq
 cmake -B build -DGGML_CUDA=ON
 cmake --build build -j"$(nproc)" --target llama-server llama-finetune
-```
-
-CPU image (no build, no TurboQuant):
-
-```bash
-docker pull ghcr.io/ll4nc33/llama-tq:server
-docker run -p 8080:8080 -v /path/to/models:/models \
-  ghcr.io/ll4nc33/llama-tq:server -m /models/your-model.gguf
 ```
 
 Vulkan is WIP on the `vulkan` branch.
