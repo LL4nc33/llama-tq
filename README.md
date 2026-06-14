@@ -35,6 +35,11 @@ cards. CUDA sm_75+, focused on Turing.
 fastest way in: verified `llama-server` commands per model, plus the reasoning behind
 every KV-cache choice — which combo, why, and what each flag does.
 
+**Every llama-tq flag** — the complete reference for the fork's own options
+(`--cache-type-{k,v}` KTQ/VTQ types, `--cache-type-{k,v}-swa`, the TurboQuant tier
+table, bit widths, kernels, and benchmarks) lives in
+[docs/turboquant.md](docs/turboquant.md).
+
 ## Build
 
 CUDA / TurboQuant — build from source (~20-30 min on a multi-core machine; the KV
