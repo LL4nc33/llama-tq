@@ -81,7 +81,7 @@ jobs:
           cat > build-matrix.json <<'JSON'
           [
             { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" },
-            { "tag": "cuda", "dockerfile": ".devops/cuda.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04", "cuda_version": "12.4.0", "cuda_arch": "75-real;86-real;89-real" }
+            { "tag": "cuda", "dockerfile": ".devops/cuda.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04", "cuda_version": "12.8.1", "cuda_arch": "75-real;86-real;89-real" }
           ]
           JSON
 
