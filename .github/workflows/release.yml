@@ -356,7 +356,11 @@ jobs:
             -DGGML_CUDA=ON \
             -DCMAKE_CUDA_ARCHITECTURES="75-real;86-real;89-real" \
             -DLLAMA_BUILD_TESTS=OFF
-          cmake --build build --config Release -j $(nproc)
+          # Cap parallelism: nvcc compiling the TurboQuant template instances for
+          # 3 arches peaks at ~3-4 GB per job; -j $(nproc) (4 on the runner) blew
+          # past the 16 GB runner RAM and the build got OOM-killed (exit 137) at
+          # ~74 min. -j2 keeps peak memory in budget; ccache covers repeat runs.
+          cmake --build build --config Release -j 2
 
       - name: Determine tag name
         id: tag
