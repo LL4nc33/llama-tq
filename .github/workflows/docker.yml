@@ -68,20 +68,20 @@ jobs:
           # Trimmed from the upstream 13-target matrix to the two images this
           # fork actually ships, both amd64-only:
           #   - cpu:  no TurboQuant, runs anywhere.
-          #   - cuda: the real fork — TurboQuant KV-cache (sm_75+, Turing/Ampere/
-          #           Ada). cuda.Dockerfile compiles full+light+server in a
-          #           SINGLE build pass (one nvcc invocation over the shared
-          #           object set), and the registry buildcache keeps repeat runs
-          #           cheap, so the GPU image fits the runner budget where the
-          #           old per-target build did not. Arch list is pinned to
-          #           75/86/89 (the 12 GB cards this fork targets) to keep the
-          #           template-heavy KV kernels from ballooning compile time.
+          #   - cuda: the real fork — TurboQuant KV-cache. cuda.Dockerfile
+          #           compiles full+light+server in a SINGLE build pass (one
+          #           nvcc invocation over the shared object set), and the
+          #           registry buildcache keeps repeat runs cheap. Arch is
+          #           pinned to sm_75 (Turing / T4 — this fork's focus) plus a
+          #           PTX fallback so it still JIT-runs on Ampere/Ada; the
+          #           template-heavy KV kernels make every extra real arch
+          #           triple the compile time, which overran the runner.
           #           free_disk_space is on because the CUDA toolchain + image
           #           layers exceed the default runner disk.
           cat > build-matrix.json <<'JSON'
           [
             { "tag": "cpu", "dockerfile": ".devops/cpu.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": false, "runs_on": "ubuntu-24.04" },
-            { "tag": "cuda", "dockerfile": ".devops/cuda.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04", "cuda_version": "12.8.1", "cuda_arch": "75-real;86-real;89-real" }
+            { "tag": "cuda", "dockerfile": ".devops/cuda.Dockerfile", "platforms": "linux/amd64", "full": true, "light": true, "server": true, "free_disk_space": true, "runs_on": "ubuntu-24.04", "cuda_version": "12.8.1", "cuda_arch": "75-real;75-virtual" }
           ]
           JSON
 

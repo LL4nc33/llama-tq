@@ -42,8 +42,9 @@ table, bit widths, kernels, and benchmarks) lives in
 
 ## Install
 
-No compile needed — prebuilt CUDA artifacts ship with TurboQuant baked in, for
-**sm_75 / sm_86 / sm_89** (Turing, Ampere, Ada — the 12 GB cards this fork targets).
+No compile needed — prebuilt CUDA artifacts ship with TurboQuant baked in, built
+for **sm_75** (Turing / T4 — the 12 GB cards this fork targets) with a PTX fallback
+so they also JIT-run on newer Ampere/Ada GPUs.
 
 **CUDA Docker image** (GPU passthrough, `llama-server` ready to serve):
 

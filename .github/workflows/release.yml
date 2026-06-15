@@ -322,7 +322,8 @@ jobs:
     # present without the apt-repo lottery. Jimver/cuda-toolkit on ubuntu-24.04
     # cannot install 12.4 (no installation candidate in the ubuntu2404 repo) and
     # mangles dev package names — building in the container sidesteps both.
-    # 12.8.1 covers sm_75/86/89 (the cards this fork targets).
+    # 12.8.1 targets sm_75 (Turing / T4 — this fork's focus) with a PTX
+    # fallback so the binary still JIT-runs on newer Ampere/Ada cards.
     container: nvidia/cuda:12.8.1-devel-ubuntu24.04
 
     strategy:
@@ -354,10 +355,10 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=ON \
-            -DCMAKE_CUDA_ARCHITECTURES="75-real;86-real;89-real" \
+            -DCMAKE_CUDA_ARCHITECTURES="75-real;75-virtual" \
             -DLLAMA_BUILD_TESTS=OFF
           # Cap parallelism: nvcc compiling the TurboQuant template instances for
-          # 3 arches peaks at ~3-4 GB per job; -j $(nproc) (4 on the runner) blew
+          # the TQ kernels peaks at ~3-4 GB per job; -j $(nproc) (4 on the runner) blew
           # past the 16 GB runner RAM and the build got OOM-killed (exit 137) at
           # ~74 min. -j2 keeps peak memory in budget; ccache covers repeat runs.
           cmake --build build --config Release -j 2
@@ -1124,7 +1125,7 @@ jobs:
             - [Ubuntu s390x (CPU)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-s390x.tar.gz)
             - [Ubuntu x64 (Vulkan)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-x64.tar.gz)
             - [Ubuntu arm64 (Vulkan)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-arm64.tar.gz)
-            - [Ubuntu x64 (CUDA 12.8, sm_75/86/89)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-cuda-12.8-x64.tar.gz)
+            - [Ubuntu x64 (CUDA 12.8, sm_75 Turing/T4 + PTX)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-cuda-12.8-x64.tar.gz)
             - [Ubuntu x64 (ROCm 7.2)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-7.2-x64.tar.gz)
             - [Ubuntu x64 (OpenVINO)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-openvino-${{ needs.ubuntu-24-openvino.outputs.openvino_version }}-x64.tar.gz)
 
