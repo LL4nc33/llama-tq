@@ -163,13 +163,27 @@ class ModelsStore {
 	}
 
 	/**
-	 * Check if a model's chat template understands the `reasoning_effort` variable
-	 * (Gemma 4, GPT-OSS, some Qwen). Detected from the template string in /props;
-	 * returns false until props are fetched.
+	 * How a model's chat template lets the client steer reasoning, detected from
+	 * the template string in /props:
+	 *   - 'effort'   → reads `reasoning_effort` (GPT-OSS, some Qwen): an off/low/.../max scale
+	 *   - 'thinking' → reads `enable_thinking` (Gemma 4, Qwen 3): a thinking on/off toggle
+	 *   - null       → neither (no reasoning control surfaced)
+	 * Returns null until props are fetched.
 	 */
-	modelSupportsReasoningEffort(modelId: string): boolean {
+	modelReasoningControl(modelId: string): 'effort' | 'thinking' | null {
 		const template = this.modelPropsCache.get(modelId)?.chat_template;
-		return typeof template === 'string' && template.includes('reasoning_effort');
+		if (typeof template !== 'string') return null;
+		if (template.includes('reasoning_effort')) return 'effort';
+		if (template.includes('enable_thinking')) return 'thinking';
+		return null;
+	}
+
+	/**
+	 * Whether the reasoning-effort selector should be shown for this model
+	 * (true when the template understands either reasoning convention).
+	 */
+	modelSupportsReasoningControl(modelId: string): boolean {
+		return this.modelReasoningControl(modelId) !== null;
 	}
 
 	/**

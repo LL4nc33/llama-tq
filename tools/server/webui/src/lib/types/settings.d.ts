@@ -28,6 +28,8 @@ export interface SettingsChatServiceOptions {
 	excludeReasoningFromContext?: boolean;
 	// Reasoning effort level (off/low/medium/high/max) for reasoning-capable models
 	reasoningEffort?: string;
+	// Which reasoning convention the active model's template uses ('effort' | 'thinking')
+	reasoningControl?: 'effort' | 'thinking';
 	tools?: OpenAIToolDefinition[];
 	// Generation parameters
 	temperature?: number;

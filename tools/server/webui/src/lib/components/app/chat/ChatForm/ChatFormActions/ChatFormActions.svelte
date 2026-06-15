@@ -136,7 +136,7 @@
 		if (activeModelId) {
 			void modelPropsVersion;
 
-			return modelsStore.modelSupportsReasoningEffort(activeModelId);
+			return modelsStore.modelSupportsReasoningControl(activeModelId);
 		}
 
 		return false;

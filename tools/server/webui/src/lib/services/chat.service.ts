@@ -86,7 +86,8 @@ export class ChatService {
 			// Config options
 			disableReasoningParsing,
 			excludeReasoningFromContext,
-			reasoningEffort
+			reasoningEffort,
+			reasoningControl
 		} = options;
 
 		const normalizedMessages: ApiChatMessageData[] = messages
@@ -164,18 +165,34 @@ export class ChatService {
 			? ReasoningFormat.NONE
 			: ReasoningFormat.AUTO;
 
-		// Reasoning effort: passed to the chat template via chat_template_kwargs.
-		// 'off' (or unset) sends nothing so the model's own default applies.
-		// Levels that map to a positive token budget also arm the reasoning-budget sampler.
-		if (reasoningEffort && reasoningEffort !== ReasoningEffort.OFF) {
-			requestBody.chat_template_kwargs = {
-				...requestBody.chat_template_kwargs,
-				reasoning_effort: reasoningEffort
-			};
+		// Reasoning effort: mapped to whichever convention the model's chat template
+		// understands (reasoningControl, set by the store from /props):
+		//   - 'effort'   → chat_template_kwargs.reasoning_effort (GPT-OSS, some Qwen)
+		//   - 'thinking' → chat_template_kwargs.enable_thinking (Gemma 4, Qwen 3)
+		// 'off' turns reasoning off (or sends nothing for effort-style templates so the
+		// model default applies). low/medium/high/max also arm the reasoning-budget
+		// sampler via thinking_budget_tokens so the level actually bounds thinking.
+		if (reasoningEffort) {
+			const isOff = reasoningEffort === ReasoningEffort.OFF;
 
-			const budget = REASONING_EFFORT_TOKENS[reasoningEffort];
-			if (budget !== undefined && budget >= 0) {
-				requestBody.thinking_budget_tokens = budget;
+			if (reasoningControl === 'thinking') {
+				requestBody.chat_template_kwargs = {
+					...requestBody.chat_template_kwargs,
+					enable_thinking: !isOff
+				};
+			} else if (!isOff) {
+				// 'effort' (default): only send when a level is selected.
+				requestBody.chat_template_kwargs = {
+					...requestBody.chat_template_kwargs,
+					reasoning_effort: reasoningEffort
+				};
+			}
+
+			if (!isOff) {
+				const budget = REASONING_EFFORT_TOKENS[reasoningEffort];
+				if (budget !== undefined && budget >= 0) {
+					requestBody.thinking_budget_tokens = budget;
+				}
 			}
 		}
 

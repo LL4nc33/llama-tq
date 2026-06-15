@@ -1596,7 +1596,16 @@ class ChatStore {
 
 		if (currentConfig.excludeReasoningFromContext) apiOptions.excludeReasoningFromContext = true;
 
-		if (currentConfig.reasoningEffort) apiOptions.reasoningEffort = String(currentConfig.reasoningEffort);
+		if (currentConfig.reasoningEffort) {
+			apiOptions.reasoningEffort = String(currentConfig.reasoningEffort);
+			// Tell the service which reasoning convention the active model's template uses
+			// ('effort' → reasoning_effort kwarg, 'thinking' → enable_thinking kwarg).
+			const activeModel = selectedModelName();
+			if (activeModel) {
+				const control = modelsStore.modelReasoningControl(activeModel);
+				if (control) apiOptions.reasoningControl = control;
+			}
+		}
 
 		if (hasValue(currentConfig.temperature))
 			apiOptions.temperature = Number(currentConfig.temperature);
