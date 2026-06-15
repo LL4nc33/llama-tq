@@ -336,6 +336,10 @@ jobs:
         run: |
           apt-get update
           apt-get install -y build-essential cmake ninja-build git libcurl4-openssl-dev ccache
+          # Inside the container the checkout dir is owned by a different uid
+          # than the one running git, so git refuses with "dubious ownership"
+          # (breaks the get-tag-name action). Mark the workspace safe.
+          git config --global --add safe.directory '*'
 
       - name: Clone
         id: checkout
