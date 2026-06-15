@@ -352,10 +352,16 @@ jobs:
       - name: Build
         id: cmake_build
         run: |
+          # The devel container ships libcuda.so only as a stub under
+          # lib64/stubs (no driver in the image). Put it on LIBRARY_PATH so the
+          # linker resolves the CUDA driver symbols (cuMemCreate, cuMemMap, ...);
+          # at runtime they bind to the host's real driver.
+          export LIBRARY_PATH="/usr/local/cuda/lib64/stubs:${LIBRARY_PATH:-}"
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_CUDA=ON \
             -DCMAKE_CUDA_ARCHITECTURES="75-real;75-virtual" \
+            -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
             -DLLAMA_BUILD_TESTS=OFF
           # Cap parallelism: nvcc compiling the TurboQuant template instances for
           # the TQ kernels peaks at ~3-4 GB per job; -j $(nproc) (4 on the runner) blew
