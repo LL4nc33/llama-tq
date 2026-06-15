@@ -163,6 +163,16 @@ class ModelsStore {
 	}
 
 	/**
+	 * Check if a model's chat template understands the `reasoning_effort` variable
+	 * (Gemma 4, GPT-OSS, some Qwen). Detected from the template string in /props;
+	 * returns false until props are fetched.
+	 */
+	modelSupportsReasoningEffort(modelId: string): boolean {
+		const template = this.modelPropsCache.get(modelId)?.chat_template;
+		return typeof template === 'string' && template.includes('reasoning_effort');
+	}
+
+	/**
 	 * Get model modalities as an array of ModelModality enum values
 	 */
 	getModelModalitiesArray(modelId: string): ModelModality[] {

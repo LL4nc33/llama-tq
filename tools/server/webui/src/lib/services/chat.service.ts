@@ -5,12 +5,14 @@ import {
 	ATTACHMENT_LABEL_PDF_FILE,
 	ATTACHMENT_LABEL_MCP_PROMPT,
 	ATTACHMENT_LABEL_MCP_RESOURCE,
-	LEGACY_AGENTIC_REGEX
+	LEGACY_AGENTIC_REGEX,
+	REASONING_EFFORT_TOKENS
 } from '$lib/constants';
 import {
 	AttachmentType,
 	ContentPartType,
 	MessageRole,
+	ReasoningEffort,
 	ReasoningFormat,
 	UrlProtocol
 } from '$lib/enums';
@@ -83,7 +85,8 @@ export class ChatService {
 			timings_per_token,
 			// Config options
 			disableReasoningParsing,
-			excludeReasoningFromContext
+			excludeReasoningFromContext,
+			reasoningEffort
 		} = options;
 
 		const normalizedMessages: ApiChatMessageData[] = messages
@@ -160,6 +163,21 @@ export class ChatService {
 		requestBody.reasoning_format = disableReasoningParsing
 			? ReasoningFormat.NONE
 			: ReasoningFormat.AUTO;
+
+		// Reasoning effort: passed to the chat template via chat_template_kwargs.
+		// 'off' (or unset) sends nothing so the model's own default applies.
+		// Levels that map to a positive token budget also arm the reasoning-budget sampler.
+		if (reasoningEffort && reasoningEffort !== ReasoningEffort.OFF) {
+			requestBody.chat_template_kwargs = {
+				...requestBody.chat_template_kwargs,
+				reasoning_effort: reasoningEffort
+			};
+
+			const budget = REASONING_EFFORT_TOKENS[reasoningEffort];
+			if (budget !== undefined && budget >= 0) {
+				requestBody.thinking_budget_tokens = budget;
+			}
+		}
 
 		if (temperature !== undefined) requestBody.temperature = temperature;
 		if (max_tokens !== undefined) {

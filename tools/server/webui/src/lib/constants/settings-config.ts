@@ -11,6 +11,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean | 
 	showThoughtInProgress: false,
 	disableReasoningParsing: false,
 	excludeReasoningFromContext: false,
+	reasoningEffort: 'off',
 	showRawOutputSwitch: false,
 	keepStatsVisible: false,
 	showMessageStats: true,
@@ -112,6 +113,8 @@ export const SETTING_CONFIG_INFO: Record<string, string> = {
 		'Send reasoning_format=none so the server returns thinking tokens inline instead of extracting them into a separate field.',
 	excludeReasoningFromContext:
 		'Strip thinking from previous messages before sending. When off, thinking is sent back via the reasoning_content field so the model sees its own chain-of-thought across turns.',
+	reasoningEffort:
+		'How hard reasoning-capable models (Gemma 4, GPT-OSS, some Qwen) think. Off uses the model default; low/medium/high/max raise the thinking-token budget. Only applies to models whose chat template supports it.',
 	showRawOutputSwitch:
 		'Show toggle button to display messages as plain text instead of Markdown-formatted content',
 	keepStatsVisible: 'Keep processing statistics visible after generation finishes.',

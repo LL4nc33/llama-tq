@@ -214,6 +214,10 @@ export interface ApiChatCompletionRequest {
 	diffusing?: boolean;
 	// Reasoning parameters
 	reasoning_format?: string;
+	// Chat-template variables passed through to the Jinja template (e.g. reasoning_effort)
+	chat_template_kwargs?: Record<string, unknown>;
+	// Reasoning-budget sampler limit (paired with reasoning_effort levels)
+	thinking_budget_tokens?: number;
 	// Generation parameters
 	temperature?: number;
 	max_tokens?: number;

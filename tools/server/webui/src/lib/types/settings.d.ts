@@ -26,6 +26,8 @@ export interface SettingsChatServiceOptions {
 	disableReasoningParsing?: boolean;
 	// Strip reasoning content from context before sending
 	excludeReasoningFromContext?: boolean;
+	// Reasoning effort level (off/low/medium/high/max) for reasoning-capable models
+	reasoningEffort?: string;
 	tools?: OpenAIToolDefinition[];
 	// Generation parameters
 	temperature?: number;

@@ -14,6 +14,18 @@ export enum ReasoningFormat {
 }
 
 /**
+ * Reasoning effort levels for models whose chat template reads `reasoning_effort`
+ * (Gemma 4, GPT-OSS, some Qwen). Sent via chat_template_kwargs; 'off' omits the kwarg.
+ */
+export enum ReasoningEffort {
+	OFF = 'off',
+	LOW = 'low',
+	MEDIUM = 'medium',
+	HIGH = 'high',
+	MAX = 'max'
+}
+
+/**
  * Message roles for chat messages.
  */
 export enum MessageRole {

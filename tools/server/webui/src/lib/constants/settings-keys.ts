@@ -59,6 +59,7 @@ export const SETTINGS_KEYS = {
 	// Developer
 	DISABLE_REASONING_PARSING: 'disableReasoningParsing',
 	EXCLUDE_REASONING_FROM_CONTEXT: 'excludeReasoningFromContext',
+	REASONING_EFFORT: 'reasoningEffort',
 	SHOW_RAW_OUTPUT_SWITCH: 'showRawOutputSwitch',
 	CUSTOM: 'custom'
 } as const;

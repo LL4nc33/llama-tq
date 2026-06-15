@@ -4,6 +4,7 @@
 	import {
 		ChatFormActionAttachmentsDropdown,
 		ChatFormActionAttachmentsSheet,
+		ChatFormActionReasoningEffort,
 		ChatFormActionRecord,
 		ChatFormActionSubmit,
 		McpServersSelector,
@@ -131,6 +132,16 @@
 		return false;
 	});
 
+	let supportsReasoningEffort = $derived.by(() => {
+		if (activeModelId) {
+			void modelPropsVersion;
+
+			return modelsStore.modelSupportsReasoningEffort(activeModelId);
+		}
+
+		return false;
+	});
+
 	let hasAudioAttachments = $derived(
 		uploadedFiles.some((file) => getFileTypeCategory(file.type) === FileTypeCategory.AUDIO)
 	);
@@ -225,6 +236,10 @@
 	</div>
 
 	<div class="ml-auto flex items-center gap-1.5">
+		{#if supportsReasoningEffort}
+			<ChatFormActionReasoningEffort disabled={disabled || isOffline} />
+		{/if}
+
 		{#if isMobile.current}
 			<ModelsSelectorSheet
 				disabled={disabled || isOffline}

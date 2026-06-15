@@ -8,6 +8,7 @@ export {
 	ErrorDialogType,
 	MessageRole,
 	MessageType,
+	ReasoningEffort,
 	ReasoningFormat
 } from './chat';
 
