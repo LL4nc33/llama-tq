@@ -58,6 +58,7 @@ __global__ void __launch_bounds__(splitD, 1)
     __shared__ CubTempStorage cub_temp_storage;
 
     BlockLoad(cub_temp_storage.load_temp).Load(A_block, regA);
+    __syncthreads(); // required before reusing cub_temp_storage smem (data-race, upstream #24360)
     BlockLoad(cub_temp_storage.load_temp).Load(s0_block, regs0);
 #else
     const int stride_s0 = src0_nb2 / sizeof(float);
@@ -96,6 +97,7 @@ __global__ void __launch_bounds__(splitD, 1)
             regs0[n] = state;
         }
         y_block[i * stride_y + threadIdx.x] = sumf;
+        __syncthreads(); // ensure all threads read smemB/smemC before next iter overwrites it (data-race, upstream #24360)
     }
 
 #ifdef USE_CUB
