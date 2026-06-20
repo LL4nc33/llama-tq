@@ -1,5 +1,6 @@
 import { isSvgMimeType, svgBase64UrlToPngDataURL } from './svg-to-png';
 import { isWebpMimeType, webpBase64UrlToPngDataURL } from './webp-to-png';
+import { applyExifOrientation, mayHaveExifOrientation } from './exif-orient';
 import { FileTypeCategory } from '$lib/enums';
 import { modelsStore } from '$lib/stores/models.svelte';
 import { settingsStore } from '$lib/stores/settings.svelte';
@@ -80,6 +81,9 @@ export async function processFilesToChatUploaded(
 					} catch (err) {
 						console.error('Failed to convert WebP to PNG:', err);
 					}
+				} else if (mayHaveExifOrientation(file.type)) {
+					// Correct EXIF orientation (sideways phone photos) and strip metadata
+					preview = await applyExifOrientation(file, preview);
 				}
 
 				results.push({ ...base, preview });
