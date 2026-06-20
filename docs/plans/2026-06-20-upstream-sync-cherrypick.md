@@ -38,15 +38,19 @@ appliziert.
 
 Branch: `upstream-sync-2026-06`. Reine Stabilität/Security, kein Fork-Feature-Risiko.
 
-- [ ] `159d093a4` — n_discard bounds-clamp (KV-ctx-shift Crash-Edge-Case)
+- [x] `159d093a4` — n_discard bounds-clamp (KV-ctx-shift Crash-Edge-Case) — `b2ade7ef4`
       ⚠️ vor Merge MTP-Draft-KV-Interaktion gegenprüfen
-- [ ] `10786217e` — invalide Grammar → HTTP 400 statt Silent-Drop
-- [ ] `e27f30859` — **Security**: CORS-Proxy leakt keine Auth-Header (nur C++-Hunk
-      `server-cors-proxy.h` + `test_security.py`; `tools/ui/`-Hunks droppen)
-- [ ] **adaptiv** `fb83cc9a0` — ssm-scan `__syncthreads`-Fix manuell nachbauen
-      (3 Zeilen, ohne `ggml_cuda_kernel_launch_params`-Abstraktion)
-- [ ] **adaptiv** `aedb2a5e9` — Cohere2MoE: `models/templates/Cohere2MoE.jinja`
-      (neue Datei, sauber) + chat.cpp-Parser-Hunk manuell einpassen
+- [x] `10786217e` — invalide Grammar → HTTP 400 statt Silent-Drop — `0e84ec731`
+- [x] `e27f30859` — **Security**: CORS-Proxy leakt keine Auth-Header (nur C++-Hunk
+      `server-cors-proxy.h` + `test_security.py`; `tools/ui/`-Hunks gedroppt) — `b90f7c459`
+- [x] **adaptiv** `fb83cc9a0` — ssm-scan zwei `__syncthreads`-Fixes manuell nachgebaut
+      (ohne `ggml_cuda_kernel_launch_params`-Abstraktion) — `af22de43a`
+- [x] ~~**adaptiv** `aedb2a5e9` — Cohere2MoE~~ **VERWORFEN**: unser `common/chat.cpp`
+      hat den nötigen neueren `autoparser`-Layer nicht (`standard_json_tools`,
+      `common_chat_split_by_role`, `message_spans`, `has_continuation` = 0 Treffer).
+      Adaptiver Port würde erst kompletten Parser-Infra-Nachzug erfordern → eigener
+      großer Brocken, nicht Batch A. Cohere2-MoE ist Nischen-Modell (nicht im Einsatz)
+      → negatives Nutzen/Aufwand. Selbe API-Lücke blockiert auch `d2462f8f7` (LFM2).
 
 **Gate:** CUDA-Build auf a local GPU host (setsid, -j1, ccache) → `make test` →
 MTP-Acceptance-Regression-Check auf gemma-4 (lossless). Erst dann Merge.
@@ -79,7 +83,10 @@ A11y Keyboard/Touch (#23132/#24604).
       TurboQuant-Flags; nicht 1:1 `server-schema.cpp` übernehmen
 - [ ] **Tool-Call-Parsing-Hardening** (`581e8eca8`) — robusteres OpenAI-Style-Parsing;
       adaptiv wg. MTP-Draft-State-Interaktion
-- [ ] **LFM2 json_schema-Fix** (`d2462f8f7`) — adaptiv in unsere PEG-Parser-Region
+- [ ] **autoparser-Infra-Nachzug** (Voraussetzung) — upstream `common/chat.cpp` nutzt
+      `standard_json_tools` / `common_chat_split_by_role` / `message_spans` /
+      `has_continuation`, die unser älterer PEG-Layer nicht hat. Erst nachziehen, dann
+      werden `d2462f8f7` (LFM2 json_schema) und `aedb2a5e9` (Cohere2MoE) pickbar.
 - [ ] **Router Model-Management** (`4b4d13ae7`, #23976) — nur **SSE-Status-Pattern +
       load/unload-Endpoints** als Idee; eigener Multi-Model-Router bleibt Basis
 
