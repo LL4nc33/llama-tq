@@ -231,8 +231,8 @@
 			onToggle={() => toggleExpanded(index, section)}
 		>
 			<div class="pt-3">
-				<div class="text-xs leading-relaxed break-words whitespace-pre-wrap">
-					{section.content}
+				<div class="text-xs leading-relaxed break-words">
+					<MarkdownContent content={section.content} />
 				</div>
 			</div>
 		</CollapsibleContentBlock>
@@ -250,8 +250,8 @@
 			onToggle={() => toggleExpanded(index, section)}
 		>
 			<div class="pt-3">
-				<div class="text-xs leading-relaxed break-words whitespace-pre-wrap">
-					{section.content}
+				<div class="text-xs leading-relaxed break-words">
+					<MarkdownContent content={section.content} />
 				</div>
 			</div>
 		</CollapsibleContentBlock>
