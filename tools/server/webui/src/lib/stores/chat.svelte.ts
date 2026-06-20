@@ -765,10 +765,31 @@ class ChatStore {
 				}
 				console.error('Streaming error:', error);
 				cleanupStreamingState();
-				const idx = conversationsStore.findMessageIndex(assistantMessage.id);
-				if (idx !== -1) {
-					const failedMessage = conversationsStore.removeMessageAtIndex(idx);
-					if (failedMessage) DatabaseService.deleteMessage(failedMessage.id).catch(console.error);
+				// Preserve any text already streamed before the error (upstream #23090):
+				// only discard the message when nothing was generated yet.
+				const partialContent = streamedContent.trim() || streamedReasoningContent.trim();
+				if (partialContent) {
+					const keepData: Record<string, unknown> = {
+						content: streamedContent,
+						reasoningContent: streamedReasoningContent || undefined,
+						diffusionPreview: undefined
+					};
+					if (resolvedModel && !modelPersisted) keepData.model = resolvedModel;
+					DatabaseService.updateMessage(currentMessageId, keepData).catch(console.error);
+					const keepIdx = conversationsStore.findMessageIndex(currentMessageId);
+					conversationsStore.updateMessageAtIndex(keepIdx, {
+						content: streamedContent,
+						reasoningContent: streamedReasoningContent || undefined,
+						diffusionPreview: undefined,
+						...(resolvedModel ? { model: resolvedModel } : {})
+					});
+					conversationsStore.updateCurrentNode(currentMessageId).catch(console.error);
+				} else {
+					const idx = conversationsStore.findMessageIndex(assistantMessage.id);
+					if (idx !== -1) {
+						const failedMessage = conversationsStore.removeMessageAtIndex(idx);
+						if (failedMessage) DatabaseService.deleteMessage(failedMessage.id).catch(console.error);
+					}
 				}
 				const contextInfo = (
 					error as Error & { contextInfo?: { n_prompt_tokens: number; n_ctx: number } }
