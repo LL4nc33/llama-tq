@@ -17,7 +17,11 @@ import {
 	UrlProtocol
 } from '$lib/enums';
 import type { ApiChatMessageContentPart, ApiChatCompletionToolCall } from '$lib/types/api';
-import type { DatabaseMessageExtraMcpPrompt, DatabaseMessageExtraMcpResource } from '$lib/types';
+import type {
+	ChatStreamCallbacks,
+	DatabaseMessageExtraMcpPrompt,
+	DatabaseMessageExtraMcpResource
+} from '$lib/types';
 import { modelsStore } from '$lib/stores/models.svelte';
 
 export class ChatService {
