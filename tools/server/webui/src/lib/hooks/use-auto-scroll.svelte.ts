@@ -112,6 +112,30 @@ export class AutoScrollController {
 	}
 
 	/**
+	 * Handles a direct user scroll-intent gesture (wheel / touchmove).
+	 *
+	 * Unlike handleScroll(), this reacts to the raw input device and is therefore
+	 * immune to the programmatic scrollTop writes the MutationObserver performs
+	 * during streaming. An upward gesture pauses auto-scroll immediately so the
+	 * observer no longer fights the user (upstream #23026).
+	 *
+	 * @param deltaY - vertical gesture delta; negative means scrolling up.
+	 */
+	handleUserScrollIntent(deltaY: number): void {
+		if (this._disabled || !this._container || deltaY >= 0) return;
+
+		const { scrollTop, scrollHeight, clientHeight } = this._container;
+		const distanceFromBottom = this._isColumnReverse
+			? Math.abs(scrollTop)
+			: scrollHeight - clientHeight - scrollTop;
+
+		if (distanceFromBottom >= AUTO_SCROLL_AT_BOTTOM_THRESHOLD) {
+			this._userScrolledUp = true;
+			this._autoScrollEnabled = false;
+		}
+	}
+
+	/**
 	 * Scrolls the container to the bottom.
 	 */
 	scrollToBottom(behavior: ScrollBehavior = 'smooth'): void {

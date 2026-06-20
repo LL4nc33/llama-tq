@@ -235,6 +235,25 @@
 		autoScroll.handleScroll();
 	}
 
+	function handleWheel(event: WheelEvent) {
+		autoScroll.handleUserScrollIntent(event.deltaY);
+	}
+
+	let lastTouchY: number | null = null;
+
+	function handleTouchStart(event: TouchEvent) {
+		lastTouchY = event.touches[0]?.clientY ?? null;
+	}
+
+	function handleTouchMove(event: TouchEvent) {
+		const currentY = event.touches[0]?.clientY ?? null;
+		if (lastTouchY !== null && currentY !== null) {
+			// finger moving down (currentY > lastTouchY) reveals content above → scroll-up intent
+			autoScroll.handleUserScrollIntent(lastTouchY - currentY);
+		}
+		lastTouchY = currentY;
+	}
+
 	async function handleSendMessage(message: string, files?: ChatUploadedFile[]): Promise<boolean> {
 		const plainFiles = files ? $state.snapshot(files) : undefined;
 		const result = plainFiles
@@ -354,6 +373,9 @@
 		ondragover={handleDragOver}
 		ondrop={handleDrop}
 		onscroll={handleScroll}
+		onwheel={handleWheel}
+		ontouchstart={handleTouchStart}
+		ontouchmove={handleTouchMove}
 		role="main"
 	>
 		<div class="flex flex-col">
@@ -427,8 +449,16 @@
 	>
 		<div class="w-full max-w-[48rem] px-4">
 			<div class="mb-10 text-center" in:fade={{ duration: 300 }}>
-				<h1 class="group mb-2 text-2xl font-semibold tracking-tight md:text-3xl cursor-default select-none inline-flex items-center justify-center gap-0 w-full">
-					<span>O</span><span class="inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out max-w-0 group-hover:max-w-[2em]">ida</span><span>N</span><span class="inline-block overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out max-w-0 group-hover:max-w-[2em]">ice</span>
+				<h1
+					class="group mb-2 inline-flex w-full cursor-default items-center justify-center gap-0 text-2xl font-semibold tracking-tight select-none md:text-3xl"
+				>
+					<span>O</span><span
+						class="inline-block max-w-0 overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out group-hover:max-w-[2em]"
+						>ida</span
+					><span>N</span><span
+						class="inline-block max-w-0 overflow-hidden whitespace-nowrap transition-all duration-300 ease-in-out group-hover:max-w-[2em]"
+						>ice</span
+					>
 					<span class="text-primary/80">&thinsp;llama-tq</span>
 				</h1>
 
