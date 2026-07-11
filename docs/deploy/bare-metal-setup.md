@@ -163,3 +163,44 @@ Test:
 curl -s localhost:8791/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"Hauptstadt Österreich? Ein Wort."}],"max_tokens":10}'
 ```
+
+**ngram-spec note:** `--spec-type ngram-cache` is lossless and content-dependent —
+the cache learns from generated text, so short prompts show no speed-up (draft
+stats read `#gen drafts = 0`). On repetitive content (code, lists, repeated
+structure) it kicks in: measured ~33 t/s → ~59 t/s (≈1.8×) on gemma-4-12B / RTX 2060.
+
+---
+
+## 6. Auto-start on boot (systemd)
+
+Put the deploy command in a script (`~/deploy-gemma4-12b.sh`, `chmod +x`) and
+wrap it in a system service so it survives reboots and restarts on crash:
+
+```ini
+# /etc/systemd/system/gemma4-server.service
+[Unit]
+Description=llama-tq gemma-4-12B server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<user>
+ExecStart=/home/<user>/deploy-gemma4-12b.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable gemma4-server      # boot-persistent
+sudo systemctl start gemma4-server
+sudo journalctl -u gemma4-server -f      # follow startup / model load
+```
+
+Model load takes ~40–60 s; `systemctl is-active` reads `active` immediately, but
+`/health` only returns `ok` once the weights + mmproj are loaded.
