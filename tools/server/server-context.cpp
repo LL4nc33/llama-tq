@@ -1478,8 +1478,7 @@ private:
                 });
             }
         } else {
-            // TODO: optimize this with min-p optimization
-            std::vector<llama_token_data> cur = get_token_probabilities(ctx, idx);
+            std::vector<llama_token_data> cur = get_token_probabilities(ctx, idx, n_probs_request);
             const size_t max_probs = cur.size();
             const size_t n_probs = std::min(max_probs, n_probs_request);
 
