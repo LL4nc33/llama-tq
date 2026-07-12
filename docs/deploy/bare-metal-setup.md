@@ -109,6 +109,11 @@ git checkout <branch-with-tricks>      # must have SWA-KV flags + gemma4uv visio
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75   # 75 = Turing (RTX 2060)
 ```
 
+The gemma4uv/gemma4ua vision+audio projector is committed on this branch
+(`tools/mtmd/models/gemma4uv.cpp` / `gemma4ua.cpp`) — a plain checkout builds
+it in. No manual `git apply` of an mtmd patch is needed; if those files are
+missing, you're on the wrong branch.
+
 **Low-RAM warning:** the TurboQuant `fattn` templates are RAM-hungry. On a
 15 GB / 4-core VM, build with **`-j1`** (higher `-j` triggers OOM-kills) and
 enable ccache. Expect a long compile (the vtq/ktq kernels alone take a while).
@@ -152,9 +157,11 @@ llama-server \
 - KV `ktq2_1`/`vtq2_3` produce `<unused49>` garbage on gemma-4 (SWA layers).
   Use `q8_0/q8_0`, or — with a build that has them — `-ctk ktq2_1 -ctv vtq2_3`
   **plus** `--cache-type-k-swa f16 --cache-type-v-swa vtq3` to keep SWA layers safe.
-- Vision needs the `gemma4uv` mmproj **and** a build with `gemma4uv`/`gemma4ua`
-  projector support. Image detail depends on `--image-max-tokens` (budgets:
-  70/140/280/560/1120; use **1120** for OCR / small text) with `-ub 2048 -b 2048`.
+- Vision needs the `gemma4uv` mmproj. The matching `gemma4uv`/`gemma4ua`
+  projector support is already committed on the tricks branch (§3.2), so a
+  source build has it; only an older *prebuilt release* may lack it. Image
+  detail depends on `--image-max-tokens` (budgets: 70/140/280/560/1120; use
+  **1120** for OCR / small text) with `-ub 2048 -b 2048`.
 - A mismatched MTP draft model logs `failed to decode draft batch, ret = -1`
   every token and craters TG — drop `--model-draft` if the draft doesn't match.
 
