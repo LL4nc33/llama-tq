@@ -1121,6 +1121,14 @@ static __device__ __forceinline__ float vtq_decode_2bit(const uint8_t * qs, int 
     return VTQ_CUDA_CB_2BIT[(qs[j / 4] >> (2 * (j % 4))) & 0x3] * PQ_CUDA_CB_SCALE;
 }
 
+// Scale-folded 2-bit decode for the FA-vec V-dequant hot path: reads the
+// pre-scaled codebook (CB * PQ_CUDA_CB_SCALE, compile-time folded) so the caller
+// pays one fp32 multiply per element instead of two. Numerically identical to
+// vtq_decode_2bit at fp32 precision (see VTQ_CUDA_CB_2BIT_SCALED comment).
+static __device__ __forceinline__ float vtq_decode_2bit_scaled(const uint8_t * qs, int j) {
+    return VTQ_CUDA_CB_2BIT_SCALED[(qs[j / 4] >> (2 * (j % 4))) & 0x3];
+}
+
 static __device__ __forceinline__ float vtq_decode_3bit(const uint8_t * qs, int j) {
     const int bit_offset = j * 3;
     const int byte_idx = bit_offset / 8;

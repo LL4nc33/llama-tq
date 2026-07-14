@@ -733,7 +733,9 @@ static __device__ __forceinline__ void dequantize_V_vtq(const void * __restrict_
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq2_1(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq<block_vtq2_1, T, ne, vtq_decode_2bit>(vx, dst, i0);
+    // Scale-folded decode: pre-scaled codebook removes the per-element
+    // PQ_CUDA_CB_SCALE multiply (one fp32 FMUL/element saved).
+    dequantize_V_vtq<block_vtq2_1, T, ne, vtq_decode_2bit_scaled>(vx, dst, i0);
 }
 
 template <typename T, int ne>
