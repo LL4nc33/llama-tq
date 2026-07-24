@@ -1278,6 +1278,9 @@ struct llm_tokenizer_rwkv_session {
                     token_id = node->value;
                     token_length = position + 1;
                 }
+                if (position + 1 >= text.size()) {
+                    break;
+                }
                 node = node->traverse(text[++position]);
             }
 
@@ -2630,6 +2633,11 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
 
             LLAMA_LOG_INFO("%s: printing all EOG tokens:\n", __func__);
             for (auto tid : special_eog_ids) {
+                if (tid < 0 || tid >= (llama_token) id_to_token.size()) {
+                    LLAMA_LOG_WARN("%s: EOG token id %d is out of range (vocab size %zu), skipping\n",
+                            __func__, tid, id_to_token.size());
+                    continue;
+                }
                 auto & text = id_to_token[tid].text;
 
                 LLAMA_LOG_INFO("%s:   - %d ('%s')\n", __func__, tid, text.c_str());
@@ -2664,6 +2672,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             llama_token s_id = LLAMA_TOKEN_NULL;
 
             for (auto tid : special_eog_ids) {
+                if (tid < 0 || tid >= (llama_token) id_to_token.size()) {
+                    continue;
+                }
                 const auto & text = id_to_token[tid].text;
                 if (text == "<|tool_response>") {
                     has_tool_response = true;
@@ -3775,7 +3786,11 @@ int llama_vocab::find_bpe_rank(const std::string & token_left, const std::string
 }
 
 std::vector<std::string> llama_vocab::get_bpe_merges() const {
-    std::vector<std::string> result(pimpl->bpe_ranks.size());
+    int max_rank = -1;
+    for (const auto & pair : pimpl->bpe_ranks) {
+        max_rank = std::max(max_rank, pair.second);
+    }
+    std::vector<std::string> result(max_rank + 1);
 
     for (const auto & pair : pimpl->bpe_ranks) {
         result[pair.second] = pair.first.first + " " + pair.first.second;
