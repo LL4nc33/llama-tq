@@ -339,6 +339,7 @@ extern "C" {
         bool no_alloc;        // only load metadata and simulate memory allocations
         bool moe_pin_experts; // cudaHostRegister MoE expert weights for async PCIe DMA (Linux+CUDA)
         enum llama_tensor_read_lazy tensor_read_lazy; // on-demand reading of tensors marked by the arch
+        bool load_mtp;        // whether to load MTP layers
     };
 
     struct llama_sampler_seq_config {

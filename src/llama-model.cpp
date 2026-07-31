@@ -2646,6 +2646,7 @@ llama_model_params llama_model_default_params() {
         /*.no_alloc                    =*/ false,
         /*.moe_pin_experts             =*/ false,
         /*.tensor_read_lazy            =*/ LLAMA_TENSOR_READ_LAZY_AUTO,
+        /*.load_mtp                    =*/ false,
     };
 
     return result;
@@ -2696,7 +2697,12 @@ int32_t llama_model_n_swa(const llama_model * model) {
 }
 
 bool llama_model_has_mtp(const llama_model * model) {
-    return model->hparams.nextn_predict_layers > 0;
+    const auto & hparams = model->hparams;
+    if (hparams.nextn_predict_layers == 0) {
+        return false;
+    }
+    // the MTP block is only usable when its tensors were loaded (see llama_model_params::load_mtp)
+    return model->layers[hparams.n_layer - hparams.nextn_predict_layers].nextn.eh_proj != nullptr;
 }
 
 int32_t llama_model_dflash_selector_top_k(const llama_model * model) {
