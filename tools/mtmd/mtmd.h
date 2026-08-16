@@ -68,6 +68,7 @@ struct mtmd_input_chunks;
 
 struct mtmd_input_text {
     const char * text;
+    size_t       text_len; // length of text in bytes; guards against silent truncation on embedded NUL (upstream #25548)
     bool add_special;
     bool parse_special;
 };

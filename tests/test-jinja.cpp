@@ -33,6 +33,7 @@ static void test_array_methods(testing & t);
 static void test_object_methods(testing & t);
 static void test_hasher(testing & t);
 static void test_stats(testing & t);
+static void test_string_parts(testing & t);
 static void test_fuzzing(testing & t);
 
 static bool g_python_mode = false;
@@ -72,6 +73,7 @@ int main(int argc, char *argv[]) {
     if (!g_python_mode) {
         t.test("hasher", test_hasher);
         t.test("stats", test_stats);
+        t.test("string parts", test_string_parts);
         t.test("fuzzing", test_fuzzing);
     }
 
@@ -433,6 +435,24 @@ static void test_expressions(testing & t) {
         "{{ ('a', 'b', 'c')[::-1]|string }}",
         json::object(),
         "('c', 'b', 'a')"
+    );
+
+    test_template(t, "string slice negative step",
+        "{{ 'abcdef'[::-2] }}",
+        json::object(),
+        "fdb"
+    );
+
+    test_template(t, "string slice negative start and step",
+        "{{ 'abcdef'[-1:1:-1] }}",
+        json::object(),
+        "fedc"
+    );
+
+    test_template(t, "string slice negative start, stop and step",
+        "{{ 'abcdef'[-1:-5:-1] }}",
+        json::object(),
+        "fedc"
     );
 
     test_template(t, "arithmetic",
@@ -1320,6 +1340,12 @@ static void test_string_methods(testing & t) {
         "hello jinja"
     );
 
+    test_template(t, "string.replace() empty",
+        "{{ s.replace('', '.') }}",
+        {{"s", "hello world"}},
+        ".h.e.l.l.o. .w.o.r.l.d."
+    );
+
     test_template(t, "string.replace() with count",
         "{{ s.replace('a', 'X', 2) }}",
         {{"s", "banana"}},
@@ -1945,6 +1971,36 @@ static void test_stats(testing & t) {
         t.assert_true("inner_key1[0] is used", val->at("nested")->at("inner_key1")->at(0)->stats.used);
         t.assert_true("inner_key2.a is used", val->at("nested")->at("inner_key2")->at("a")->stats.used);
     });
+}
+
+static void test_string_parts(testing & t) {
+    static auto render = [](const std::string & tmpl, const json & vars) -> jinja::string {
+        jinja::lexer lexer;
+        auto lexer_res = lexer.tokenize(tmpl);
+
+        jinja::program ast = jinja::parse_from_tokens(lexer_res);
+
+        jinja::context ctx(tmpl);
+        jinja::global_from_json(ctx, vars, true);
+
+        jinja::runtime runtime(ctx);
+        return runtime.gather_string_parts(runtime.execute(ast))->as_string();
+    };
+
+    t.test("merge joins only the neighbours with the same type", [](testing & t) {
+        // "AB" comes from the input and merges, "-" comes from the template and must not
+        jinja::string res = render("{{ val.a }}{{ val.b }}-{{ val.c }}",
+                                   json{{"val", json{{"a", "A"}, {"b", "B"}, {"c", "C"}}}});
+
+        if (t.assert_true("3 parts after the merge", res.parts.size() == 3)) {
+            t.assert_true("part 0 is the merged input", res.parts[0].val == "AB" && res.parts[0].is_input);
+            t.assert_true("part 1 is from the template", res.parts[1].val == "-" && !res.parts[1].is_input);
+            t.assert_true("part 2 is input",             res.parts[2].val == "C" && res.parts[2].is_input);
+        } else {
+            t.log("parts: " + std::to_string(res.parts.size()) + ", rendered: " + json(res.str()).dump());
+        }
+    });
+
 }
 
 static void test_template_cpp(testing & t, const std::string & name, const std::string & tmpl, const json & vars, const std::string & expect) {

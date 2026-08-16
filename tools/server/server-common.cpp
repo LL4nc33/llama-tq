@@ -714,6 +714,7 @@ server_tokens process_mtmd_prompt(mtmd_context * mctx, std::string prompt, std::
     // multimodal
     mtmd_input_text inp_txt = {
         prompt.c_str(),
+        /* text_len */      prompt.size(),
         /* add_special */   true,
         /* parse_special */ true,
     };
@@ -1047,6 +1048,13 @@ json oaicompat_chat_params_parse(
         inputs.enable_thinking = false;
     } else if (!enable_thinking_kwarg.empty() && enable_thinking_kwarg[0] == '"') {
         throw std::invalid_argument("invalid type for \"enable_thinking\" (expected boolean, got string)");
+    }
+
+    // OAI-standard "reasoning_effort": "none" disables reasoning for this request (upstream #26045).
+    // Other values (low/medium/high/max) have no effect here — enable_thinking stays as-is.
+    if (body.contains("reasoning_effort") && body.at("reasoning_effort").is_string()
+            && body.at("reasoning_effort").get<std::string>() == "none") {
+        inputs.enable_thinking = false;
     }
 
     // if the assistant message appears at the end of list, we do not add end-of-turn token

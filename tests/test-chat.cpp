@@ -1618,6 +1618,80 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
             .run();
 
         tst.test(
+               "<tool_call>\n"
+               "<function=edit>\n"
+               "<parameter=filename>\n"
+               "foo.c\n"
+               "</parameter>\n"
+               "<parameter=oldString>\n"
+               "#iclunde\n"
+               "</parameter>\n"
+               "<parameter=newString>\n"
+               "#include\n"
+               "</parameter>\n"
+               "</function>\n"
+               "</tool_call>")
+            .enable_thinking(false)
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .tools({
+                edit_tool
+        })
+            .expect_tool_calls({
+                { "edit", "{\"filename\": \"foo.c\", \"oldString\": \"#iclunde\", \"newString\": \"#include\"}", {} },
+            })
+            .run();
+
+        // a parameter value that itself ends in a newline (e.g. a source file with a
+        // trailing newline). The structural delimiter is "\n</parameter>\n", so the value
+        // "#include\n" renders as "...#include\n\n</parameter>\n". The trailing newline must
+        // be preserved faithfully (no stripping), and the generated grammar must admit a
+        // value ending on a delimiter prefix. Regression test for gbnf_excluding_pattern.
+        tst.test(
+               "<tool_call>\n"
+               "<function=edit>\n"
+               "<parameter=filename>\n"
+               "foo.c\n"
+               "</parameter>\n"
+               "<parameter=oldString>\n"
+               "#iclunde\n"
+               "</parameter>\n"
+               "<parameter=newString>\n"
+               "#include\n"
+               "\n"
+               "</parameter>\n"
+               "</function>\n"
+               "</tool_call>")
+            .enable_thinking(false)
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .tools({
+                edit_tool
+        })
+            .expect_tool_calls({
+                { "edit", "{\"filename\": \"foo.c\", \"oldString\": \"#iclunde\", \"newString\": \"#include\\n\"}", {} },
+            })
+            .run();
+
+
+        // test code that starts with indent
+        tst.test(
+               "<tool_call>\n"
+               "<function=python>\n"
+               "<parameter=code>\n"
+               "    print(\"Hello, world!\")\n"
+               "</parameter>\n"
+               "</function>\n"
+               "</tool_call>")
+            .enable_thinking(false)
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .tools({
+                python_tool
+        })
+            .expect_tool_calls({
+                { "python", "{\"code\": \"    print(\\\"Hello, world!\\\")\"}", {} },
+            })
+            .run();
+
+        tst.test(
                "I need to output the invoice details in JSON\n"
                "</think>\n"
                R"({"amount": 123.45, "date": "2025-12-03"})")
@@ -3368,9 +3442,16 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
     // Format: <TOOLCALL>[{"name": "func", "arguments": {...}}]</TOOLCALL>
     {
         auto tst = peg_tester("models/templates/NVIDIA-Nemotron-Nano-v2.jinja", detailed_debug);
-        tst.test("<TOOLCALL>[{\"name\": \"special_function\", \"arguments\": {\"arg1\": 1}}]</TOOLCALL><SPECIAL_12>")
+        tst.test("I'm\nthinking\n</think>\n<TOOLCALL>[{\"name\": \"special_function\", \"arguments\": {\"arg1\": 1}}]</TOOLCALL>")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
             .tools({ special_function_tool })
-            .expect(message_assist_call)
+            .expect(message_assist_call_thoughts)
+            .run();
+
+        tst.test("I'm\nthinking\n</think>\n\n<TOOLCALL>[{\"name\": \"special_function\", \"arguments\": {\"arg1\": 1}}]</TOOLCALL>\n")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .tools({ special_function_tool })
+            .expect(message_assist_call_thoughts)
             .run();
     }
 
