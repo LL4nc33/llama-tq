@@ -1050,6 +1050,13 @@ json oaicompat_chat_params_parse(
         throw std::invalid_argument("invalid type for \"enable_thinking\" (expected boolean, got string)");
     }
 
+    // OAI-standard "reasoning_effort": "none" disables reasoning for this request (upstream #26045).
+    // Other values (low/medium/high/max) have no effect here — enable_thinking stays as-is.
+    if (body.contains("reasoning_effort") && body.at("reasoning_effort").is_string()
+            && body.at("reasoning_effort").get<std::string>() == "none") {
+        inputs.enable_thinking = false;
+    }
+
     // if the assistant message appears at the end of list, we do not add end-of-turn token
     // for ex. this can be useful to modify the reasoning process in reasoning models
     bool prefill_assistant_message = !inputs.messages.empty() && inputs.messages.back().role == "assistant" && opt.prefill_assistant;
