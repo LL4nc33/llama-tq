@@ -288,6 +288,7 @@ static int run_one_prompt(llama_model * model, const common_params & params, con
 
         mtmd_input_text text;
         text.text          = formatted.c_str();
+        text.text_len      = formatted.size();
         text.add_special   = false;
         text.parse_special = true;
         auto bmp_c = bitmaps.c_ptr();
