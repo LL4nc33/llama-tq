@@ -1277,7 +1277,7 @@ private:
         // initialize samplers
         if (task.need_sampling()) {
             try {
-                slot.smpl.reset(common_sampler_init(model, task.params.sampling));
+                slot.smpl.reset(common_sampler_init(model, task.params.sampling, slot.n_ctx));
             } catch (std::exception & e) {
                 std::string err_msg = std::string("Failed to initialize samplers: ") + e.what();
                 send_error(task, err_msg, ERROR_TYPE_INVALID_REQUEST);
