@@ -7,11 +7,16 @@ doc — this file is the index. Feedback and PRs welcome.
 
 | Area | Summary | Details |
 |------|---------|---------|
-| **TurboQuant KV cache** | KTQ × VTQ at 2.78 bpw, f16-equivalent quality. CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
+| **TurboQuant KV cache** | KTQ × VTQ at 2.78 bpw, quality close to f16 on the tested models. CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
 | **Speculation** | MTP (gemma-4 draft) + n-gram hybrid. 2.28× on Qwen3.6-35B-A3B-IQ2_XXS. | [speculative.md](docs/speculative.md) |
 | **DiffusionGemma** | Coherent 2-bit text diffusion (26B-A4B) on a single 12 GB GPU. | [diffusion-gemma.md](docs/diffusion-gemma.md) |
 | **Fine-tune on quantised** | LoRA on `ffn_*_exps` of Qwen3.6-A35B-IQ2_XXS, single 12 GB GPU. | [finetune.md](docs/finetune.md) |
 | **Vulkan backend** | Upstream `ggml-vulkan` + Turing tunings. PP parity reached. | [vulkan.md](docs/vulkan.md) |
+| **Tensor split without P2P** | `-sm tensor` across GPUs without peer access or NCCL: partial sums are reduced through mapped pinned host memory. Optional bf16 transfer via `GGML_CUDA_HOST_ALLREDUCE_BF16=1`. | [tp-tq-design.md](docs/tp-tq-design.md) |
+| **Ternary weights** | `PQ2_0` / `PTQ1_0` group-128 ternary types with Hadamard-rotated activations (Ternary-Bonsai-2-27B). CUDA mat-vec / MMQ kernels. | [README.md](README.md) |
+| **Qwen3.8 family** | Qwen3.8 and Qwen3.8-Flash-Next (`qwen4exp`) incl. sparse flash attention for the compressed-attention indexer. | [README.md](README.md) |
+| **Gated DeltaNet speed-ups** | State gather and gate activations inside the kernel for the hybrid Qwen3.5 / 3.8 models. | [README.md](README.md) |
+| **DFlash / DFlash2** | Block-diffusion speculative decoding on top of the MTP / n-gram stack. | [speculative.md](docs/speculative.md) |
 
 ## 🚧 In flight
 
@@ -28,6 +33,12 @@ doc — this file is the index. Feedback and PRs welcome.
 - Full-capability fine-tuning (attention backward, dense gradient flow through
   quantised activations, SSM training). → [finetune.md](docs/finetune.md)
 - One DiffusionGemma instance per GPU at full context, batch-parallel serving.
+
+## Known issues
+
+- **TurboQuant KV on Qwen3-4B-Instruct:** `ktq2_1` / `vtq2_1` produce garbage output at a
+  prompt of about 7k tokens, with and without deferred staging. f16 KV is correct on the
+  same prompt. Under investigation. → [turboquant.md](docs/turboquant.md)
 
 ## Maintenance policy
 

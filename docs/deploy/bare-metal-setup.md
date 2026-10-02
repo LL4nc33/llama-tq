@@ -147,7 +147,7 @@ curl -fsSL https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/mmpro
 export CUDA_VISIBLE_DEVICES=0
 llama-server \
   -m ~/models/model.gguf \
-  --host 0.0.0.0 --port 8791 --jinja --flash-attn on \
+  --host 0.0.0.0 --port 8080 --jinja --flash-attn on \
   -c 131072 -ngl 99 --parallel 1 -ub 512 \
   -ctk q8_0 -ctv q8_0 \
   --no-context-shift --reasoning off
@@ -167,8 +167,8 @@ llama-server \
 
 Test:
 ```bash
-curl -s localhost:8791/v1/chat/completions -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"Hauptstadt Österreich? Ein Wort."}],"max_tokens":10}'
+curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Capital of Austria? One word."}],"max_tokens":10}'
 ```
 
 **ngram-spec note:** `--spec-type ngram-cache` is lossless and content-dependent —
@@ -180,7 +180,7 @@ structure) it kicks in: measured ~33 t/s → ~59 t/s (≈1.8×) on gemma-4-12B /
 
 ## 6. Auto-start on boot (systemd)
 
-Put the deploy command in a script (`~/deploy-gemma4-12b.sh`, `chmod +x`) and
+Put the deploy command in a script (`/usr/local/bin/deploy-gemma4-12b.sh`, `chmod +x`) and
 wrap it in a system service so it survives reboots and restarts on crash:
 
 ```ini
@@ -193,7 +193,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=<user>
-ExecStart=/home/<user>/deploy-gemma4-12b.sh
+ExecStart=/usr/local/bin/deploy-gemma4-12b.sh
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=300

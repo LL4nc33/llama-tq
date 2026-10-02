@@ -49,7 +49,7 @@ Defaults: `--server http://localhost:8080`, `--model qwen3.6-35b-a3b`.
 Override either:
 
 ```bash
-./scripts/onllama-launch-claude.sh --server http://127.0.0.1:9000 --model my-model
+./scripts/onllama-launch-claude.sh --server http://127.0.0.1:8081 --model my-model
 ```
 
 Pass extra args to Claude Code after `--`:
@@ -82,7 +82,7 @@ Bind the server with `--host 0.0.0.0` (or a specific LAN IP) and point
 Claude Code at it:
 
 ```bash
-./scripts/onllama-launch-claude.sh --server http://gpu-host.lan:8080
+./scripts/onllama-launch-claude.sh --server http://<server-ip>:8080
 ```
 
 No auth is enforced by the wrapper; put the server on a trusted network

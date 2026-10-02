@@ -6,7 +6,7 @@
 #   ./scripts/measure-draft-accept.sh [--server URL] [--samples N] [--max-tokens N]
 #
 # Defaults:
-#   --server       http://localhost:8791
+#   --server       http://localhost:8080
 #   --samples      20
 #   --max-tokens   128
 #
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-SERVER_URL="${SERVER_URL:-http://localhost:8791}"
+SERVER_URL="${SERVER_URL:-http://localhost:8080}"
 SAMPLES=20
 MAX_TOKENS=128
 

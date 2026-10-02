@@ -2,14 +2,47 @@
 
 > Tensor Parallelism combined with quantized KV-cache on consumer GPUs.
 
-## Overview
+## Current status: tensor split without P2P
+
+`-sm tensor` works on GPUs without peer access (no P2P, no NVLink, no NCCL). The partial
+sums of each split matmul go through mapped pinned host memory: each GPU writes its part,
+raises a flag, then adds the parts of the other GPUs in a fixed order. All GPUs end up with
+identical results, and no host thread is involved.
+
+| Env var | Effect |
+|---|---|
+| `GGML_CUDA_HOST_ALLREDUCE=0` | disable the host-memory allreduce |
+| `GGML_CUDA_HOST_ALLREDUCE_BF16=1` | transfer partial sums as bf16, halves link traffic |
+
+```bash
+GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m ~/models/model.gguf -ngl 99 -fa on -sm tensor -c 65536
+```
+
+Measured on 2x RTX 2060 12 GB, one card on a chipset x4 gen2 link (tensor split vs layer split):
+
+| Model | Metric | `-sm tensor` | `-sm layer` |
+|---|---|---:|---:|
+| Qwen3.8-27B UD-Q4_K_M | decode (t/s) | 24.0 | 16.5 |
+| Qwen3.8-27B UD-Q4_K_M | prefill, 17k prompt (t/s) | 282 | 355 |
+| Ternary-Bonsai-2-27B PTQ1_0 | decode (t/s) | 37.8 | 34.8 |
+| Ternary-Bonsai-2-27B PTQ1_0 | decode at 171k context (t/s) | 21.6 | 16.0 |
+
+Wikitext perplexity is identical to layer split. On this hardware tensor split wins on
+decode and loses on long-prompt prefill.
+
+## Earlier design notes
+
+The sections below describe the original TP+TQ design (NCCL / P2P based) and are kept
+for reference.
+
+### Overview
 
 llama-tq enables simultaneous use of Tensor Parallelism (TP) and TurboQuant (TQ) KV-cache
 quantization. The upstream llama.cpp implementation blocks this combination — we replace
 the block with proper validation, making it possible to run large models across multiple
 GPUs while keeping the KV-cache compressed to 3.5–5.5 bits per weight.
 
-## Why This Works
+### Why This Works
 
 AllReduce — the synchronization primitive for TP — operates exclusively on **activations**
 (f16/f32 tensors after matrix multiplications). It never touches the KV-cache. Each GPU
@@ -24,7 +57,7 @@ The KV-cache is partitioned by heads, not by elements within a head. Since TQ op
 on 32-element blocks and head dimensions are always ≥64 (multiples of 32), TQ block
 boundaries always align with head boundaries. No TQ block is ever split across GPUs.
 
-## Mathematical Correctness
+### Mathematical Correctness
 
 For weight matrix W split into row-shards W_0, W_1 and input Z split into column-shards Z_0, Z_1:
 
@@ -42,7 +75,7 @@ and norm correction are all per-block operations with no cross-GPU dependencies.
 **Note**: TP+TQ results are not bit-identical to single-GPU+TQ because TQ block indices
 are local per GPU. Both produce correct results within the expected noise distribution.
 
-## Validation
+### Validation
 
 Three conditions are checked at context creation (`llama-context.cpp`):
 
@@ -52,20 +85,20 @@ Three conditions are checked at context creation (`llama-context.cpp`):
 
 Error messages tell the user what to do: "try a different model or fewer GPUs."
 
-## Hardware Recommendations
+### Hardware Recommendations
 
-### Symmetric PCIe (x16/x16 or NVLink)
+#### Symmetric PCIe (x16/x16 or NVLink)
 - Use `--split-mode tensor` for full TP
 - AllReduce overhead: ≈1.6 ms/token at 32 layers (≈5% of decode time)
 - Both GPUs contribute equally
 
-### Asymmetric PCIe (x16/x4, e.g. B450 boards)
+#### Asymmetric PCIe (x16/x4, e.g. B450 boards)
 - **Use `--split-mode layer` instead** — 30–50× less PCIe overhead than TP
 - Layer-split: 2 transfers/token (≈0.06 ms)
 - Tensor-parallel: 64+ AllReduces/token (≈2–3 ms through x4 bottleneck)
 - Recommended: `-sm layer -ts 1.2,1.0` (slightly more load on faster GPU)
 
-### Memory Savings (TQ2_1, 200K context, 14B model)
+#### Memory Savings (TQ2_1, 200K context, 14B model)
 
 | Config | Total KV | Per GPU (TP=2) |
 |--------|----------|----------------|
@@ -73,7 +106,7 @@ Error messages tell the user what to do: "try a different model or fewer GPUs."
 | TQ2_1 | 8.2 GB | **4.1 GB** |
 | TQ4_1 | 12.9 GB | 6.45 GB |
 
-## Usage
+### Usage
 
 ```bash
 # TP + TQ on 2 GPUs with NCCL
@@ -89,7 +122,7 @@ llama-server -m model.gguf \
   -ngl 99 --flash-attn
 ```
 
-## Architecture Compatibility
+### Architecture Compatibility
 
 | Architecture | TP+TQ | Notes |
 |-------------|-------|-------|
@@ -99,7 +132,7 @@ llama-server -m model.gguf \
 | Gemma4 (iSWA) | ⚠️ | Known SWA+TQ bug under investigation (workaround: `--tq-protect-layers 999`) |
 | DeepSeek2 (MLA) | ❌ | Blocked — MLA incompatible with standard TP |
 
-## Benchmarking
+### Benchmarking
 
 ```bash
 # Speed comparison: single GPU vs TP vs layer-split
@@ -114,13 +147,13 @@ llama-perplexity -m model.gguf -ngl 99 \
   -f wikitext-2-raw/wiki.test.raw --ctx-size 512
 ```
 
-## Implementation
+### Implementation
 
 The change is minimal — a single validation block in `src/llama-context.cpp` (≈55 lines)
 replaces the upstream hard block. All TP infrastructure (Meta-Backend, NCCL AllReduce,
 weight splitting, graph execution) is reused from upstream llama.cpp.
 
-## Known Issues
+### Known Issues
 
 - **Gemma4 SWA + TQ**: SWA layers (D=256) produce garbage with any TQ type. Global layers
   (D=512) work correctly. Under active investigation. Workaround: `--tq-protect-layers 999`.

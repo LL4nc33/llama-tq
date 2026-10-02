@@ -188,7 +188,6 @@ loader path is healthy.
 - ~5 GB peak per GPU at rank=2 + 256 ctx
 - Smoke: 222 steps loss 3.247 → 1.379, acc 31% → 64%, same numerical trajectory as single-GPU
 - **Throughput: ~0.35 step/s vs single-GPU ~0.50 step/s** — dual-GPU layer-split is ~44% slower per step on a consumer dual-2060 rig (asymmetric PCIe x16+x4, no working P2P). Use only when the workload does not fit single-GPU.
-- See `docs/phase-d-smoke-results.md` for the full table and why dual-GPU loses to single-GPU on this hardware
 - Fix commits: `9d136dee5` (dynamic `sched->graph_inputs[]`) and `93388f61d` (sched comparator sentinel for graph-shape switches in opt mode)
 
 ### Sparse path
@@ -254,6 +253,6 @@ Two scheduler fixes were needed (both on `feature/phase-d-multigpu-lora`):
 - `9d136dee5` — `sched->graph_inputs[]` is now a dynamic array. The previous fixed-size `GGML_SCHED_MAX_SPLIT_INPUTS=30` cap fits inference but is overrun by training graphs (forward + backward + per-param `OPT_STEP`) on a layer-split MoE.
 - `93388f61d` — new `ggml_backend_sched_invalidate_prev_backend_ids()` plus a sentinel-aware comparator. The scheduler previously cached `prev_node_backend_ids` from the prior shape; on a `gf → gb_grad → gb_opt` switch it missed the change, skipped the reserve-and-retry path, and segfaulted at `init_tensor` on a stale `buffer_id`. The invalidate helper is called from `ggml_opt_alloc` on every graph-shape change and forces the realloc path.
 
-**Caveat — dual-GPU is not a speedup for fitted workloads.** Layer-split is sequential, and on consumer dual-2060 rigs without working P2P/NVLink, the cross-device sync cost (asymmetric PCIe x16+x4) outweighs the compute parallelism. Measured: ~0.35 step/s dual vs ~0.50 step/s single (~44% slower per step). Use dual-GPU when the workload does not fit single-GPU (200k+ ctx, higher rank, AdamW momenta), not as a free speedup. See `docs/phase-d-smoke-results.md`.
+**Caveat — dual-GPU is not a speedup for fitted workloads.** Layer-split is sequential, and on consumer dual-2060 rigs without working P2P/NVLink, the cross-device sync cost (asymmetric PCIe x16+x4) outweighs the compute parallelism. Measured: ~0.35 step/s dual vs ~0.50 step/s single (~44% slower per step). Use dual-GPU when the workload does not fit single-GPU (200k+ ctx, higher rank, AdamW momenta), not as a free speedup.
 
 **Next step.** rank=4 + AdamW reachable now that VRAM doubles, which addresses the SGD-only drift seen in the earlier 10335-sample run. Validation pending.

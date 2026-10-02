@@ -122,7 +122,7 @@ remains the source of truth for whether to keep an override.
 3. **Single global codebook.** Per-layer-class codebooks (early/mid/late) would
    shave another 1-2% MSE but require either runtime indirection
    (`codebook[layer_class][idx]`) or compile-time specialization. Out of
-   scope for this script; track in `LEGION/` if pursued.
+   scope for this script.
 
 4. **No KV-cache live path yet.** Option B in the original task (a `'M'` tag
    in `common/router-profile.h` for K-tensor mean post-FWHT) is *not*

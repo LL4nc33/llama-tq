@@ -1,6 +1,6 @@
 # Qwen3.5-122B-A10B Bench — Expert-Offload Sweep (Research)
 
-Experimental deployment test on a research fork — not a production guide.
+Experimental deployment test on a research fork, not a deploy guide.
 
 Date: 2026-04-23
 Model: `Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf` (34.11 GiB)
@@ -30,9 +30,9 @@ GQA(2) + 48 layers = ~9 KB per-token KV at f16 → even 262k ctx needs only ~2.3
 14.06 ± 0.49 tok/s TG, 28.4 ± 2.3 tok/s PP @ 200k ctx on the test rig.
 
 ```bash
-.//build/bin/llama-server \
-  -m ./models/Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf \
-  --host 0.0.0.0 --port 8794 \
+./build/bin/llama-server \
+  -m ~/models/Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf \
+  --host 0.0.0.0 --port 8080 \
   -c 200000 -ngl 99 -ts 12,12 -fa on \
   --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
   --parallel 1 --fit-target 128 \
@@ -63,22 +63,22 @@ Coarse/fine sweep `-ngl 99 -ts 12,12 -fa 1 -r 3 -p 512 -n 256`:
 
 **Bench is misleading:** `-ts 12,12` + `-ot` on layers 0-9 de-facto uses only GPU0. "Dual-GPU" bench configs did run dual but were slower because of PCIe cross-traffic with only a 4k compute buffer.
 
-### Phase 2: Live-server smoke @ 262k ctx mit TQ2_1
+### Phase 2: Live-server smoke @ 262k ctx with TQ2_1
 
-Single-side Winner failed bei realem ctx (GPU0 Compute-Buffer OOM). Balanced-Configs liefen:
+The single-side winner failed at real context (GPU0 compute buffer OOM). The balanced configs ran:
 
 - 14L balanced (7+7): 13.44 tok/s
 - 16L balanced (8+8): 13.95 tok/s
 
 ### Phase 3: Fine-Tuning @ 200k ctx (PCIe-aware)
 
-User-Insight: GPU0 x16, GPU1 x4 → Expert-Heavy auf GPU0 spart Cross-GPU-Traffic.
+Insight: GPU0 x16, GPU1 x4, so placing more experts on GPU0 saves cross-GPU traffic.
 
 | Config | L | GPU0 free | GPU1 free | pp mean±σ | tg mean±σ |
 |--------|---:|---:|---:|---:|---:|
 | 18L (9+9) | 18 | 1.6 | 1.4 | 28.51 | 13.97 |
 | 19L (9+10) | 19 | 1.6 | 0.7 | 28.97 | 14.04 |
-| **19L (10+9)** 🏆 | 19 | **0.9** | 1.4 | 28.43±2.33 | **14.06±0.49** |
+| **19L (10+9)** | 19 | **0.9** | 1.4 | 28.43±2.33 | **14.06±0.49** |
 | 20L (10+10) | 20 | 0.9 | 0.7 | 27.34±4.45 | 14.34±0.45 |
 | 21L (11+10) | 21 | 0.3 | 0.7 | **31.31±0.75** | 14.34±0.38 |
 
@@ -104,7 +104,7 @@ User-Insight: GPU0 x16, GPU1 x4 → Expert-Heavy auf GPU0 spart Cross-GPU-Traffi
 ## Use case
 
 **Fits:** chat, Q&A, reasoning with moderate prompts.
-**Doesn't fit:** Claude-Code-style (14 tok/s × 100k ctx = 2h/response).
+**Doesn't fit:** agentic coding with long contexts (14 tok/s × 100k ctx = 2h/response).
 
 To reach >20 tok/s: IQ1_M (quality loss), DDR5 (2× bandwidth), or single-GPU with 24+ GB.
 
@@ -113,11 +113,3 @@ To reach >20 tok/s: IQ1_M (quality loss), DDR5 (2× bandwidth), or single-GPU wi
 - **Activation profiling** — hot-expert detection might bring +10-20% TG. Needs a source patch in expert selection.
 - **llama-bench CPU-only TQ-init bug** — issue #167, low priority.
 - **Shared-experts-only GPU** — Qwen3.5 has `expert_shared_feed_forward_length=1024` → every token hits the shared expert. Isolated pinning not tested.
-
-## Credit
-
-- **distillery-claude:** full sweep methodology, PCIe-aware final config, 5× statistical validation.
-- **User (LL4nc33):** PCIe-aware expert-shift idea — +11% PP over the balanced baseline.
-- **llamatq-claude:** TQ2_1 KV cache — enabler for 200k ctx (OOM otherwise).
-
-Source: `LEGION/2026-04-23_2340_distillery_122b-deploy-complete-results.md`.

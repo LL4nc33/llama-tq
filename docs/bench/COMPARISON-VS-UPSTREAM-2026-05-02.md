@@ -1,5 +1,7 @@
 # llama-tq vs upstream llama.cpp — A/B Benchmark (2026-05-02 Refresh)
 
+> Historical snapshot (2026-05-02). Current measurements will be published on the benchmark page.
+
 **Date:** 2026-05-02
 **Hardware:** test-box — 2× RTX 2060 12GB (CC 7.5), CUDA, FA on, KVM guest of Ryzen 7 3700X
 **Methodology:** `llama-bench -p 512 -n 128 -ngl 99 -fa 1 -ts 12,12 -r 3` (sequential, GPU verified clean between runs)
@@ -21,7 +23,7 @@ Note: This is a refresh of the 2026-04-26 A/B (commit `6e50fc701` vs `0c6ee1cad`
 
 ---
 
-## 2. Main Benchmark — Qwen3.6-35B-A3B-IQ2_XXS bartowski (10.01 GiB, 34.66 B params)
+## 2. Main Benchmark — Qwen3.6-35B-A3B-IQ2_XXS (10.01 GiB, 34.66 B params)
 
 | Engine | KV cache | KV bpw | pp512 (t/s) | tg128 (t/s) |
 |--------|----------|-------:|------------:|------------:|
@@ -50,7 +52,7 @@ The most aggressive upstream KV-quant available, vs llama-tq's TQ default:
 
 ### llama-tq ktq2/vtq2 (2.78 bpw) vs upstream q8_0/q8_0 (8.5 bpw)
 
-The most popular upstream KV choice for production:
+The most popular upstream KV choice for daily use:
 
 | Metric | llama-tq ktq2/vtq2 | upstream q8_0/q8_0 | Δ |
 |---|---:|---:|---:|
@@ -79,8 +81,8 @@ From the wikitext-2 sweep (chunks=3, ctx=512):
 |---|---:|---:|
 | llama-tq f16/f16 baseline | 7.2044 | 0.00% |
 | **llama-tq ktq2/vtq2** | **7.1807** | **−0.33%** (within stderr of f16) |
-| llama-tq ktq2/vtq3 | 7.2024 | −0.03% (essentially lossless) |
-| upstream baseline (legacy 35B prod ktq2_1/vtq2_1) | 7.4816 | +3.85% |
+| llama-tq ktq2/vtq3 | 7.2024 | −0.03% (close to f16) |
+| upstream baseline (legacy 35B deploy ktq2_1/vtq2_1) | 7.4816 | +3.85% |
 
 ## 5. TL;DR
 
@@ -102,7 +104,7 @@ cmake -B build -DGGML_CUDA=ON
 cmake --build build -j2 --target llama-bench
 
 # Run identical bench on same hardware
-MODEL=Qwen_Qwen3.6-35B-A3B-IQ2_XXS-bartowski.gguf
+MODEL=~/models/Qwen3.6-35B-A3B-IQ2_XXS.gguf
 
 OMP_WAIT_POLICY=passive ./llama-tq/build/bin/llama-bench -m $MODEL \
   -ngl 99 -fa 1 -ts 12,12 -p 512 -n 128 -r 3 -ctk ktq2 -ctv vtq2
@@ -121,7 +123,7 @@ OMP_WAIT_POLICY=passive ./llama.cpp-upstream/build/bin/llama-bench -m $MODEL \
 
 ## 8. Note on Active Competitors
 
-For context (per `docs/research/SUMMARY-2026-05-02.md`):
+For context:
 - **vLLM** merged TurboQuant April 15, 2026 (PR #38479) — datacenter-targeted, requires Hopper FP8
 - **TheTom/llama-cpp-turboquant** (1.1k stars) ships `turbo3`/`turbo4` symmetric K=V types
 - **spiritbuun/buun-llama-cpp** (526 stars) ships Trellis-Coded turbo*_tcq, asymmetric default

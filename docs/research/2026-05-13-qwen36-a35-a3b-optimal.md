@@ -1,9 +1,9 @@
-# Qwen3.6-35B-A3B (the model-34B) — Optimal Configuration
+# Qwen3.6-35B-A3B: optimal settings
 
 ## TL;DR
 
-**ub=1024 statt default ub=512 bringt +13% PP@2k, +13% PP@4k.**
-Kombiniert mit dual-GPU layer-split: **+50-71% PP** über single-GPU baseline.
+**ub=1024 instead of the default ub=512 gives +13% PP@2k and +13% PP@4k.**
+Combined with dual-GPU layer split: **+50-71% PP** over the single-GPU baseline.
 
 ## Sweep results (build `6cc4920d0`, IQ2_XXS, dual-GPU layer-split)
 
@@ -19,7 +19,7 @@ Kombiniert mit dual-GPU layer-split: **+50-71% PP** über single-GPU baseline.
 | 1536 | 1414 | 1305 | 1040 | 77 |
 | 2048 | 1270 | 1310 | 1145 | 77 |
 
-→ **ub=1024 ist 35B-A3B sweet-spot.** ub=512→1024 = +13% PP@2k.
+→ **ub=1024 is the 35B-A3B sweet spot.** ub=512→1024 = +13% PP@2k.
 
 ### split-mode test
 
@@ -28,7 +28,7 @@ Kombiniert mit dual-GPU layer-split: **+50-71% PP** über single-GPU baseline.
 | layer (default) | **1437** | 77 |
 | row | 358 (-75%) | 32 (-58%) |
 
-→ **sm=row ist CATASTROPHIC für 35B.** Default layer-split bleibt.
+→ **sm=row is far slower on 35B.** Default layer split stays.
 
 ## Full sweep with optimal config (ub=1024, layer-split)
 
@@ -63,10 +63,10 @@ through pipeline parallelism efficiency.
 - Dense small (3B-14B, D=128): ub=128 optimal
 - MoE (35B-A3B, D=256): ub=1024 optimal
 
-## Production deploy notes
+## Deploy notes
 
-The existing `scripts/deploy-the-model-dualgpu-200k.sh` uses `-ub 512` and
-`ktq2`/`vtq4` (different from our tested `ktq2_1`/`vtq2_1` Phase 5 path).
+The deploy config at the time used `-ub 512` and
+`ktq2`/`vtq4` (different from the tested `ktq2_1`/`vtq2_1` Phase 5 path).
 Considerations for an updated deploy:
 
 - Switch to `ktq2_1`/`vtq2_1` to enable Phase 5 MMA inline (would need testing
@@ -75,5 +75,5 @@ Considerations for an updated deploy:
 - Keep `--moe-pin-experts` and `--backend-sampling` (helpful)
 - For 200k ctx the VRAM budget is tight — verify ub=1024 fits
 
-Recommended next step: test current production deploy with `-ub 1024` swap
-(no other changes) on staging before full Phase 5 + ub upgrade.
+Recommended next step: test the existing deploy with only `-ub 1024` changed
+before the full Phase 5 + ub upgrade.

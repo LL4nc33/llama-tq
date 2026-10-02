@@ -15,7 +15,7 @@
 #                 --model-tag qwen35-0.8b-q8
 #
 # Constraints (see README.md / project memory):
-#   - Never point --server-url at the live deploy on localhost:8791.
+#   - Never point --server-url at the live deploy on localhost:8080.
 #   - Never run two gates in parallel on the same test-rig host.
 #   - cache_prompt is forced false inside pred_llama.py — do not weaken.
 set -euo pipefail

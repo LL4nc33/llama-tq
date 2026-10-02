@@ -1,13 +1,15 @@
 # TurboQuant — KTQ/VTQ KV Cache Quantization for CUDA
 
-Status: 2026-05-05. **v8 unified type aliases shipped (2026-05-02).** Short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults; new `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers — essentially **lossless** on 35B-A3B (-0.03% PPL drift vs f16). Three V-cache families (v1, v2 Trellis, v3 Trellis+outlier-split) and one K-cache family (KTQ), freely composable.
+> **Known issue (under investigation):** TurboQuant KV (`ktq2_1` / `vtq2_1`) produces garbage output on Qwen3-4B-Instruct with a prompt of about 7k tokens, with and without deferred staging. f16 KV is correct on the same prompt. Use f16 or q8_0 KV for this model until it is resolved.
 
-**Recommended (35B-A3B):** `--cache-type-k ktq2 --cache-type-v vtq3` (v8 quality tier, lossless).
-**Stable default (since 2026-04-25, EOS-cutoff fix 2026-05-03):** `--cache-type-k ktq2 --cache-type-v vtq2` (= `ktq2_1 / vtq2_2` in legacy long-form). Avoid `vtq2_1` on long contexts on builds with S199 plumbing — see Version History 2026-05-03.
+Historical status (2026-05-05): v8 unified type aliases shipped on 2026-05-02. Short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the tested defaults; `vtq3` (= `vtq3_v8`, enum 58) is a 3.625-bpw trellis-3bit + 2 outliers type, close to f16 on the tested models (-0.03% PPL drift vs f16 on 35B-A3B). Three V-cache families (v1, v2 Trellis, v3 Trellis+outlier-split) and one K-cache family (KTQ), freely composable.
+
+**Quality tier (35B-A3B):** `--cache-type-k ktq2 --cache-type-v vtq3`.
+**Stable default (since 2026-04-25, EOS-cutoff fix 2026-05-03):** `--cache-type-k ktq2 --cache-type-v vtq2` (= `ktq2_1 / vtq2_2` in legacy long-form). Avoid `vtq2_1` on long contexts on builds with S199 plumbing, see Version History 2026-05-03.
 
 ## Overview
 
-TurboQuant is the KV-cache quantization stack of the `llama-tq` fork. It compresses the KV cache via a Randomized Hadamard Transform (RHT) plus codebook or trellis quantization, enabling much longer contexts on the same VRAM with negligible perplexity loss.
+TurboQuant is the KV-cache quantization stack of the `llama-tq` fork. It compresses the KV cache via a Randomized Hadamard Transform (RHT) plus codebook or trellis quantization, enabling much longer contexts on the same VRAM, with perplexity close to f16 on the tested models.
 
 Two type families exist, split by cache role:
 
@@ -160,7 +162,7 @@ All measured on the test box: Ryzen 7 3700X host (Zen 2, 8C/16T), KVM guest 12 v
 | llama-tq f16/f16   | 187 | 17.00 |
 | Δ                  | +5% | +9% |
 
-Live numbers (TG, PPL, HellaSwag for all five deploy targets): [`docs/bench/LIVE_NUMBERS.md`](bench/LIVE_NUMBERS.md).
+Historical snapshot of TG, PPL and HellaSwag for several models: [`docs/bench/LIVE_NUMBERS.md`](bench/LIVE_NUMBERS.md).
 
 ## How It Works
 
@@ -276,7 +278,7 @@ Cumulative +18.5% TG on 80B-A3B (30.80 → ~36.5 t/s at ctx ≤ 8192), +9.3% on 
 
 ### Networking / API
 
-Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`, gzip — used by Claude Code clients and external agents.
+Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`, gzip — used by Anthropic-API clients and external agents.
 
 ## Source Files
 
@@ -290,11 +292,11 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 | `ggml/src/ggml-cuda/convert.cu`            | CUDA dequant dispatch (contiguous + NC) for KTQ + all VTQ families. |
 | `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ; shared `PQ_CODEBOOK_*` constants. |
 | `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_3`. |
-| `docs/bench/LIVE_NUMBERS.md`               | Current TG/PPL/HellaSwag for all five deploy targets. |
+| `docs/bench/LIVE_NUMBERS.md`               | Historical TG/PPL/HellaSwag snapshot. |
 
 ## Roadmap
 
-> Full v6 plan: see [docs/plans/2026-05-05-v6-roadmap.md](plans/2026-05-05-v6-roadmap.md). The v6 verdict drops Trellis-K (mathematically incompatible with our Hadamard-domain Q·K USP) and prioritises performance levers.
+> The v6 plan drops Trellis-K (mathematically incompatible with our Hadamard-domain Q·K USP) and prioritises performance levers.
 
 ### Active research (v6 scope)
 
@@ -362,10 +364,10 @@ This implementation is inspired by but deviates from the cited papers. KTQ uses 
 - **2026-04-26**: 80B-TQ1_0 deployed full-VRAM (54.93 t/s, +50% vs IQ2_XXS). Phase 4 perf stack: `MADV_HUGEPAGE`, `mul_mat_id` prefetch, `OMP_WAIT_POLICY=active`, adaptive layer-split (80B: 18/18/12), P2P opt-in, AVX2-FWHT-32. Cumulative +18.5% TG on 80B, +9.3% on 122B.
 - **2026-04-27**: XQuant Phase 1–5 code-complete (XKTQ2_1, dormant on hybrid SSM). `--moe-pin-experts` opt-in (+3.3% TG on 80B-IQ2). gpt-oss-20b head_dim=64 fix (commit `c818f6c84`). Anthropic `/v1/messages` with prompt caching, `TCP_NODELAY`, gzip.
 - **2026-04-28**: model directory layout on the test box consolidated. Doc rewrite — this file.
-- **2026-05-02 — TurboQuant v8 unified type aliases**: short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults. New `vtq3_v8` (enum 58, 3.625 bpw) = trellis-3bit + 2 fp16 outliers — essentially **lossless** on 35B-A3B (−0.03% PPL drift vs f16 baseline, 12% smaller than legacy `vtq3_3`). Legacy long names (`ktq2_1`, `vtq2_2`, …) remain accepted.
-- **2026-05-03 — EOS-cutoff regression fix**: long-context coding outputs (Snake-game generation) cut off mid-function with `ktq2_1 + vtq2_1` on the post-S199-plumbing build. A/B test (n=5, Snake prompt with 9k input): `ktq2_1+vtq2_1` 1/3 cutoffs, `ktq2+vtq2_2` 0/5 cutoffs. Fix is a pure KV-type switch (no `--logit-bias` workaround). Hypothesis: the S199 `extern __constant__ float d_ktq_sparse_k_threshold;` symbol changes nvcc codegen for the `vtq2_1` dispatch path; `vtq2_2` is unaffected. Bisect against `e054a3088` not yet performed. Default deploy scripts updated.
-- **2026-05-05 — Repo cleanup**: doc tone pass + filename renames in `docs/blog/`. Vendored upstream content untouched. Math fix: VRAM-saved tier-table values corrected (e.g. 2.78 bpw is 83% saved, not 91%). v6 roadmap captured in `docs/plans/2026-05-05-v6-roadmap.md`.
+- **2026-05-02 — TurboQuant v8 unified type aliases**: short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults. New `vtq3_v8` (enum 58, 3.625 bpw) = trellis-3bit + 2 fp16 outliers — close to f16 on 35B-A3B (−0.03% PPL drift vs f16 baseline, 12% smaller than legacy `vtq3_3`). Legacy long names (`ktq2_1`, `vtq2_2`, …) remain accepted.
+- **2026-05-03 — EOS-cutoff regression fix**: long-context coding outputs (Snake-game generation) cut off mid-function with `ktq2_1 + vtq2_1` on the post-S199-plumbing build. A/B test (n=5, Snake prompt with 9k input): `ktq2_1+vtq2_1` 1/3 cutoffs, `ktq2+vtq2_2` 0/5 cutoffs. Fix is a pure KV-type switch (no `--logit-bias` workaround). Hypothesis: the S199 `extern __constant__ float d_ktq_sparse_k_threshold;` symbol changes nvcc codegen for the `vtq2_1` dispatch path; `vtq2_2` is unaffected. Bisect against `e054a3088` not yet performed.
+- **2026-05-05 — Repo cleanup**: doc tone pass. Vendored upstream content untouched. Math fix: VRAM-saved tier-table values corrected (e.g. 2.78 bpw is 83% saved, not 91%). v6 roadmap defined.
 - **2026-05-18 — MoE LoRA fine-tuning lands** (independent of TurboQuant; tracked here only because the same fork ships both). `MUL_MAT_ID` backward, LoRA bootstrap for `ffn_*_exps`, adapter save as `.lora.gguf`, and a SIGTERM/SIGINT safety flush land in `llama-finetune`. Qwen3.6-A35B-IQ2_XXS now trains end-to-end on a single 12 GB GPU. Full details in [docs/finetune.md](finetune.md).
-- **2026-06-08 — MTP + n-gram hybrid speculative decoding lands** (independent of TurboQuant; same caveat). Full upstream MTP integration (model-class refactor, libllama MTP API, CLI draft flags, server speculation wiring) plus a fork-side n-gram hybrid with pretrained static cache. Prod deploy on Qwen3.6-35B-A3B-IQ2_XXS (bartowski) + KTQ2_1 + VTQ2_1 + 200k ctx: 80 t/s creative, 176 t/s repeat (2.28× universal boost) on 2× RTX 2060 12 GB. mmproj + spec coexistence via per-request `has_media()` gate (upstream-PR ready).
+- **2026-06-08 — MTP + n-gram hybrid speculative decoding lands** (independent of TurboQuant; same caveat). Full upstream MTP integration (model-class refactor, libllama MTP API, CLI draft flags, server speculation wiring) plus a fork-side n-gram hybrid with pretrained static cache. Deploy on Qwen3.6-35B-A3B-IQ2_XXS + KTQ2_1 + VTQ2_1 + 200k ctx: 80 t/s creative, 176 t/s repeat (2.28× universal boost) on 2× RTX 2060 12 GB. mmproj + spec coexistence via per-request `has_media()` gate (upstream-PR ready).
 - **2026-06-09 — Dequant kernel perf-cluster lands** (PR #12). Multi-warp-per-CTA NC dequant for VTQ + KTQ2_1 convert (4× occupancy on Turing), pre-scaled VTQ codebook in read-path decoders (eliminates one mul per element), VTQ2_1 4-outputs-per-thread NC dequant kernel. Smoke parity verified: 0.8B-Q8 TG 225.40 t/s vs 224.37 baseline (within noise). Plus Vulkan KTQ2_1 dequant validation harness (PR #11) for the dormant Vulkan port.
-- **2026-06-09 — Eagle3 draft-head infrastructure lands** (PR #10). Hidden-state extraction at three configurable layer taps (low/mid/high) via `llama_get_embeddings_eagle3_{low,mid,high}_ith` C-API, GGUF KV plumbing (`eagle3_layer_low/mid/high`), head graph fusion (`build_eagle3_fusion` in qwen35 dense + MoE), `LLM_TENSOR_NEXTN_EAGLE3_FC` tensor type, loader, and Python converter for HF eagle3 checkpoints. Single-stream MTP path unchanged when no eagle3 head is present. Driver-side wire-up of the embd buffer fill (C.4 part 2) deferred until a trained head exists; training in flight in the distillery sister repo.
+- **2026-06-09 — Eagle3 draft-head infrastructure lands** (PR #10). Hidden-state extraction at three configurable layer taps (low/mid/high) via `llama_get_embeddings_eagle3_{low,mid,high}_ith` C-API, GGUF KV plumbing (`eagle3_layer_low/mid/high`), head graph fusion (`build_eagle3_fusion` in qwen35 dense + MoE), `LLM_TENSOR_NEXTN_EAGLE3_FC` tensor type, loader, and Python converter for HF eagle3 checkpoints. Single-stream MTP path unchanged when no eagle3 head is present. Driver-side wire-up of the embd buffer fill (C.4 part 2) deferred until a trained head exists.

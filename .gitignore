@@ -145,7 +145,6 @@ poetry.toml
 /.windsurf/
 # emscripten
 a.out.*
-LEGION/
 DISCUSSION_POST.md
 
 # HuggingFace release staging — model card + GGUF upload tooling.
@@ -171,7 +170,6 @@ docs/plans/*
 autoresearch/
 
 # Fork-private development directories — recursive guards (added 2026-05-05)
-**/LEGION/
 **/autoresearch/
 **/brainstorming-*/
 **/notes-*/

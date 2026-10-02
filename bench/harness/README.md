@@ -1,12 +1,10 @@
 # RULER + LongBench Harness — Skeleton
 
-Spec: [`docs/plans/2026-04-26-ruler-harness-spec.md`](../../docs/plans/2026-04-26-ruler-harness-spec.md)
-
 This directory will contain the long-context evaluation harness for the
 llama-tq fork: synthetic RULER tasks (primary) and real LongBench tasks
 (secondary), driven through the llama-server `/completion` endpoint.
 
-**Status: skeleton only.** End-to-end wiring works against a locally-spun
+**Status: experimental harness.** End-to-end wiring works against a locally-spun
 llama-server, but scoring uses a placeholder substring metric. The real
 RULER + LongBench scorers are vendored later — see
 [`vendor/VENDOR.md`](vendor/VENDOR.md) for target upstream SHAs.
@@ -68,7 +66,7 @@ only, not a quality signal.
 - No parallel bench runs on the same GPU — VRAM contention and thermal
   drift skew measurements.
 
-## Implementation Order (from spec §9)
+## Implementation Order
 
 1. ~~Skeleton commit (this PR)~~
 2. Vendor RULER + LongBench metrics under `vendor/`, pin SHAs

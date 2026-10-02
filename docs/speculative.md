@@ -249,8 +249,7 @@ without quality regression is not achievable** with current draft-source options
 Option 2 is the realistic next step. Community Eagle3 checkpoints exist for
 Qwen3-30B-A3B (`lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex`)
 and Qwen3-VL-30B-A3B. Implementation is a 3-5 week engineering project on
-top of the existing MTP infrastructure — see internal plan in
-`docs/plans/2026-06-08-eagle3-integration.md` (local-only, not pushed).
+top of the existing MTP infrastructure.
 
 Repeat-heavy workloads (lists, code boilerplate, log scanning) still hit
 1.5-3.8x today via ngram-cache and do not need Eagle3.
