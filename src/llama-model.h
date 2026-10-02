@@ -491,6 +491,12 @@ struct llama_layer {
     // diffusion-gemma encoder-phase per-layer output scale (decoder reuses out_scale)
     struct ggml_tensor * out_scale_enc = nullptr;
 
+    // DFlash2 local convolution (per-layer dynamic + static conv coefficients)
+    struct ggml_tensor * dflash_attn_conv_base = nullptr;
+    struct ggml_tensor * dflash_attn_conv_proj = nullptr;
+    struct ggml_tensor * dflash_ffn_conv_base  = nullptr;
+    struct ggml_tensor * dflash_ffn_conv_proj  = nullptr;
+
     struct llama_layer_posnet posnet;
 
     struct llama_layer_convnext convnext;
@@ -535,7 +541,26 @@ struct llama_model {
     struct ggml_tensor * output_norm_b   = nullptr;
     struct ggml_tensor * output          = nullptr;
     struct ggml_tensor * output_b        = nullptr;
+    struct ggml_tensor * output_s        = nullptr;
     struct ggml_tensor * output_norm_enc = nullptr;
+
+    // DFlash / DSpark speculative drafter (model-level projections)
+    struct ggml_tensor * fc   = nullptr;
+    struct ggml_tensor * fc_s = nullptr;
+    struct ggml_tensor * d2t  = nullptr; // draft-to-target vocabulary mapping
+
+    struct ggml_tensor * dspark_markov_w1   = nullptr;
+    struct ggml_tensor * dspark_markov_w2   = nullptr;
+    struct ggml_tensor * dspark_markov_w2_s = nullptr;
+    struct ggml_tensor * dspark_conf_proj   = nullptr;
+    struct ggml_tensor * dspark_conf_proj_b = nullptr;
+
+    struct ggml_tensor * dflash_selector_prev   = nullptr;
+    struct ggml_tensor * dflash_selector_next   = nullptr;
+    struct ggml_tensor * dflash_selector_hidden = nullptr;
+
+    // DFlash: which target-model layers feed the encoder feature fusion
+    std::vector<int32_t> target_layer_ids;
 
     // NextN/MTP model-level projections
     struct ggml_tensor * nextn_proj_pre  = nullptr;

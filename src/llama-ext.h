@@ -107,6 +107,11 @@ LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_nextn_ith(struct llama_context * ctx, int32_t i);
 LLAMA_API void    llama_set_embeddings_nextn(struct llama_context * ctx, bool value, bool masked);
 
+// DFlash speculative drafter model introspection (used by common_speculative)
+LLAMA_API int32_t         llama_model_dflash_selector_top_k(const struct llama_model * model);
+LLAMA_API const int32_t * llama_model_target_layer_ids     (const struct llama_model * model);
+LLAMA_API uint32_t        llama_model_target_layer_ids_n   (const struct llama_model * model);
+
 // Eagle3 multi-stream hidden-state extraction.
 // Set value=true to enable; the model must have been loaded with non-zero
 // eagle3_layer_{low,mid,high} hparams. Returns one row of n_embd floats per
@@ -115,6 +120,12 @@ LLAMA_API void    llama_set_embeddings_eagle3(struct llama_context * ctx, bool v
 LLAMA_API float * llama_get_embeddings_eagle3_low_ith (struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_embeddings_eagle3_mid_ith (struct llama_context * ctx, int32_t i);
 LLAMA_API float * llama_get_embeddings_eagle3_high_ith(struct llama_context * ctx, int32_t i);
+
+// Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
+// set enables extraction of the residual stream entering target layer lid; get returns
+// the base pointer of that layer's export buffer ([n_outputs][n_embd] floats), or nullptr.
+LLAMA_API void    llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid, bool value);
+LLAMA_API float * llama_get_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid);
 
 //
 // Gemma4 MTP (PR #23398): secondary context (assistant/draft) accessor

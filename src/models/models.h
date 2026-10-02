@@ -1994,3 +1994,23 @@ struct llama_model_step35 : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
+
+
+// DFlash / DSpark block-diffusion speculative drafter.
+// Note: the DeepSeek-V4 (DSpark) backbone path (graph_dsv4) is gated out in the fork
+// because it inherits llama_model_deepseek4, which is not ported here. Only the
+// DFlash1/DFlash2 encoder (graph<true>) + decoder (graph<false>) paths are active.
+struct llama_model_dflash : public llama_model_base {
+    llama_model_dflash(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    template <bool is_enc>
+    struct graph : public llm_graph_context {
+        graph(const llama_model & model, const llm_graph_params & params);
+
+        ggml_tensor * build_inp_embd_enc() const;
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};

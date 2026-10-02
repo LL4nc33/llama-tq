@@ -83,6 +83,12 @@ struct llama_context {
     float * get_embeddings_eagle3_high_ith(int32_t i);
     void    set_embeddings_eagle3(bool value);
 
+    // Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
+    // set enables extraction of the residual stream entering layer lid; get returns
+    // the base pointer of that layer's export buffer ([n_outputs][n_embd] floats).
+    void    set_embeddings_layer_inp(uint32_t lid, bool enable);
+    float * get_embeddings_layer_inp(uint32_t lid);
+
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
 
@@ -313,6 +319,13 @@ private:
     buffer_view<float> embd_eagle3_low  = {nullptr, 0};
     buffer_view<float> embd_eagle3_mid  = {nullptr, 0};
     buffer_view<float> embd_eagle3_high = {nullptr, 0};
+
+    // Generic per-layer input-feature export (DFlash / upstream layer_inp path).
+    // One buffer per model layer (index il); populated only for layers whose
+    // cparams.embeddings_layer_inp[il] flag is set. Each buffer holds [n_outputs][n_embd]
+    // floats: the residual stream entering layer il, as tapped by the model graph
+    // (res->t_layer_inp[il]). Mirrors the embd_eagle3_* buffers but generalized to N layers.
+    std::vector<buffer_view<float>> embd_layer_inp;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

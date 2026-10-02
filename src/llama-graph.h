@@ -765,11 +765,23 @@ public:
     ggml_tensor * get_h_pre_norm()  const { return t_h_pre_norm; }
     // PR #23398: Gemma4 MTP post-output-norm hidden-state slot (LM-head input feature).
     // Distinct from t_h_pre_norm; populated by gemma4 graph builder.
-    ggml_tensor * get_h_nextn()     const { return t_h_nextn ? t_h_nextn : t_h_pre_norm; }
+    // Return t_h_nextn as-is (no h_pre_norm fallback): all nextn producers (dflash,
+    // gemma4, gemma4-assistant) set it explicitly, and the fallback made the nextn
+    // export path resolve to an out-of-graph tensor on injection decodes, permuting
+    // the DFlash2 selector lattice. Matches upstream get_h_nextn().
+    ggml_tensor * get_h_nextn()     const { return t_h_nextn; }
     llm_graph_input_diffusion_self_cond_topk * get_inp_diffusion_self_cond_topk() const;
     ggml_tensor * get_h_eagle3_low()  const { return t_h_eagle3_low; }
     ggml_tensor * get_h_eagle3_mid()  const { return t_h_eagle3_mid; }
     ggml_tensor * get_h_eagle3_high() const { return t_h_eagle3_high; }
+
+    // Generic per-layer input-feature tap (DFlash / upstream layer_inp path).
+    // Returns the residual stream entering layer il (== inpL at the top of the layer
+    // loop), or nullptr if the model builder did not populate it. Sized to
+    // LLAMA_MAX_LAYERS+1 in reset(); indexed by layer id.
+    ggml_tensor * get_layer_inp(int il) const {
+        return (il >= 0 && il < (int) t_layer_inp.size()) ? t_layer_inp[il] : nullptr;
+    }
 
     ggml_cgraph  * get_gf()  const { return gf; }
     ggml_context * get_ctx() const { return ctx_compute.get(); }
@@ -811,6 +823,12 @@ public:
     ggml_tensor * t_h_eagle3_low  = nullptr;
     ggml_tensor * t_h_eagle3_mid  = nullptr;
     ggml_tensor * t_h_eagle3_high = nullptr;
+
+    // Generic per-layer input-feature taps (DFlash / upstream layer_inp path).
+    // Populated by base-model graph builders (res->t_layer_inp[il] = inpL at the top
+    // of the layer loop). One slot per layer id; only the layers flagged in
+    // cparams.embeddings_layer_inp are marked as graph outputs and exported.
+    std::vector<ggml_tensor *> t_layer_inp;
 
     std::map<llama_seq_id, ggml_tensor*> t_sampled_logits;
     std::map<llama_seq_id, ggml_tensor*> t_candidates;

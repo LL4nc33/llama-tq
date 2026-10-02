@@ -81,6 +81,10 @@ llama_context::llama_context(
     cparams.embeddings_nextn = false;
     cparams.embeddings_nextn_masked = false;
     cparams.embeddings_eagle3 = false;
+    // Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
+    // +1: layer id == n_layer() taps the output of the last layer (input of the head).
+    cparams.embeddings_layer_inp.resize(hparams.n_layer + 1, false);
+    embd_layer_inp.resize(hparams.n_layer + 1);
     cparams.offload_kqv      = params.offload_kqv;
     cparams.no_perf          = params.no_perf;
     cparams.pooling_type     = params.pooling_type;
@@ -102,10 +106,11 @@ llama_context::llama_context(
     cparams.ctx_other = nullptr;
 
     // TODO: more generic
-    if (model.arch == LLM_ARCH_GEMMA4_ASSISTANT) {
+    // DFlash draft models also share the target's token embeddings via ctx_other.
+    if (model.arch == LLM_ARCH_GEMMA4_ASSISTANT || model.arch == LLM_ARCH_DFLASH) {
         if (params.ctx_other == nullptr) {
             // TODO: change from runtime_error to llama_exception to avoid printing error message
-            throw std::runtime_error("Gemma4Assistant requires ctx_other to be set (this is normal during memory fitting)");
+            throw std::runtime_error("draft model requires ctx_other to be set (this is normal during memory fitting)");
         }
 
         cparams.ctx_other = params.ctx_other;
@@ -980,6 +985,24 @@ void llama_context::set_embeddings_eagle3(bool value) {
     cparams.embeddings_eagle3 = value;
 }
 
+// Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
+void llama_context::set_embeddings_layer_inp(uint32_t lid, bool enable) {
+    GGML_ASSERT(lid < cparams.embeddings_layer_inp.size());
+    cparams.embeddings_layer_inp[lid] = enable;
+    // note (from upstream): without re-reserving here, draft acceptance drops to zero.
+    // The reserve re-runs output_reserve so the newly enabled layer's export buffer is
+    // allocated and res->t_layer_inp[il] is marked as an output before the next decode.
+    sched_need_reserve = true;
+}
+
+float * llama_context::get_embeddings_layer_inp(uint32_t lid) {
+    output_reorder();
+    if (lid >= embd_layer_inp.size() || !embd_layer_inp[lid].has_data()) {
+        return nullptr;
+    }
+    return embd_layer_inp[lid].data;
+}
+
 void llama_context::set_embeddings_nextn(bool value, bool masked) {
     cparams.embeddings_nextn        = value;
     cparams.embeddings_nextn_masked = masked;
@@ -1612,7 +1635,11 @@ int llama_context::encode(const llama_batch & batch_inp) {
 
     const auto & hparams = model.hparams;
 
-    const int64_t n_embd  = hparams.n_embd_inp();
+    // eagle3/DFlash: features are the encoder input (n_embd_inp_enc). For non-encoder
+    // models n_embd_inp_enc() falls back to n_embd_inp(), so this is safe everywhere.
+    // Using n_embd_inp() here undersizes the ubatch embd buffer for DFlash (feature dim
+    // 5*n_embd) and causes an OOB read in llm_graph_input_embd::set_input.
+    const int64_t n_embd  = hparams.n_embd_inp_enc();
     const int64_t n_vocab = model.vocab.n_tokens();
 
     // note: during encode, we always pass the full sequence starting from pos = 0
@@ -1677,7 +1704,10 @@ int llama_context::encode(const llama_batch & batch_inp) {
     auto * t_logits        = res->get_logits();
     auto * t_embd          = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
     auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm() : nullptr;
-    auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm() : nullptr; // reuses h_pre_norm slot in fork
+    // get_h_nextn() returns t_h_nextn when the graph populated it (DFlash2 packs its
+    // selector lattice there) and otherwise falls back to t_h_pre_norm (MTP/EAGLE3 reuse
+    // the pre-norm slot). Reading get_h_pre_norm() directly starved DFlash2 of its lattice.
+    auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_nextn() : nullptr;
     auto * t_h_eagle3_low  = cparams.embeddings_eagle3 ? res->get_h_eagle3_low()  : nullptr;
     auto * t_h_eagle3_mid  = cparams.embeddings_eagle3 ? res->get_h_eagle3_mid()  : nullptr;
     auto * t_h_eagle3_high = cparams.embeddings_eagle3 ? res->get_h_eagle3_high() : nullptr;
@@ -1757,11 +1787,15 @@ int llama_context::encode(const llama_batch & batch_inp) {
     }
     if (embd_nextn.data && t_h_nextn && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
         ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
-        GGML_ASSERT(backend_h != nullptr);
-        const uint32_t n_embd = hparams.n_embd;
-        GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_nextn.size);
-        ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn.data, 0, n_tokens*n_embd*sizeof(float));
+        if (backend_h != nullptr) {  // absent when t_h_nextn resolved via fallback to a tensor not in this graph
+            const uint32_t n_embd = hparams.n_embd_out();
+            GGML_ASSERT(n_tokens*n_embd <= (int64_t) embd_nextn.size);
+            ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn.data, 0, n_tokens*n_embd*sizeof(float));
+        }
     }
+    // DFlash2 reads embd_nextn immediately after encode via get_embeddings_nextn; the
+    // readback above is async, so force completion here (the encoder path has no other sync).
+    synchronize();
 
     // Eagle3: extract three hidden-state streams (low/mid/high).
     auto extract_eagle3_stream = [&](ggml_tensor * tensor, buffer_view<float> & buf) {
@@ -1775,6 +1809,29 @@ int llama_context::encode(const llama_batch & batch_inp) {
     extract_eagle3_stream(t_h_eagle3_low,  embd_eagle3_low);
     extract_eagle3_stream(t_h_eagle3_mid,  embd_eagle3_mid);
     extract_eagle3_stream(t_h_eagle3_high, embd_eagle3_high);
+
+    // Generic per-layer input-feature export (DFlash / upstream layer_inp path).
+    // Single-ubatch path: exports ALL n_tokens batch positions at offset 0 (the buffer
+    // is sized n_embd*n_batch), because the DFlash speculator indexes by batch position.
+    if (cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+        const uint32_t n_embd_li = hparams.n_embd;
+        for (uint32_t il = 0; il < (uint32_t) embd_layer_inp.size(); ++il) {
+            if (il >= cparams.embeddings_layer_inp.size() || !cparams.embeddings_layer_inp[il]) {
+                continue;
+            }
+            if (!embd_layer_inp[il].has_data()) {
+                continue;
+            }
+            ggml_tensor * t_li = res->get_layer_inp((int) il);
+            if (!t_li) {
+                continue;
+            }
+            ggml_backend_t backend_li = ggml_backend_sched_get_tensor_backend(sched.get(), t_li);
+            GGML_ASSERT(backend_li != nullptr);
+            GGML_ASSERT(n_tokens*n_embd_li <= (int64_t) embd_layer_inp[il].size);
+            ggml_backend_tensor_get_async(backend_li, t_li, embd_layer_inp[il].data, 0, n_tokens*n_embd_li*sizeof(float));
+        }
+    }
 
     // TODO: hacky solution
     if (model.arch == LLM_ARCH_T5 && t_embd) {
@@ -2071,6 +2128,8 @@ int llama_context::decode(const llama_batch & batch_inp) {
     };
 
     int64_t n_outputs_prev = 0;
+    // cumulative batch-position offset for the DFlash layer_inp export (all tokens, not just outputs)
+    int64_t n_tokens_prev  = 0;
 
     do {
         const auto & ubatch = mctx->get_ubatch();
@@ -2134,7 +2193,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         auto * t_logits        = res->get_logits();
         auto * t_embd          = cparams.embeddings          ? res->get_embd()        : nullptr;
         auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm()  : nullptr;
-        auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_pre_norm()  : nullptr;
+        auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_nextn()     : nullptr; // DFlash2 lattice via t_h_nextn, MTP falls back to h_pre_norm
         auto * t_h_eagle3_low  = cparams.embeddings_eagle3 ? res->get_h_eagle3_low()  : nullptr;
         auto * t_h_eagle3_mid  = cparams.embeddings_eagle3 ? res->get_h_eagle3_mid()  : nullptr;
         auto * t_h_eagle3_high = cparams.embeddings_eagle3 ? res->get_h_eagle3_high() : nullptr;
@@ -2231,14 +2290,30 @@ int llama_context::decode(const llama_batch & batch_inp) {
             GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_pre_norm.size);
             ggml_backend_tensor_get_async(backend_h, t_h_pre_norm, embd_pre_norm_out, 0, n_outputs*n_embd*sizeof(float));
         }
-        if (embd_nextn.data && t_h_nextn && n_outputs > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
-            ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
-            GGML_ASSERT(backend_h != nullptr);
-            const uint32_t n_embd = hparams.n_embd;
-            float * embd_nextn_out = embd_nextn.data + n_outputs_prev*n_embd;
-            GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
-            GGML_ASSERT((n_outputs_prev + n_outputs)*n_embd <= (int64_t) embd_nextn.size);
-            ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_outputs*n_embd*sizeof(float));
+        {
+            // DFlash2 packs its selector lattice into t_h_nextn and runs UNMASKED
+            // (embeddings_nextn_masked == false): the drafter reads the lattice by
+            // BATCH POSITION (lattice + (beg+i)*n_embd), so the readback must export
+            // every batch row at its batch offset, not the output-compacted rows.
+            // MTP runs masked (== true) and keeps the n_outputs basis. Hardcoding the
+            // masked basis here permuted the lattice under output_reorder and cratered
+            // DFlash2 acceptance (~1%).
+            const bool    masked = cparams.embeddings_nextn_masked;
+            const int64_t n_rows = masked ? n_outputs      : (int64_t) ubatch.n_tokens;
+            const int64_t offset = masked ? n_outputs_prev : n_tokens_prev;
+            // t_h_nextn may resolve (via get_h_nextn fallback) to a tensor that is not in
+            // this graph -- e.g. the DFlash KV-injection decode has no selector graph, so the
+            // lattice tensor is absent. A null backend means "not produced here": skip rather
+            // than abort (upstream gets this for free because its get_h_nextn has no fallback).
+            if (embd_nextn.data && t_h_nextn && n_rows > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+                ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
+                if (backend_h != nullptr) {
+                    const uint32_t n_embd = hparams.n_embd_out();
+                    float * embd_nextn_out = embd_nextn.data + offset*n_embd;
+                    GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_nextn.size);
+                    ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_rows*n_embd*sizeof(float));
+                }
+            }
         }
 
         // Eagle3: same multi-output pattern as embd_nextn, three times.
@@ -2256,6 +2331,33 @@ int llama_context::decode(const llama_batch & batch_inp) {
         extract_eagle3_stream_multi(t_h_eagle3_mid,  embd_eagle3_mid);
         extract_eagle3_stream_multi(t_h_eagle3_high, embd_eagle3_high);
 
+        // Generic per-layer input-feature export (DFlash / upstream layer_inp path).
+        // Indexed by ABSOLUTE BATCH POSITION (all ubatch tokens at the n_tokens_prev
+        // offset), NOT by output index: the DFlash speculator reads these features by
+        // batch position, so every token row must be exported (matches upstream
+        // b10f9ca58 extract_layer_inputs(res, n_tokens_prev, ubatch.n_tokens)).
+        if (ubatch.n_tokens > 0 && cparams.pooling_type == LLAMA_POOLING_TYPE_NONE) {
+            const uint32_t n_embd_li  = hparams.n_embd;
+            const int64_t  n_rows_li  = (int64_t) ubatch.n_tokens;
+            for (uint32_t il = 0; il < (uint32_t) embd_layer_inp.size(); ++il) {
+                if (il >= cparams.embeddings_layer_inp.size() || !cparams.embeddings_layer_inp[il]) {
+                    continue;
+                }
+                if (!embd_layer_inp[il].has_data()) {
+                    continue;
+                }
+                ggml_tensor * t_li = res->get_layer_inp((int) il);
+                if (!t_li) {
+                    continue;
+                }
+                ggml_backend_t backend_li = ggml_backend_sched_get_tensor_backend(sched.get(), t_li);
+                GGML_ASSERT(backend_li != nullptr);
+                float * out = embd_layer_inp[il].data + n_tokens_prev*n_embd_li;
+                GGML_ASSERT((n_tokens_prev + n_rows_li)*n_embd_li <= (int64_t) embd_layer_inp[il].size);
+                ggml_backend_tensor_get_async(backend_li, t_li, out, 0, n_rows_li*n_embd_li*sizeof(float));
+            }
+        }
+
         // Copy backend sampling output if this ubatch produced any sampling tensors.
         if (has_samplers && (!res->t_sampled.empty() || !res->t_sampled_probs.empty() || !res->t_sampled_logits.empty())) {
             const auto seq_to_output_row = build_seq_to_output_row(ubatch, n_outputs_prev);
@@ -2270,6 +2372,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
 
         n_outputs_prev += n_outputs;
+        n_tokens_prev  += ubatch.n_tokens;
     } while (mctx->next());
 
     // set to total number of outputs in the batch, for use in llama_get_logits_ith
@@ -2366,7 +2469,11 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     embd.size          = has_embd          ? n_embd_out*n_outputs_max  : 0;
     embd_pre_norm.size = has_embd_pre_norm ? n_embd*n_outputs_max      : 0;
     const bool has_embd_nextn = cparams.embeddings_nextn;
-    const size_t nextn_n = cparams.embeddings_nextn_masked ? n_outputs_max : n_outputs_max; // we always reserve for n_outputs_max
+    // Unmasked nextn (DFlash2 selector lattice) is read back by BATCH POSITION for every
+    // batch row, so the buffer must hold n_batch rows -- not the (smaller) n_outputs_max.
+    // Masked nextn (MTP) is compacted to output rows and keeps the n_outputs_max basis.
+    // (Upstream sizes this n_embd_out*n_batch for encoder models; here n_batch covers it.)
+    const size_t nextn_n = cparams.embeddings_nextn_masked ? (size_t) n_outputs_max : (size_t) n_batch;
     embd_nextn.size = has_embd_nextn ? n_embd*nextn_n : 0;
 
     // Eagle3 multi-stream extraction needs 3 × (n_embd × n_outputs_max) floats.
@@ -2374,6 +2481,18 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     embd_eagle3_low.size  = has_embd_eagle3 ? n_embd*n_outputs_max : 0;
     embd_eagle3_mid.size  = has_embd_eagle3 ? n_embd*n_outputs_max : 0;
     embd_eagle3_high.size = has_embd_eagle3 ? n_embd*n_outputs_max : 0;
+
+    // Generic per-layer input-feature export (DFlash / upstream layer_inp path).
+    // Sized by n_embd*n_batch (ALL batch positions), not n_outputs_max: the DFlash
+    // speculator indexes these features by absolute batch position, so every position
+    // in the batch must have a slot (matches upstream b10f9ca58 which uses n_embd*n_batch).
+    // Accumulate the total here (additive to the buf_output accumulator below).
+    size_t embd_layer_inp_float_count = 0;
+    for (size_t il = 0; il < embd_layer_inp.size(); ++il) {
+        const bool enabled = il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il];
+        embd_layer_inp[il].size = enabled ? (size_t) n_embd*n_batch : 0;
+        embd_layer_inp_float_count += embd_layer_inp[il].size;
+    }
 
     // Allocate backend sampling output buffers if there are backend samplers configured.
     const bool has_sampling = !sampling.samplers.empty();
@@ -2391,6 +2510,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     const size_t new_size  =
         (logits.size + embd.size + embd_pre_norm.size + embd_nextn.size
          + embd_eagle3_low.size + embd_eagle3_mid.size + embd_eagle3_high.size
+         + embd_layer_inp_float_count
          + backend_float_count) * sizeof(float) +
         (                                               backend_token_count) * sizeof(llama_token);
 
@@ -2448,6 +2568,16 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     offset += embd_eagle3_mid.size * sizeof(float);
     embd_eagle3_high = has_embd_eagle3 ? buffer_view<float>{(float *) (base + offset), embd_eagle3_high.size} : buffer_view<float>{nullptr, 0};
     offset += embd_eagle3_high.size * sizeof(float);
+
+    // Generic per-layer input-feature export (DFlash / upstream layer_inp path).
+    for (size_t il = 0; il < embd_layer_inp.size(); ++il) {
+        if (embd_layer_inp[il].size > 0) {
+            embd_layer_inp[il] = buffer_view<float>{(float *) (base + offset), embd_layer_inp[il].size};
+            offset += embd_layer_inp[il].size * sizeof(float);
+        } else {
+            embd_layer_inp[il] = buffer_view<float>{nullptr, 0};
+        }
+    }
 
     if (has_sampling) {
         sampling.logits = {(float *) (base + offset), (size_t)(n_vocab*n_outputs_max)};
@@ -2516,6 +2646,15 @@ void llama_context::output_reorder() {
         if (embd_pre_norm.size > 0) {
             for (uint64_t k = 0; k < n_embd; k++) {
                 std::swap(embd_pre_norm.data[i0*n_embd + k], embd_pre_norm.data[i1*n_embd + k]);
+            }
+        }
+
+        // Generic per-layer input-feature export (DFlash / upstream layer_inp path).
+        for (size_t lid = 0; lid < embd_layer_inp.size(); ++lid) {
+            if (embd_layer_inp[lid].size > 0) {
+                for (uint64_t k = 0; k < n_embd; ++k) {
+                    std::swap(embd_layer_inp[lid].data[i0*n_embd + k], embd_layer_inp[lid].data[i1*n_embd + k]);
+                }
             }
         }
 
@@ -3980,6 +4119,16 @@ float * llama_get_embeddings_eagle3_mid_ith(llama_context * ctx, int32_t i) {
 
 float * llama_get_embeddings_eagle3_high_ith(llama_context * ctx, int32_t i) {
     return ctx->get_embeddings_eagle3_high_ith(i);
+}
+
+// Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
+void llama_set_embeddings_layer_inp(llama_context * ctx, uint32_t lid, bool value) {
+    ctx->set_embeddings_layer_inp(lid, value);
+}
+
+float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
+    ctx->synchronize();
+    return ctx->get_embeddings_layer_inp(lid);
 }
 
 float * llama_get_embeddings_pre_norm_raw_ith(llama_context * ctx, int32_t i) {

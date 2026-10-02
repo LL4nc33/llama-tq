@@ -2978,7 +2978,19 @@ private:
             // State_seq mirror is only used in the legacy two-model path. In shared-ctx
             // MTP mode, ctx_dft's KV is synced via common_speculative_process() which feeds
             // the targets pre-norm embeddings into the MTP-graph forward.
-            if (ctx_dft && ret == 0 && !shared_ctx_mode) {
+            //
+            // DFlash/DFlash2 is a block-diffusion drafter with a convolution-based
+            // architecture: its ctx_dft has NO classic attention KV layers (layers.size()==0
+            // in the draft kv_cache). Copying the target's serialized KV blob (e.g. 16 GQA
+            // layers of a Qwen3.8 hybrid) into it would fail state_read_data's layer-count
+            // check ("mismatched layer count (16 instead of 0)") and kill the server after
+            // the first draft. Like MTP, DFlash keeps ctx_dft in sync on its own: the drafter
+            // extracts target-layer residual features (llama_get_embeddings_layer_inp) and
+            // injects them via its private batch_inject. So exclude DFlash from this mirror.
+            const bool dflash_type_in_types =
+                std::find(params_base.speculative.types.begin(), params_base.speculative.types.end(),
+                          COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params_base.speculative.types.end();
+            if (ctx_dft && ret == 0 && !shared_ctx_mode && !dflash_type_in_types) {
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
                     const llama_seq_id sid = sl.id;
@@ -3006,7 +3018,19 @@ private:
                     if (!sl.is_processing() || !sl.spec) continue;
                     if (skip_process) continue;
                     const int64_t t_proc_start = prof_mtp ? ggml_time_us() : 0;
-                    if (shared_ctx_mode && batch_view.n_tokens > 0) {
+                    // Trim ctx_dft's draft-tail KV back to the continuation point before
+                    // re-injecting this batch. Any self-syncing drafter that feeds ctx_dft
+                    // via common_speculative_process() (MTP's h_pre_norm pairing, or DFlash's
+                    // target-layer feature injection through batch_inject) requires this: the
+                    // injection llama_decode(ctx_dft, ...) writes at the target positions
+                    // batch_view.pos[...], so seq_pos_max must equal p0 - 1 or balloc->init
+                    // rejects the batch ("failed to initialize batch" -> the sequence
+                    // positions must remain consecutive). Without the trim, stale draft-block
+                    // positions from the previous draft() (injected at n_past + i) still sit
+                    // at positions >= p0, breaking continuity. Upstream does the same trim
+                    // unconditionally for any ctx_dft (seq_rm to ckpt.pos_max + 1); here it
+                    // must fire for DFlash too, not only shared-ctx MTP.
+                    if ((shared_ctx_mode || dflash_type_in_types) && batch_view.n_tokens > 0) {
                         const llama_pos p0 = batch_view.pos[0];
                         llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, p0, -1);
                     }

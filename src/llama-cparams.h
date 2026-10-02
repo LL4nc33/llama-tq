@@ -33,6 +33,10 @@ struct llama_cparams {
     bool embeddings_nextn;        // also extract MTP-input embeddings
     bool embeddings_nextn_masked; // extract only rows where batch.logits != 0
     bool embeddings_eagle3;       // also extract Eagle3 (low/mid/high) hidden states
+    // Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
+    // Size == n_layer()+1. embeddings_layer_inp[il] == true requests that the residual
+    // stream entering layer il be exported to embd_layer_inp[il] for an external drafter.
+    std::vector<bool> embeddings_layer_inp;
     bool causal_attn;
     bool offload_kqv;
     bool flash_attn;

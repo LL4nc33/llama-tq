@@ -163,6 +163,14 @@ struct llama_hparams {
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
 
+    // for DFlash speculative drafter
+    uint32_t n_embd_inp_enc_impl     = 0;
+    uint32_t dflash_block_size       = 0;
+    uint32_t dflash_conv_kernel_size = 0;
+    uint32_t dflash_conv_group_size  = 0;
+    uint32_t dflash_selector_rank    = 0;
+    uint32_t dflash_selector_top_k   = 0;
+
     // for hybrid state space models
     std::array<bool, LLAMA_MAX_LAYERS> recurrent_layer_arr;
 
@@ -282,6 +290,9 @@ struct llama_hparams {
 
     // dimension of main + auxiliary input embeddings
     uint32_t n_embd_inp() const;
+
+    // dimension of the encoder input embeddings (DFlash concatenated target features)
+    uint32_t n_embd_inp_enc() const;
 
     // dimension of output embeddings
     uint32_t n_embd_out() const;

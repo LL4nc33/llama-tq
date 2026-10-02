@@ -989,6 +989,9 @@ void llm_graph_result::reset() {
     t_h_eagle3_low  = nullptr;
     t_h_eagle3_mid  = nullptr;
     t_h_eagle3_high = nullptr;
+    // Generic per-layer input-feature taps (DFlash / upstream layer_inp path).
+    t_layer_inp.resize(LLAMA_MAX_LAYERS + 1);
+    std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
     t_sampled.clear();
     t_sampled_probs.clear();
     t_sampled_logits.clear();
@@ -1026,6 +1029,24 @@ void llm_graph_result::set_outputs() {
     }
     if (t_embd_pooled != nullptr) {
         ggml_set_output(t_embd_pooled);
+    }
+    // DFlash / MTP / EAGLE3 nextn slot (encoder selector lattice / pre-norm hidden).
+    // Must be marked as a graph output or the scheduler may not materialize it,
+    // leaving the host readback (llama_get_embeddings_nextn) reading stale/zero data.
+    if (t_h_nextn != nullptr) {
+        ggml_set_output(t_h_nextn);
+    }
+    // Generic per-layer input-feature taps (DFlash / upstream layer_inp path).
+    // Mark as graph outputs only the layer taps requested via cparams.embeddings_layer_inp,
+    // so the residual stream entering those layers is materialized for host readback.
+    {
+        const auto & embeddings_layer_inp = params.cparams.embeddings_layer_inp;
+        for (size_t il = 0; il < embeddings_layer_inp.size(); ++il) {
+            if (embeddings_layer_inp[il]) {
+                GGML_ASSERT(il < t_layer_inp.size() && t_layer_inp[il] != nullptr && "layer input tensor is null");
+                ggml_set_output(t_layer_inp[il]);
+            }
+        }
     }
     for (auto & [seq_id, t] : t_sampled) {
         if (t != nullptr) {

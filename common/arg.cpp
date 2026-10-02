@@ -3832,7 +3832,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
-        {"--spec-type"}, "[none|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]",
+        {"--spec-type"}, "[none|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|draft-simple|draft-mtp|draft-dflash]",
         string_format("type of speculative decoding to use when no draft model is provided (default: %s)\n",
             common_speculative_type_to_str(params.speculative.type).c_str()),
         [](common_params & params, const std::string & value) {
@@ -3892,6 +3892,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                         params.speculative.types.clear();
                     }
                     params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+                }
+            } else if (value == "draft-dflash") {
+                params.speculative.type = COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+                // Explicit --spec-type draft-dflash means DFlash-only: drop any DRAFT_SIMPLE
+                // that may have been auto-registered via -md. The DFlash block-diffusion drafter
+                // is a separate draft model and does not use the token-level draft-simple path.
+                params.speculative.types.erase(
+                    std::remove(params.speculative.types.begin(), params.speculative.types.end(),
+                                COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE),
+                    params.speculative.types.end());
+                if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                              COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) == params.speculative.types.end()) {
+                    if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+                        params.speculative.types.clear();
+                    }
+                    params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
                 }
             } else {
                 throw std::invalid_argument("unknown speculative decoding type without draft model");

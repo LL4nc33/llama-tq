@@ -170,6 +170,11 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
     const int n_transformer_layers = n_layer - (int) hparams.nextn_predict_layers;
     for (int il = 0; il < n_transformer_layers; ++il) {
+        // Generic per-layer input-feature tap (DFlash / upstream layer_inp path):
+        // record the residual stream entering this layer so an external drafter can
+        // extract it via cparams.embeddings_layer_inp[il]. Coexists with the eagle3 taps.
+        res->t_layer_inp[il] = inpL;
+
         ggml_tensor * inpSA = inpL;
 
         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
