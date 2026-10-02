@@ -1,6 +1,5 @@
 # Full profile — release-gate run.
 # PLACEHOLDER skeleton. Not wired to run_gate.sh yet (vendor RULER + LongBench first).
-# See docs/plans/2026-04-26-ruler-harness-spec.md §4–5 for budget.
 name: full
 description: >
   Release gate. RULER 13 tasks × 6 lengths × n=200, plus LongBench EN.

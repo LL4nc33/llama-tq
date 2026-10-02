@@ -320,12 +320,12 @@ endif()
 
 # ----------------------------------------------------------------------------
 # TurboQuant KTQ2_1 Vulkan dequant validation
-# Per spec-master.md §1.3 + §7 + §10 (Gate G1: max_abs_err ≤ 1e-3, mean ≤ 1e-5)
+# Acceptance (max_abs_err ≤ 1e-3, mean ≤ 1e-5)
 #
 # Standalone harness (does not go through ggml-vulkan's GGML_OP_GET_ROWS path
-# yet — that wiring lives on the A-cpp-wiring agent's branch). Drives the
+# yet). Drives the
 # dequant_ktq2_1.comp pipeline directly via raw Vulkan, mirroring the Layer 3
-# POC (docs/plans/tq-vulkan-port/poc/{gen_fixture.c,poc_host.cpp}).
+# POC.
 #
 # Built only when GGML_VULKAN=ON. The shader is compiled to SPV at build time
 # via ${Vulkan_GLSLC_EXECUTABLE} and the resulting path is injected as a

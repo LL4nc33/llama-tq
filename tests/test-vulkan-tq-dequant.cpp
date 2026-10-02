@@ -1,7 +1,7 @@
 // test-vulkan-tq-dequant.cpp — TurboQuant KTQ2_1 Vulkan dequant validation.
 //
 // Derived from the Layer-3 proof of concept.
-// Per spec-master §1.3 + §7 + §10 (Gate G1):
+// Acceptance:
 //
 //   max_abs_err  ≤ 1e-3
 //   mean_abs_err ≤ 1e-5
@@ -21,11 +21,9 @@
 //
 // The test does *not* go through ggml-vulkan's GGML_OP_GET_ROWS dispatch,
 // because no Vulkan-side wiring for KTQ2_1 lands on the `turboquant` branch
-// yet (that's A-cpp-wiring agent's `tq-vulkan-port-cpp` work). Instead it
-// drives the standalone `dequant_ktq2_1.comp` block-dequant pipeline
-// directly with raw Vulkan, exactly as the POC did. Once A-cpp-wiring lands,
-// this can be optionally rewritten on top of test-backend-ops; see §7 in
-// spec-master for the longer-term shape of that.
+// yet. Instead it drives the standalone `dequant_ktq2_1.comp` block-dequant
+// pipeline directly with raw Vulkan. Once the backend wiring lands, this can be
+// rewritten on top of test-backend-ops.
 //
 // SPV path resolution order:
 //   1. argv[1] if given

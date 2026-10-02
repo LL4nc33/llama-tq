@@ -17,7 +17,15 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for **long conte
 
 ## What it does
 
-27B dense models at 200k context with vision across two 12 GB GPUs. 35B-class MoE with 100k context and vision on a single 12 GB GPU. CUDA sm_75+ daily-driven on Turing.
+Measured on 2× RTX 2060 12 GB (Turing, no P2P):
+
+| Setup | Context | Decode |
+|---|---|---|
+| Ternary-Bonsai-2-27B PTQ1_0, tensor split, f16 KV, vision | 200k | ~40 t/s short, 21.6 t/s at 171k |
+| Qwen3.8-27B UD-Q4_K_M, tensor split, f16 KV, vision | 72k | 24 t/s |
+| Qwen3.8-27B Q4_K_M + DFlash2 draft (code) | — | 26-28 t/s instead of 15.5 |
+| 35B-class MoE (IQ2), single GPU, vision | 100k | — |
+| DiffusionGemma 26B-A4B at ~2-bit, single GPU | — | coherent |
 
 Two GPUs without P2P, tensor split:
 
@@ -27,7 +35,8 @@ GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m model.gguf -ngl 99 -fa on -sm te
 
 ## Deploy
 
-CPU image (no build):
+**Prebuilt:** releases carry Linux x64 binaries, including a CUDA 12.8 build (sm_75 plus PTX
+for newer GPUs). CPU Docker image:
 
 ```bash
 docker pull ghcr.io/ll4nc33/llama-tq:server
@@ -35,19 +44,25 @@ docker run -p 8080:8080 -v /path/to/models:/models \
   ghcr.io/ll4nc33/llama-tq:server -m /models/your-model.gguf
 ```
 
-CUDA / TurboQuant — build from source (~20-30 min on a multi-core machine; template instances exceed CI budget, so no CUDA image):
+**From source (CUDA):** the TurboQuant template instances make the CUDA build heavy; build
+for your architecture only (75 = Turing, 86 = Ampere, 89 = Ada).
 
 ```bash
 git clone https://github.com/LL4nc33/llama-tq && cd llama-tq
-cmake -B build -DGGML_CUDA=ON
-cmake --build build -j"$(nproc)" --target llama-server llama-finetune
+cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
+cmake --build build -j"$(nproc)" --target llama-server
 ```
 
-Vulkan is WIP on `vulkan`. [Upstream build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) for prerequisites.
+Vulkan is WIP on the `vulkan` branch. See the [upstream build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) for prerequisites.
 
 ## Status
 
-Actively maintained. Upstream fixes cherry-picked; larger features integrated case-by-case. Bench parity verified on 0.8B-Q8 and 35B-A3B-IQ2_XXS at every merge gate. See [ROADMAP.md](ROADMAP.md) for what's working, in flight, and shipped. Recent changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Actively maintained and used daily on Turing GPUs. Upstream fixes are cherry-picked; larger
+upstream features are integrated case by case. New kernels and model paths are checked
+against the CPU backend (`test-backend-ops`) and by perplexity against reference builds.
+[ROADMAP.md](ROADMAP.md) lists what is shipped, in flight and known to be broken;
+[CHANGELOG.md](CHANGELOG.md) lists recent changes. Detailed benchmarks with settings will be
+published separately.
 
 ## License
 
