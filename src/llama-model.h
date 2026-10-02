@@ -624,6 +624,17 @@ struct llama_model {
     // gguf metadata
     std::unordered_map<std::string, std::string> gguf_kv;
 
+    // Hadamard-folded weights (prism.hadamard.* metadata). The name maps are
+    // filled from metadata in load_hparams, the tensor maps after the weights
+    // have buffers. Explicit sign mode stores one +/-1 vector per input width.
+    std::unordered_map<std::string, uint32_t> hadamard_weight_blocks;
+    std::unordered_map<std::string, uint32_t> hadamard_inverse_blocks;
+    std::map<uint32_t, std::vector<int32_t>>  hadamard_sign_data;
+    bool hadamard_gdn_v_grouped = false;
+    bool hadamard_tied_output   = false;
+    llama_hadamard_rotations hadamard_rotations; // weight -> transform before its matmul
+    llama_hadamard_rotations hadamard_inverses;  // lookup table -> transform after its row lookup
+
     // list of devices used in this model
     std::vector<llama_device> devices;
 
@@ -742,6 +753,12 @@ struct llama_model_base : public llama_model {
 
     void load_stats  (llama_model_loader & ml) override;
     void load_hparams(llama_model_loader & ml) override;
+
+    // prism.hadamard.* metadata -> hadamard_*_blocks / sign data (no-op without the metadata)
+    void load_hadamard_metadata(llama_model_loader & ml);
+    // rotation / sign tensors for the folded weights, once the weights have buffers
+    void create_hadamard_tensors();
+
     void load_vocab  (llama_model_loader & ml) override;
     bool load_tensors(llama_model_loader & ml) override;
 

@@ -88,6 +88,8 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
             return MMQ_Q8_1_DS_LAYOUT_DS4;
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
             return MMQ_Q8_1_DS_LAYOUT_D4;
         default:
             GGML_ABORT("fatal error");
@@ -205,6 +207,8 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
         case GGML_TYPE_IQ1_S:   return MMQ_DP4A_TXS_Q8_0;
         case GGML_TYPE_IQ4_XS:  return MMQ_DP4A_TXS_Q8_0;
         case GGML_TYPE_IQ4_NL:  return MMQ_DP4A_TXS_Q8_0;
+        case GGML_TYPE_PQ2_0:   return MMQ_DP4A_TXS_Q8_0;
+        case GGML_TYPE_PTQ1_0:  return MMQ_DP4A_TXS_Q8_0;
         default:                return tile_x_sizes{0, 0, 0};
     }
 }
@@ -250,6 +254,8 @@ static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
         case GGML_TYPE_IQ1_S:   return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_IQ4_XS:  return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_IQ4_NL:  return MMQ_MMA_TILE_X_K_Q8_0;
+        case GGML_TYPE_PQ2_0:   return MMQ_MMA_TILE_X_K_Q8_0;
+        case GGML_TYPE_PTQ1_0:  return MMQ_MMA_TILE_X_K_Q8_0;
         default:                return 0;
     }
 }
@@ -3208,6 +3214,204 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
     }
 }
 
+// ------------------------------------------------------------
+// PQ2_0 and PTQ1_0: one fp16 scale per 128 values. The loaders expand the codes to signed bytes
+// (PQ2_0: -1, 0, +1, +2; PTQ1_0: -1, 0, +1), so the tile has the Q8_0 layout with the block scale
+// repeated for each of its four 32-value groups and the Q8_0 dot products are used unchanged.
+
+// __byte_perm with the CUDA semantics (byte n of the result is byte ((s >> 4*n) & 7) of y:x).
+// HIP and MUSA get a portable fallback that the compiler folds for constant selectors.
+static __device__ __forceinline__ uint32_t mmq_byte_perm(const uint32_t x, const uint32_t y, const uint32_t s) {
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+    return __byte_perm(x, y, s);
+#else
+    const uint64_t yx = ((uint64_t) y << 32) | x;
+    uint32_t r = 0;
+#pragma unroll
+    for (int n = 0; n < 4; ++n) {
+        r |= (uint32_t) ((yx >> (8*((s >> (4*n)) & 0x7))) & 0xFF) << (8*n);
+    }
+    return r;
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+}
+
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_pq2_0(
+    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    constexpr int nwarps = mmq_get_nwarps_device();
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + 2*MMQ_TILE_NE_K);
+#else
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_PQ2_0, mmq_y);
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + txs.qs);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+    // each thread expands one packed 32-bit word (16 codes) into 4 tile words
+    constexpr int blocks_per_iter = MMQ_ITER_K / QK_PQ2_0;
+    constexpr int words_per_block = QK_PQ2_0 / 16;
+    constexpr int threads_per_row = blocks_per_iter * words_per_block;
+    constexpr int nrows = warp_size / threads_per_row;
+    const int txi = threadIdx.x % threads_per_row;
+    const int kbx = txi / words_per_block;
+    const int kqs = txi % words_per_block;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nrows*nwarps) {
+        int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
+
+        if (need_check) {
+            i = min(i, i_max);
+        }
+
+        const block_pq2_0 * bxi = (const block_pq2_0 *) x + kbx0 + i*stride + kbx;
+
+        // codes of the values 16*kqs .. 16*kqs + 15 of the block, value 16*kqs + n in bits 2n, 2n + 1
+        const uint32_t q  = get_int_b2(bxi->qs, kqs);
+        const int      k0 = kbx*(QK_PQ2_0/4) + 4*kqs;
+
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            const uint32_t q16 = q >> (16*h);
+            // table lookup {-1, 0, +1, +2} of the even and of the odd codes, then interleave them
+            const uint32_t qe = mmq_byte_perm(0x020100FF, 0x020100FF, q16 >> 0);
+            const uint32_t qo = mmq_byte_perm(0x020100FF, 0x020100FF, q16 >> 2);
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + k0 + 2*h + 0] = mmq_byte_perm(qe, qo, 0x5140);
+            x_qs[i*MMQ_MMA_TILE_X_K_Q8_0 + k0 + 2*h + 1] = mmq_byte_perm(qe, qo, 0x7362);
+#else
+            x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + 2*h + 0] = mmq_byte_perm(qe, qo, 0x5140);
+            x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + 2*h + 1] = mmq_byte_perm(qe, qo, 0x7362);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        }
+    }
+
+    constexpr int scales_per_block = QK_PQ2_0 / QK8_0;
+    constexpr int scales_per_row   = blocks_per_iter * scales_per_block;
+    constexpr int rows_per_warp    = warp_size / scales_per_row;
+    const int ksx = threadIdx.x % scales_per_row;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nwarps * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / scales_per_row;
+
+        if (need_check) {
+            i = min(i, i_max);
+        }
+
+        const block_pq2_0 * bxi = (const block_pq2_0 *) x + kbx0 + i*stride + ksx / scales_per_block;
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_0                 + ksx] = __half2float(bxi->d);
+#else
+        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + ksx] = __half2float(bxi->d);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    }
+}
+
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_ptq1_0(
+    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    constexpr int nwarps = mmq_get_nwarps_device();
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + 2*MMQ_TILE_NE_K);
+#else
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_PTQ1_0, mmq_y);
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + txs.qs);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+    // 8 threads per block, thread `lane` reads 32-bit word min(lane, 6) of the block:
+    //   lanes 0..3: qs bytes 4*lane .. 4*lane + 3, trit t -> values 16*t + 4*lane + 0..3 = tile word 4*t + lane
+    //   lanes 4, 5: qs bytes 4*lane .. 4*lane + 3, trit t -> values 80 + 8*t + 4*(lane - 4) + 0..3
+    //               = tile word 16 + lane + 2*t
+    //   lane  6   : qh[0], qh[1] (and d, unused), trit t -> values 120 + 2*t + 0..1, recombined into tile words 30, 31
+    //   lane  7   : no stores
+    // All lanes run the same 5-step trit loop, so the warp does not diverge; only the stores differ.
+    constexpr int blocks_per_iter   = MMQ_ITER_K / QK_PTQ1_0;
+    constexpr int threads_per_block = 8;
+    constexpr int threads_per_row   = blocks_per_iter * threads_per_block;
+    constexpr int nrows = warp_size / threads_per_row;
+    const int  txi       = threadIdx.x % threads_per_row;
+    const int  kbx       = txi / threads_per_block;
+    const int  lane      = txi % threads_per_block;
+    const int  word      = lane < 6 ? lane : 6;
+    const bool full_lane = lane < 6;
+    const int  dst_base  = lane < 4 ? lane : 16 + lane;
+    const int  dst_step  = lane < 4 ? 4    : 2;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nrows*nwarps) {
+        int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
+
+        if (need_check) {
+            i = min(i, i_max);
+        }
+
+        const block_ptq1_0 * bxi = (const block_ptq1_0 *) x + kbx0 + i*stride + kbx;
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        int * row = x_qs + i*MMQ_MMA_TILE_X_K_Q8_0 + kbx*(QK_PTQ1_0/4);
+#else
+        int * row = x_qs + i*(2*MMQ_TILE_NE_K + 1) + kbx*(QK_PTQ1_0/4);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+        // the block is 28 bytes with qs first, so word 6 is {qh[0], qh[1], d}
+        const uint32_t packed = get_int_b4(bxi, word);
+
+        // the bytes sit in the low halves of 16-bit lanes: 3*255 < 2^16, no carry between lanes
+        uint32_t vlo = mmq_byte_perm(packed, 0, 0x4140); // [b0, 0, b1, 0]
+        uint32_t vhi = mmq_byte_perm(packed, 0, 0x4342); // [b2, 0, b3, 0]
+        vhi = full_lane ? vhi : vlo;                     // lane 6: both halves walk qh[0], qh[1]
+
+        int q[5];
+#pragma unroll
+        for (int t = 0; t < 5; ++t) {
+            // base-3 digit t of each byte: v = (v*3) & 0xFF, digit = (v*3) >> 8
+            const uint32_t wlo = vlo * 3;
+            const uint32_t whi = vhi * 3;
+            vlo = wlo & 0x00FF00FF;
+            vhi = whi & 0x00FF00FF;
+            q[t] = __vsubss4(mmq_byte_perm(wlo, whi, 0x7531), 0x01010101);
+            if (full_lane) {
+                row[dst_base + t*dst_step] = q[t];
+            }
+        }
+        if (lane == 6) {
+            // q[t] = {qh[0].t, qh[1].t, qh[0].t, qh[1].t}, values 120 + 2*t, 121 + 2*t
+            row[30] = mmq_byte_perm(q[0], q[1], 0x5410);
+            row[31] = mmq_byte_perm(q[2], q[3], 0x5410);
+        }
+    }
+
+    constexpr int scales_per_block = QK_PTQ1_0 / QK8_0;
+    constexpr int scales_per_row   = blocks_per_iter * scales_per_block;
+    constexpr int rows_per_warp    = warp_size / scales_per_row;
+    const int ksx = threadIdx.x % scales_per_row;
+
+#pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nwarps * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / scales_per_row;
+
+        if (need_check) {
+            i = min(i, i_max);
+        }
+
+        const block_ptq1_0 * bxi = (const block_ptq1_0 *) x + kbx0 + i*stride + ksx / scales_per_block;
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_0                 + ksx] = __half2float(bxi->d);
+#else
+        x_df[i*(2*MMQ_TILE_NE_K/QI8_0) + i/(QI8_0/2) + ksx] = __half2float(bxi->d);
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+    }
+}
+
 template<int mmq_x, int mmq_y, bool need_check>
 static __device__ __forceinline__ void mmq_write_back_dp4a(
         const float * __restrict__ sum, const int32_t * __restrict__ ids_dst, float * __restrict__ dst,
@@ -3451,6 +3655,22 @@ template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_IQ4_XS> {
     static constexpr int              vdr          = VDR_IQ4_XS_Q8_1_MMQ;
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_iq4_xs<mmq_y, need_check>;
+    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_D4>;
+    static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
+};
+
+template <int mmq_x, int mmq_y, bool need_check>
+struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_PQ2_0> {
+    static constexpr int              vdr          = VDR_Q8_0_Q8_1_MMQ;
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_pq2_0<mmq_y, need_check>;
+    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_D4>;
+    static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
+};
+
+template <int mmq_x, int mmq_y, bool need_check>
+struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_PTQ1_0> {
+    static constexpr int              vdr          = VDR_Q8_0_Q8_1_MMQ;
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_ptq1_0<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_D4>;
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
 };
@@ -4172,6 +4392,8 @@ extern DECL_MMQ_CASE(GGML_TYPE_IQ3_S);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ1_S);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ4_NL);
 extern DECL_MMQ_CASE(GGML_TYPE_IQ4_XS);
+extern DECL_MMQ_CASE(GGML_TYPE_PQ2_0);
+extern DECL_MMQ_CASE(GGML_TYPE_PTQ1_0);
 
 // -------------------------------------------------------------------------------------------------------------------------
 

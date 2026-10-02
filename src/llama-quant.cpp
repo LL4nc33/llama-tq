@@ -383,7 +383,9 @@ static ggml_type tensor_type_fallback(quantize_state_impl & qs, const ggml_tenso
             case GGML_TYPE_Q2_K:
             case GGML_TYPE_Q3_K:
             case GGML_TYPE_TQ1_0:
-            case GGML_TYPE_TQ2_0:   return_type = GGML_TYPE_Q4_0;   break;
+            case GGML_TYPE_TQ2_0:
+            case GGML_TYPE_PQ2_0:
+            case GGML_TYPE_PTQ1_0:  return_type = GGML_TYPE_Q4_0;   break;
             case GGML_TYPE_Q4_K:    return_type = GGML_TYPE_Q5_0;   break;
             case GGML_TYPE_Q5_K:    return_type = GGML_TYPE_Q5_1;   break;
             case GGML_TYPE_Q6_K:    return_type = GGML_TYPE_Q8_0;   break;
@@ -484,7 +486,8 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
             else if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS) {
                 new_type = GGML_TYPE_IQ3_S;
             }
-            else if (ftype == LLAMA_FTYPE_MOSTLY_TQ1_0 || ftype == LLAMA_FTYPE_MOSTLY_TQ2_0) {
+            else if (ftype == LLAMA_FTYPE_MOSTLY_TQ1_0 || ftype == LLAMA_FTYPE_MOSTLY_TQ2_0 ||
+                     ftype == LLAMA_FTYPE_MOSTLY_PQ2_0 || ftype == LLAMA_FTYPE_MOSTLY_PTQ1_0) {
                 new_type = GGML_TYPE_Q4_K;
             }
             else if (ftype == LLAMA_FTYPE_MOSTLY_TQW3) {
@@ -808,6 +811,9 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_BF16: return GGML_TYPE_BF16;
         case LLAMA_FTYPE_ALL_F32:     return GGML_TYPE_F32;
         case LLAMA_FTYPE_MOSTLY_Q1_0: return GGML_TYPE_Q1_0;
+        case LLAMA_FTYPE_MOSTLY_PQ2_0:
+        case LLAMA_FTYPE_MOSTLY_PQ2_0_LEGACY: return GGML_TYPE_PQ2_0;
+        case LLAMA_FTYPE_MOSTLY_PTQ1_0: return GGML_TYPE_PTQ1_0;
 
         // TurboQuant weight ftype — reuses KTQ3_1 block format (RHT + 3-bit Lloyd-Max + per-32 fp16 scale)
         case LLAMA_FTYPE_MOSTLY_TQW3: return GGML_TYPE_KTQ3_1;

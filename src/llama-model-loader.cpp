@@ -37,6 +37,9 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_F16:      return "F16";
         case LLAMA_FTYPE_MOSTLY_BF16:     return "BF16";
         case LLAMA_FTYPE_MOSTLY_Q1_0:     return "Q1_0";
+        case LLAMA_FTYPE_MOSTLY_PQ2_0:    return "PQ2_0 - 2.13 bpw (group 128)";
+        case LLAMA_FTYPE_MOSTLY_PQ2_0_LEGACY: return "PQ2_0 - 2.13 bpw (group 128, legacy file_type)";
+        case LLAMA_FTYPE_MOSTLY_PTQ1_0:   return "PTQ1_0 - 1.75 bpw ternary (group 128)";
         case LLAMA_FTYPE_MOSTLY_Q4_0:     return "Q4_0";
         case LLAMA_FTYPE_MOSTLY_Q4_1:     return "Q4_1";
         case LLAMA_FTYPE_MOSTLY_Q5_0:     return "Q5_0";
@@ -394,6 +397,8 @@ namespace GGUFMeta {
         return get_arr(llm_kv(kid), result, required);
     }
 
+    template bool llama_model_loader::get_arr<std::string>(const std::string & key, std::vector<std::string> & result, bool required);
+    template bool llama_model_loader::get_arr<int32_t>(const std::string & key, std::vector<int32_t> & result, bool required);
     template bool llama_model_loader::get_arr<std::vector<std::string>>(enum llm_kv kid, std::vector<std::string> & result, bool required);
     // DFlash: target_layer_ids (vector<int>) + fixed-size layer-pattern arrays
     template bool llama_model_loader::get_arr<std::vector<int32_t>>(enum llm_kv kid, std::vector<int32_t> & result, bool required);
@@ -428,6 +433,9 @@ namespace GGUFMeta {
     template bool llama_model_loader::get_key<float>      (enum llm_kv kid, float & result,       bool required);
     template bool llama_model_loader::get_key<uint32_t>   (enum llm_kv kid, uint32_t & result,    bool required);
     template bool llama_model_loader::get_key<std::string>(enum llm_kv kid, std::string & result, bool required);
+    template bool llama_model_loader::get_key<bool>       (const std::string & key, bool & result,        bool required);
+    template bool llama_model_loader::get_key<uint32_t>   (const std::string & key, uint32_t & result,    bool required);
+    template bool llama_model_loader::get_key<std::string>(const std::string & key, std::string & result, bool required);
 
     template<>
     bool llama_model_loader::get_key(enum llm_kv kid, enum llama_pooling_type & result, bool required) {
@@ -770,6 +778,8 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
             case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;
             case GGML_TYPE_Q1_0:    ftype = LLAMA_FTYPE_MOSTLY_Q1_0;    break;
+            case GGML_TYPE_PQ2_0:   ftype = LLAMA_FTYPE_MOSTLY_PQ2_0;   break;
+            case GGML_TYPE_PTQ1_0:  ftype = LLAMA_FTYPE_MOSTLY_PTQ1_0;  break;
             default:
                 {
                     LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));

@@ -446,7 +446,11 @@ extern "C" {
         GGML_TYPE_VTQ4_3  = 56, // V-cache: Trellis v2 + 4 fp16 outlier positions, 5.00 bpw
         GGML_TYPE_XKTQ2_1 = 57, // K-cache XQuant subordinate: own scale only, codes shared from sibling layer (~2.0 bpw metadata)
         GGML_TYPE_VTQ3_V8 = 58, // V-cache: Trellis 3-bit + 2 fp16 outliers (v8 redesign of vtq3_3, 3.625 bpw)
-        GGML_TYPE_COUNT   = 59,
+        // 59..141 unused: the ternary weight types below use the ids that existing
+        // GGUF files carry, so type_traits has empty (blck_size == 0) entries in between
+        GGML_TYPE_PQ2_0   = 142, // 2-bit codes {-1,0,+1,+2} * d, group 128 (2.125 bpw)
+        GGML_TYPE_PTQ1_0  = 143, // ternary base-3 packing, group 128 (1.75 bpw)
+        GGML_TYPE_COUNT   = 144,
     };
 
     // precision
@@ -491,6 +495,8 @@ extern "C" {
         GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PQ2_0   = 128, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PTQ1_0  = 129, // except 1d tensors
     };
 
     // available tensor operations:

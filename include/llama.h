@@ -156,6 +156,9 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_TQW3          = 41, // TurboQuant weights @ 4.5 bpw (reuses GGML_TYPE_KTQ3_1 format)
+        LLAMA_FTYPE_MOSTLY_PQ2_0         = 141, // except 1d tensors (2-bit, group 128); value used by existing GGUF files
+        LLAMA_FTYPE_MOSTLY_PQ2_0_LEGACY  = 142, // older file_type value for the same format, still found in GGUF files
+        LLAMA_FTYPE_MOSTLY_PTQ1_0        = 143, // except 1d tensors (ternary, group 128)
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };

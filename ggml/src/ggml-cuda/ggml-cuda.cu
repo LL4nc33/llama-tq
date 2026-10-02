@@ -3700,6 +3700,22 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // sign flip of a Hadamard rotation: MUL(x, signs) -> RESHAPE -> MUL_MAT with the Sylvester hint, where
+    // only the reshape reads the product and only the matmul reads the reshape
+    if (node->op == GGML_OP_MUL && i + 2 < cgraph->n_nodes) {
+        ggml_tensor * rs = cgraph->nodes[i + 1];
+        ggml_tensor * mm = cgraph->nodes[i + 2];
+        if (rs->op == GGML_OP_RESHAPE && rs->src[0] == node &&
+                mm->op == GGML_OP_MUL_MAT && mm->src[1] == rs &&
+                ggml_get_op_params_i32(mm, 1) == GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD &&
+                ggml_node_get_use_count(cgraph, i) == 1 && ggml_node_get_use_count(cgraph, i + 1) == 1 &&
+                !(node->flags & GGML_TENSOR_FLAG_OUTPUT) && !(rs->flags & GGML_TENSOR_FLAG_OUTPUT) &&
+                ggml_are_same_shape(node, node->src[0]) &&
+                ggml_cuda_op_fwht_signs(*cuda_ctx, node->src[0], node->src[1], rs, mm)) {
+            return 2;
+        }
+    }
+
     //topk-moe
     if (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||
             cgraph->nodes[i]->op == GGML_OP_ARGSORT) {
@@ -5115,6 +5131,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_IQ4_XS:
                     case GGML_TYPE_BF16:
+                    case GGML_TYPE_PQ2_0:
+                    case GGML_TYPE_PTQ1_0:
                     // TurboQuant weight formats — dequant via get_to_fp16_cuda (cuBLAS fallback path)
                     case GGML_TYPE_KTQ1_1:
                     case GGML_TYPE_KTQ2_1:
@@ -5155,6 +5173,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_Q5_0:
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
+                    case GGML_TYPE_PQ2_0:
+                    case GGML_TYPE_PTQ1_0:
                         return true;
                     default:
                         return false;

@@ -4339,6 +4339,65 @@ struct test_mul_mat_hadamard : public test_mul_mat {
     }
 };
 
+// sign flip followed by a Sylvester Hadamard rotation over blocks of n, as for folded weights:
+// MUL(x, signs) -> RESHAPE -> MUL_MAT(H, .), which the CUDA backend fuses
+struct test_hadamard_signs : public test_case {
+    const int64_t n;     // block size of the rotation
+    const int64_t width; // columns of x, a multiple of n
+    const int64_t rows;
+
+    std::string vars() override {
+        return VARS_TO_STR3(n, width, rows);
+    }
+
+    test_hadamard_signs(int64_t n = 1024, int64_t width = 5120, int64_t rows = 1)
+        : n(n), width(width), rows(rows) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * x     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, width, rows);
+        ggml_tensor * signs = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, width);
+        ggml_tensor * h     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n, n);
+        ggml_set_name(x,     "x");
+        ggml_set_name(signs, "signs");
+        ggml_set_name(h,     "h");
+
+        ggml_tensor * cur = ggml_mul(ctx, x, signs);
+        cur = ggml_reshape_2d(ctx, cur, n, width*rows/n);
+        cur = ggml_mul_mat(ctx, h, cur);
+        ggml_mul_mat_set_hint(cur, GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD);
+        ggml_set_name(cur, "out");
+        return cur;
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "HADAMARD_SIGNS";
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "h") == 0) {
+                std::vector<float> data(n*n);
+                const float scale = 1.0f / sqrtf((float) n);
+                for (int64_t r = 0; r < n; r++) {
+                    for (int64_t i = 0; i < n; i++) {
+                        data[r*n + i] = (__builtin_popcountll(r & i) % 2 == 0) ? scale : -scale;
+                    }
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (strcmp(t->name, "signs") == 0) {
+                std::vector<float> data(width);
+                for (int64_t i = 0; i < width; i++) {
+                    data[i] = (rand() & 1) ? 1.0f : -1.0f;
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (t->type == GGML_TYPE_F32 && !ggml_is_view_op(t->op)) {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
 static void init_mul_mat_id_tensors(ggml_context * ctx, int n_mats) {
     std::random_device rd;
     std::default_random_engine rng(rd());
@@ -7747,6 +7806,7 @@ static const ggml_type all_types[] = {
     GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
     GGML_TYPE_Q8_0,
     GGML_TYPE_Q1_0,
+    GGML_TYPE_PQ2_0, GGML_TYPE_PTQ1_0,
     GGML_TYPE_MXFP4, GGML_TYPE_NVFP4,
     GGML_TYPE_Q2_K, GGML_TYPE_Q3_K,
     GGML_TYPE_Q4_K, GGML_TYPE_Q5_K,
@@ -7773,6 +7833,7 @@ static const ggml_type other_types[] = {
     GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
     GGML_TYPE_Q8_0,
     GGML_TYPE_Q1_0,
+    GGML_TYPE_PQ2_0, GGML_TYPE_PTQ1_0,
     GGML_TYPE_Q2_K, GGML_TYPE_Q3_K,
     GGML_TYPE_Q5_K,
     GGML_TYPE_Q6_K,
@@ -8490,8 +8551,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 64, 1, 64));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 256, 1, 256));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 128, 32, 128));
+    for (int64_t rows : {1, 3, 64}) {
+        test_cases.emplace_back(new test_hadamard_signs(1024, 5120, rows));
+        test_cases.emplace_back(new test_hadamard_signs(128,  384,  rows));
+    }
     // the plain Sylvester matrix takes the fast transform on CUDA
-    for (int64_t n : {64, 128, 256, 512}) {
+    for (int64_t n : {64, 128, 256, 512, 1024}) {
         test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, n, 1,  n, {1, 1}, {1, 1}, GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD));
         test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, n, 37, n, {1, 1}, {1, 1}, GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD));
     }
@@ -9357,6 +9422,46 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_dsv4_hc_post(128, 2, 17, identity));
     }
 
+    // PTQ1_0 / PQ2_0 mat-vec at k = 5120: 1..8 columns reach the planar PTQ1_0 kernel and the
+    // generic mmvq path, the odd row count 67 lands a partial row group
+    for (ggml_type type_a : {GGML_TYPE_PTQ1_0, GGML_TYPE_PQ2_0}) {
+        for (int64_t n : {1, 2, 3, 4, 5, 8}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,   67, n, 5120, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 1024, n, 5120, {1, 1}, {1, 1}));
+        }
+        // shapes the planar kernel does not take: batch dims and expert ids
+        for (int64_t n : {1, 3}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 67, n, 5120, {2, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 67, n, 5120));
+        }
+        // more than 8 columns take the MMQ path: 67 rows leave a partial row tile, k = 384 is an odd
+        // number of 128-value blocks (the last MMQ iteration of a row reaches into the next block)
+        for (int64_t n : {9, 16, 64, 128}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,   67, n, 5120, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 1024, n, 5120, {1, 1}, {1, 1}));
+        }
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 67, 16, 384, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 67, 16, 5120, {2, 1}, {1, 1}));
+        for (int64_t n : {16, 64}) {
+            test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 67, n, 5120));
+        }
+    }
+    // fused bias / gated GLU epilogue of the planar PTQ1_0 kernel (one column)
+    for (bool with_gate : {false, true}) {
+        for (bool with_bias : {false, true}) {
+            if (!with_gate && !with_bias) {
+                continue;
+            }
+            for (ggml_glu_op glu_op : {GGML_GLU_OP_SWIGLU, GGML_GLU_OP_GEGLU}) {
+                if (!with_gate && glu_op != GGML_GLU_OP_SWIGLU) {
+                    continue;
+                }
+                test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_PTQ1_0, glu_op, 1, 67, 5120,
+                    false, 1, 1, false, with_bias, with_gate, {1, 1}));
+            }
+        }
+    }
+
     return test_cases;
 }
 #ifdef _MSC_VER
@@ -9665,6 +9770,21 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128, 512, 1));  // 4h PP-512
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128, 1024, 1)); // 4h PP-1024
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 64, 1, 1, false, true)); // KDA PP-64
+
+    // ternary / 2-bit projections at decode and small verify batches (m = output rows, k = input width):
+    // qkv 5120 -> 10240, ffn up 5120 -> 17408, ffn down 17408 -> 5120, gate 5120 -> 6144
+    for (ggml_type type_a : {GGML_TYPE_PTQ1_0, GGML_TYPE_PQ2_0}) {
+        for (int n : {1, 2, 3, 4}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 10240, n,  5120, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 17408, n,  5120, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,  5120, n, 17408, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,  6144, n,  5120, {1, 1}, {1, 1}));
+        }
+        // the mmvq / MMQ switch-over region and prompt processing
+        for (int n : {8, 9, 16, 32, 512}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 17408, n,  5120, {1, 1}, {1, 1}));
+        }
+    }
 
     return test_cases;
 }

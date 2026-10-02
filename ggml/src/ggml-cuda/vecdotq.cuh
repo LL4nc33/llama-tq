@@ -1293,6 +1293,120 @@ static __device__ __forceinline__ float vec_dot_iq1_m_q8_1(
     return d * ((sumi[0] + sumf[0]) * sc0 + (sumi[1] + sumf[1]) * sc1);
 }
 
+#define VDR_PQ2_0_Q8_1_MMVQ  1 // one 32-element chunk per call
+#define VDR_PTQ1_0_Q8_1_MMVQ 4 // the whole 128-element block per call
+
+// PQ2_0 x Q8_1: iqs picks one of the four 32-element chunks of the 128-element block
+static __device__ __forceinline__ float vec_dot_pq2_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_pq2_0 * bq = (const block_pq2_0 *) vbq + kbx;
+
+    const float     d2 = bq->d;
+    const int16_t * qs = (const int16_t *) bq->qs + iqs * 4;
+
+    const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
+
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int q = qs[j];
+        const int u = get_int_b4(bq8_1_chunk->qs, j*2 + 0);
+        const int w = get_int_b4(bq8_1_chunk->qs, j*2 + 1);
+
+        // even and odd 2-bit codes into bytes {-1, 0, 1, 2}, then back into element order
+        const int qe = __byte_perm(0x020100FF, 0x020100FF, q >> 0);
+        const int qo = __byte_perm(0x020100FF, 0x020100FF, q >> 2);
+        const int qx = __byte_perm(qe, qo, 0x5140);
+        const int qy = __byte_perm(qe, qo, 0x7362);
+
+        sumi = ggml_cuda_dp4a(u, qx, sumi);
+        sumi = ggml_cuda_dp4a(w, qy, sumi);
+    }
+
+    const float d8 = __low2float(bq8_1_chunk->ds);
+    return d2 * d8 * sumi;
+}
+
+// PTQ1_0 x Q8_1, the whole block per call. The trits come out as digits {0, 1, 2}; the -1 is folded
+// into the activation sums: sum((q - 1) * a) = sum(q * a) - sum(a). Four bytes advance at once in the
+// low bytes of 16-bit lanes (3*255 < 2^16, no carry between lanes).
+static __device__ __forceinline__ float vec_dot_ptq1_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_ptq1_0 * bq = (const block_ptq1_0 *) vbq + kbx;
+
+    int sumi[4] = { 0, 0, 0, 0 };
+    int sumu[4] = { 0, 0, 0, 0 };
+
+    const uint32_t * qs32 = (const uint32_t *) bq->qs;
+
+    // qs[0..15]: element t*16 + m for trit t of byte m
+#pragma unroll
+    for (int w = 0; w < 4; ++w) {
+        const uint32_t packed = qs32[w];
+        uint32_t v_lo = __byte_perm(packed, 0, 0x4140); // [b0, 0, b1, 0]
+        uint32_t v_hi = __byte_perm(packed, 0, 0x4342); // [b2, 0, b3, 0]
+
+#pragma unroll
+        for (int t = 0; t < 5; ++t) {
+            const uint32_t w_lo = v_lo * 3u;
+            const uint32_t w_hi = v_hi * 3u;
+            v_lo = w_lo & 0x00FF00FFu;
+            v_hi = w_hi & 0x00FF00FFu;
+            const int e = t * 16 + 4 * w;
+            const int u = get_int_b4(bq8_1[iqs + (e >> 5)].qs, (e & 31) >> 2);
+            const int q = __byte_perm(w_lo, w_hi, 0x7531);
+            sumi[e >> 5] = ggml_cuda_dp4a(q, u, sumi[e >> 5]);
+            sumu[e >> 5] = ggml_cuda_dp4a(0x01010101, u, sumu[e >> 5]);
+        }
+    }
+
+    // qs[16..23]: element 80 + t*8 + m
+#pragma unroll
+    for (int w = 0; w < 2; ++w) {
+        const uint32_t packed = qs32[4 + w];
+        uint32_t v_lo = __byte_perm(packed, 0, 0x4140);
+        uint32_t v_hi = __byte_perm(packed, 0, 0x4342);
+
+#pragma unroll
+        for (int t = 0; t < 5; ++t) {
+            const uint32_t w_lo = v_lo * 3u;
+            const uint32_t w_hi = v_hi * 3u;
+            v_lo = w_lo & 0x00FF00FFu;
+            v_hi = w_hi & 0x00FF00FFu;
+            const int e = 80 + t * 8 + 4 * w;
+            const int u = get_int_b4(bq8_1[iqs + (e >> 5)].qs, (e & 31) >> 2);
+            const int q = __byte_perm(w_lo, w_hi, 0x7531);
+            sumi[e >> 5] = ggml_cuda_dp4a(q, u, sumi[e >> 5]);
+            sumu[e >> 5] = ggml_cuda_dp4a(0x01010101, u, sumu[e >> 5]);
+        }
+    }
+
+    // qh[0..1]: element 120 + t*2 + h
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+        uint32_t v = bq->qh[h];
+#pragma unroll
+        for (int t = 0; t < 4; ++t) {
+            const uint32_t w = v * 3;
+            const int      q = (int) (w >> 8);
+            v                = w & 0xFF;
+            const int e      = 120 + t * 2 + h;
+            const int a      = (int) bq8_1[iqs + (e >> 5)].qs[e & 31];
+            sumi[e >> 5] += q * a;
+            sumu[e >> 5] += a;
+        }
+    }
+
+    float acc = 0.0f;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+        acc += __low2float(bq8_1[iqs + k].ds) * (float) (sumi[k] - sumu[k]);
+    }
+    return (float) bq->d * acc;
+}
+
 #define VDR_IQ4_NL_Q8_1_MMVQ 2
 #define VDR_IQ4_NL_Q8_1_MMQ  4
 

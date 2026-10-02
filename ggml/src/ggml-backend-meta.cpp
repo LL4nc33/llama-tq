@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cinttypes>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1001,6 +1002,13 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
                         }
                         split_state.ne[j] *= tensor->ne[split_state.axis];
                         if (split_state.ne[j] != 0 || tensor->src[i]->ne[src_ss[i].axis] != 0) {
+                            if (split_state.ne[j] % tensor->src[i]->ne[src_ss[i].axis] != 0) {
+                                GGML_LOG_ERROR("%s: %s (%s, ne %" PRId64 " %" PRId64 " %" PRId64 " %" PRId64 ") cannot take the split of src %zu %s "
+                                        "(%s, axis %d, ne %" PRId64 "): %" PRId64 " elements on device %zu\n", __func__,
+                                        tensor->name, ggml_op_name(tensor->op), tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3],
+                                        i, tensor->src[i]->name, ggml_op_name(tensor->src[i]->op), src_ss[i].axis,
+                                        tensor->src[i]->ne[src_ss[i].axis], split_state.ne[j], j);
+                            }
                             GGML_ASSERT(split_state.ne[j] % tensor->src[i]->ne[src_ss[i].axis] == 0);
                             split_state.ne[j] /= tensor->src[i]->ne[src_ss[i].axis];
                         }

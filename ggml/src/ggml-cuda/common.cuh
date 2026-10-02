@@ -1052,6 +1052,46 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ1_M> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PQ2_0> {
+    static constexpr int qk = QK_PQ2_0;
+    static constexpr int qr = QR_PQ2_0;
+    static constexpr int qi = QI_PQ2_0;
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_PTQ1_0> {
+    static constexpr int qk = QK_PTQ1_0;
+    static constexpr int qr = QR_PTQ1_0;
+    static constexpr int qi = QI_PTQ1_0;
+};
+
+// PTQ1_0 packs five trits per byte, so the element order follows the CPU codec: a 16-byte chunk of
+// qs (elements 0..79), an 8-byte chunk (80..119), then qh at four trits per byte (120..127).
+// Trit n of a byte comes out of the base-3 recurrence v = (v*3) & 0xFF, t = (v*3) >> 8.
+static __device__ __forceinline__ int ptq1_0_trit(const block_ptq1_0 * x, const int e) {
+    uint8_t b;
+    int     n;
+    if (e < 80) {
+        b = x->qs[e & 15];        n = e >> 4;
+    } else if (e < 120) {
+        const int t = e - 80;
+        b = x->qs[16 + (t & 7)];  n = t >> 3;
+    } else {
+        const int t = e - 120;
+        b = x->qh[t & 1];         n = t >> 1;
+    }
+
+    uint32_t v = b;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        if (i < n) {
+            v = (v * 3) & 0xFF;
+        }
+    }
+    return (int) ((v * 3) >> 8) - 1;
+}
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_IQ4_NL> {
     static constexpr int qk = QK4_NL;
     static constexpr int qr = QR4_NL;

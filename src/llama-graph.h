@@ -11,10 +11,27 @@
 #include <set>
 #include <functional>
 #include <map>
+#include <unordered_map>
 
 struct ggml_cgraph;
 struct ggml_context;
 struct ggml_tensor;
+
+// Weights stored in a Hadamard-rotated input basis (declared by the
+// prism.hadamard.* GGUF metadata) map to the activation-side transform that is
+// applied right before their matmul: optional feature permutation, optional
+// sign flip, then the normalized blockwise Hadamard rotation.
+struct llama_hadamard_transform {
+    ggml_tensor * rot   = nullptr; // [block, block] F32 normalized Sylvester-Hadamard matrix
+    ggml_tensor * signs = nullptr; // [n_in] F32 +/-1, nullptr for identity sign mode
+    // when perm_rep > 1 the activation arrives with its feature axis in tiled
+    // head order [hd, nk, rep] and must be permuted to the grouped order
+    // [hd, rep, nk] the fold was computed in, before signs and rotation
+    int64_t perm_hd  = 0;
+    int64_t perm_nk  = 0;
+    int64_t perm_rep = 0;
+};
+using llama_hadamard_rotations = std::unordered_map<const ggml_tensor *, llama_hadamard_transform>;
 
 struct llama_cparams;
 struct llama_layer;
@@ -663,6 +680,10 @@ struct llm_graph_params {
     const llama_cross            * cross;
     const llama_diffusion_cond   * diffusion;
 
+    // Hadamard-folded weights (nullptr when the model has none)
+    const llama_hadamard_rotations * hadamard_rotations; // forward transform before the matmul
+    const llama_hadamard_rotations * hadamard_inverses;  // inverse transform after a row lookup
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     static bool samplers_equal(
@@ -918,6 +939,10 @@ struct llm_graph_context {
     const llama_cross            * cross;
     const llama_diffusion_cond   * diffusion;
 
+    // Hadamard-folded weights (nullptr when the model has none)
+    const llama_hadamard_rotations * hadamard_rotations; // forward transform before the matmul
+    const llama_hadamard_rotations * hadamard_inverses;  // inverse transform after a row lookup
+
     std::map<llama_seq_id, llama_sampler *> samplers;
 
     const llm_graph_cb & cb_func;
@@ -926,6 +951,9 @@ struct llm_graph_context {
 
     ggml_context * ctx0 = nullptr;
     ggml_cgraph  * gf   = nullptr;
+
+    // weights sharing one activation reuse its Hadamard transform: (activation, rotation) -> transformed
+    mutable std::map<std::pair<const ggml_tensor *, const ggml_tensor *>, ggml_tensor *> hadamard_memo;
 
     llm_graph_context(const llm_graph_params & params);
     virtual ~llm_graph_context() = default;
@@ -952,6 +980,16 @@ struct llm_graph_context {
               ggml_tensor * w,   // ggml_tensor * as
               ggml_tensor * cur, // ggml_tensor * b
               ggml_tensor * ids) const;
+
+    // activation-side transform for a Hadamard-folded weight; returns cur unchanged otherwise
+    ggml_tensor * build_hadamard_input(
+              ggml_tensor * w,
+              ggml_tensor * cur) const;
+
+    // inverse transform for rows looked up from a Hadamard-latent table (e.g. token embeddings)
+    ggml_tensor * build_hadamard_lookup(
+              ggml_tensor * table,
+              ggml_tensor * rows) const;
 
     ggml_tensor * build_norm(
              ggml_tensor * cur,

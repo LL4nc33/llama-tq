@@ -600,6 +600,8 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
         cb(h_input, "mtp_eagle3_fc", il);
     }
     ggml_tensor * tok_embd = ggml_get_rows(ctx0, tok_embd_w, inp->tokens);
+    // a Hadamard-latent table stores rotated rows; restore the primal basis like the trunk does
+    tok_embd = build_hadamard_lookup(tok_embd_w, tok_embd);
     cb(tok_embd, "mtp_tok_embd", il);
 
     res->add_input(std::move(inp));
