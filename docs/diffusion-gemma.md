@@ -41,8 +41,3 @@ llama-diffusion-gemma-server -m DiffusionGemma-26B-A4B-<quant>.gguf -ngl 99 -fa 
 an end-of-sequence token has been committed, so keep it high (48); low values cut long
 answers off mid-denoise. Keep the canvas KV at f16; the committed history can use
 TurboQuant KV types. Build prerequisites: [docs/build.md](build.md).
-
-## In flight
-
-- Lower-bit self-conditioning to reduce the weight footprint further while holding
-  coherence, aiming at full 256k context on a single 12 GB GPU.

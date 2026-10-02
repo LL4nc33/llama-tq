@@ -20,10 +20,8 @@ doc — this file is the index. Feedback and PRs welcome.
 
 ## 🚧 In flight
 
-- **Aggressive low-bit DiffusionGemma** — pushing the weight footprint lower to fit
-  full 256k context per single 12 GB GPU. → [diffusion-gemma.md](docs/diffusion-gemma.md)
 - **Eagle3 draft head** — extraction + GGUF plumbing landed; dormant until a trained
-  head loads. → [speculative.md](docs/speculative.md)
+  head loads.
 - **Vulkan KTQ/VTQ port** — PP parity reached, TG gap remaining. → [vulkan.md](docs/vulkan.md)
 - **Stage-4 QAT wire-up** — `ggml_quantize_dequantize_fake` op landed; CLI flag +
   LoRA-graph integration queued. → [finetune.md](docs/finetune.md)
