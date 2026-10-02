@@ -645,6 +645,7 @@ struct common_params {
     bool no_extra_bufts    = false; // disable extra buffer types (used for weight repacking)
     bool no_host           = false; // bypass host buffer allowing extra buffers to be used
     bool moe_pin_experts   = false; // cudaHostRegister MoE expert weight pages for async PCIe DMA
+    enum llama_tensor_read_lazy tensor_read_lazy = LLAMA_TENSOR_READ_LAZY_AUTO; // on-demand reading of tensors marked by the arch
 
     bool single_turn       = false; // single turn chat conversation
 

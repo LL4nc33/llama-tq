@@ -485,6 +485,30 @@ struct llama_layer {
     struct ggml_tensor * indexer_attn_k   = nullptr;
     struct ggml_tensor * indexer_attn_q_b = nullptr; // note: for lora a/b, not bias
 
+    // qwen4exp QSA indexer (new tensor names)
+    struct ggml_tensor * index_q_proj = nullptr;
+    struct ggml_tensor * index_k_proj = nullptr;
+    struct ggml_tensor * index_q_norm = nullptr;
+    struct ggml_tensor * index_k_norm = nullptr;
+
+    // qwen4exp low-rank hyper-connections
+    struct ggml_tensor * hc_attn_norm   = nullptr;
+    struct ggml_tensor * hc_attn_down   = nullptr;
+    struct ggml_tensor * hc_attn_up     = nullptr;
+    struct ggml_tensor * hc_attn_inject = nullptr;
+    struct ggml_tensor * hc_ffn_norm    = nullptr;
+    struct ggml_tensor * hc_ffn_down    = nullptr;
+    struct ggml_tensor * hc_ffn_up      = nullptr;
+    struct ggml_tensor * hc_ffn_inject  = nullptr;
+
+    // qwen4exp PLE
+    struct ggml_tensor * ple_key        = nullptr;
+    struct ggml_tensor * ple_value      = nullptr;
+    struct ggml_tensor * ple_norm_key   = nullptr;
+    struct ggml_tensor * ple_norm_query = nullptr;
+    struct ggml_tensor * ple_norm_conv  = nullptr;
+    struct ggml_tensor * ple_conv1d     = nullptr;
+
     // gemma4 layer output scale
     struct ggml_tensor * out_scale = nullptr;
 
@@ -583,6 +607,11 @@ struct llama_model {
     struct ggml_tensor * per_layer_model_proj = nullptr;
     struct ggml_tensor * per_layer_proj_norm  = nullptr;
 
+    // qwen4exp final hyper-connection mixer (output norm)
+    struct ggml_tensor * hc_head_norm = nullptr;
+    struct ggml_tensor * hc_head_down = nullptr;
+    struct ggml_tensor * hc_head_up   = nullptr;
+
     std::vector<llama_layer> layers;
 
     //Dense linear projections for SentenceTransformers models like embeddinggemma
@@ -603,6 +632,9 @@ struct llama_model {
 
     // for keeping track of associated LoRA adapters
     std::unordered_set<llama_adapter_lora *> loras;
+
+    // tensors whose rows are read from disk on demand (TENSOR_READ_LAZY), so a gather can prefetch them
+    std::unordered_set<const ggml_tensor *> can_prefetch;
 
     // statically allocated context for assigning
     struct llama_meta_device_get_split_state_userdata get_split_state_ud;
@@ -688,6 +720,8 @@ struct llama_model_base : public llama_model {
     const int TENSOR_NOT_REQUIRED;
     const int TENSOR_SKIP;
     const int TENSOR_SKIP_IF_VIRTUAL;
+    const int TENSOR_READ_LAZY;
+    const int TENSOR_ALLOW_RESHAPE;
 
     explicit llama_model_base(const llama_model_params & params);
     virtual ~llama_model_base() = default;

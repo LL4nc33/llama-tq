@@ -43,10 +43,10 @@
 #define LLAMA_FILE_MAGIC_GGSQ 0x67677371u // 'ggsq'
 
 #define LLAMA_SESSION_MAGIC   LLAMA_FILE_MAGIC_GGSN
-#define LLAMA_SESSION_VERSION 9
+#define LLAMA_SESSION_VERSION 10
 
 #define LLAMA_STATE_SEQ_MAGIC   LLAMA_FILE_MAGIC_GGSQ
-#define LLAMA_STATE_SEQ_VERSION 2
+#define LLAMA_STATE_SEQ_VERSION 3
 
 #ifdef __cplusplus
 extern "C" {
@@ -289,6 +289,14 @@ extern "C" {
         ggml_backend_buffer_type_t buft;
     };
 
+    // on-demand reading of very large tensors an architecture marks for it
+    // (e.g. the qwen4exp n-gram embedding table), instead of loading them up front
+    enum llama_tensor_read_lazy {
+        LLAMA_TENSOR_READ_LAZY_OFF  = 0, // always read the whole tensor up front
+        LLAMA_TENSOR_READ_LAZY_AUTO = 1, // lazy only for marked tensors larger than 4 GiB (requires mmap)
+        LLAMA_TENSOR_READ_LAZY_ON   = 2, // read the rows of marked tensors on demand (requires mmap)
+    };
+
     struct llama_model_params {
         // NULL-terminated list of devices to use for offloading (if NULL, all available devices are used)
         ggml_backend_dev_t * devices;
@@ -327,6 +335,7 @@ extern "C" {
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
         bool moe_pin_experts; // cudaHostRegister MoE expert weights for async PCIe DMA (Linux+CUDA)
+        enum llama_tensor_read_lazy tensor_read_lazy; // on-demand reading of tensors marked by the arch
     };
 
     struct llama_sampler_seq_config {

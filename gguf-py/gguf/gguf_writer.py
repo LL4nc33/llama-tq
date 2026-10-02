@@ -790,6 +790,57 @@ class GGUFWriter:
     def add_indexer_top_k(self, top_k: int) -> None:
         self.add_uint32(Keys.Attention.Indexer.TOP_K.format(arch=self.arch), top_k)
 
+    def add_hyper_connection_count(self, count: int) -> None:
+        self.add_uint32(Keys.HyperConnection.COUNT.format(arch=self.arch), count)
+
+    def add_hyper_connection_low_rank(self, rank: int) -> None:
+        self.add_uint32(Keys.HyperConnection.LOW_RANK.format(arch=self.arch), rank)
+
+    def add_hyper_connection_sinkhorn_iterations(self, iters: int) -> None:
+        self.add_uint32(Keys.HyperConnection.SINKHORN_ITERATIONS.format(arch=self.arch), iters)
+
+    def add_hyper_connection_epsilon(self, eps: float) -> None:
+        self.add_float32(Keys.HyperConnection.EPSILON.format(arch=self.arch), eps)
+
+    def add_attention_compress_ratios(self, ratios: Sequence[int]) -> None:
+        data = list(ratios)
+        self.add_array(Keys.Compress.RATIOS.format(arch=self.arch), data)
+
+    def add_attention_compress_rope_freq_base(self, base: float) -> None:
+        self.add_float32(Keys.Compress.ROPE_FREQ_BASE.format(arch=self.arch), base)
+
+    def add_ple_layers(self, layers: Sequence[int]) -> None:
+        self.add_array(Keys.PLE.LAYERS.format(arch=self.arch), list(layers))
+
+    def add_ple_ngram_size(self, size: int) -> None:
+        self.add_uint32(Keys.PLE.NGRAM_SIZE.format(arch=self.arch), size)
+
+    def add_ple_heads_per_ngram(self, heads: int) -> None:
+        self.add_uint32(Keys.PLE.HEADS_PER_NGRAM.format(arch=self.arch), heads)
+
+    def add_ple_conv_kernel(self, kernel: int) -> None:
+        self.add_uint32(Keys.PLE.CONV_KERNEL.format(arch=self.arch), kernel)
+
+    # the PLE n-gram hash constants need the full 64-bit range (multipliers are ~45 bit);
+    # plain add_array would infer INT32 for Python ints and overflow
+    def _add_u64_array(self, key: str, values: Sequence[int]) -> None:
+        self.add_key_value(key, list(values), GGUFValueType.ARRAY, GGUFValueType.UINT64)
+
+    def add_ple_layer_multipliers(self, multipliers: Sequence[int]) -> None:
+        self._add_u64_array(Keys.PLE.LAYER_MULTIPLIERS.format(arch=self.arch), multipliers)
+
+    def add_ple_head_offsets(self, offsets: Sequence[int]) -> None:
+        self._add_u64_array(Keys.PLE.HEAD_OFFSETS.format(arch=self.arch), offsets)
+
+    def add_ple_head_vocab_sizes(self, sizes: Sequence[int]) -> None:
+        self._add_u64_array(Keys.PLE.HEAD_VOCAB_SIZES.format(arch=self.arch), sizes)
+
+    def add_ple_eos_token_id(self, token_id: int) -> None:
+        self.add_uint32(Keys.PLE.EOS_TOKEN_ID.format(arch=self.arch), token_id)
+
+    def add_ple_image_token_id(self, token_id: int) -> None:
+        self.add_uint32(Keys.PLE.IMAGE_TOKEN_ID.format(arch=self.arch), token_id)
+
     def add_max_alibi_bias(self, bias: float) -> None:
         self.add_float32(Keys.Attention.MAX_ALIBI_BIAS.format(arch=self.arch), bias)
 

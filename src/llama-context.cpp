@@ -207,6 +207,7 @@ llama_context::llama_context(
     cparams.fused_gdn_ar = true;
     cparams.fused_gdn_ch = true;
     cparams.auto_fgdn    = true;
+    cparams.fused_hc     = model.arch == LLM_ARCH_QWEN4EXP;
 
     // with causal attention, the batch size is limited by the context size
     cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;
@@ -617,6 +618,46 @@ void llama_context::sched_reserve() {
         }
 
         cparams.auto_fgdn = false;
+    }
+
+    if (cparams.fused_hc) {
+        // the fused hyper-connection ops only pay off where the layer's own backend runs them
+        auto * gf = graph_reserve(1, n_seqs, n_outputs, mctx.get(), true);
+        if (!gf) {
+            throw std::runtime_error("failed to reserve graph for fused hyper-connection check");
+        }
+
+        bool hc_device_mismatch = false;
+        for (int i = 0; i < ggml_graph_n_nodes(gf); i++) {
+            ggml_tensor * n = ggml_graph_node(gf, i);
+            if (n->op != GGML_OP_DSV4_HC_PRE && n->op != GGML_OP_DSV4_HC_POST) {
+                continue;
+            }
+
+            // nodes are named "<name>-<layer>"; the head mixer has no layer and follows the last one
+            const char * dash = strrchr(n->name, '-');
+            if (dash == nullptr) {
+                continue;
+            }
+            const int il = std::stoi(dash + 1);
+
+            ggml_backend_dev_t device_hc    = ggml_backend_get_device(ggml_backend_sched_get_tensor_backend(sched.get(), n));
+            ggml_backend_dev_t device_layer = model.dev_layer(il);
+            if (device_hc != device_layer) {
+                LLAMA_LOG_WARN("%s: layer %d is assigned to device %s but the fused hyper-connection tensor "
+                        "is assigned to device %s (usually due to missing support)\n",
+                        __func__, il, ggml_backend_dev_name(device_layer), ggml_backend_dev_name(device_hc));
+                hc_device_mismatch = true;
+                break;
+            }
+        }
+
+        if (hc_device_mismatch) {
+            cparams.fused_hc = false;
+            LLAMA_LOG_WARN("%s: fused hyper-connections not supported, set to disabled\n", __func__);
+        } else {
+            LLAMA_LOG_INFO("%s: fused hyper-connections enabled\n", __func__);
+        }
     }
 
     // reserve worst-case graph
@@ -2694,7 +2735,8 @@ void llama_context::output_reorder() {
 //
 
 uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
-    if (model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_KIMI_LINEAR || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE) {
+    if (model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_KIMI_LINEAR || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE ||
+        model.arch == LLM_ARCH_QWEN4EXP) {
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
     uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());

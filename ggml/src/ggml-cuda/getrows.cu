@@ -71,6 +71,38 @@ static __global__ void k_get_rows_float(
     }
 }
 
+// rows shorter than a block: one thread per element instead of one block per row, which would leave
+// most threads idle and launch a block for every requested row
+template<typename src0_t, typename dst_t>
+static __global__ void k_get_rows_float_short(
+        const src0_t * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const uint3 ne00_fdv, const uint32_t n_per_z, const int64_t ne11, const uint3 ne12_fdv,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+
+    const uint32_t i = blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= n_per_z) {
+        return;
+    }
+    const uint2 rc = fast_div_modulo(i, ne00_fdv);
+    const int i10 = rc.x;
+    const int i00 = rc.y;
+
+    for (int64_t z = blockIdx.y; z < ne11*(int64_t)ne12_fdv.z; z += gridDim.y) {
+        const uint2 dm = fast_div_modulo((uint32_t)z, ne12_fdv);
+        const int i11 = dm.x;
+        const int i12 = dm.y;
+
+        const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+
+        dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
+        const src0_t * src0_row = (const src0_t *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
+
+        dst_row[i00] = ggml_cuda_cast<dst_t>(src0_row[i00]);
+    }
+}
+
 template<typename grad_t, typename dst_t>
 static __global__ void k_get_rows_back_float(
         const grad_t * __restrict__ grad, const int32_t * __restrict__ rows, dst_t * __restrict__ dst, const int64_t ncols, const int64_t nrows_grad) {
@@ -156,6 +188,15 @@ static void get_rows_cuda_float(
     GGML_ASSERT(ne12 > 0);
     GGML_ASSERT(ne11 <= std::numeric_limits<uint32_t>::max() / ne12);
     const uint3 ne12_fdv = init_fastdiv_values(ne12);
+
+    if (ne00 < CUDA_GET_ROWS_BLOCK_SIZE && ne10*ne00 <= std::numeric_limits<uint32_t>::max() - CUDA_GET_ROWS_BLOCK_SIZE) {
+        const uint32_t n_per_z = ne10*ne00;
+        const dim3 block_nums_short((n_per_z + CUDA_GET_ROWS_BLOCK_SIZE - 1) / CUDA_GET_ROWS_BLOCK_SIZE, MIN(ne11*ne12, UINT16_MAX), 1);
+        k_get_rows_float_short<<<block_nums_short, block_dims, 0, stream>>>(
+            src0_d, src1_d, dst_d, init_fastdiv_values(ne00), n_per_z, ne11, ne12_fdv,
+            s1, s2, s3, nb01, nb02, nb03, s10, s11, s12);
+        return;
+    }
 
     k_get_rows_float<<<block_nums, block_dims, 0, stream>>>(
         src0_d, src1_d, dst_d,

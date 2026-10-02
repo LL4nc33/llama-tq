@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstring>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -67,6 +68,8 @@ struct llama_model_loader {
     static const int TENSOR_DUPLICATED      = 1 << 1;
     static const int TENSOR_SKIP            = 1 << 2;
     static const int TENSOR_SKIP_IF_VIRTUAL = 1 << 3;
+    static const int TENSOR_READ_LAZY       = 1 << 4; // read rows on demand instead of loading the whole tensor; requires mmap
+    static const int TENSOR_ALLOW_RESHAPE   = 1 << 5; // accept any stored shape with the same number of elements
 
     int n_kv      = 0;
     int n_tensors = 0;
@@ -86,6 +89,14 @@ struct llama_model_loader {
     llama_fver  fver;
 
     llama_mmaps mappings;
+
+    enum llama_tensor_read_lazy tensor_read_lazy = LLAMA_TENSOR_READ_LAZY_OFF;
+
+    // byte ranges of TENSOR_READ_LAZY tensors, per file index
+    std::map<uint32_t, llama_mmap::ranges> lazy_tensor_ranges;
+
+    // the tensors those ranges belong to
+    std::set<const ggml_tensor *> lazy_tensors;
 
     std::map<std::string, llama_tensor_weight, weight_name_comparer> weights_map;
     std::unordered_map<std::string, llama_model_kv_override> kv_overrides;
@@ -178,7 +189,7 @@ struct llama_model_loader {
 
     struct ggml_tensor * require_tensor_meta(const std::string & name) const;
 
-    const struct ggml_tensor * check_tensor_dims(const std::string & name, const std::vector<int64_t> & ne, bool required) const;
+    const struct ggml_tensor * check_tensor_dims(const std::string & name, const std::vector<int64_t> & ne, bool required, bool allow_reshape = false) const;
 
     struct ggml_tensor * create_tensor(
         const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,

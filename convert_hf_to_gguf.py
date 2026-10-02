@@ -872,12 +872,16 @@ class ModelBase:
                     else:
                         raise ValueError(f"Unknown file type: {self.ftype.name}")
 
+                # a chunked tensor quantizes one chunk at a time, while it is written
+                quantize = data.quantize if isinstance(data, gguf.LazyChunkedTensor) else (
+                    lambda qtype, d=data: gguf.quants.quantize(d, qtype))
+
                 try:
-                    data = gguf.quants.quantize(data, data_qtype)
+                    data = quantize(data_qtype)
                 except gguf.QuantError as e:
                     logger.warning("%s, %s", e, "falling back to F16")
                     data_qtype = gguf.GGMLQuantizationType.F16
-                    data = gguf.quants.quantize(data, data_qtype)
+                    data = quantize(data_qtype)
 
                 shape = gguf.quant_shape_from_byte_shape(data.shape, data_qtype) if data.dtype == np.uint8 else data.shape
 
@@ -1529,6 +1533,9 @@ class TextModel(ModelBase):
             res = "exaone-moe"
         if chkhsh == "d30d75d9059f1aa2c19359de71047b3ae408c70875e8a3ccf8c5fba56c9d8af4":
             # ref: https://huggingface.co/Qwen/Qwen3.5-9B-Instruct
+            res = "qwen35"
+        if chkhsh == "1444df51289cfa8063b96f0e62b1125440111bc79a52003ea14b6eac7016fd5f":
+            # ref: https://huggingface.co/Qwen/Qwen3.8-Flash-Next
             res = "qwen35"
         if chkhsh == "b4b8ca1f9769494fbd956ebc4c249de6131fb277a4a3345a7a92c7dd7a55808d":
             # ref: https://huggingface.co/jdopensource/JoyAI-LLM-Flash
@@ -5419,6 +5426,170 @@ class Qwen3_5TextModel(_LinearAttentionVReorderBase):
 @ModelBase.register("Qwen3_5MoeForConditionalGeneration", "Qwen3_5MoeForCausalLM")
 class Qwen3_5MoeTextModel(_LinearAttentionVReorderBase):
     model_arch = gguf.MODEL_ARCH.QWEN35MOE
+
+
+@ModelBase.register("Qwen4ExpForConditionalGeneration", "Qwen4ExpForCausalLM")
+class Qwen4ExpTextModel(_LinearAttentionVReorderBase):
+    """Qwen3.8-Flash-Next.
+
+    Shares the Qwen3.5 gated delta net and interleaved mrope, and adds hyper-connections
+    in place of every layer norm, QSA sparse attention on the full attention layers and
+    PLE n-gram hash embeddings. Everything the Qwen3-Next base already converts (A_log,
+    dt_bias, conv1d, norm offsets, qkvz split, v-head reorder) is left to the base class.
+    """
+
+    model_arch = gguf.MODEL_ARCH.QWEN4EXP
+    no_mtp = True
+
+    # the loader treats rope.dimension_sections as required; checkpoints may omit it
+    _DEFAULT_MROPE_SECTION = [11, 11, 10, 0]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # only the shard names, so the (very large) n-gram table is never held in memory
+        self._ple_shards: dict[int, str] = {}
+        self._ple_row_dim: int | None = None
+
+    def _read_hash_constants(self, suffix: str) -> list[int]:
+        """Read an int64 PLE constant straight from the checkpoint.
+
+        prepare_tensors() casts non-float tensors to float32 before modify_tensors()
+        sees them, which would round the ~45-bit multipliers. The lazy tensor is exact.
+        """
+        for name, gen in self.model_tensors.items():
+            if name.endswith(suffix):
+                t = gen()
+                if t.dtype != torch.int64:
+                    t = t.to(torch.int64)
+                return [int(x) for x in t.tolist()]
+        raise ValueError(f"PLE constant {suffix!r} missing from the checkpoint")
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        hp = self.hparams
+
+        if "mrope_section" not in self.rope_parameters:
+            self.gguf_writer.add_rope_dimension_sections(self._DEFAULT_MROPE_SECTION)
+
+        self.gguf_writer.add_hyper_connection_count(hp["hc_count"])
+        self.gguf_writer.add_hyper_connection_low_rank(hp["hc_lowrank"])
+
+        n_layer = hp["num_hidden_layers"]
+        self.gguf_writer.add_indexer_head_count(hp["indexer_n_heads"])
+        self.gguf_writer.add_indexer_key_length(hp["indexer_head_dim"])
+        self.gguf_writer.add_indexer_top_k(hp["indexer_budget"])
+        ratio = hp["indexer_compress_ratio"]
+        layer_types = hp["layer_types"]
+        self.gguf_writer.add_attention_compress_ratios(
+            [ratio if layer_types[i] == "full_attention" else 0 for i in range(n_layer)]
+        )
+
+        # ple_layer_ids is 1-based in the HF config; empty means there is no n-gram table
+        ple_layers = [i - 1 for i in hp.get("ple_layer_ids", [])]
+        if not ple_layers:
+            return
+        self.gguf_writer.add_ple_layers(ple_layers)
+        self.gguf_writer.add_ple_ngram_size(hp["ngram_size"])
+        self.gguf_writer.add_ple_heads_per_ngram(hp["heads_per_ngram"])
+        self.gguf_writer.add_ple_conv_kernel(hp["ple_conv_kernel_size"])
+        self.gguf_writer.add_ple_eos_token_id(self._eos_token_id())
+        # images are decoded as embeddings-only batches with no ids to hash; this id stands in
+        if (img := hp.get("image_token_id")) is not None:
+            self.gguf_writer.add_ple_image_token_id(int(img))
+        # the row width comes from the table itself; tensors are prepared before the metadata,
+        # except for --vocab-only, where no tensors are read at all
+        if self._ple_row_dim is not None:
+            self.gguf_writer.add_embedding_length_per_layer_input(self._ple_row_dim)
+
+        self.gguf_writer.add_ple_layer_multipliers(
+            self._read_hash_constants("ple_embedding.layer_multipliers"))
+        self.gguf_writer.add_ple_head_offsets(
+            self._read_hash_constants("ple_embedding.ngram_heads_offsets"))
+        self.gguf_writer.add_ple_head_vocab_sizes(
+            self._read_hash_constants("ple_embedding.ngram_heads_vocab_sizes"))
+
+    def _eos_token_id(self) -> int:
+        eos = self.hparams.get("eos_token_id")
+        if isinstance(eos, list):
+            # the PLE hash resets its n-grams on the primary EOS
+            return int(eos[-1])
+        if eos is None:
+            raise ValueError("eos_token_id is required: the PLE hash resets its n-grams on it")
+        return int(eos)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # the int64 hash constants go into KV arrays (set_gguf_parameters), not tensors
+        if name.endswith(("ple_embedding.layer_multipliers",
+                          "ple_embedding.ngram_heads_offsets",
+                          "ple_embedding.ngram_heads_vocab_sizes")):
+            return []
+
+        # the shards are looked up again by their checkpoint name, so keep it unmodified
+        if ".ngram_embedding.shard_" in name:
+            return self._place_ple_shard(data_torch, name)
+
+        # checkpoints nest the text model under model.language_model.
+        name = name.replace("model.language_model.", "model.")
+
+        # one projection feeds indexer q and k; split it
+        if ".indexer.index_qk_proj.weight" in name:
+            n_q = self.hparams["indexer_n_heads"] * self.hparams["indexer_head_dim"]
+            return [
+                (self.format_tensor_name(gguf.MODEL_TENSOR.INDEXER_Q_PROJ, bid, ".weight"), data_torch[:n_q]),
+                (self.format_tensor_name(gguf.MODEL_TENSOR.INDEXER_K_PROJ, bid, ".weight"), data_torch[n_q:]),
+            ]
+
+        # zero-centred gammas the inherited norm.weight rule misses (or would apply twice)
+        if name.endswith((".ple.norm_key.weight", ".ple.norm_query.weight", ".ple.norm_conv.weight",
+                          ".indexer.q_layernorm.weight", ".indexer.k_layernorm.weight")):
+            return [(self.map_tensor_name(name), data_torch + 1)]
+
+        if name.endswith(".ple.conv1d.weight"):
+            return [(self.map_tensor_name(name), data_torch.squeeze())]
+
+        return super().modify_tensors(data_torch, name, bid)
+
+    def _place_ple_shard(self, data_torch: Tensor, name: str) -> Iterable[tuple[str, Tensor]]:
+        # the shards concatenate into a table of well over 100 GB; a LazyChunkedTensor
+        # writes it one shard at a time instead of materialising it
+        idx = int(name.rpartition(".shard_")[2].partition(".")[0])
+        n_parts = self.hparams["split_ngram_parts"]
+
+        self._ple_shards[idx] = name
+        self._ple_row_dim = int(data_torch.shape[-1])
+
+        if len(self._ple_shards) < n_parts:
+            return []
+
+        # the checkpoint may yield the shards in any order; row order is by shard index
+        shards = [self._ple_shards[i] for i in sorted(self._ple_shards)]
+        rows = 0
+        for shard in shards:
+            shape = self.model_tensors[shard]().shape
+            if int(shape[-1]) != self._ple_row_dim:
+                raise ValueError(f"PLE shard {shard} has row dim {int(shape[-1])}, expected {self._ple_row_dim}")
+            rows += int(shape[0])
+
+        table = gguf.LazyChunkedTensor(
+            [self._load_ple_shard(shard) for shard in shards],
+            shape=(rows, self._ple_row_dim),
+            dtype=np.float32,
+        )
+        gguf_name = gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.PER_LAYER_TOKEN_EMBD]
+        return [(gguf_name + ".weight", cast("Tensor", table))]
+
+    def _load_ple_shard(self, name: str):
+        def load() -> np.ndarray:
+            # a fresh lazy tensor on every call, otherwise to_eager() memoizes each shard
+            eager = LazyTorchTensor.to_eager(self.model_tensors[name]())
+            return eager.to(torch.float32).contiguous().numpy()
+        return load
+
+    def prepare_tensors(self):
+        super().prepare_tensors()
+        n_parts = self.hparams.get("split_ngram_parts", 0)
+        if self._ple_shards and len(self._ple_shards) != n_parts:
+            raise ValueError(f"got {len(self._ple_shards)} PLE embedding shards, expected {n_parts}")
 
 
 @ModelBase.register("GPT2LMHeadModel")

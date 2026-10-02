@@ -314,10 +314,11 @@ namespace GGUFMeta {
             case GGUF_TYPE_UINT32:
             case GGUF_TYPE_INT32:   GGML_ASSERT((std::is_same<T,     int32_t>::value) ||
                                                 (std::is_same<T,    uint32_t>::value)); break;
+            case GGUF_TYPE_UINT64:  GGML_ASSERT((std::is_same<T,    uint64_t>::value)); break;
             case GGUF_TYPE_FLOAT32: GGML_ASSERT((std::is_same<T,       float>::value)); break;
             case GGUF_TYPE_STRING:  GGML_ASSERT((std::is_same<T, std::string>::value)); break;
             default:
-                throw std::runtime_error(format("%s is not a string/float32/uint32/int32 array", key.c_str()));
+                throw std::runtime_error(format("%s is not a string/float32/uint32/int32/uint64 array", key.c_str()));
         }
 
         if constexpr (std::is_same<T, std::string>::value) {
@@ -356,10 +357,11 @@ namespace GGUFMeta {
             case GGUF_TYPE_UINT32:
             case GGUF_TYPE_INT32:   GGML_ASSERT((std::is_same<T,     int32_t>::value) ||
                                                 (std::is_same<T,    uint32_t>::value)); break;
+            case GGUF_TYPE_UINT64:  GGML_ASSERT((std::is_same<T,    uint64_t>::value)); break;
             case GGUF_TYPE_FLOAT32: GGML_ASSERT((std::is_same<T,       float>::value)); break;
             case GGUF_TYPE_STRING:  GGML_ASSERT((std::is_same<T, std::string>::value)); break;
             default:
-                throw std::runtime_error(format("%s is not a string/float32/uint32/int32 array", key.c_str()));
+                throw std::runtime_error(format("%s is not a string/float32/uint32/int32/uint64 array", key.c_str()));
         }
 
         if (arr_info.length > N_MAX) {
@@ -396,6 +398,10 @@ namespace GGUFMeta {
     // DFlash: target_layer_ids (vector<int>) + fixed-size layer-pattern arrays
     template bool llama_model_loader::get_arr<std::vector<int32_t>>(enum llm_kv kid, std::vector<int32_t> & result, bool required);
     template bool llama_model_loader::get_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, bool required);
+    // qwen4exp PLE: layer list + 64-bit n-gram hash constants
+    template bool llama_model_loader::get_arr<std::vector<uint32_t>>(enum llm_kv kid, std::vector<uint32_t> & result, bool required);
+    template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> & result, bool required);
+    template bool llama_model_loader::get_arr<std::array<uint64_t, LLAMA_MAX_PLE_HEADS>>(enum llm_kv kid, std::array<uint64_t, LLAMA_MAX_PLE_HEADS> & result, bool required);
 
     template<typename T>
     bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
@@ -864,7 +870,7 @@ struct ggml_tensor * llama_model_loader::require_tensor_meta(const std::string &
     return tensor;
 }
 
-const struct ggml_tensor * llama_model_loader::check_tensor_dims(const std::string & name, const std::vector<int64_t> & ne, bool required) const {
+const struct ggml_tensor * llama_model_loader::check_tensor_dims(const std::string & name, const std::vector<int64_t> & ne, bool required, bool allow_reshape) const {
     const struct ggml_tensor * cur = get_tensor_meta(name.c_str());
 
     if (cur == NULL) {
@@ -876,10 +882,19 @@ const struct ggml_tensor * llama_model_loader::check_tensor_dims(const std::stri
 
     {
         bool is_ok = true;
-        for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
-            if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
-                is_ok = false;
-                break;
+        if (allow_reshape) {
+            // only the total number of elements has to match
+            int64_t nexp = 1;
+            for (size_t i = 0; i < ne.size(); ++i) {
+                nexp *= ne[i];
+            }
+            is_ok = ggml_nelements(cur) == nexp;
+        } else {
+            for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
+                if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
+                    is_ok = false;
+                    break;
+                }
             }
         }
         if (!is_ok) {
@@ -1269,16 +1284,49 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     }
 
     LLAMA_LOG_DEBUG("%s: loading tensor %s\n", __func__, tn.str().c_str());
-    const struct ggml_tensor * cur = check_tensor_dims(tn.str(), ne, !(flags & TENSOR_NOT_REQUIRED));
+    const struct ggml_tensor * cur = check_tensor_dims(tn.str(), ne, !(flags & TENSOR_NOT_REQUIRED), flags & TENSOR_ALLOW_RESHAPE);
 
     if (cur == NULL) {
         return NULL;
+    }
+
+    bool lazy = false;
+
+    if ((flags & TENSOR_READ_LAZY) && use_mmap && tensor_read_lazy != LLAMA_TENSOR_READ_LAZY_OFF) {
+        // in auto mode, small tensors are cheap enough to keep resident
+        constexpr size_t auto_lazy_min_size = 4ull * 1024 * 1024 * 1024;
+        if (tensor_read_lazy == LLAMA_TENSOR_READ_LAZY_ON || ggml_nbytes(cur) > auto_lazy_min_size) {
+            const auto & w = require_weight(tn.str().c_str());
+            lazy_tensor_ranges[w.idx].emplace_back(w.offs, w.offs + ggml_nbytes(cur));
+            lazy = true;
+
+            LLAMA_LOG_INFO("%s: tensor %s (size = %zu MiB) lazy read enabled\n",
+                    __func__, tn.str().c_str(), ggml_nbytes(cur)/1024/1024);
+        }
     }
 
     const bool duplicated = flags & TENSOR_DUPLICATED;
 
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, cur);
     ggml_set_name(tensor, ggml_get_name(cur));
+
+    if (flags & TENSOR_ALLOW_RESHAPE) {
+        // same data, laid out as the caller asked
+        for (size_t dim = 0; dim < GGML_MAX_DIMS; dim++) {
+            tensor->ne[dim] = dim < ne.size() ? ne.begin()[dim] : 1;
+            if (dim == 0) {
+                tensor->nb[dim] = ggml_type_size(tensor->type);
+            } else if (dim == 1) {
+                tensor->nb[dim] = ggml_row_size(tensor->type, tensor->ne[dim-1]);
+            } else {
+                tensor->nb[dim] = tensor->ne[dim-1]*tensor->nb[dim-1];
+            }
+        }
+    }
+
+    if (lazy) {
+        lazy_tensors.insert(tensor);
+    }
 
     if (duplicated) {
         size_data += ggml_nbytes(cur);
@@ -1339,7 +1387,8 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
     if (use_mmap) {
         mappings.reserve(files.size());
         mmaps_used.reserve(files.size());
-        for (const auto & file : files) {
+        for (uint32_t idx = 0; idx < files.size(); idx++) {
+            const auto & file = files[idx];
             bool is_numa = false;
 
             auto * dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
@@ -1351,7 +1400,10 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
                 }
             }
 
-            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch ? -1 : 0, is_numa, mmap_huge);
+            const auto it_lazy = lazy_tensor_ranges.find(idx);
+            static const llama_mmap::ranges no_lazy_ranges;
+            std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch ? -1 : 0, is_numa, mmap_huge,
+                    it_lazy != lazy_tensor_ranges.end() ? it_lazy->second : no_lazy_ranges);
             mmaps_used.emplace_back(mapping->size(), 0);
             if (mlock_mmaps) {
                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());

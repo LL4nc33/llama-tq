@@ -116,6 +116,7 @@ public:
     // per layer
     std::vector<ggml_tensor *> r_l;
     std::vector<ggml_tensor *> s_l;
+    std::vector<ggml_tensor *> p_l; // qwen4exp PLE conv states
 
 private:
     //const llama_model & model;
@@ -130,6 +131,7 @@ private:
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> shadow_ctxs_bufs;
     std::vector<ggml_tensor *> shadow_r_l;
     std::vector<ggml_tensor *> shadow_s_l;
+    std::vector<ggml_tensor *> shadow_p_l;
     // Metadata snapshot — needed alongside r_l/s_l tensor copies to correctly
     // restore the recurrent state's position/cell tracking.
     std::vector<mem_cell> shadow_cells;
@@ -141,12 +143,15 @@ private:
 
     size_t size_r_bytes() const;
     size_t size_s_bytes() const;
+    size_t size_p_bytes() const;
 
     void state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const;
 
     bool state_read_meta(llama_io_read_i & io, uint32_t cell_count, llama_seq_id dest_seq_id = -1);
     bool state_read_data(llama_io_read_i & io, uint32_t cell_count);
+
+    void state_clear(llama_seq_id seq_id, uint32_t cell_head, uint32_t cell_count);
 };
 
 class llama_memory_recurrent_context : public llama_memory_context_i {
@@ -186,6 +191,7 @@ public:
 
     ggml_tensor * get_r_l(int32_t il) const;
     ggml_tensor * get_s_l(int32_t il) const;
+    ggml_tensor * get_p_l(int32_t il) const;
 
     int32_t s_copy(int i) const;
 

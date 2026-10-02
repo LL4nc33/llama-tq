@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 #include <cstdio>
 
@@ -41,8 +42,13 @@ private:
 };
 
 struct llama_mmap {
+    // [begin, end) byte ranges of the file
+    using ranges = std::vector<std::pair<size_t, size_t>>;
+
     llama_mmap(const llama_mmap &) = delete;
-    llama_mmap(struct llama_file * file, size_t prefetch = (size_t) -1, bool numa = false, bool huge = false);
+    // lazy_ranges are read on demand: excluded from prefetching and advised as random access
+    llama_mmap(struct llama_file * file, size_t prefetch = (size_t) -1, bool numa = false, bool huge = false,
+               const ranges & lazy_ranges = {});
     ~llama_mmap();
 
     size_t size() const;
@@ -70,5 +76,15 @@ private:
     struct impl;
     std::unique_ptr<impl> pimpl;
 };
+
+struct llama_memory_range {
+    const void * addr;
+    size_t size;
+};
+
+using llama_memory_ranges = std::vector<llama_memory_range>;
+
+// ask the OS to read in the host pages covering these memory ranges, without waiting for them
+void llama_prefetch(llama_memory_ranges mr);
 
 size_t llama_path_max();

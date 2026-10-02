@@ -1066,7 +1066,8 @@ struct llm_graph_context {
             ggml_tensor * v_mla,   // [n_embd_head_v_mla, n_embd_head_v, n_head_v]
                   float   kq_scale,
                     int   il,
-            ggml_tensor * sibling_k = nullptr) const;  // XQuant Phase 3b: dominant layer K for paired dispatch
+            ggml_tensor * sibling_k = nullptr,  // XQuant Phase 3b: dominant layer K for paired dispatch
+                int64_t   n_kv_max  = 0) const; // bound on the finite entries per mask row, 0 = dense
 
     llm_graph_input_attn_no_cache * build_attn_inp_no_cache() const;
     llm_graph_input_attn_no_cache_prefix * build_attn_inp_no_cache_prefix(int64_t n_prompt) const;

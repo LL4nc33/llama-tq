@@ -3,11 +3,14 @@
 #include "llama.h"
 
 #include <array>
+#include <bitset>
 #include <cassert>
 
 // bump if necessary
 #define LLAMA_MAX_LAYERS  512
 #define LLAMA_MAX_EXPERTS 512 // Qwen3 Next
+#define LLAMA_MAX_PLE_NGRAM 8
+#define LLAMA_MAX_PLE_HEADS 64
 
 enum llama_expert_gating_func_type {
     LLAMA_EXPERT_GATING_FUNC_TYPE_NONE           = 0,
@@ -232,6 +235,33 @@ struct llama_hparams {
     uint32_t indexer_n_head    = 0;
     uint32_t indexer_head_size = 0;
     uint32_t indexer_top_k     = 0;
+
+    // qwen4exp hyper-connections
+    uint32_t dsv4_hc_mult           = 0;
+    uint32_t hc_low_rank            = 0;
+
+    // qwen4exp QSA compress ratios
+    std::array<uint32_t, LLAMA_MAX_LAYERS> dsv4_compress_ratios;
+
+    // qwen4exp PLE (per-layer n-gram hash embeddings)
+    uint32_t ple_ngram_size      = 0;
+    uint32_t ple_heads_per_ngram = 0;
+    uint32_t ple_conv_kernel     = 0;
+    uint32_t ple_n_heads         = 0;
+    uint32_t ple_head_dim        = 0;
+    uint32_t ple_eos_token_id    = 0;
+    uint32_t ple_image_token_id  = 0;
+    std::bitset<LLAMA_MAX_LAYERS> is_ple_impl;
+    std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>  ple_layer_multipliers;
+    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_offsets;
+    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_vocab_sizes;
+
+    // qwen4exp recurrent layer pattern (1 = recurrent/GDN, 0 = full attention)
+    std::array<uint32_t, LLAMA_MAX_LAYERS> is_recr_impl;
+
+    bool is_ple(uint32_t il) const;
+    bool is_recr(uint32_t il) const;
+    uint32_t ple_conv_state() const;
 
     // qwen3vl deepstack
     uint32_t n_deepstack_layers = 0;

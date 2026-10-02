@@ -270,3 +270,21 @@ uint32_t llama_hparams::n_layer_kv() const {
 bool llama_hparams::use_mrope() const {
     return rope_sections[0] > 0 && rope_sections[1] > 0;
 }
+
+bool llama_hparams::is_recr(uint32_t il) const {
+    return il < n_layer && is_recr_impl[il];
+}
+
+bool llama_hparams::is_ple(uint32_t il) const {
+    if (il < n_layer) {
+        return is_ple_impl[il];
+    }
+    return false;
+}
+
+uint32_t llama_hparams::ple_conv_state() const {
+    if (ple_n_heads == 0 || ple_conv_kernel == 0) {
+        return 0;
+    }
+    return (ple_conv_kernel - 1) * ple_ngram_size * dsv4_hc_mult * n_embd;
+}

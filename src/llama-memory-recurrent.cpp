@@ -51,7 +51,7 @@ llama_memory_recurrent::llama_memory_recurrent(
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
             ggml_init_params params = {
-                /*.mem_size   =*/ size_t(2u*n_layer*ggml_tensor_overhead()),
+                /*.mem_size   =*/ size_t((hparams.ple_conv_state() > 0 ? 3u : 2u)*n_layer*ggml_tensor_overhead()),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -71,6 +71,7 @@ llama_memory_recurrent::llama_memory_recurrent(
 
     r_l.resize(n_layer);
     s_l.resize(n_layer);
+    p_l.resize(n_layer);
 
     for (int i = 0; i < n_layer; i++) {
         if (filter && !filter(i)) {
@@ -103,6 +104,13 @@ llama_memory_recurrent::llama_memory_recurrent(
         ggml_format_name(s, "cache_s_l%d", i);
         r_l[i] = r;
         s_l[i] = s;
+
+        // qwen4exp PLE conv history, only on the (single) PLE layer
+        if (hparams.ple_conv_state() > 0 && hparams.is_ple(i)) {
+            ggml_tensor * p = ggml_new_tensor_2d(ctx, type_r, hparams.ple_conv_state(), n_rows);
+            ggml_format_name(p, "cache_p_l%d", i);
+            p_l[i] = p;
+        }
     }
 
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
@@ -119,11 +127,13 @@ llama_memory_recurrent::llama_memory_recurrent(
     {
         const size_t memory_size_r = size_r_bytes();
         const size_t memory_size_s = size_s_bytes();
+        const size_t memory_size_p = size_p_bytes();
 
-        LLAMA_LOG_INFO("%s: size = %7.2f MiB (%6u cells, %3d layers, %2u seqs %2u rs_seq), R (%s): %7.2f MiB, S (%s): %7.2f MiB\n", __func__,
-                (float)(memory_size_r + memory_size_s) / (1024.0f * 1024.0f), mem_size, n_layer, n_seq_max, n_rs_seq,
+        LLAMA_LOG_INFO("%s: size = %7.2f MiB (%6u cells, %3d layers, %2u seqs %2u rs_seq), R (%s): %7.2f MiB, S (%s): %7.2f MiB%s\n", __func__,
+                (float)(memory_size_r + memory_size_s + memory_size_p) / (1024.0f * 1024.0f), mem_size, n_layer, n_seq_max, n_rs_seq,
                 ggml_type_name(type_r), (float)memory_size_r / (1024.0f * 1024.0f),
-                ggml_type_name(type_s), (float)memory_size_s / (1024.0f * 1024.0f));
+                ggml_type_name(type_s), (float)memory_size_s / (1024.0f * 1024.0f),
+                memory_size_p > 0 ? format(", P (%s): %7.2f MiB", ggml_type_name(type_r), (float)memory_size_p / (1024.0f * 1024.0f)).c_str() : "");
     }
 }
 
@@ -727,6 +737,18 @@ size_t llama_memory_recurrent::size_s_bytes() const {
     return size_s_bytes;
 }
 
+size_t llama_memory_recurrent::size_p_bytes() const {
+    size_t size_p_bytes = 0;
+
+    for (const auto & p : p_l) {
+        if (p != nullptr) {
+            size_p_bytes += ggml_nbytes(p);
+        }
+    }
+
+    return size_p_bytes;
+}
+
 void llama_memory_recurrent::state_write(llama_io_write_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) const {
     GGML_UNUSED(flags);
 
@@ -815,7 +837,12 @@ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_i
 
     bool res = true;
 
-    res = res && state_read_meta(io, cell_count, seq_id);
+    // save the head of the restored cells - could be needed to clear the state
+    // the head is valid only when state_read_meta() succeeded
+    const bool meta_read = state_read_meta(io, cell_count, seq_id);
+    const uint32_t cell_head = head;
+
+    res = res && meta_read;
 
     try {
         res = res && state_read_data(io, cell_count);
@@ -824,11 +851,7 @@ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_i
     }
 
     if (!res) {
-        if (seq_id == -1) {
-            clear(true);
-        } else {
-            seq_rm(seq_id, -1, -1);
-        }
+        state_clear(seq_id, cell_head, meta_read ? cell_count : 0);
         throw std::runtime_error("failed to restore kv cache");
     }
 
@@ -942,11 +965,36 @@ void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::
             }
         }
     }
+
+    // Write P tensors (PLE conv states) if present
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (p_l[il] == nullptr) continue;
+
+        // Write P tensor type
+        const int32_t p_type_i = (int32_t)p_l[il]->type;
+        io.write(&p_type_i, sizeof(p_type_i));
+
+        // Write row size of P tensor
+        const uint64_t p_size_row = ggml_row_size(p_l[il]->type, hparams.ple_conv_state());
+        io.write(&p_size_row, sizeof(p_size_row));
+
+        // Write each logical cell row range.
+        for (const auto & range : cell_ranges) {
+            const size_t range_size = range.second - range.first;
+            const size_t buf_size = range_size * p_size_row;
+            io.write_tensor(p_l[il], range.first * p_size_row, buf_size);
+        }
+    }
 }
 
 bool llama_memory_recurrent::state_read_meta(llama_io_read_i & io, uint32_t cell_count, llama_seq_id dest_seq_id) {
     if (dest_seq_id != -1) {
         // single sequence
+        if (cell_count > size) {
+            LLAMA_LOG_ERROR("%s: not enough cells in kv cache\n", __func__);
+            return false;
+        }
+
         seq_rm(dest_seq_id, -1, -1);
 
         if (cell_count == 0) {
@@ -1161,7 +1209,66 @@ bool llama_memory_recurrent::state_read_data(llama_io_read_i & io, uint32_t cell
         }
     }
 
+    // Read P tensors (PLE conv states) if present
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (p_l[il] == nullptr) continue;
+
+        // Read type of P
+        int32_t p_type_i_ref;
+        io.read_to(&p_type_i_ref, sizeof(p_type_i_ref));
+        const int32_t p_type_i = (int32_t) p_l[il]->type;
+        if (p_type_i != p_type_i_ref) {
+            LLAMA_LOG_ERROR("%s: mismatched p type (%d != %d, layer %d)\n", __func__, p_type_i, p_type_i_ref, il);
+            return false;
+        }
+
+        // Read row size of P
+        uint64_t p_size_row_ref;
+        io.read_to(&p_size_row_ref, sizeof(p_size_row_ref));
+        const size_t p_size_row = ggml_row_size(p_l[il]->type, hparams.ple_conv_state());
+        if (p_size_row != p_size_row_ref) {
+            LLAMA_LOG_ERROR("%s: mismatched p row size (%zu != %zu, layer %d)\n", __func__, p_size_row, (size_t) p_size_row_ref, il);
+            return false;
+        }
+
+        if (cell_count) {
+            ggml_backend_tensor_set(p_l[il], io.read(cell_count * p_size_row), head * p_size_row, cell_count * p_size_row);
+        }
+    }
+
     return true;
+}
+
+// the cleared ranges mirror the write pattern of state_read_data() - keep both in sync
+// the transposed s layout is not handled - state_read_data() rejects it before any write
+void llama_memory_recurrent::state_clear(llama_seq_id seq_id, uint32_t cell_head, uint32_t cell_count) {
+    if (seq_id == -1) {
+        clear(true);
+        return;
+    }
+
+    seq_rm(seq_id, -1, -1);
+
+    if (cell_count == 0) {
+        return;
+    }
+
+    for (uint32_t il = 0; il < hparams.n_layer; ++il) {
+        if (r_l[il] != nullptr) {
+            const size_t r_size_row = ggml_row_size(r_l[il]->type, hparams.n_embd_r());
+            llama_clear_tensor_data(r_l[il], cell_head * r_size_row, cell_count * r_size_row);
+        }
+
+        if (s_l[il] != nullptr) {
+            const size_t s_size_row = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
+            llama_clear_tensor_data(s_l[il], cell_head * s_size_row, cell_count * s_size_row);
+        }
+
+        if (p_l[il] != nullptr) {
+            const size_t p_size_row = ggml_row_size(p_l[il]->type, hparams.ple_conv_state());
+            llama_clear_tensor_data(p_l[il], cell_head * p_size_row, cell_count * p_size_row);
+        }
+    }
 }
 
 //
@@ -1240,6 +1347,10 @@ ggml_tensor * llama_memory_recurrent_context::get_s_l(int32_t il) const {
     return mem->s_l[il];
 }
 
+ggml_tensor * llama_memory_recurrent_context::get_p_l(int32_t il) const {
+    return mem->p_l[il];
+}
+
 int32_t llama_memory_recurrent_context::s_copy(int i) const {
     const uint32_t cell_idx = i + mem->head;
     const int32_t  src0     = mem->cells[cell_idx].src0;
@@ -1265,6 +1376,7 @@ bool llama_memory_recurrent::shadow_alloc() {
     const uint32_t n_layer = hparams.n_layer;
     shadow_r_l.resize(n_layer, nullptr);
     shadow_s_l.resize(n_layer, nullptr);
+    shadow_p_l.resize(n_layer, nullptr);
     std::map<ggml_backend_buffer_type_t, ggml_context_ptr> ctx_map;
     auto ctx_for_buft = [&ctx_map](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
@@ -1286,6 +1398,10 @@ bool llama_memory_recurrent::shadow_alloc() {
         shadow_s_l[il] = ggml_dup_tensor(ctx, s_l[il]);
         ggml_format_name(shadow_r_l[il], "shadow_r_l%d", (int)il);
         ggml_format_name(shadow_s_l[il], "shadow_s_l%d", (int)il);
+        if (p_l[il] != nullptr) {
+            shadow_p_l[il] = ggml_dup_tensor(ctx, p_l[il]);
+            ggml_format_name(shadow_p_l[il], "shadow_p_l%d", (int)il);
+        }
     }
     for (auto & [buft, ctx] : ctx_map) {
         ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
@@ -1310,6 +1426,9 @@ void llama_memory_recurrent::shadow_save() {
         if (r_l[il] == nullptr || shadow_r_l[il] == nullptr) continue;
         ggml_backend_tensor_copy(r_l[il], shadow_r_l[il]);
         ggml_backend_tensor_copy(s_l[il], shadow_s_l[il]);
+        if (p_l[il] != nullptr && shadow_p_l[il] != nullptr) {
+            ggml_backend_tensor_copy(p_l[il], shadow_p_l[il]);
+        }
     }
 }
 
@@ -1326,6 +1445,9 @@ void llama_memory_recurrent::shadow_load() {
         if (r_l[il] == nullptr || shadow_r_l[il] == nullptr) continue;
         ggml_backend_tensor_copy(shadow_r_l[il], r_l[il]);
         ggml_backend_tensor_copy(shadow_s_l[il], s_l[il]);
+        if (p_l[il] != nullptr && shadow_p_l[il] != nullptr) {
+            ggml_backend_tensor_copy(shadow_p_l[il], p_l[il]);
+        }
     }
 }
 

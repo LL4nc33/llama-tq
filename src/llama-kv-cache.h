@@ -123,7 +123,11 @@ public:
         const  layer_reuse_cb & reuse,
         const  layer_share_cb & share,
         const std::vector<ggml_type> & type_v_layers = {},
-                         bool   xquant_enabled = false);
+                         bool   xquant_enabled = false,
+        // a second cache with its own geometry (qwen4exp indexer keys); nullptr = model.hparams
+          const llama_hparams * hparams_override = nullptr,
+        // a model can hold more than one cache, so tensor names need a distinguishing prefix
+                 const char *   name_tag = "");
 
     ~llama_kv_cache() = default;
 
@@ -181,6 +185,29 @@ public:
     // Caller dequants on host and computes moments per head.
     uint32_t get_v_tensors_for_profile(std::vector<ggml_tensor *> & v_tensors,
                                        std::vector<int32_t>        & model_il) const;
+
+    //
+    // cell access API
+    //
+
+    const llama_kv_cells & get_cells(llama_seq_id seq_id) const;
+
+    // whether the cells carry extra data that the state must keep:
+    // M-RoPE needs the 2D position, the PLE n-gram hash needs the token id
+    bool has_cell_ext() const;
+
+    void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
+
+    // state_read, plus the cells the restored tokens were placed in
+    void state_read_sinfo(
+            llama_io_read_i & io,
+               llama_seq_id   seq_id,
+      llama_state_seq_flags   flags,
+          slot_info_vec_t *   sinfos_out,
+    const slot_info_vec_t *   sinfos_in);
+
+    // undo a state_read() of seq_id (-1 for the whole cache) that another memory module failed to complete
+    void state_clear(llama_seq_id seq_id);
 
     //
     // graph_build API
@@ -247,6 +274,8 @@ public:
 private:
     const llama_model & model;
     const llama_hparams & hparams;
+
+    const std::string name_tag;
 
     struct kv_layer {
         // layer index in the model
@@ -382,8 +411,10 @@ private:
     void state_write_meta(llama_io_write_i & io, const cell_ranges_t & cr, llama_seq_id seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const cell_ranges_t & cr) const;
 
-    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,       slot_info & sinfo, llama_seq_id dest_seq_id = -1);
+    bool state_read_meta(llama_io_read_i & io, uint32_t strm, uint32_t cell_count,       slot_info & sinfo, llama_seq_id dest_seq_id = -1, const slot_info * sinfo_in = nullptr);
     bool state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo);
+
+    void state_clear(llama_seq_id seq_id, uint32_t strm, const slot_info & sinfo);
 };
 
 class llama_kv_cache_context : public llama_memory_context_i {
@@ -471,6 +502,10 @@ public:
 
     void set_input_k_rot(ggml_tensor * dst) const;
     void set_input_v_rot(ggml_tensor * dst) const;
+
+    // read the predecessors of each token in the ubatch from the KV cells (ext.tok)
+    // res is filled with n_prev tokens per token, oldest first; LLAMA_TOKEN_NULL for missing entries
+    void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
 
 private:
     llama_memory_status status;

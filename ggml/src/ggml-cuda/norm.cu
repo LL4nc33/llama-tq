@@ -71,7 +71,7 @@ static __global__ void group_norm_f32(const float * x, float * dst, const int gr
     }
 }
 
-template <int block_size, bool do_multiply = false, bool do_add = false>
+template <int block_size, bool do_multiply = false, bool do_add = false, bool do_scale = false>
 static __global__ void rms_norm_f32(const float * x,
                                     float *       dst,
                                     const int     ncols,
@@ -94,7 +94,8 @@ static __global__ void rms_norm_f32(const float * x,
                                     const uint3   add_ncols_packed     = make_uint3(0, 0, 0),
                                     const uint3   add_nrows_packed     = make_uint3(0, 0, 0),
                                     const uint3   add_nchannels_packed = make_uint3(0, 0, 0),
-                                    const uint3   add_nsamples_packed  = make_uint3(0, 0, 0)) {
+                                    const uint3   add_nsamples_packed  = make_uint3(0, 0, 0),
+                                    const float   scale_out            = 1.0f) {
     const int nrows     = gridDim.x;
     const int nchannels = gridDim.y;
 
@@ -104,6 +105,7 @@ static __global__ void rms_norm_f32(const float * x,
     const int tid       = threadIdx.x;
 
     static_assert(!do_add || do_multiply, "fusing add is not supported without multiplying");
+    static_assert(!do_scale || !do_multiply, "fusing scale is not supported with multiplying");
 
     x   += sample*stride_sample + channel*stride_channel + row*stride_row;
     dst += ((sample*nchannels + channel)*nrows + row)*ncols;
@@ -144,6 +146,9 @@ static __global__ void rms_norm_f32(const float * x,
         } else if constexpr (do_multiply) {
             const int mul_col = fastmodulo(col, mul_ncols_packed);
             dst[col]          = scale * x[col] * mul[mul_col];
+        } else if constexpr (do_scale) {
+            // same order as the unfused rms_norm followed by scale, so the result is bit-identical
+            dst[col] = scale_out * (scale * x[col]);
         } else {
             dst[col] = scale * x[col];
         }
@@ -304,6 +309,27 @@ static void rms_norm_f32_cuda(
     } else {
         const dim3 block_dims(1024, 1, 1);
         rms_norm_f32<1024, false><<<blocks_num, block_dims, block_dims.x > WARP_SIZE ? 32 * sizeof(float): 0, stream>>>(x, dst, ncols, stride_row, stride_channel, stride_sample, eps);
+    }
+}
+
+static void rms_norm_scale_f32_cuda(
+        const float * x, float * dst, const int ncols, const int nrows, const int nchannels, const int nsamples,
+        const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps,
+        const float scale_out, cudaStream_t stream) {
+    const dim3 blocks_num(nrows, nchannels, nsamples);
+    const uint3 z = make_uint3(0, 0, 0);
+    if (ncols < 1024) {
+        const dim3 block_dims(256, 1, 1);
+        rms_norm_f32<256, false, false, true><<<blocks_num, block_dims, block_dims.x > WARP_SIZE ? 32 * sizeof(float): 0, stream>>>(
+                x, dst, ncols, stride_row, stride_channel, stride_sample, eps,
+                nullptr, 0, 0, 0, z, z, z, z,
+                nullptr, 0, 0, 0, z, z, z, z, scale_out);
+    } else {
+        const dim3 block_dims(1024, 1, 1);
+        rms_norm_f32<1024, false, false, true><<<blocks_num, block_dims, block_dims.x > WARP_SIZE ? 32 * sizeof(float): 0, stream>>>(
+                x, dst, ncols, stride_row, stride_channel, stride_sample, eps,
+                nullptr, 0, 0, 0, z, z, z, z,
+                nullptr, 0, 0, 0, z, z, z, z, scale_out);
     }
 }
 
@@ -471,6 +497,34 @@ void ggml_cuda_op_rms_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t s03 = nb03 / ts0;
 
     rms_norm_f32_cuda(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
+}
+
+// rms_norm followed by a scale without bias, e.g. the Gated DeltaNet key/query normalisation
+void ggml_cuda_op_rms_norm_scale_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_tensor * scale_tensor) {
+    const ggml_tensor * src0 = dst->src[0];
+    const float * src0_d = (const float *) src0->data;
+    float * dst_d = (float *) scale_tensor->data;
+    cudaStream_t stream = ctx.stream();
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32);
+    GGML_ASSERT(scale_tensor->type == GGML_TYPE_F32);
+
+    GGML_TENSOR_UNARY_OP_LOCALS;
+
+    float eps;
+    memcpy(&eps, dst->op_params, sizeof(float));
+    GGML_ASSERT(eps >= 0.0f);
+
+    float scale_out;
+    memcpy(&scale_out, (const float *) scale_tensor->op_params, sizeof(float));
+
+    const size_t ts0 = ggml_type_size(src0->type);
+    GGML_ASSERT(nb00 == ts0);
+    const int64_t s01 = nb01 / ts0;
+    const int64_t s02 = nb02 / ts0;
+    const int64_t s03 = nb03 / ts0;
+
+    rms_norm_scale_f32_cuda(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, scale_out, stream);
 }
 
 void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_tensor * mul_tensor) {
