@@ -47,7 +47,7 @@ Vulkan is WIP on `vulkan`. [Upstream build docs](https://github.com/ggml-org/lla
 
 ## Status
 
-Actively maintained. Upstream fixes cherry-picked; larger features integrated case-by-case. Bench parity verified on 0.8B-Q8 and 35B-A3B-IQ2_XXS at every merge gate. See [ROADMAP.md](ROADMAP.md) for what's working, in flight, and shipped.
+Actively maintained. Upstream fixes cherry-picked; larger features integrated case-by-case. Bench parity verified on 0.8B-Q8 and 35B-A3B-IQ2_XXS at every merge gate. See [ROADMAP.md](ROADMAP.md) for what's working, in flight, and shipped. Recent changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

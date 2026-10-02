@@ -2285,7 +2285,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "Trick 4: enable per-block correction overlay for VTQ_2 V-cache.\n"
         "N = top-N highest-error entries per 256-sample trellis block (1..4).\n"
         "0 disables the overlay (default). Storage cost per entry is ~0.6%\n"
-        "of V-cache size (4 B per block, see docs/plans/2026-04-20-trick4-*).\n"
+        "of V-cache size (4 B per block).\n"
         "MVP: CPU helpers + extract/apply only; CUDA decode-hook TBD.",
         [](common_params & params, int value) {
             if (value < 0 || value > 4) {

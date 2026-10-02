@@ -20,7 +20,6 @@ Produces two analyses:
         top-N hot experts per layer, share-of-dispatch, unique-touched count.
       Output: JSON file consumable by Phase 6f prefetcher.
 
-See `docs/plans/2026-04-27-phase6f-hot-expert-prefetch.md`.
 """
 
 from __future__ import annotations

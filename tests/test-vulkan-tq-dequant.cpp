@@ -1,8 +1,6 @@
 // test-vulkan-tq-dequant.cpp — TurboQuant KTQ2_1 Vulkan dequant validation.
 //
-// Productionized from the Layer-3 POC (originally split across
-//   docs/plans/tq-vulkan-port/poc/gen_fixture.c and
-//   docs/plans/tq-vulkan-port/poc/poc_host.cpp).
+// Derived from the Layer-3 proof of concept.
 // Per spec-master §1.3 + §7 + §10 (Gate G1):
 //
 //   max_abs_err  ≤ 1e-3
@@ -37,9 +35,6 @@
 // custom command attached to this target.
 //
 // References:
-//   docs/plans/tq-vulkan-port/spec-master.md §4.1, §7, §10 (Gate G1)
-//   docs/plans/tq-vulkan-port/research-correctness-pitfalls.md §3, §5
-//   docs/plans/tq-vulkan-port/layer3-poc-ktq2-results.md
 //   ggml/src/ggml-cuda/turboquant.cuh:255-263, 352-382 (CUDA reference)
 //   ggml/src/ggml-quants.c:5527-5832 (CPU encode primitives — verbatim port below)
 

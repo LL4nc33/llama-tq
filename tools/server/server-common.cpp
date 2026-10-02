@@ -1744,7 +1744,6 @@ json convert_anthropic_to_oai(const json & body) {
     // The actual KV save/restore is implemented in a later phase; for now we only
     // validate the request (reject >4 breakpoints per spec) and emit the collected
     // breakpoints on oai_body["__anthropic_cache"] for downstream consumers.
-    // Design: docs/plans/2026-04-23-anthropic-prompt-caching-design.md §2.1
     {
         // We build a "prefix identity" string as we walk blocks in the
         // canonical Anthropic order (system[] → messages[*].content[] → tools[]).

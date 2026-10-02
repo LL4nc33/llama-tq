@@ -803,7 +803,6 @@ struct common_params {
     // Anthropic prompt-caching (Phase 2)
     // Enabled by default when slot_save_path is set. Storage lives under
     // <slot_save_path>/anthropic-cache/. Design:
-    // docs/plans/2026-04-23-anthropic-prompt-caching-design.md
     bool     anthropic_cache_enabled = true;
     int32_t  anthropic_cache_ttl_default_sec = 300;   // 5 minutes
     int32_t  anthropic_cache_max_gb          = 32;    // disk quota (informational, not enforced v1)

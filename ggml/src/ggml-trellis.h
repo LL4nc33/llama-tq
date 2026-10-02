@@ -63,7 +63,6 @@ GGML_API void ggml_trellis_decode_group(
     float         * y);    // QK_GROUP output samples
 
 // --- Correction Overlay (Trick 4) — CPU helpers ---
-// See docs/plans/2026-04-20-trick4-correction-overlay-design.md and
 // ggml-common.h `vtq_overlay_entry`. Operates on raw packed bytes (4 B/entry)
 // to avoid a C header dependency on ggml-common.h's struct definition.
 //

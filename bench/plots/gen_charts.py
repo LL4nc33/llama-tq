@@ -107,7 +107,7 @@ def chart_ppl_vs_bpw():
     ]
 
     # KTQ × VTQ_2 combos — 35B-A3B IQ2_XXS, wikitext-2 ctx=2048, 5 chunks
-    # (measured 2026-04-24; see docs/plans/2026-04-24-ktq-vtq2-combos.md)
+    # (measured 2026-04-24)
     # Note: V component is inactive under attention-only PPL eval — all v2
     # variants collapse to the same PPL because deferred V never fires.
     # Plot the lightest config as representative; decode-phase eval is TODO.

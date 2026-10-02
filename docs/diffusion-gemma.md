@@ -27,15 +27,22 @@ context costs almost only KV — not graph memory.
 - **Embedded WebUI.** The diffusion server ships the standard llama.cpp web UI,
   including a live view of the denoising process.
 
-## In flight
-
-- **Aggressive low-bit self-conditioning** to push the weight footprint lower while
-  holding coherence, targeting **full 256k context per single 12 GB GPU** so one
-  instance can run per card.
-
 ## Running it
 
-The model loads through the diffusion CLI / server entry points. Coherent low-bit
-deployment combines the mixed-precision quant, the decoder-path imatrix, and the
-position-dependent KV cache; the canvas must stay f16. See the build docs for
-prerequisites — [docs/build.md](build.md).
+The diffusion server is `llama-diffusion-gemma-server` (CLI: `llama-diffusion-gemma-cli`); the
+canvas is 256 tokens.
+
+```bash
+llama-diffusion-gemma-server -m DiffusionGemma-26B-A4B-<quant>.gguf -ngl 99 -fa on \
+    -c 65536 --diffusion-steps 48 --port 8080
+```
+
+`--diffusion-steps` is an upper bound: denoising stops early once the canvas is stable and
+an end-of-sequence token has been committed, so keep it high (48); low values cut long
+answers off mid-denoise. Keep the canvas KV at f16; the committed history can use
+TurboQuant KV types. Build prerequisites: [docs/build.md](build.md).
+
+## In flight
+
+- Lower-bit self-conditioning to reduce the weight footprint further while holding
+  coherence, aiming at full 256k context on a single 12 GB GPU.

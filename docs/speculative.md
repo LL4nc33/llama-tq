@@ -181,7 +181,7 @@ statistics ngram_map_k: #calls(b,g,a) = 6 1690 26, #gen drafts = 26, #acc drafts
 - `#acc tokens`: number of tokens accepted by the main model
 - `dur(b,g,a): durations of begin (new prompt), generation and accumulation (process acceptance).
 
-## llama-tq fork recommendations (2026-06)
+## llama-tq fork recommendations
 
 ### Model-class config matrix
 
@@ -237,24 +237,31 @@ files trained with NGRAM_STATIC=2 must be regenerated. On IQ2 models the static
 cache helps mostly with structured prompts; creative prompts see <5% boost from
 static cache alone — the bottleneck is the model, not the lookup table.
 
-### Universal-2x ceiling and Eagle3 path
+### DFlash / DFlash2 (block-diffusion drafter)
 
-On consumer 2x12 GB hardware with IQ2 MoE models, **universal 2x speculation
-without quality regression is not achievable** with current draft-source options
-(single-layer MTP-head + ngram-cache). Real universal 2x requires either:
-1. Q4+ quantization (model doesn't fit in 24 GB at 27B+ context lengths)
-2. **Eagle3-style draft-head** with 3-hidden-state fusion + training-time-test
-3. Larger draft model (separate small GGUF; eats VRAM that's already maxed)
+DFlash drafts a whole block of tokens per step with a small block-diffusion model that reads
+hidden states of the target model; DFlash2 adds a selector over the drafted lattice. Because
+the drafts are verified in one parallel batch, this also works on hybrid recurrent targets
+(Qwen3.5 / Qwen3.8), where sequential drafts are accepted poorly.
 
-Option 2 is the realistic next step. Community Eagle3 checkpoints exist for
-Qwen3-30B-A3B (`lmsys/SGLang-EAGLE3-Qwen3-30B-A3B-Instruct-2507-SpecForge-Nex`)
-and Qwen3-VL-30B-A3B. Implementation is a 3-5 week engineering project on
-top of the existing MTP infrastructure.
+```bash
+llama-server -m Qwen3.8-27B-Q4_K_M.gguf -md dflash2-draft-Q4_K_M.gguf \
+    --spec-type draft-dflash -ngl 99 -ngld 99 -fa on
+```
 
-Repeat-heavy workloads (lists, code boilerplate, log scanning) still hit
-1.5-3.8x today via ngram-cache and do not need Eagle3.
+The draft GGUF carries its target layer ids (`dflash.target_layers`). Measured on 2x RTX 2060
+12 GB with Qwen3.8-27B Q4_K_M: code generation about 26-28 t/s instead of 15.5 t/s, output
+unchanged at temperature 0. Prose gains less; repeat-heavy text is still best served by
+`ngram-mod`.
 
-### Critical fix (commit 78216a941)
+### Earlier notes on the 2x ceiling
+
+With single-layer MTP heads and n-gram caches alone, a universal 2x was not reachable on
+2x 12 GB with IQ2 MoE models; MTP drafts on dense Qwen3.8 even cost 10-14 %. Block drafting
+(DFlash above) is the path that reaches 2x on code. Repeat-heavy workloads (lists, code
+boilerplate, log scanning) reach 1.5-3.8x with `ngram-cache` / `ngram-mod`.
+
+### Hybrid-recurrent fix
 
 Prior to 2026-06-08, ngram-* and draft-simple spec types silently corrupted
 output on hybrid-recurrent models (qwen35) because `need_n_rs_seq()` only

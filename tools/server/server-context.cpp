@@ -4249,7 +4249,6 @@ void server_routes::init_routes() {
         // existing automatic prefix-match handles the actual delta prefill
         // — we just preload enough state for that match to succeed.
         //
-        // Design: docs/plans/2026-04-23-anthropic-prompt-caching-design.md
         //         §2.2 / §2.3 / §2.4
         // -----------------------------------------------------------------
         std::string                         anthropic_cache_key;

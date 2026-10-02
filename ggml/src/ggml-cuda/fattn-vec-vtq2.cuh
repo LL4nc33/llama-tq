@@ -4,7 +4,6 @@
 // Feature-flag gated by `FATTN_VTQ2_CACHED` (default OFF). When OFF, this
 // header is still compilable but the kernel is never dispatched.
 //
-// Design: docs/plans/2026-04-21-e11-cuda-port-spec.md
 // Triton ref: ~/workspace/llama-tq/triton-autoresearch/variants_r3.py
 //
 // Key difference from `fattn_vec` (legacy):

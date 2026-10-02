@@ -3,7 +3,7 @@
 // ============================================================
 // Flash-Attention TurboQuant helpers — extracted from fattn-common.cuh.
 //
-// Background (see docs/plans/2026-04-26-fa-tu-bloat-profile.md):
+// Background:
 // Including turboquant.cuh (1376 LOC) + trellis.cuh (311 LOC) from
 // fattn-common.cuh leaks ~1700 LOC of TQ machinery (codebooks, FWHT
 // shuffles, Philox PRNG, trellis decoder LUTs) into every FA TU,

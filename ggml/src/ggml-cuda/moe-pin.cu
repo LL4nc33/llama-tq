@@ -6,7 +6,6 @@
 // no slot ring, no eviction, no stream changes — just turn pageable host
 // pages into pinned pages so the existing copy path can DMA without staging.
 //
-// See: docs/plans/2026-04-28-two-tier-expert-cache.md (Phase A, Option C).
 
 #include "moe-pin.cuh"
 #include "common.cuh"  // vendor shim for HIP/MUSA cuda_runtime.h equivalence

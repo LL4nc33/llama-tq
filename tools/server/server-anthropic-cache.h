@@ -15,7 +15,6 @@
 // Thread-safety: the in-memory index is guarded by an internal mutex; the
 // class is safe to share across request handlers.
 //
-// Design: docs/plans/2026-04-23-anthropic-prompt-caching-design.md §2.2-2.6
 
 #include <cstdint>
 #include <mutex>

@@ -15,7 +15,6 @@
 // values in shmem and the FA-vec output will be off. Catching it here
 // avoids chasing a correctness bug through a 45min CUDA rebuild.
 //
-// Spec: docs/plans/2026-04-21-e11-cuda-port-spec.md §7
 
 #include <cassert>
 #include <cmath>

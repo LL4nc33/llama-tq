@@ -10,7 +10,6 @@
 // LOC of TQ machinery into every FA TU and inflate ptxas register usage
 // on the pure-f16 MMA prefill kernels by +23 to +79 regs/thread, causing
 // a measured 13.6% pp512 regression on Qwen3.6-35B-A3B (head_dim=128).
-// See docs/plans/2026-04-26-fa-tu-bloat-profile.md.
 //
 // TUs that actually instantiate TQ paths must include fattn-tq.cuh:
 //   • fattn-vec.cuh, fattn-vec-vtq2.cuh

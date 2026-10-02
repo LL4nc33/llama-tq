@@ -6690,7 +6690,7 @@ void dequantize_row_vtq4_1(const block_vtq4_1 * GGML_RESTRICT x, float * GGML_RE
 }
 
 // --- VTQ_MIXED: 8 samples @ 3-bit (positions 0,4,8,12,16,20,24,28) + 24 samples @ 2-bit ---
-// Free-lunch bpw savings: 2.75 bpw, ~18% MSE reduction vs VTQ2_1 (see docs/plans/2026-04-23-v6-verdict.md).
+// Free-lunch bpw savings: 2.75 bpw, ~18% MSE reduction vs VTQ2_1.
 
 // Helper: hi-slot test (sample at stride-4 position)
 #define VTQ_MIXED_IS_HI(j) (((j) & 3) == 0)
@@ -6975,7 +6975,7 @@ void dequantize_row_vtq4_3(const block_vtq4_3 * GGML_RESTRICT x, float * GGML_RE
 }
 
 // --- VTQ3_V8 (TurboQuant v8): Trellis 3-bit + 2 outliers ---
-// Spec: docs/plans/v8-algorithm-spec.md. Same backbone as vtq3_3 but only
+// Same backbone as vtq3_3 but only
 // 2 outliers instead of 4 → 58 B / 128 samples = 3.625 bpw structural
 // (vs vtq3_3 4.0 bpw). Tradeoff: -12% storage, +0.5-0.7% PPL drift estimate.
 

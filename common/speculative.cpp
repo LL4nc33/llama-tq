@@ -796,7 +796,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
 // DFlash / DFlash2 block-diffusion drafter (port of upstream common_speculative_impl_draft_dflash).
 //
-// Fork adaptations vs upstream (see docs/plans/2026-08-30-dflash2-port-design.md, Phase 1 step 4):
+// Fork adaptations vs upstream:
 //   - base ctor is 2-arg (type, n_seq); the fork base has no `n_max` member (kept as a local field).
 //   - target-layer feature extraction (Way A): the generic per-layer layer_inp export path
 //     (llama_{set,get}_embeddings_layer_inp) has been ported into the fork, matching upstream

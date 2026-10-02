@@ -12,7 +12,6 @@
 // (1.6 tok/s on Qwen3-0.6B vs expected ~100). Kernel source kept in
 // fattn-vec-vtq2.cuh for future ncu diagnosis.
 // Re-enable with -DFATTN_VTQ2_CACHED_ENABLE=1 only after kernel rewrite.
-// See docs/plans/2026-04-22-e11-phase3a1-results.md for root-cause candidates.
 #if defined(FATTN_VTQ2_CACHED) && defined(FATTN_VTQ2_CACHED_ENABLE)
 #include "fattn-vec-vtq2.cuh"
 

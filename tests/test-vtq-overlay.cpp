@@ -1,5 +1,4 @@
 // Round-trip tests for Trick 4 "Correction Overlay Buffer" CPU helpers.
-// See docs/plans/2026-04-20-trick4-correction-overlay-design.md
 
 #include "ggml.h"
 #include "../ggml/src/ggml-trellis.h"

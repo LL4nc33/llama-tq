@@ -7,7 +7,6 @@
 // 15× TG regression on Qwen3.5-35B-A3B (d=256).
 //
 // Phase 3B2 — primary Pfad aus
-// docs/plans/2026-04-22-e14-split-decode-spec.md.
 //
 // Reuses `ggml_get_to_fp16_nc_cuda` (convert.cu:1035) for bulk dequant.
 // No new dequantize kernel needed.

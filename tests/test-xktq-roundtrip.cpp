@@ -1,6 +1,5 @@
 // XQuant Phase 1 — CPU round-trip sanity test for paired KTQ2_1 + XKTQ2_1.
 //
-// Spec: docs/plans/2026-04-26-xquant-port-spec.md (Phase 1 deliverables, §10).
 //
 // Goal: verify that a "subordinate" XKTQ2_1 layer reusing a sibling KTQ2_1
 // layer's quantized codes (qs) and RHT sign bits (sb), but applying its own

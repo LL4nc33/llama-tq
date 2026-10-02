@@ -5,7 +5,7 @@
 //
 // This file is a **forward-declaration skeleton**. The actual impl ties into
 // llama-kv-cache.cpp's deferred-V infrastructure (see cpy_v() and the
-// tq_deferred_state enum). See docs/plans/2026-04-23-c1-streaming-window-design.md.
+// tq_deferred_state enum).
 
 #pragma once
 

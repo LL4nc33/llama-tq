@@ -507,7 +507,7 @@ typedef struct {
 static_assert(sizeof(block_vtq4_3) == 80, "wrong vtq4_3 block size");  // 5.00 bpw
 
 // --- VTQ3_V8: TurboQuant v8 redesign of vtq3_3 with 2 outliers instead of 4 ---
-// Spec: docs/plans/v8-algorithm-spec.md (section a). Same trellis backbone as
+// Same trellis backbone as
 // VTQ_2 + 2 fp16 outliers (downsized from vtq3_3's 4) for 12% smaller block.
 // Tradeoff: -12% storage vs vtq3_3 at expected +0.5-0.7% PPL drift (sweep TBD).
 //
@@ -528,7 +528,7 @@ static_assert(sizeof(block_vtq3_v8) == 58, "wrong vtq3_v8 block size");  // 3.62
 // --- VTQ Correction Overlay (Trick 4) ---
 // Per-trellis-block top-N error sidecar. Stored in a separate tensor,
 // parallel to block_vtq{2,3,4}_2 (whose struct layout is frozen by GGUF
-// static_asserts). See docs/plans/2026-04-20-trick4-correction-overlay-design.md.
+// static_asserts).
 //
 // Layout is 4 bytes/entry. We expose the struct so encoder/decoder hooks
 // can share a definition; the CPU helpers in ggml-trellis.c pack/unpack
