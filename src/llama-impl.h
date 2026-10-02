@@ -55,7 +55,16 @@ static inline ggml_tensor * llama_mul_mat_hadamard(
 
     ggml_tensor * res;
 
-    if (!ggml_is_contiguous(cur)) {
+    // for the fast transform keep the blocks of a row on their own axis, so that a split of the row
+    // (tensor split) maps to the block axis and back without touching the token axis
+    if (sylvester && cur->ne[0] % n == 0) {
+        const int64_t nb = cur->ne[0]/n;
+        if (!ggml_is_contiguous(cur)) {
+            res = ggml_cont_3d(ctx, cur, n, nb, ggml_nelements(cur)/cur->ne[0]);
+        } else {
+            res = ggml_reshape_3d(ctx, cur, n, nb, ggml_nelements(cur)/cur->ne[0]);
+        }
+    } else if (!ggml_is_contiguous(cur)) {
         res = ggml_cont_2d(ctx, cur, n, ggml_nelements(cur)/n);
     } else {
         res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);

@@ -329,6 +329,22 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     const llama_hparams & hparams = ud->model->hparams;
     const std::string tensor_name = tensor->name;
 
+    // the input sign vector of a Hadamard-folded weight is split exactly like the weight's input axis
+    static const std::string hadamard_signs_suffix = ".hadamard_signs";
+    if (tensor_name.size() > hadamard_signs_suffix.size() &&
+            tensor_name.compare(tensor_name.size() - hadamard_signs_suffix.size(), std::string::npos, hadamard_signs_suffix) == 0) {
+        const std::string weight_name = tensor_name.substr(0, tensor_name.size() - hadamard_signs_suffix.size()) + ".weight";
+        const ggml_tensor * weight = ud->model->get_tensor(weight_name.c_str());
+        GGML_ASSERT(weight != nullptr && weight->ne[0] == tensor->ne[0]);
+        return llama_meta_device_get_split_state(weight, userdata);
+    }
+
+    // Hadamard block of a folded weight, 0 if the weight is not folded
+    auto hadamard_block = [&](uint32_t il, const char * suffix) -> int64_t {
+        const auto it = ud->model->hadamard_weight_blocks.find("blk." + std::to_string(il) + "." + suffix);
+        return it == ud->model->hadamard_weight_blocks.end() ? 0 : it->second;
+    };
+
     const std::regex pattern_q_weight        ("blk\\.\\d*\\.attn_q.weight");
     const std::regex pattern_kv_weight       ("blk\\.\\d*\\.attn_(k|v).weight");
     const std::regex pattern_qkv_weight      ("blk\\.\\d*\\.attn_qkv.weight");
@@ -518,6 +534,11 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                     GGML_ASSERT(tensor->ne[axis] == 2*key_dim + value_dim);
                     return std::vector<int64_t>(2 + head_ratio, key_dim);
                 }
+                if (std::regex_match(tensor_name, pattern_ssm_out_weight) && ud->model->hadamard_gdn_v_grouped &&
+                        hadamard_block(il, "ssm_out.weight") > 0) {
+                    // folded in grouped [head_dim, head_ratio, n_k_heads] order: whole K heads are contiguous
+                    return {tensor->ne[axis]};
+                }
                 if (std::regex_match(tensor_name, pattern_attn_gate_weight) || std::regex_match(tensor_name, pattern_ssm_out_weight)) {
                     return std::vector<int64_t>(head_ratio, key_dim);
                 }
@@ -561,7 +582,20 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         if (hparams.is_recurrent(il)) {
             // linear attention
             const int64_t head_dim  = hparams.ssm_d_state;
-            const int64_t granularity_qkv = std::lcm(blck_size, head_dim);
+            int64_t granularity_qkv = std::lcm(blck_size, head_dim);
+            const int64_t block_out = hadamard_block(il, "ssm_out.weight");
+            const bool    grouped   = block_out > 0 && ud->model->hadamard_gdn_v_grouped;
+            const int64_t head_ratio = hparams.ssm_n_group > 0 ? hparams.ssm_dt_rank / hparams.ssm_n_group : 1;
+            if (block_out > 0) {
+                // each device must hold whole transform blocks of the ssm_out input; in grouped order a device
+                // holds head_ratio V heads per K head, so the per-segment unit shrinks by head_ratio
+                granularity_qkv = std::lcm(granularity_qkv,
+                        grouped ? std::lcm(block_out, head_ratio*head_dim) / head_ratio : block_out);
+            }
+            if (grouped && std::regex_match(tensor_name, pattern_ssm_out_weight)) {
+                GGML_ASSERT(segments.size() == 1);
+                return {granularity_qkv * head_ratio};
+            }
             if (std::regex_match(tensor_name, pattern_qkv_weight) || std::regex_match(tensor_name, pattern_attn_gate_weight) ||
                     std::regex_match(tensor_name, pattern_ssm_conv1d) || std::regex_match(tensor_name, pattern_ssm_out_weight)) {
                 return std::vector<int64_t>(segments.size(), granularity_qkv);
@@ -588,13 +622,15 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
                 return {std::lcm(n_embd_q, blck_size)/n_embd_q * n_gqa};
             }
 
-            const int64_t granularity_q = std::lcm(n_embd_q, blck_size);
+            const int64_t block_out = hadamard_block(il, "attn_output.weight");
+            const int64_t granularity_q = block_out > 0 ?
+                std::lcm(std::lcm<int64_t>(n_embd_q, blck_size), block_out) : std::lcm<int64_t>(n_embd_q, blck_size);
             if (std::regex_match(tensor_name, pattern_q_weight) || std::regex_match(tensor_name, pattern_q_bias)) {
                 GGML_ASSERT(segments.size() == 1);
                 // some models have Q gate tensors, for those cases the granularity needs to be doubled:
                 if (ud->model->arch == LLM_ARCH_QWEN3NEXT || ud->model->arch == LLM_ARCH_QWEN35 || ud->model->arch == LLM_ARCH_QWEN35MOE ||
                 ud->model->arch == LLM_ARCH_QWEN4EXP) {
-                    return {std::lcm(2*n_embd_q, blck_size)};
+                    return {block_out > 0 ? std::lcm(2*granularity_q, blck_size) : std::lcm<int64_t>(2*n_embd_q, blck_size)};
                 }
                 return {granularity_q};
             }
@@ -620,7 +656,8 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         if (std::regex_match(tensor_name, pattern_ffn_up_gate_weight) || std::regex_match(tensor_name, pattern_ffn_up_gate_bias) ||
                 std::regex_match(tensor_name, pattern_ffn_gate_up_weight) || std::regex_match(tensor_name, pattern_ffn_down_weight)) {
             GGML_ASSERT(segments.size() <= 2);
-            return std::vector<int64_t>(segments.size(), blck_size);
+            const int64_t block_down = std::max(hadamard_block(il, "ffn_down.weight"), hadamard_block(il, "ffn_down_exps.weight"));
+            return std::vector<int64_t>(segments.size(), block_down > 0 ? std::lcm(blck_size, block_down) : blck_size);
         }
 
         // everything else
@@ -1858,15 +1895,27 @@ void llama_model_base::create_hadamard_tensors() {
                 throw std::runtime_error(format(
                     "prism.hadamard has no sign vector for width %u (%s)", width, weight_name.c_str()));
             }
-            const auto key = std::make_pair(width, buft);
-            auto st = sign_tensors.find(key);
-            if (st == sign_tensors.end()) {
+            // with a tensor split, a weight split along its input axis receives a split activation and
+            // needs its own sign vector split the same way (named after the weight, see get_split_state)
+            const bool row_parallel = !devices.empty() && devices[0].is_meta &&
+                llama_meta_device_get_split_state(weight, &get_split_state_ud).axis == GGML_BACKEND_SPLIT_AXIS_0;
+            const std::string weight_suffix = ".weight";
+            if (row_parallel && weight_name.size() > weight_suffix.size() &&
+                    weight_name.compare(weight_name.size() - weight_suffix.size(), std::string::npos, weight_suffix) == 0) {
                 std::vector<float> data(sd->second.begin(), sd->second.end());
-                char name[GGML_MAX_NAME];
-                snprintf(name, sizeof(name), "prism.hadamard.signs.%u", width);
-                st = sign_tensors.emplace(key, alloc_tensor(buft, name, width, 1, data)).first;
+                const std::string name = weight_name.substr(0, weight_name.size() - weight_suffix.size()) + ".hadamard_signs";
+                sign_tensor = alloc_tensor(buft, name.c_str(), width, 1, data);
+            } else {
+                const auto key = std::make_pair(width, buft);
+                auto st = sign_tensors.find(key);
+                if (st == sign_tensors.end()) {
+                    std::vector<float> data(sd->second.begin(), sd->second.end());
+                    char name[GGML_MAX_NAME];
+                    snprintf(name, sizeof(name), "prism.hadamard.signs.%u", width);
+                    st = sign_tensors.emplace(key, alloc_tensor(buft, name, width, 1, data)).first;
+                }
+                sign_tensor = st->second;
             }
-            sign_tensor = st->second;
         }
 
         llama_hadamard_transform transform;

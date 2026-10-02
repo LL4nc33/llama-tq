@@ -59,6 +59,7 @@
 #include "ggml-cuda/gla.cuh"
 #include "ggml-cuda/gated_delta_net.cuh"
 #include "ggml-cuda/fwht.cuh"
+#include "ggml-cuda/allreduce-host.cuh"
 #include "ggml-cuda/dsv4-hc.cuh"
 #include "ggml-cuda/set.cuh"
 #include "ggml-cuda/set-rows.cuh"
@@ -1250,6 +1251,9 @@ bool ggml_backend_cuda_allreduce_tensor(ggml_backend_t * backends, struct ggml_t
 
     return true;
 #else
+    if (ggml_cuda_allreduce_host(backends, tensors, n_backends)) {
+        return true;
+    }
     // If NCCL is installed it is used by default for optimal performance.
     // However, NVIDIA does not distribute NCCL with CUDA so users may be unwittingly missing this package.
     // RCCL is disabled by default, users are explicitly opting in.
