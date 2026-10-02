@@ -58,6 +58,7 @@
 #include "ggml-cuda/wkv.cuh"
 #include "ggml-cuda/gla.cuh"
 #include "ggml-cuda/gated_delta_net.cuh"
+#include "ggml-cuda/fwht.cuh"
 #include "ggml-cuda/dsv4-hc.cuh"
 #include "ggml-cuda/set.cuh"
 #include "ggml-cuda/set-rows.cuh"
@@ -691,11 +692,44 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+// describe where a pointer lives, for the error report of a failed copy
+static const char * ggml_cuda_pointer_kind(const void * ptr, int * device) {
+    *device = -1;
+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+    GGML_UNUSED(ptr);
+    return "unknown";
+#else
+    cudaPointerAttributes attr;
+    if (cudaPointerGetAttributes(&attr, ptr) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return "unknown";
+    }
+    *device = attr.device;
+    switch (attr.type) {
+        case cudaMemoryTypeUnregistered: return "pageable host";
+        case cudaMemoryTypeHost:         return "pinned host";
+        case cudaMemoryTypeDevice:       return "device";
+        case cudaMemoryTypeManaged:      return "managed";
+        default:                         return "other";
+    }
+#endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+}
+
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    const cudaError_t err = cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread);
+    if (err != cudaSuccess) {
+        int dst_dev = -1;
+        int src_dev = -1;
+        const char * dst_kind = ggml_cuda_pointer_kind((char *) tensor->data + offset, &dst_dev);
+        const char * src_kind = ggml_cuda_pointer_kind(data, &src_dev);
+        GGML_LOG_ERROR("%s: copy to '%s' (buffer %s, device %d) failed: dst %p is %s (device %d), src %p is %s (device %d), offset %zu, size %zu\n",
+                __func__, tensor->name, ggml_backend_buffer_name(buffer), ctx->device,
+                (void *) ((char *) tensor->data + offset), dst_kind, dst_dev, data, src_kind, src_dev, offset, size);
+    }
+    CUDA_CHECK(err);
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
@@ -2335,6 +2369,14 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
 }
 
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    // src0 is the plain Sylvester Hadamard matrix: apply the fast transform to src1 instead of
+    // multiplying. A rotation tagged GGML_HINT_SRC0_IS_HADAMARD may carry random signs, so it stays a matmul
+    const int32_t hint = ggml_get_op_params_i32(dst, 1);
+    if (hint == GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
+            ggml_cuda_op_fwht(ctx, src1, dst)) {
+        return;
+    }
+
     const bool split = ggml_backend_buft_is_cuda_split(src0->buffer->buft);
 
     // If src0 is a temporary compute buffer it may have some padding that needs to be cleared for mul_mat_vec_q or mul_mat_q.
@@ -4053,6 +4095,72 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     return 0;
 }
 
+// The recurrent state of a gated delta net layer is gathered from its cache by GET_ROWS into a
+// temporary that, through reshapes, only the GATED_DELTA_NET node reads. For a single sequence the
+// GET_ROWS is skipped and the kernel reads the cache row directly (see ggml_cuda_gdn_gather_context).
+// With several sequences a gathered row could alias one that another sequence writes, so those keep
+// the copy. GGML_CUDA_GDN_GATHER_FUSION=0 disables it.
+static bool ggml_cuda_try_gdn_gather_skip(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
+    static const bool disabled = getenv("GGML_CUDA_GDN_GATHER_FUSION") != nullptr &&
+                                 atoi(getenv("GGML_CUDA_GDN_GATHER_FUSION")) == 0;
+    if (disabled) {
+        return false;
+    }
+
+    const ggml_tensor * gr = cgraph->nodes[node_idx];
+    if (gr->op != GGML_OP_GET_ROWS || gr->type != GGML_TYPE_F32 || (gr->flags & GGML_TENSOR_FLAG_OUTPUT) ||
+        !ggml_is_contiguous(gr)) {
+        return false;
+    }
+
+    const ggml_tensor * cache = gr->src[0];
+    const ggml_tensor * ids   = gr->src[1];
+    if (cache->type != GGML_TYPE_F32 || ids->type != GGML_TYPE_I32 || cache->data == nullptr || ids->data == nullptr ||
+        cache->buffer == nullptr || ids->buffer == nullptr ||
+        cache->buffer->buft != ggml_backend_cuda_buffer_type(ctx.device) ||
+        ids->buffer->buft   != ggml_backend_cuda_buffer_type(ctx.device) ||
+        cache->nb[0] != sizeof(float) || cache->nb[1] % sizeof(float) != 0 || !ggml_is_contiguous(ids) ||
+        ggml_nelements(ids) != 1 || gr->ne[1] != 1 || gr->ne[2] != 1 || gr->ne[3] != 1 || gr->ne[0] != cache->ne[0]) {
+        return false;
+    }
+
+    if (ggml_node_get_use_count(cgraph, node_idx) != 1) {
+        return false;
+    }
+
+    const ggml_tensor * cur = gr;
+    for (int j = node_idx + 1; j < cgraph->n_nodes; ++j) {
+        const ggml_tensor * n = cgraph->nodes[j];
+        if (n->op == GGML_OP_GATED_DELTA_NET && n->src[5] == cur) {
+            const ggml_tensor * v = n->src[2];
+            const int64_t       D = v->ne[0] * v->ne[0] * v->ne[1];
+            // one sequence and one state slot
+            if (gr->ne[0] != D || v->ne[3] != 1 || ggml_nelements(cur) != D) {
+                return false;
+            }
+            ggml_cuda_gated_delta_net_gather gather;
+            gather.base       = (const float *) cache->data;
+            gather.ids        = (const int32_t *) ids->data;
+            gather.row_stride = (int64_t) (cache->nb[1] / sizeof(float));
+            ctx.gdn_gathers().set(n, gather);
+            return true;
+        }
+        if (n->op == GGML_OP_RESHAPE && n->src[0] == cur) {
+            if (ggml_node_get_use_count(cgraph, j) != 1) {
+                return false;
+            }
+            cur = n;
+            continue;
+        }
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            if (n->src[s] == cur || (n->view_src != nullptr && n->view_src == gr)) {
+                return false;
+            }
+        }
+    }
+    return false;
+}
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
 
@@ -4151,6 +4259,8 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 stream_ctx.concurrent_events.clear();
             }
 
+            cuda_ctx->gdn_gathers().reset();
+
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
                 if (is_concurrent_event_active) {
@@ -4196,6 +4306,12 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 }
 
                 if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+                    continue;
+                }
+
+                // recurrent state gather folded into the gated delta net kernel
+                if (node->op == GGML_OP_GET_ROWS && !is_concurrent_event_active &&
+                        ggml_cuda_try_gdn_gather_skip(*cuda_ctx, cgraph, i)) {
                     continue;
                 }
 

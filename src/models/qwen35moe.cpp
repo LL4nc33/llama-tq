@@ -307,9 +307,9 @@ ggml_tensor * llama_model_qwen35moe::graph::build_norm_gated(
         ggml_tensor * gate,
         int           layer) {
     ggml_tensor * normalized = build_norm(input, weights, nullptr, LLM_NORM_RMS, layer);
-    ggml_tensor * gated_silu = ggml_silu(ctx0, gate);
 
-    return ggml_mul(ctx0, normalized, gated_silu);
+    // silu(gate) * normalized in one op
+    return ggml_swiglu_split(ctx0, gate, normalized);
 }
 
 ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
@@ -420,18 +420,29 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
     beta = ggml_reshape_4d(ctx0, beta, 1, num_v_heads, n_seq_tokens, n_seqs);
     cb(beta, "beta", il);
 
-    beta = ggml_sigmoid(ctx0, beta);
-    cb(beta, "beta_sigmoid", il);
+    // the fused op can take the gates before activation and compute them itself
+    const bool raw_gates = gdn_raw_gates_usable(true) &&
+        model.layers[il].ssm_dt->type == GGML_TYPE_F32 && model.layers[il].ssm_a->type == GGML_TYPE_F32;
+    if (!raw_gates) {
+        beta = ggml_sigmoid(ctx0, beta);
+        cb(beta, "beta_sigmoid", il);
+    }
 
     ggml_tensor * alpha = build_lora_mm(model.layers[il].ssm_alpha, cur, model.layers[il].ssm_alpha_s);
     alpha = ggml_reshape_3d(ctx0, alpha, num_v_heads, n_seq_tokens, n_seqs);
     cb(alpha, "alpha", il);
 
-    ggml_tensor * alpha_biased   = ggml_add(ctx0, alpha, model.layers[il].ssm_dt);
-    ggml_tensor * alpha_softplus = ggml_softplus(ctx0, alpha_biased);
-    cb(alpha_softplus, "a_softplus", il);
+    ggml_tensor * gate = alpha;
+    if (raw_gates) {
+        gdn_raw_dt = model.layers[il].ssm_dt;
+        gdn_raw_a  = model.layers[il].ssm_a;
+    } else {
+        ggml_tensor * alpha_biased   = ggml_add(ctx0, alpha, model.layers[il].ssm_dt);
+        ggml_tensor * alpha_softplus = ggml_softplus(ctx0, alpha_biased);
+        cb(alpha_softplus, "a_softplus", il);
 
-    ggml_tensor * gate = ggml_mul(ctx0, alpha_softplus, model.layers[il].ssm_a);  // -A_log.exp() * softplus
+        gate = ggml_mul(ctx0, alpha_softplus, model.layers[il].ssm_a);  // -A_log.exp() * softplus
+    }
     cb(gate, "gate", il);
 
     gate = ggml_reshape_4d(ctx0, gate, 1, num_v_heads, n_seq_tokens, n_seqs);
@@ -486,8 +497,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
 
     const float eps_norm = hparams.f_norm_rms_eps;
 
-    q_conv = build_gdn_l2_norm(ctx0, q_conv, eps_norm);
-    k_conv = build_gdn_l2_norm(ctx0, k_conv, eps_norm);
+    build_gdn_qk_l2_norm(ctx0, conv_qkv_mix, &q_conv, &k_conv, eps_norm);
 
     //q_conv = ggml_cont_4d(ctx0, q_conv, head_k_dim, num_k_heads, n_seq_tokens, n_seqs);
     //k_conv = ggml_cont_4d(ctx0, k_conv, head_k_dim, num_k_heads, n_seq_tokens, n_seqs);
@@ -506,6 +516,8 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
     cb(v_conv, "v_conv_predelta", il);
 
     ggml_tensor * output = build_recurrent_attn(inp, ssm_states_all, q_conv, k_conv, v_conv, gate, beta, state, il);
+    gdn_raw_dt = nullptr;
+    gdn_raw_a  = nullptr;
 
     // z: [head_dim, n_heads, n_tokens, n_seqs] -> [n_heads * n_tokens * n_seqs, head_dim]
     ggml_tensor * z_2d = ggml_reshape_4d(ctx0, z, head_v_dim, num_v_heads, n_seq_tokens, n_seqs);

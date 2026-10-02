@@ -3995,16 +3995,25 @@ struct test_gated_delta_net : public test_case {
     const bool    permuted;
     const bool    kda;
     const int64_t K; // snapshot slot count: 1 = final-only, >1 = last K states
+    const bool    gather; // state gathered from a cache by GET_ROWS, as the recurrent memory does
+    const bool    raw;    // gate activations folded into the op (ggml_gated_delta_net_set_raw_gates)
 
     std::string vars() override {
-        return VARS_TO_STR9(type, head_count, head_size, n_seq_tokens, n_seqs, v_repeat, permuted, kda, K);
+        std::string res = VARS_TO_STR9(type, head_count, head_size, n_seq_tokens, n_seqs, v_repeat, permuted, kda, K);
+        if (gather) {
+            res += "," + VAR_TO_STR(gather);
+        }
+        if (raw) {
+            res += "," + VAR_TO_STR(raw);
+        }
+        return res;
     }
 
     test_gated_delta_net(ggml_type type = GGML_TYPE_F32,
             int64_t head_count = 4, int64_t head_size = 16, int64_t n_seq_tokens = 1, int64_t n_seqs = 1,
-            int v_repeat = 1, bool permuted = false, bool kda = false, int64_t K = 1)
+            int v_repeat = 1, bool permuted = false, bool kda = false, int64_t K = 1, bool gather = false, bool raw = false)
         : type(type), head_count(head_count), head_size(head_size), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs),
-          v_repeat(v_repeat), permuted(permuted), kda(kda), K(K) {}
+          v_repeat(v_repeat), permuted(permuted), kda(kda), K(K), gather(gather), raw(raw) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * q;
@@ -4026,24 +4035,57 @@ struct test_gated_delta_net : public test_case {
         const int64_t g_ne0 = kda ? head_size : 1;
         ggml_tensor * g     = ggml_new_tensor_4d(ctx, type, g_ne0, head_count * v_repeat, n_seq_tokens, n_seqs);
         ggml_tensor * beta  = ggml_new_tensor_4d(ctx, type, 1, head_count * v_repeat, n_seq_tokens, n_seqs);
-        ggml_tensor * state = ggml_new_tensor_3d(ctx, type, head_size * v_repeat * head_size * head_count, K, n_seqs);
+        const int64_t D     = head_size * v_repeat * head_size * head_count;
+        ggml_tensor * state = nullptr;
+        if (gather) {
+            GGML_ASSERT(K == 1 && n_seqs == 1);
+            ggml_tensor * cache = ggml_new_tensor_2d(ctx, type, D, 5);
+            ggml_tensor * ids   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+            ggml_set_name(cache, "state_cache");
+            ggml_set_name(ids,   "state_ids");
+            state = ggml_reshape_3d(ctx, ggml_get_rows(ctx, cache, ids), D, K, n_seqs);
+        } else {
+            state = ggml_new_tensor_3d(ctx, type, D, K, n_seqs);
+            ggml_set_name(state, "state");
+        }
         ggml_set_name(g,     "g");
         ggml_set_name(beta,  "beta");
-        ggml_set_name(state, "state");
         // q/k are L2-normalised in qwen35/kimi-linear before delta_net
         q = ggml_l2_norm(ctx, q, 1e-6f);
         k = ggml_l2_norm(ctx, k, 1e-6f);
         ggml_tensor * out   = ggml_gated_delta_net(ctx, q, k, v, g, beta, state);
+        if (raw) {
+            ggml_tensor * dt_bias = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_count * v_repeat);
+            ggml_tensor * a       = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_count * v_repeat);
+            ggml_set_name(dt_bias, "dt_bias");
+            ggml_set_name(a,       "a_raw");
+            ggml_gated_delta_net_set_raw_gates(out, dt_bias, a);
+        }
         return out;
     }
 
     void initialize_tensors(ggml_context * ctx) override {
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
             if (ggml_is_view_op(t->op)) { continue; }
-            if (strcmp(t->name, "g") == 0) {
-                init_tensor_uniform(t, -20.0f, -1e-4f);
+            if (strcmp(t->name, "state_ids") == 0) {
+                const int32_t row = 3;
+                ggml_backend_tensor_set(t, &row, 0, sizeof(row));
+            } else if (strcmp(t->name, "g") == 0) {
+                if (raw) {
+                    init_tensor_uniform(t, -8.0f, 25.0f); // before softplus, across its x > 20 branch
+                } else {
+                    init_tensor_uniform(t, -20.0f, -1e-4f);
+                }
+            } else if (strcmp(t->name, "dt_bias") == 0) {
+                init_tensor_uniform(t, -1.0f, 1.0f);
+            } else if (strcmp(t->name, "a_raw") == 0) {
+                init_tensor_uniform(t, -2.0f, -0.05f);
             } else if (strcmp(t->name, "beta") == 0) {
-                init_tensor_uniform(t, 0.0f, 1.0f);
+                if (raw) {
+                    init_tensor_uniform(t, -6.0f, 6.0f); // before the sigmoid
+                } else {
+                    init_tensor_uniform(t, 0.0f, 1.0f);
+                }
             } else if (strcmp(t->name, "v") == 0) {
                 init_tensor_uniform(t, -0.3f, 5.0f);
             } else {
@@ -4235,11 +4277,22 @@ struct test_mul_mat : public test_case {
 
 // GGML_HINT_SRC0_IS_HADAMARD
 struct test_mul_mat_hadamard : public test_mul_mat {
+    const ggml_op_hint hint;
+
+    std::string vars() override {
+        std::string res = test_mul_mat::vars();
+        if (hint != GGML_HINT_SRC0_IS_HADAMARD) {
+            res += ",hint=" + std::to_string((int) hint);
+        }
+        return res;
+    }
+
     test_mul_mat_hadamard(ggml_type type_a = GGML_TYPE_F32, ggml_type type_b = GGML_TYPE_F32,
             int64_t m = 32, int64_t n = 32, int64_t k = 32,
             std::array<int64_t, 2> bs = {1, 1},
-            std::array<int64_t, 2> nr = {1, 1})
-        : test_mul_mat(type_a, type_b, m, n, k, bs, nr) {
+            std::array<int64_t, 2> nr = {1, 1},
+            ggml_op_hint hint = GGML_HINT_SRC0_IS_HADAMARD)
+        : test_mul_mat(type_a, type_b, m, n, k, bs, nr), hint(hint) {
             GGML_ASSERT(type_a == GGML_TYPE_F32);
         }
 
@@ -4248,7 +4301,7 @@ struct test_mul_mat_hadamard : public test_mul_mat {
         // Find the mul_mat op in the graph and set the hint
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
             if (t->op == GGML_OP_MUL_MAT) {
-                ggml_mul_mat_set_hint(t, GGML_HINT_SRC0_IS_HADAMARD);
+                ggml_mul_mat_set_hint(t, hint);
             }
         }
         return out;
@@ -8437,6 +8490,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 64, 1, 64));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 256, 1, 256));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 128, 32, 128));
+    // the plain Sylvester matrix takes the fast transform on CUDA
+    for (int64_t n : {64, 128, 256, 512}) {
+        test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, n, 1,  n, {1, 1}, {1, 1}, GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD));
+        test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, n, 37, n, {1, 1}, {1, 1}, GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD));
+    }
 
 #if 0
     // > 4GB A matrix. Too slow to be enabled by default.
@@ -8625,6 +8683,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_F16, GGML_TYPE_F32, 1, 1, false, 8, 16, 1));
+    // small K with a row count that is not a multiple of the rows per CUDA block: the tail block must
+    // stay inside its expert slot
+    for (ggml_type type_a : {GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_IQ4_NL}) {
+        test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 8, 4, false, 70, 1, 1024));
+    }
     test_cases.emplace_back(new test_mul_mat_id_fusion(GGML_TYPE_F16, GGML_TYPE_F32, 16, 16, false, 32, 32, 32, 3));
 
     // gpt-oss issue with Vulkan mmq_id
@@ -9208,6 +9271,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));
+    // gate activations folded into the op, with and without rollback slots and a gathered state
+    for (int64_t n_tokens : {1, 5}) {
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 64,  n_tokens, 1, 2, false, false, 1, false, true));
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, n_tokens, 2, 1, false, false, 1, false, true));
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, n_tokens, 1, 1, false, false, 1, true,  true));
+    }
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 4, 1, 1, false, false, 4, false, true));
+    // the CUDA backend folds the GET_ROWS of a single sequence into the kernel
+    for (int64_t n_tokens : {1, 4}) {
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, n_tokens, 1, 1, false, false, 1, true));
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 64,  n_tokens, 1, 2, false, true,  1, true));
+    }
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1, 1, true, true));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 16, 1, 1, 1, false, true));

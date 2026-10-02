@@ -457,6 +457,10 @@ static __global__ void mul_mat_vec_q(
     const uint32_t sample_x    = fastdiv(sample_dst, sample_ratio);
     const uint32_t sample_y    = sample_dst;
 
+    // dst rows are contiguous; with ids the rows of one slot are bounded by stride_channel_dst,
+    // stride_col_dst is then the token stride
+    const uint32_t nrows_dst = ids ? stride_channel_dst : stride_col_dst;
+
     bool use_gate = false;
     bool use_bias = false;
     bool use_gate_bias = false;
@@ -485,7 +489,7 @@ static __global__ void mul_mat_vec_q(
             // 1. Hide latency by prefetching bias and gate here
             // 2. load only on threads that won't die after partial sum calculation
             if (threadIdx.x < rows_per_cuda_block && threadIdx.y == 0 &&
-                (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < stride_col_dst)) {
+                (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < nrows_dst)) {
 #pragma unroll
                 for (int j = 0; j < ncols_dst; ++j) {
                     x_biases[j] = x_bias[j * stride_col_dst + threadIdx.x];
@@ -495,7 +499,7 @@ static __global__ void mul_mat_vec_q(
         if (use_gate_bias) {
             gate_bias = gate_bias + sample_dst*stride_sample_dst + channel_bias*stride_channel_dst + row0;
             if (threadIdx.x < rows_per_cuda_block && threadIdx.y == 0 &&
-                (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < stride_col_dst)) {
+                (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < nrows_dst)) {
 #pragma unroll
                 for (int j = 0; j < ncols_dst; ++j) {
                     gate_biases[j] = gate_bias[j * stride_col_dst + threadIdx.x];
@@ -631,7 +635,7 @@ static __global__ void mul_mat_vec_q(
             }
         }
 
-        if (threadIdx.x < rows_per_cuda_block && (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < stride_col_dst)) {
+        if (threadIdx.x < rows_per_cuda_block && (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < nrows_dst)) {
             float result = tmp[j][threadIdx.x];
             if constexpr (has_fusion) {
                 if (use_bias) {

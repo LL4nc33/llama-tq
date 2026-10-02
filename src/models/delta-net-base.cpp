@@ -401,6 +401,9 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     // K=1 (final state only): reshape to 3D (S_v*S_v*H_v, 1, n_seqs) for ggml_gated_delta_net.
     ggml_tensor * s_3d = ggml_reshape_3d(ctx0, s, S_v * S_v * H_v, 1, n_seqs);
     ggml_tensor * result = ggml_gated_delta_net(ctx0, q, k, v, g, b, s_3d);
+    if (gdn_raw_a) {
+        ggml_gated_delta_net_set_raw_gates(result, gdn_raw_dt, gdn_raw_a);
+    }
     if (n_tokens == 1) {
         cb(result, LLAMA_TENSOR_NAME_FGDN_AR, il);
     } else {
@@ -445,6 +448,16 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     }
 
     return build_delta_net_chunking(q, k, v, g, b, s, il);
+}
+
+bool llm_build_delta_net_base::gdn_raw_gates_usable(bool rollback_path) const {
+    if (!cparams.gdn_raw_gates) {
+        return false;
+    }
+    if (rollback_path && keep_rs()) {
+        return true;
+    }
+    return ubatch.n_seq_tokens == 1 ? cparams.fused_gdn_ar : cparams.fused_gdn_ch;
 }
 
 bool llm_build_delta_net_base::keep_rs() const {
@@ -554,6 +567,9 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     ggml_tensor * state_3d    = ggml_pad(ctx0, state_in_3d, 0, K - 1, 0, 0);
 
     ggml_tensor * gdn_out = ggml_gated_delta_net(ctx0, q, k, v, g, b, state_3d);
+    if (gdn_raw_a) {
+        ggml_gated_delta_net_set_raw_gates(gdn_out, gdn_raw_dt, gdn_raw_a);
+    }
     cb(gdn_out, LLAMA_TENSOR_NAME_FGDN_CH, il);
 
     const int64_t attn_score_elems    = S_v * H_v * n_seq_tokens * n_seqs;

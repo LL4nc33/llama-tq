@@ -17,6 +17,21 @@ static inline ggml_tensor * build_gdn_l2_norm(ggml_context * ctx, ggml_tensor * 
     return ggml_scale(ctx, ggml_rms_norm(ctx, x, eps/n), 1.0f/sqrtf(n));
 }
 
+// q and k sit side by side in the conv output with the same shape, so one norm over both head
+// groups replaces two; q and k become views of its result
+static inline void build_gdn_qk_l2_norm(ggml_context * ctx, ggml_tensor * qkv, ggml_tensor ** q, ggml_tensor ** k, float eps) {
+    const ggml_tensor * q0 = *q;
+    GGML_ASSERT(q0->view_src == qkv->view_src || q0->view_src == qkv);
+    GGML_ASSERT((*k)->view_offs == q0->view_offs + q0->ne[1]*q0->nb[1] && ggml_are_same_stride(q0, *k));
+
+    ggml_tensor * qk = ggml_view_4d(ctx, qkv, q0->ne[0], 2*q0->ne[1], q0->ne[2], q0->ne[3],
+            q0->nb[1], q0->nb[2], q0->nb[3], q0->view_offs - (qkv->view_src ? qkv->view_offs : 0));
+    qk = build_gdn_l2_norm(ctx, qk, eps);
+
+    *q = ggml_view_4d(ctx, qk, q0->ne[0], q0->ne[1], q0->ne[2], q0->ne[3], qk->nb[1], qk->nb[2], qk->nb[3], 0);
+    *k = ggml_view_4d(ctx, qk, q0->ne[0], q0->ne[1], q0->ne[2], q0->ne[3], qk->nb[1], qk->nb[2], qk->nb[3], q0->ne[1]*qk->nb[1]);
+}
+
 //
 // base classes
 //
@@ -78,6 +93,16 @@ struct llm_build_delta_net_base : public llm_graph_context {
 
     // true when speculative rollback is enabled and the batch fits in the rs cache
     bool keep_rs() const;
+
+    // whether the gate activations of this ubatch can be folded into the gated delta net op: the op
+    // must be used (fused path, or the rollback branch of build_recurrent_attn when rollback_path) and
+    // every device must implement the folding
+    bool gdn_raw_gates_usable(bool rollback_path) const;
+
+    // dt bias and A of the layer being built when its gates are handed to the op before activation
+    // (ggml_gated_delta_net_set_raw_gates); nullptr when the gates are activated in the graph
+    ggml_tensor * gdn_raw_dt = nullptr;
+    ggml_tensor * gdn_raw_a  = nullptr;
 
     // read conv state from cache, concat with qkv_mixed, write back (single slot or per-token)
     // qkv_mixed: (qkv_dim, n_seq_tokens, n_seqs); returns conv_input: (kernel_size + n_seq_tokens - 1, channels, n_seqs)

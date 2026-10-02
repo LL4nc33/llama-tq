@@ -43,6 +43,7 @@ struct llama_cparams {
     bool auto_fa;
     bool fused_gdn_ar;       // use fused gated delta net (autoregressive)
     bool fused_gdn_ch;       // use fused gated delta net (chunked)
+    bool gdn_raw_gates;      // fold the gate activations into the fused gated delta net op
     bool auto_fgdn;
     bool fused_hc;           // use the fused hyper-connection ops (qwen4exp)
     bool no_perf;

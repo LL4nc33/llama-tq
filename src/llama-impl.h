@@ -44,10 +44,13 @@ struct no_init {
 // result so the backend can fuse the Hadamard transform, then restore the shape.
 // Ported from upstream (DFlash draft path); the fork's KTQ/VTQ Hadamard machinery
 // (attn_rot_hadamard + set_input_k_rot/v_rot in llama-kv-cache.cpp) is unaffected.
+// sylvester: rot is exactly the orthonormal Sylvester Hadamard matrix (no random signs), so a
+// backend may apply the fast transform instead
 static inline ggml_tensor * llama_mul_mat_hadamard(
         ggml_context * ctx,
         ggml_tensor * cur,
-        ggml_tensor * rot) {
+        ggml_tensor * rot,
+        bool sylvester = false) {
     const auto n = rot->ne[0];
 
     ggml_tensor * res;
@@ -58,7 +61,7 @@ static inline ggml_tensor * llama_mul_mat_hadamard(
         res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);
     }
     res = ggml_mul_mat(ctx, rot, res);
-    ggml_mul_mat_set_hint(res, GGML_HINT_SRC0_IS_HADAMARD);
+    ggml_mul_mat_set_hint(res, sylvester ? GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD : GGML_HINT_SRC0_IS_HADAMARD);
     res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
 
     return res;

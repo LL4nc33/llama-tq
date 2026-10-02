@@ -15808,6 +15808,10 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             return true; // all inputs are contiguous, see ggml.c
         case GGML_OP_GATED_DELTA_NET:
             {
+                // the folded gate activations (op param 1) are not implemented here
+                if (ggml_get_op_params_i32(op, 1) != 0) {
+                    return false;
+                }
                 const uint32_t S_v = op->src[2]->ne[0];
                 if (S_v != 32 && S_v != 64 && S_v != 128) {
                     return false;

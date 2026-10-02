@@ -10586,6 +10586,12 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
 
     const bool kda = (neg0 == S_v);
 
+    // gate activations folded in (ggml_gated_delta_net_set_raw_gates)
+    const bool    raw    = ggml_get_op_params_i32(dst, 1) != 0;
+    const float * raw_dt = raw ? (const float *) dst->src[7]->data : nullptr;
+    const float * raw_a  = raw ? (const float *) dst->src[8]->data : nullptr;
+    GGML_ASSERT(!raw || !kda);
+
     // state is 3D (S_v*S_v*H, K, n_seqs); K is the snapshot slot count.
     const int64_t K = src_state->ne[1];
     GGML_ASSERT(K >= 1);
@@ -10648,7 +10654,10 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
             const float * k_d = (const float *)((const char *)src_k->data + ik3 * nbk3 + t * nbk2 + ik1 * nbk1);
             const float * v_d = (const float *)((const char *)src_v->data + iv3 * nbv3 + t * nbv2 + iv1 * nbv1);
 
-            const float beta_val = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
+            float beta_val = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
+            if (raw_a) {
+                beta_val = 1.f / (1.f + expf(-beta_val));
+            }
             const float * g_d    =  (const float *)((const char *)src_g->data    + iv3 * nbg3 + t * nbg2 + iv1 * nbg1);
 
             // state is stored transposed: s_out[j*S_v + i] = S[i][j]
@@ -10664,7 +10673,13 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
                     ggml_vec_mul_f32(S_v, &s_out[j * S_v], &s_out[j * S_v], delta);
                 }
             } else {
-                ggml_vec_scale_f32(S_v * S_v, s_out, expf(g_d[0]));
+                float g_val = g_d[0];
+                if (raw_a) {
+                    // a[h] * softplus(g + dt_bias[h]), as the separate add, softplus and mul compute it
+                    const float x = g_val + raw_dt[iv1];
+                    g_val = ((x > 20.0f) ? x : logf(1.0f + expf(x))) * raw_a[iv1];
+                }
+                ggml_vec_scale_f32(S_v * S_v, s_out, expf(g_val));
             }
 
             // delta[j] = sum_i S[i][j] * k[i] = dot(row j of M, k)

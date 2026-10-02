@@ -198,9 +198,9 @@ ggml_tensor * llama_model_qwen3next::graph::build_norm_gated(
         ggml_tensor * gate,
         int           layer) {
     ggml_tensor * normalized = build_norm(input, weights, nullptr, LLM_NORM_RMS, layer);
-    ggml_tensor * gated_silu = ggml_silu(ctx0, gate);
 
-    return ggml_mul(ctx0, normalized, gated_silu);
+    // silu(gate) * normalized in one op
+    return ggml_swiglu_split(ctx0, gate, normalized);
 }
 
 ggml_tensor * llama_model_qwen3next::graph::build_layer_attn(

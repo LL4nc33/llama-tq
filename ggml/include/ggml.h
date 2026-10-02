@@ -458,7 +458,8 @@ extern "C" {
     // op hint
     enum ggml_op_hint {
         GGML_HINT_NONE             = 0,
-        GGML_HINT_SRC0_IS_HADAMARD = 1,
+        GGML_HINT_SRC0_IS_HADAMARD = 1, // src0 is an orthonormal rotation, possibly with random signs (D*H*D)
+        GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD = 2, // src0 is exactly the orthonormal Sylvester Hadamard matrix
     };
 
     // model file types
@@ -2567,6 +2568,14 @@ extern "C" {
             struct ggml_tensor  * g,
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state);
+
+    // fold the gate activations into a gated_delta_net op (scalar gate only): the op then takes beta
+    // and g before activation and computes sigmoid(beta) and a[h] * softplus(g + dt_bias[h]) itself.
+    // dt_bias and a are F32 with one value per value head
+    GGML_API void ggml_gated_delta_net_set_raw_gates(
+            struct ggml_tensor  * gdn,
+            struct ggml_tensor  * dt_bias,
+            struct ggml_tensor  * a);
 
     // Hyper-connections: the residual is a set of hc parallel streams instead of a single one
     //

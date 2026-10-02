@@ -1350,6 +1350,33 @@ struct ggml_cuda_stream_context {
     }
 };
 
+// The recurrent state of a gated delta net layer reaches the op through GET_ROWS(cache, ids) into a
+// temporary that only the op reads. When the graph evaluator can prove that, it skips the GET_ROWS
+// and records the gather here, keyed by the GATED_DELTA_NET node, so the kernel reads the cache row
+// directly. Valid for one graph evaluation.
+struct ggml_cuda_gated_delta_net_gather {
+    const float *   base       = nullptr; // cache rows, row_stride floats apart
+    const int32_t * ids        = nullptr; // cache row of each sequence
+    int64_t         row_stride = 0;
+};
+
+struct ggml_cuda_gdn_gather_context {
+    std::unordered_map<const ggml_tensor *, ggml_cuda_gated_delta_net_gather> gathers;
+
+    void reset() {
+        gathers.clear();
+    }
+
+    void set(const ggml_tensor * gdn, const ggml_cuda_gated_delta_net_gather & gather) {
+        gathers[gdn] = gather;
+    }
+
+    const ggml_cuda_gated_delta_net_gather * find(const ggml_tensor * gdn) const {
+        const auto it = gathers.find(gdn);
+        return it == gathers.end() ? nullptr : &it->second;
+    }
+};
+
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
@@ -1402,6 +1429,7 @@ struct ggml_backend_cuda_context {
     }
 
     ggml_cuda_stream_context concurrent_stream_context;
+    ggml_cuda_gdn_gather_context gdn_gather_context;
 
     ~ggml_backend_cuda_context();
 
@@ -1416,6 +1444,8 @@ struct ggml_backend_cuda_context {
     cudaStream_t stream() { return stream(device, curr_stream_no); }
 
     ggml_cuda_stream_context & stream_context() { return concurrent_stream_context; }
+
+    ggml_cuda_gdn_gather_context & gdn_gathers() { return gdn_gather_context; }
 
     cublasHandle_t cublas_handle(int device) {
         if (cublas_handles[device] == nullptr) {

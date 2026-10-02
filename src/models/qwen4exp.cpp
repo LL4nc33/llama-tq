@@ -655,18 +655,29 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     beta = ggml_reshape_4d(ctx0, beta, 1, num_v_heads, n_seq_tokens, n_seqs);
     cb(beta, "beta", il);
 
-    beta = ggml_sigmoid(ctx0, beta);
-    cb(beta, "beta_sigmoid", il);
+    // the fused op can take the gates before activation and compute them itself
+    const bool raw_gates = gdn_raw_gates_usable(false) &&
+        model.layers[il].ssm_dt->type == GGML_TYPE_F32 && model.layers[il].ssm_a->type == GGML_TYPE_F32;
+    if (!raw_gates) {
+        beta = ggml_sigmoid(ctx0, beta);
+        cb(beta, "beta_sigmoid", il);
+    }
 
     ggml_tensor * alpha = build_lora_mm(model.layers[il].ssm_alpha, cur);
     alpha = ggml_reshape_3d(ctx0, alpha, num_v_heads, n_seq_tokens, n_seqs);
     cb(alpha, "alpha", il);
 
-    ggml_tensor * alpha_biased   = ggml_add(ctx0, alpha, model.layers[il].ssm_dt);
-    ggml_tensor * alpha_softplus = ggml_softplus(ctx0, alpha_biased);
-    cb(alpha_softplus, "a_softplus", il);
+    ggml_tensor * gate = alpha;
+    if (raw_gates) {
+        gdn_raw_dt = model.layers[il].ssm_dt;
+        gdn_raw_a  = model.layers[il].ssm_a;
+    } else {
+        ggml_tensor * alpha_biased   = ggml_add(ctx0, alpha, model.layers[il].ssm_dt);
+        ggml_tensor * alpha_softplus = ggml_softplus(ctx0, alpha_biased);
+        cb(alpha_softplus, "a_softplus", il);
 
-    ggml_tensor * gate = ggml_mul(ctx0, alpha_softplus, model.layers[il].ssm_a);
+        gate = ggml_mul(ctx0, alpha_softplus, model.layers[il].ssm_a);
+    }
     cb(gate, "gate", il);
 
     gate = ggml_reshape_4d(ctx0, gate, 1, num_v_heads, n_seq_tokens, n_seqs);
@@ -726,8 +737,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
 
     const float eps_norm = hparams.f_norm_rms_eps;
 
-    q_conv = build_gdn_l2_norm(ctx0, q_conv, eps_norm);
-    k_conv = build_gdn_l2_norm(ctx0, k_conv, eps_norm);
+    build_gdn_qk_l2_norm(ctx0, conv_qkv_mix, &q_conv, &k_conv, eps_norm);
 
     // if head keys and value keys differ, repeat to force matching shapes;
     // the fused GDN handles that itself, so the explicit repeat is only needed without it
@@ -742,6 +752,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn_linear(
     cb(v_conv, "v_conv_predelta", il);
 
     auto attn_out = build_delta_net(q_conv, k_conv, v_conv, gate, beta, state, il);
+    gdn_raw_dt = nullptr;
+    gdn_raw_a  = nullptr;
 
     ggml_tensor * output    = attn_out.first;
     ggml_tensor * new_state = attn_out.second;
