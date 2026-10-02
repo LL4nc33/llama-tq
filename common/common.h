@@ -652,6 +652,8 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
+    size_t moe_cache_size = 0; // GPU cache size in bytes for the MoE experts kept in the CPU
+
     // KV cache type for sliding-window-attention (SWA) layers. GGML_TYPE_COUNT = inherit
     // cache_type_k / cache_type_v (backward compatible). Set higher than the base type to
     // keep SWA layers (head_dim=256 outliers) coherent while global layers stay quantised.

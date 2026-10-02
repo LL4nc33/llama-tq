@@ -16,6 +16,7 @@
 
 struct llama_model;
 class llama_batch_allocr;
+class llama_moe_cache;
 
 class llama_io_read_i;
 class llama_io_write_i;
@@ -297,6 +298,8 @@ private:
     bool diffusion_gpu_sampling = false; // skip dense logits D2H; sampled via CUDA backend proc
 
     llama_memory_ptr memory;
+
+    std::unique_ptr<llama_moe_cache> moe_cache;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};

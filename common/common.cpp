@@ -1531,6 +1531,8 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
 
+    cparams.moe_cache_size = params.moe_cache_size;
+
     // SWA-layer KV type: GGML_TYPE_COUNT means "inherit type_k / type_v" (backward compatible).
     cparams.type_k_swa = params.cache_type_k_swa;
     cparams.type_v_swa = params.cache_type_v_swa;

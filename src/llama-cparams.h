@@ -51,6 +51,8 @@ struct llama_cparams {
     bool warmup;
     bool op_offload;
     bool kv_unified;
+
+    size_t moe_cache_size;
     bool pipeline_parallel;
 
     // Trick 2 PR1: per-head V variance/kurtosis profiling
