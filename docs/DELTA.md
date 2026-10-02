@@ -10,7 +10,6 @@ Compact list of what this fork adds on top of upstream. The overview with number
 | Tensor split without P2P | `-sm tensor` on GPUs without peer access: allreduce through mapped pinned host memory, optional bf16 transfer. | `ggml/src/ggml-cuda/allreduce-host.cu` | [tp-tq-design.md](tp-tq-design.md) |
 | Ternary weights | `PQ2_0` / `PTQ1_0` group-128 ternary types with Hadamard-rotated activations, CUDA mat-vec / MMQ kernels, fast Walsh-Hadamard transform. | `ggml/`, `src/llama-quant.cpp` | [README.md](../README.md) |
 | Qwen3.8 family | Qwen3.8 and Qwen3.8-Flash-Next (`qwen4exp`): per-layer n-gram embeddings, hyper-connections, compressed-attention indexer with sparse flash attention. Faster Gated DeltaNet kernels for hybrid Qwen3.5 / 3.8. | `src/models/qwen4exp.cpp`, `src/models/qwen35.cpp`, `ggml/src/ggml-cuda/` | [README.md](../README.md) |
-| DiffusionGemma | Text diffusion inference (26B-A4B) incl. a dedicated diffusion server and coherent ~2-bit weights on a single 12 GB GPU. | `examples/diffusion-gemma/`, `src/models/diffusion-gemma.cpp` | [diffusion-gemma.md](diffusion-gemma.md) |
 | MoE LoRA fine-tuning | LoRA on `ffn_*_exps` of quantised MoE models: `MUL_MAT_ID` backward, adapter save as `.lora.gguf`, `--train-skip-regex`. | `ggml/src/ggml.c`, `examples/training/` | [finetune.md](finetune.md) |
 | Vulkan (experimental) | Turing tunings, dormant KTQ/VTQ port on the `vulkan` branch. | `ggml/src/ggml-vulkan/` | [vulkan.md](vulkan.md) |
 

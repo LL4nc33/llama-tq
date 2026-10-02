@@ -9,7 +9,6 @@ doc — this file is the index. Feedback and PRs welcome.
 |------|---------|---------|
 | **TurboQuant KV cache** | KTQ × VTQ at 2.78 bpw, quality close to f16 on the tested models. CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
 | **Speculation** | MTP (gemma-4 draft) + n-gram hybrid. 2.28× on Qwen3.6-35B-A3B-IQ2_XXS. | [speculative.md](docs/speculative.md) |
-| **DiffusionGemma** | Coherent 2-bit text diffusion (26B-A4B) on a single 12 GB GPU. | [diffusion-gemma.md](docs/diffusion-gemma.md) |
 | **Fine-tune on quantised** | LoRA on `ffn_*_exps` of Qwen3.6-A35B-IQ2_XXS, single 12 GB GPU. | [finetune.md](docs/finetune.md) |
 | **Vulkan backend** | Upstream `ggml-vulkan` + Turing tunings. PP parity reached. | [vulkan.md](docs/vulkan.md) |
 | **Tensor split without P2P** | `-sm tensor` across GPUs without peer access or NCCL: partial sums are reduced through mapped pinned host memory. Optional bf16 transfer via `GGML_CUDA_HOST_ALLREDUCE_BF16=1`. | [tp-tq-design.md](docs/tp-tq-design.md) |
@@ -30,7 +29,6 @@ doc — this file is the index. Feedback and PRs welcome.
 
 - Full-capability fine-tuning (attention backward, dense gradient flow through
   quantised activations, SSM training). → [finetune.md](docs/finetune.md)
-- One DiffusionGemma instance per GPU at full context, batch-parallel serving.
 
 ## Known issues
 

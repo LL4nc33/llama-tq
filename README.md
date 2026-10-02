@@ -12,7 +12,6 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for **long conte
 - **Qwen3.8 family** — Qwen3.8-Flash-Next (qwen4exp: per-layer n-gram embeddings, hyper-connections, compressed-attention indexer with sparse flash attention) and faster Gated DeltaNet layers for the hybrid Qwen3.5/3.8 models (state gather and gate activations inside the kernel).
 - **TurboQuant KV cache** — KTQ × VTQ at 2.78 bpw. Drop in: `--cache-type-k ktq2 --cache-type-v vtq2`. Details in [docs/turboquant.md](docs/turboquant.md).
 - **Speculation stack** — MTP + n-gram hybrid, mmproj+spec coexistence, and DFlash / DFlash2 block-diffusion drafting. Details in [docs/speculative.md](docs/speculative.md).
-- **2-bit text diffusion** — DiffusionGemma (26B-A4B) running coherently at ~2-bit on a single 12 GB GPU. Details in [docs/diffusion-gemma.md](docs/diffusion-gemma.md).
 - **MoE LoRA on quantised** — fine-tune `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS in 12 GB. Mechanics in [docs/finetune.md](docs/finetune.md).
 
 ## What it does
@@ -25,7 +24,6 @@ Measured on 2× RTX 2060 12 GB (Turing, no P2P):
 | Qwen3.8-27B UD-Q4_K_M, tensor split, f16 KV, vision | 72k | 24 t/s |
 | Qwen3.8-27B Q4_K_M + DFlash2 draft (code) | — | 26-28 t/s instead of 15.5 |
 | 35B-class MoE (IQ2), single GPU, vision | 100k | — |
-| DiffusionGemma 26B-A4B at ~2-bit, single GPU | — | coherent |
 
 Two GPUs without P2P, tensor split:
 
