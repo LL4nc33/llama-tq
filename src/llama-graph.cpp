@@ -1702,6 +1702,9 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     if (probs_in == nullptr) {
         logits = build_lora_mm(gate_inp, cur); // [n_expert, n_tokens]
+        if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID_LOGIT_ADD) {
+            ggml_prec_set_acc(logits, GGML_PREC_F32);
+        }
         cb(logits, "ffn_moe_logits", il);
     } else {
         logits = probs_in;
@@ -1719,6 +1722,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 probs = ggml_soft_max(ctx0, logits); // [n_expert, n_tokens]
             } break;
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID:
+        case LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID_LOGIT_ADD:
             {
                 probs = ggml_sigmoid(ctx0, logits); // [n_expert, n_tokens]
             } break;
@@ -1734,7 +1738,13 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     // add experts selection bias - introduced in DeepSeek V3
     // leave probs unbiased as it's later used to get expert weights
     ggml_tensor * selection_probs = probs;
-    if (exp_probs_b != nullptr) {
+    if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID_LOGIT_ADD) {
+        // Kolibri 1: select on the biased raw logits (not on sigmoid(logits) + bias);
+        // the expert weights stay the unbiased sigmoid(logits)
+        GGML_ASSERT(exp_probs_b != nullptr && "SIGMOID_LOGIT_ADD gating requires exp_probs_b");
+        selection_probs = ggml_add(ctx0, logits, exp_probs_b);
+        cb(selection_probs, "ffn_moe_logits_biased", il);
+    } else if (exp_probs_b != nullptr) {
         selection_probs = ggml_add(ctx0, probs, exp_probs_b);
         cb(selection_probs, "ffn_moe_probs_biased", il);
     }
