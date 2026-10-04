@@ -217,13 +217,20 @@ static __device__ __forceinline__ uint32_t ktq_cuda_philox_6r(uint32_t counter, 
 // destroying the Lloyd-Max quantizer's optimality guarantee.
 // ============================================================
 static __device__ __forceinline__ uint16_t ktq_cuda_derive_seed(int64_t block_index) {
-    // FNV-1a hash of block index — fast, good avalanche
+    // All blocks share the sign pattern of block 0 (see kktq_derive_seed): the attention kernel
+    // rotates Q once per query. FNV-1a hash of the (fixed) block index.
+    block_index = 0;
     uint32_t h = 2166136261u;
     h ^= (uint32_t)(block_index & 0xFF);        h *= 16777619u;
     h ^= (uint32_t)((block_index >> 8) & 0xFF); h *= 16777619u;
     h ^= (uint32_t)((block_index >> 16) & 0xFF); h *= 16777619u;
     h ^= (uint32_t)((block_index >> 24) & 0xFF); h *= 16777619u;
     return (uint16_t)(h & 0xFFFF);
+}
+
+// Sign of element j in the RHT sign pattern shared by all KTQ blocks (+1 or -1).
+static __device__ __forceinline__ float ktq_cuda_shared_sign(int j) {
+    return (ktq_cuda_philox_6r((uint32_t) j, ktq_cuda_derive_seed(0)) & 1) ? 1.0f : -1.0f;
 }
 
 // ============================================================

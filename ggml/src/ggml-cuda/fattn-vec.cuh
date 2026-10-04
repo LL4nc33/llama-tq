@@ -175,6 +175,15 @@ static __global__ void flash_attn_ext_vec(
                     Q_f32[j][bi] = Q_j[bi * WARP_SIZE + threadIdx.x] * scale;
                 }
             }
+            if constexpr (nthreads_KQ == WARP_SIZE) {
+                // all KTQ blocks share one RHT sign pattern: rotate Q into the Hadamard domain once
+                // (signs, then the 32-point FWHT across the warp) instead of once per K block
+                const float sign = ktq_cuda_shared_sign(threadIdx.x);
+#pragma unroll
+                for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                    Q_f32[j][bi] = ktq_cuda_fwht_warp(Q_f32[j][bi] * sign);
+                }
+            }
         }
     } else if constexpr (Q_q8_1) {
 #pragma unroll
@@ -741,6 +750,15 @@ static __global__ void flash_attn_ext_vec_paired(
 #pragma unroll
                 for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
                     Q_f32[j][bi] = Q_j[bi * WARP_SIZE + threadIdx.x] * scale;
+                }
+            }
+            if constexpr (nthreads_KQ == WARP_SIZE) {
+                // all KTQ blocks share one RHT sign pattern: rotate Q into the Hadamard domain once
+                // (signs, then the 32-point FWHT across the warp) instead of once per K block
+                const float sign = ktq_cuda_shared_sign(threadIdx.x);
+#pragma unroll
+                for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                    Q_f32[j][bi] = ktq_cuda_fwht_warp(Q_f32[j][bi] * sign);
                 }
             }
         }

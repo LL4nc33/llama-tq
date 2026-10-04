@@ -5966,7 +5966,11 @@ static void kktq_rht_inverse_sb(const float * y, float * x, int n, const uint8_t
     }
 }
 
+// All KTQ blocks share one sign pattern (the seed of block 0): the rotation stays a random
+// orthogonal map per block, and the attention kernel can rotate Q once per query instead of
+// once per K block. Must match ktq_cuda_derive_seed.
 static inline uint16_t kktq_derive_seed(int64_t block_index) {
+    block_index = 0;
     uint32_t h = 2166136261u;
     h ^= (uint32_t)(block_index & 0xFF);        h *= 16777619u;
     h ^= (uint32_t)((block_index >> 8) & 0xFF); h *= 16777619u;

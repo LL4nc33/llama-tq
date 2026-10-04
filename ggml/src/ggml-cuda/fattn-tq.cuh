@@ -308,14 +308,8 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq1_1(
         #pragma unroll
         for (int bi = 0; bi < nblocks; ++bi) {
             const float norm = (float)K_tq[bi].d;
-            // NOTE: no early-exit — all lanes must participate in FWHT warp shuffle
-
-            // 1. Sign-flip Q for this K-block (branchless)
-            const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
-
-            // 2. FWHT(Q_signed) -> rotate Q into Hadamard space (5 shuffles)
-            float Q_rot = ktq_cuda_fwht_warp(Q_signed);
+            // Q was rotated once per query (all blocks share one sign pattern)
+            const float Q_rot = Q_f32[bi];
 
             // 3. Codebook lookup — 1-bit index
             const int idx = (K_tq[bi].qs[lane / 8] >> (lane % 8)) & 0x1;
@@ -381,17 +375,8 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq2_1(
         #pragma unroll
         for (int bi = 0; bi < nblocks; ++bi) {
             const float norm = (float)K_tq[bi].d;
-            // All 32 lanes must reach the FWHT below: __shfl_xor_sync on a
-            // partial mask would desync the warp. norm==0 is handled by the
-            // final multiply instead of an early return.
-
-            // 1. Apply D_s (diagonal signs from sb[]) to Q — pushing the
-            //    inverse of the quantizer's RHT onto the query side.
-            const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
-
-            // 2. Rotate Q into Hadamard space: H_n · (D_s · Q).
-            float Q_rot = ktq_cuda_fwht_warp(Q_signed);
+            // Q was rotated once per query (all blocks share one sign pattern)
+            const float Q_rot = Q_f32[bi];
 
             // 3. K stays in Hadamard space as a codebook index — no inverse FWHT.
             const int idx = (K_tq[bi].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
@@ -469,9 +454,8 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_xktq2_1_paired(
         #pragma unroll
         for (int bi = 0; bi < nblocks; ++bi) {
             const float norm = (float)K_sub[bi].d;     // subordinate's own scale
-            const int sb  = (K_dom[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
-            float Q_rot    = ktq_cuda_fwht_warp(Q_signed);
+            // Q was rotated once per query (all blocks share one sign pattern)
+            const float Q_rot = Q_f32[bi];
             const int idx  = (K_dom[bi].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
             accum += PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE * Q_rot * norm;
         }
@@ -523,11 +507,8 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq3_1(
         #pragma unroll
         for (int bi = 0; bi < nblocks; ++bi) {
             const float norm = (float)K_tq[bi].d;
-            // NOTE: no early-exit — all lanes must participate in FWHT warp shuffle
-
-            const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
-            float Q_rot = ktq_cuda_fwht_warp(Q_signed);
+            // Q was rotated once per query (all blocks share one sign pattern)
+            const float Q_rot = Q_f32[bi];
 
             // 3-bit unpack
             const int bit_offset = lane * 3;
@@ -582,11 +563,8 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq4_1(
         #pragma unroll
         for (int bi = 0; bi < nblocks; ++bi) {
             const float norm = (float)K_tq[bi].d;
-            // NOTE: no early-exit — all lanes must participate in FWHT warp shuffle
-
-            const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
-            float Q_rot = ktq_cuda_fwht_warp(Q_signed);
+            // Q was rotated once per query (all blocks share one sign pattern)
+            const float Q_rot = Q_f32[bi];
 
             // 4-bit nibble unpack
             const int idx = (K_tq[bi].qs[lane / 2] >> (4 * (lane % 2))) & 0xF;
