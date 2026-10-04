@@ -4120,6 +4120,36 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 // GET_ROWS is skipped and the kernel reads the cache row directly (see ggml_cuda_gdn_gather_context).
 // With several sequences a gathered row could alias one that another sequence writes, so those keep
 // the copy. GGML_CUDA_GDN_GATHER_FUSION=0 disables it.
+// The skipped GET_ROWS was the last reader of the ids tensor in the graph, so the allocator may hand its memory
+// to a node that runs before the gated delta net op. The ids are therefore copied, in stream order, into this
+// per-device buffer at the position of the skipped GET_ROWS; the count resets with each graph evaluation.
+struct ggml_cuda_gdn_ids_buffer {
+    int32_t * data     = nullptr;
+    int       capacity = 0;
+    int       used     = 0;
+};
+static ggml_cuda_gdn_ids_buffer g_gdn_ids[GGML_CUDA_MAX_DEVICES];
+
+static const int32_t * ggml_cuda_gdn_snapshot_ids(ggml_backend_cuda_context & ctx, const int32_t * src, const int n) {
+    ggml_cuda_gdn_ids_buffer & b = g_gdn_ids[ctx.device];
+    if (b.data == nullptr) {
+        ggml_cuda_set_device(ctx.device);
+        if (cudaMalloc(&b.data, 256*sizeof(int32_t)) != cudaSuccess) {
+            (void) cudaGetLastError();
+            b.data = nullptr;
+            return nullptr;
+        }
+        b.capacity = 256;
+    }
+    if (b.used + n > b.capacity) {
+        return nullptr;
+    }
+    int32_t * dst = b.data + b.used;
+    CUDA_CHECK(cudaMemcpyAsync(dst, src, n*sizeof(int32_t), cudaMemcpyDeviceToDevice, ctx.stream()));
+    b.used += n;
+    return dst;
+}
+
 static bool ggml_cuda_try_gdn_gather_skip(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
     static const bool disabled = getenv("GGML_CUDA_GDN_GATHER_FUSION") != nullptr &&
                                  atoi(getenv("GGML_CUDA_GDN_GATHER_FUSION")) == 0;
@@ -4160,8 +4190,11 @@ static bool ggml_cuda_try_gdn_gather_skip(ggml_backend_cuda_context & ctx, const
             }
             ggml_cuda_gated_delta_net_gather gather;
             gather.base       = (const float *) cache->data;
-            gather.ids        = (const int32_t *) ids->data;
+            gather.ids        = ggml_cuda_gdn_snapshot_ids(ctx, (const int32_t *) ids->data, 1);
             gather.row_stride = (int64_t) (cache->nb[1] / sizeof(float));
+            if (gather.ids == nullptr) {
+                return false;
+            }
             ctx.gdn_gathers().set(n, gather);
             return true;
         }
@@ -4280,6 +4313,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             }
 
             cuda_ctx->gdn_gathers().reset();
+            g_gdn_ids[cuda_ctx->device].used = 0;
 
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
