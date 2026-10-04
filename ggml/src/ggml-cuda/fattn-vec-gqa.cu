@@ -14,6 +14,36 @@
     FATTN_VEC_GQA_CASE(D_, type_K_, GGML_TYPE_VTQ3_1)            \
     FATTN_VEC_GQA_CASE(D_, type_K_, GGML_TYPE_VTQ4_1)
 
+template <int ncols>
+static bool ggml_cuda_flash_attn_ext_vec_gqa_ncols(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const bool use_sparse) {
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+    const int64_t D = Q->ne[0];
+
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ2_1)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ3_1)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ4_1)
+
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
+
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ2_1)
+    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ3_1)
+    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ4_1)
+
+    return false;
+}
+
 bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * Q     = dst->src[0];
     const ggml_tensor * K     = dst->src[1];
@@ -40,23 +70,9 @@ bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tens
     const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
     const bool use_sparse = n_kv_max > 0 && mask->ne[0] == K->ne[1] && mask->ne[2] == 1 && K->ne[1] >= 2*int64_t(n_kv_max);
 
-    constexpr int ncols = 8;
-    const int64_t D = Q->ne[0];
-
-    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
-    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
-    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
-    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_F16)
-    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ2_1)
-    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ3_1)
-    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ4_1)
-
-    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
-    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
-    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
-    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ2_1)
-    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ3_1)
-    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ4_1)
-
-    return false;
+    // GQA groups of up to 4 Q heads fit one 4-column block, larger groups use blocks of 8
+    if (gqa_ratio <= 4) {
+        return ggml_cuda_flash_attn_ext_vec_gqa_ncols<4>(ctx, dst, use_sparse);
+    }
+    return ggml_cuda_flash_attn_ext_vec_gqa_ncols<8>(ctx, dst, use_sparse);
 }

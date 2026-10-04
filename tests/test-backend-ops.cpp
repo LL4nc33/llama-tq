@@ -9273,7 +9273,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             for (int64_t nb : {1, 2}) {
                 for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
                         {GGML_TYPE_KTQ2_1, GGML_TYPE_F16}, {GGML_TYPE_F16, GGML_TYPE_VTQ2_1},
-                        {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}}) {
+                        {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},
+                        {GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0},
+                        {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}}) {
                     test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {nr2, 1}, 1024, nb, true, false, 0, 0,
                                 GGML_PREC_F32, kv_types.first, kv_types.second));
                 }
@@ -9289,6 +9291,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                 test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {12, 1}, kv, 1, true, false, 0, 0,
                             GGML_PREC_F32, kv_types.first, kv_types.second, {0, 1, 2, 3}, n_kv_max));
             }
+        }
+    }
+
+    // q5_0 K/V batches (converted to f16 for the MMA kernel)
+    for (int hs : {128, 256}) {
+        for (int64_t nb : {8, 32}) {
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {4, 1}, 1024, nb, true, false, 0, 0,
+                        GGML_PREC_F32, GGML_TYPE_Q5_0, GGML_TYPE_Q5_0));
         }
     }
 
@@ -9692,6 +9702,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                             GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, n_kv_max));
             }
         }
+    }
+
+    // TurboQuant KV decode, K2 Horizon attention (head 128, 8 KV heads, GQA 4) at 16k
+    for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},
+            {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}}) {
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, 16384, 1, true, false, 0, 0,
+                    GGML_PREC_F32, kv_types.first, kv_types.second));
     }
 
     // TurboQuant KV decode, Qwen3.8-27B attention per GPU with tensor split (head 256, 2 KV heads, GQA 6)

@@ -4,6 +4,10 @@
 #include "fattn-common.cuh"
 #include "fattn-tq.cuh"
 
+#ifndef GGML_CUDA_FA_GQA_MIN_BLOCKS
+#define GGML_CUDA_FA_GQA_MIN_BLOCKS 2
+#endif
+
 // Flash attention decode kernel for TurboQuant KV caches with grouped-query attention.
 //
 // The generic VEC kernel runs one block per Q head, so every K/V row is read and dequantized once per Q head
@@ -14,7 +18,7 @@
 // ncols partial KQ dot products of a row are reduced across the warp together: log2(ncols) exchange steps that
 // halve the number of values per lane, then plain shuffles for the rest (9 shuffles for 8 columns instead of 40).
 //
-// Supported: one query (ne01 == 1), no ALiBi, no sinks; K f16 (D == 256) or KTQ; V f16, KTQ or codebook VTQ.
+// Supported: one query (ne01 == 1), no ALiBi, no sinks; K f16 (D == 256), q8_0, q5_0 or KTQ; V f16, q8_0, q5_0 or codebook VTQ.
 //
 // use_sparse: only the K/V rows of the index list built from the mask are visited (sparse attention, the query sees
 // at most n_kv_max cells); KV_max then holds the list of each sequence, followed by the number of live entries.
@@ -53,8 +57,62 @@ static __device__ __forceinline__ float fattn_gqa_reduce_cols(float * s) {
     return sum;
 }
 
+// The codebook lookups of the TurboQuant types index __constant__ memory with a different index per lane, which the
+// constant cache serves one address at a time (up to 16 serialized reads for 4 bit). This kernel copies the codebooks
+// to shared memory, where the at most 16 entries sit in distinct banks.
+template <ggml_type type> struct fattn_gqa_tq {
+    static constexpr int bits = 0; // not a codebook type
+};
+template <> struct fattn_gqa_tq<GGML_TYPE_KTQ2_1> { static constexpr int bits = 2; using block = block_ktq2_1; };
+template <> struct fattn_gqa_tq<GGML_TYPE_KTQ3_1> { static constexpr int bits = 3; using block = block_ktq3_1; };
+template <> struct fattn_gqa_tq<GGML_TYPE_KTQ4_1> { static constexpr int bits = 4; using block = block_ktq4_1; };
+template <> struct fattn_gqa_tq<GGML_TYPE_VTQ2_1> { static constexpr int bits = 2; using block = block_vtq2_1; };
+template <> struct fattn_gqa_tq<GGML_TYPE_VTQ3_1> { static constexpr int bits = 3; using block = block_vtq3_1; };
+template <> struct fattn_gqa_tq<GGML_TYPE_VTQ4_1> { static constexpr int bits = 4; using block = block_vtq4_1; };
+
+// codebook index of element j of a block
+template <int bits>
+static __device__ __forceinline__ int fattn_gqa_tq_index(const uint8_t * qs, const int j) {
+    if constexpr (bits == 2) {
+        return (qs[j / 4] >> (2 * (j % 4))) & 0x3;
+    } else if constexpr (bits == 4) {
+        return (qs[j / 2] >> (4 * (j % 2))) & 0xF;
+    } else {
+        const int bit_offset = j * 3;
+        const int byte_idx   = bit_offset / 8;
+        const int bit_pos    = bit_offset % 8;
+        int idx = qs[byte_idx] >> bit_pos;
+        if (bit_pos > 5) {
+            idx |= qs[byte_idx + 1] << (8 - bit_pos);
+        }
+        return idx & 0x7;
+    }
+}
+
+// codebook of a type, scaled by PQ_CUDA_CB_SCALE (as the decoders of fattn-tq.cuh apply it)
+template <ggml_type type>
+static __device__ __forceinline__ float fattn_gqa_tq_centroid(const int i) {
+    if constexpr (type == GGML_TYPE_VTQ2_1) {
+        return VTQ_CUDA_CB_2BIT[i] * PQ_CUDA_CB_SCALE;
+    } else if constexpr (fattn_gqa_tq<type>::bits == 2) {
+        return PQ_CUDA_CB_2BIT[i] * PQ_CUDA_CB_SCALE;
+    } else if constexpr (fattn_gqa_tq<type>::bits == 3) {
+        return PQ_CUDA_CB_3BIT[i] * PQ_CUDA_CB_SCALE;
+    } else {
+        return PQ_CUDA_CB_4BIT[i] * PQ_CUDA_CB_SCALE;
+    }
+}
+
+// element j (0..31) of a q5_0 block: 4 low bits from qs, the fifth from qh, offset by 16
+// (the block is 22 bytes, so qh is not 4-byte aligned: read only the byte that holds the bit of element j)
+static __device__ __forceinline__ float fattn_gqa_q5_0(const block_q5_0 * b, const int j) {
+    const int lo = j < 16 ? b->qs[j] & 0xF : b->qs[j - 16] >> 4;
+    const int hi = (b->qh[j / 8] >> (j % 8)) & 1;
+    return __half2float(b->d) * float((lo | (hi << 4)) - 16);
+}
+
 template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap, bool use_sparse>
-__launch_bounds__(128, 2)
+__launch_bounds__(128, GGML_CUDA_FA_GQA_MIN_BLOCKS)
 static __global__ void flash_attn_ext_vec_gqa(
         const char * __restrict__ Q,
         const char * __restrict__ K,
@@ -84,15 +142,20 @@ static __global__ void flash_attn_ext_vec_gqa(
     constexpr int nthreads = 128;
     constexpr int nwarps   = nthreads / WARP_SIZE;
     constexpr bool K_tq = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 || type_K == GGML_TYPE_KTQ4_1;
-    static_assert(K_tq || (type_K == GGML_TYPE_F16 && D == 256), "K must be KTQ, or f16 with D == 256");
+    constexpr bool K_q8 = type_K == GGML_TYPE_Q8_0;
+    constexpr bool V_q8 = type_V == GGML_TYPE_Q8_0;
+    constexpr bool K_q5 = type_K == GGML_TYPE_Q5_0;
+    constexpr bool V_q5 = type_V == GGML_TYPE_Q5_0;
+    constexpr bool Q_lane = K_tq || K_q8 || K_q5; // Q in the element-per-lane layout of 32-element blocks
+    static_assert(Q_lane || (type_K == GGML_TYPE_F16 && D == 256), "K must be KTQ, q8_0 or q5_0, or f16 with D == 256");
     static_assert(D % (2*WARP_SIZE) == 0, "D not divisible by 64");
 
     // one warp per K row and per V row
     constexpr int nthreads_KQ       = WARP_SIZE;
     constexpr int nthreads_V        = WARP_SIZE;
     constexpr int V_rows_per_thread = D / WARP_SIZE;
-    constexpr vec_dot_KQ_t   vec_dot_KQ   = get_vec_dot_KQ<type_K, D, nthreads_KQ>();
-    constexpr dequantize_V_t dequantize_V = get_dequantize_V<type_V, float, V_rows_per_thread>();
+    constexpr vec_dot_KQ_t   vec_dot_KQ   = get_vec_dot_KQ<K_q8 || K_q5 ? GGML_TYPE_F16 : type_K, D, nthreads_KQ>();
+    constexpr dequantize_V_t dequantize_V = get_dequantize_V<V_q8 || V_q5 ? GGML_TYPE_F16 : type_V, float, V_rows_per_thread>();
 
     const int gqa_ratio  = ne02 / ne12;
     const int ntiles_gqa = (gqa_ratio + ncols - 1) / ncols;
@@ -113,11 +176,28 @@ static __global__ void flash_attn_ext_vec_gqa(
 
     const int tid = WARP_SIZE*threadIdx.y + threadIdx.x;
 
+    // with 4 entries (2 bit) the constant cache serializes little and is faster than shared memory
+    constexpr int bits_K = fattn_gqa_tq<type_K>::bits >= 3 ? fattn_gqa_tq<type_K>::bits : 0;
+    constexpr int bits_V = fattn_gqa_tq<type_V>::bits >= 3 ? fattn_gqa_tq<type_V>::bits : 0;
+    __shared__ float cb_K[bits_K ? 1 << bits_K : 1];
+    __shared__ float cb_V[bits_V ? 1 << bits_V : 1];
+    if constexpr (bits_K) {
+        if (tid < (1 << bits_K)) {
+            cb_K[tid] = fattn_gqa_tq_centroid<type_K>(tid);
+        }
+    }
+    if constexpr (bits_V) {
+        if (tid < (1 << bits_V)) {
+            cb_V[tid] = fattn_gqa_tq_centroid<type_V>(tid);
+        }
+    }
+    __syncthreads();
+
     // Q in registers, lane t holds elements [i*32 + t] (KTQ: rotated into the Hadamard domain) or the
     // float2 pairs [t*cpy_ne ...] of the f16 dot product
     constexpr int cpy_ne = ggml_cuda_get_max_cpy_bytes() / 4;
-    float  Q_f32[K_tq ? ncols : 1][D/WARP_SIZE];
-    __align__(16) float2 Q_f2[K_tq ? 1 : ncols][(D/2)/nthreads_KQ];
+    float  Q_f32[Q_lane ? ncols : 1][D/WARP_SIZE];
+    __align__(16) float2 Q_f2[Q_lane ? 1 : ncols][(D/2)/nthreads_KQ];
 #pragma unroll
     for (int j = 0; j < ncols; ++j) {
         const float * Q_j = (const float *) (Q + j*nb02);
@@ -127,6 +207,11 @@ static __global__ void flash_attn_ext_vec_gqa(
             for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
                 const float q = j < ncols_valid ? Q_j[bi*WARP_SIZE + threadIdx.x] * scale : 0.0f;
                 Q_f32[j][bi] = ktq_cuda_fwht_warp(q * sign);
+            }
+        } else if constexpr (K_q8 || K_q5) {
+#pragma unroll
+            for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                Q_f32[j][bi] = j < ncols_valid ? Q_j[bi*WARP_SIZE + threadIdx.x] * scale : 0.0f;
             }
         } else {
 #pragma unroll
@@ -165,14 +250,52 @@ static __global__ void flash_attn_ext_vec_gqa(
 #pragma unroll 4
         for (int i_KQ_0 = 0; i_KQ_0 < WARP_SIZE; ++i_KQ_0) {
             const int i_KQ = threadIdx.y*WARP_SIZE + i_KQ_0;
-            const char * K_row = K + int64_t(__shfl_sync(0xFFFFFFFF, row_own, i_KQ_0, WARP_SIZE))*nb11;
+            const int    row_KQ = use_sparse ? __shfl_sync(0xFFFFFFFF, row_own, i_KQ_0, WARP_SIZE) : k_VKQ_0 + i_KQ;
+            const char * K_row  = K + int64_t(row_KQ)*nb11;
             float s[ncols];
 #pragma unroll
             for (int j = 0; j < ncols; ++j) {
-                if constexpr (K_tq) {
+                if constexpr (bits_K || K_q8 || K_q5) {
+                    s[j] = 0.0f;
+                } else if constexpr (K_tq) {
                     s[j] = vec_dot_KQ(K_row, Q_f32[j], nullptr, nullptr);
                 } else {
                     s[j] = vec_dot_KQ(K_row, Q_f2[j], nullptr, nullptr);
+                }
+            }
+            if constexpr (bits_K) {
+                // lane t owns element t of every block; the block's centroid is shared by all columns
+                const typename fattn_gqa_tq<type_K>::block * K_b = (const typename fattn_gqa_tq<type_K>::block *) K_row;
+#pragma unroll
+                for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                    const float k = cb_K[fattn_gqa_tq_index<bits_K>(K_b[bi].qs, threadIdx.x)] * __half2float(K_b[bi].d);
+#pragma unroll
+                    for (int j = 0; j < ncols; ++j) {
+                        s[j] += k * Q_f32[j][bi];
+                    }
+                }
+            }
+            if constexpr (K_q8) {
+                // lane t owns element t of every block
+                const block_q8_0 * K_b = (const block_q8_0 *) K_row;
+#pragma unroll
+                for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                    const float k = __half2float(K_b[bi].d) * K_b[bi].qs[threadIdx.x];
+#pragma unroll
+                    for (int j = 0; j < ncols; ++j) {
+                        s[j] += k * Q_f32[j][bi];
+                    }
+                }
+            }
+            if constexpr (K_q5) {
+                const block_q5_0 * K_b = (const block_q5_0 *) K_row;
+#pragma unroll
+                for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                    const float k = fattn_gqa_q5_0(K_b + bi, threadIdx.x);
+#pragma unroll
+                    for (int j = 0; j < ncols; ++j) {
+                        s[j] += k * Q_f32[j][bi];
+                    }
                 }
             }
             const float sum = fattn_gqa_reduce_cols<ncols>(s);
@@ -212,9 +335,39 @@ static __global__ void flash_attn_ext_vec_gqa(
 #pragma unroll 2
         for (int k0 = 0; k0 < WARP_SIZE; ++k0) {
             const int k = threadIdx.y*WARP_SIZE + k0;
-            const char * V_row = V + int64_t(__shfl_sync(0xFFFFFFFF, row_own, k0, WARP_SIZE))*nb21;
+            const int    row_V = use_sparse ? __shfl_sync(0xFFFFFFFF, row_own, k0, WARP_SIZE) : k_VKQ_0 + k;
+            const char * V_row = V + int64_t(row_V)*nb21;
             float2 tmp[V_rows_per_thread/2];
-            dequantize_V(V_row, tmp, threadIdx.x*V_rows_per_thread);
+            if constexpr (bits_V) {
+                // lane t owns elements [t*V_rows_per_thread, (t+1)*V_rows_per_thread), all in one block
+                const int i0 = threadIdx.x*V_rows_per_thread;
+                const typename fattn_gqa_tq<type_V>::block * V_b = (const typename fattn_gqa_tq<type_V>::block *) V_row + i0/QK_VTQ;
+                const float d = __half2float(V_b->d);
+#pragma unroll
+                for (int l = 0; l < V_rows_per_thread; l += 2) {
+                    tmp[l/2].x = cb_V[fattn_gqa_tq_index<bits_V>(V_b->qs, i0 % QK_VTQ + l + 0)] * d;
+                    tmp[l/2].y = cb_V[fattn_gqa_tq_index<bits_V>(V_b->qs, i0 % QK_VTQ + l + 1)] * d;
+                }
+            } else if constexpr (V_q5) {
+                const int i0 = threadIdx.x*V_rows_per_thread;
+                const block_q5_0 * V_b = (const block_q5_0 *) V_row + i0/QK5_0;
+#pragma unroll
+                for (int l = 0; l < V_rows_per_thread; l += 2) {
+                    tmp[l/2].x = fattn_gqa_q5_0(V_b, i0 % QK5_0 + l + 0);
+                    tmp[l/2].y = fattn_gqa_q5_0(V_b, i0 % QK5_0 + l + 1);
+                }
+            } else if constexpr (V_q8) {
+                const int i0 = threadIdx.x*V_rows_per_thread;
+                const block_q8_0 * V_b = (const block_q8_0 *) V_row + i0/QK8_0;
+                const float d = __half2float(V_b->d);
+#pragma unroll
+                for (int l = 0; l < V_rows_per_thread; l += 2) {
+                    tmp[l/2].x = d * V_b->qs[i0 % QK8_0 + l + 0];
+                    tmp[l/2].y = d * V_b->qs[i0 % QK8_0 + l + 1];
+                }
+            } else {
+                dequantize_V(V_row, tmp, threadIdx.x*V_rows_per_thread);
+            }
 #pragma unroll
             for (int j = 0; j < ncols; ++j) {
                 const float p = KQ[j*nthreads + k];

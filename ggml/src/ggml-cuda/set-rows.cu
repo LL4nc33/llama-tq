@@ -182,6 +182,151 @@ static __global__ void k_set_rows_pq(const float * __restrict__ src0,
     GGML_UNUSED(ne13);
 }
 
+// Warp-cooperative TurboQuant quantization: one warp per 32-element block, lane j owns element j.
+// The single-thread quantizers above run the whole block (signs, two FWHTs, the codebook search) in one
+// thread, so a decode step with a handful of blocks is bound by the latency of one thread. The results
+// are bit-identical to them: the warp FWHT does the same additions in the same order, and the norms are
+// accumulated serially over the broadcast elements like the single-thread loop.
+template <typename block_type> struct tq_warp_traits { static constexpr int bits = 0; };
+template <> struct tq_warp_traits<block_ktq2_1> { static constexpr int bits = 2; static constexpr bool rht = true;  };
+template <> struct tq_warp_traits<block_ktq3_1> { static constexpr int bits = 3; static constexpr bool rht = true;  };
+template <> struct tq_warp_traits<block_ktq4_1> { static constexpr int bits = 4; static constexpr bool rht = true;  };
+template <> struct tq_warp_traits<block_vtq2_1> { static constexpr int bits = 2; static constexpr bool rht = false; };
+template <> struct tq_warp_traits<block_vtq3_1> { static constexpr int bits = 3; static constexpr bool rht = false; };
+template <> struct tq_warp_traits<block_vtq4_1> { static constexpr int bits = 4; static constexpr bool rht = false; };
+
+template <typename block_type>
+static __device__ __forceinline__ const float * tq_warp_codebook() {
+    constexpr int bits = tq_warp_traits<block_type>::bits;
+    if constexpr (std::is_same_v<block_type, block_vtq2_1>) {
+        return VTQ_CUDA_CB_2BIT;
+    } else if constexpr (bits == 2) {
+        return PQ_CUDA_CB_2BIT;
+    } else if constexpr (bits == 3) {
+        return PQ_CUDA_CB_3BIT;
+    } else {
+        return PQ_CUDA_CB_4BIT;
+    }
+}
+
+// sum over the warp in the order of the single-thread loop (lane 0 first)
+static __device__ __forceinline__ float tq_warp_serial_sum_sq(const float v) {
+    float acc = 0.0f;
+#pragma unroll
+    for (int j = 0; j < WARP_SIZE; ++j) {
+        const float vj = __shfl_sync(0xFFFFFFFF, v, j, WARP_SIZE);
+        acc += vj * vj;
+    }
+    return acc;
+}
+
+template <typename block_type>
+static __device__ __forceinline__ void tq_quantize_block_warp(const float x, block_type * __restrict__ y, const int lane) {
+    constexpr int  bits = tq_warp_traits<block_type>::bits;
+    constexpr bool rht  = tq_warp_traits<block_type>::rht;
+    constexpr int  n_cb = 1 << bits;
+    const float * cb = tq_warp_codebook<block_type>();
+
+    const float norm = sqrtf(tq_warp_serial_sum_sq(x));
+    if (norm < 1e-30f) {
+        if (lane == 0) {
+            y->d = __float2half(norm);
+        }
+        if (lane < int(sizeof(y->qs))) {
+            y->qs[lane] = 0;
+        }
+        if constexpr (rht) {
+            if (lane < 4) {
+                y->sb[lane] = 0;
+            }
+        }
+        return;
+    }
+
+    float v = x * (1.0f / norm);
+    uint32_t sign_bit = 0;
+    if constexpr (rht) {
+        sign_bit = ktq_cuda_philox_6r((uint32_t) lane, ktq_cuda_derive_seed(0)) & 1;
+        v = ktq_cuda_fwht_warp(v * (sign_bit ? 1.0f : -1.0f));
+    }
+    const int best = pq_nearest<n_cb>(v, cb);
+
+    // norm correction from the reconstruction
+    float r = cb[best] * PQ_CUDA_CB_SCALE;
+    if constexpr (rht) {
+        r = ktq_cuda_fwht_warp(r) * (sign_bit ? 1.0f : -1.0f);
+    }
+    const float recon_norm = sqrtf(tq_warp_serial_sum_sq(r));
+
+    // pack the indices (and the sign bits) from ballots
+    uint32_t m[bits];
+#pragma unroll
+    for (int b = 0; b < bits; ++b) {
+        m[b] = __ballot_sync(0xFFFFFFFF, (best >> b) & 1);
+    }
+    const uint32_t m_sign = __ballot_sync(0xFFFFFFFF, sign_bit);
+    if (lane < int(sizeof(y->qs))) {
+        // byte `lane` of qs collects the index bits [8*lane, 8*lane + 8)
+        uint32_t byte = 0;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const int bit = 8*lane + k;          // bit position in the packed stream
+            const int j   = bit / bits;          // element
+            const int b   = bit % bits;          // bit of its index
+            if (j < 32) {
+                byte |= ((m[b] >> j) & 1) << k;
+            }
+        }
+        y->qs[lane] = (uint8_t) byte;
+    }
+    if constexpr (rht) {
+        if (lane < 4) {
+            y->sb[lane] = (uint8_t) (m_sign >> (8*lane));
+        }
+    }
+    if (lane == 0) {
+        y->d = __float2half(recon_norm > 1e-30f ? norm / recon_norm : norm);
+    }
+}
+
+template<typename idx_t, typename block_type>
+static __global__ void k_set_rows_pq_warp(const float * __restrict__ src0,
+                                          const idx_t * __restrict__ src1,
+                                          block_type * __restrict__ dst,
+                                          const int64_t ne_total,
+                                          const int64_t s01, const int64_t s02, const int64_t s03,
+                                          const int64_t s10, const int64_t s11, const int64_t s12,
+                                          const int64_t s1, const int64_t s2, const int64_t s3,
+                                          const uint3 ne00, const uint3 ne01, const uint3 ne02,
+                                          const uint3 ne11_fd, const uint3 ne12_fd) {
+    const int64_t i    = (int64_t(blockDim.x) * blockIdx.x + threadIdx.x) / WARP_SIZE;
+    const int     lane = threadIdx.x % WARP_SIZE;
+    if (i >= ne_total) {
+        return;
+    }
+
+    uint32_t tmp = (uint32_t) (i * 32);
+    uint2    div_mod;
+    div_mod           = fast_div_modulo(tmp, ne00);
+    const int64_t i00 = div_mod.y;
+    tmp               = div_mod.x;
+    div_mod           = fast_div_modulo(tmp, ne01);
+    const int64_t i01 = div_mod.y;
+    tmp               = div_mod.x;
+    div_mod           = fast_div_modulo(tmp, ne02);
+    const int64_t i02 = div_mod.y;
+    const int64_t i03 = div_mod.x;
+
+    const int64_t i12 = fastmodulo((uint32_t) i03, ne12_fd);
+    const int64_t i11 = fastmodulo((uint32_t) i02, ne11_fd);
+    const int64_t dst_row = *(src1 + i01*s10 + i11*s11 + i12*s12);
+
+    const float * src_block = src0 + i01*s01 + i02*s02 + i03*s03 + i00;
+    block_type  * dst_block = dst + (dst_row*s1 + i02*s2 + i03*s3) / sizeof(block_type) + i00 / 32;
+
+    tq_quantize_block_warp(src_block[lane], dst_block, lane);
+}
+
 // Template dispatch function for TurboQuant set_rows
 template<typename idx_t, typename block_type, int qk, void (*quantize_func)(const float*, block_type*, int64_t)>
 static void set_rows_cuda_pq(
@@ -216,6 +361,16 @@ static void set_rows_cuda_pq(
         const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
         const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
+        static const bool serial = getenv("GGML_CUDA_TQ_SET_ROWS_SERIAL") != nullptr; // A/B against the single-thread path
+        if constexpr (tq_warp_traits<block_type>::bits > 0) if (!serial) {
+            static_assert(qk == 32, "warp quantizer expects 32-element blocks");
+            const int64_t n_threads = ne_total * WARP_SIZE;
+            const dim3 grid_size_warp((n_threads + CUDA_SET_ROWS_BLOCK_SIZE - 1) / CUDA_SET_ROWS_BLOCK_SIZE);
+            k_set_rows_pq_warp<idx_t, block_type><<<grid_size_warp, block_size, 0, stream>>>(
+                src0_d, src1_d, dst_d, ne_total, s01, s02, s03, s10, s11, s12, s1, s2, s3,
+                ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd);
+            return;
+        }
         k_set_rows_pq<idx_t, block_type, qk, quantize_func><<<grid_size, block_size, 0, stream>>>(
             src0_d, src1_d, dst_d, ne_total, ne10, ne11, ne12, ne13, s01, s02, s03, s10, s11, s12, s1, s2, s3, ne00_fd,
             ne01_fd, ne02_fd, ne11_fd, ne12_fd);

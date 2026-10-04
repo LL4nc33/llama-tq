@@ -492,6 +492,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     if (K->type != V->type && !is_vtq_v && !(is_tq_k_early && V->type == GGML_TYPE_F16)) {
         return BEST_FATTN_KERNEL_NONE;
     }
+    // q5_0 K/V without VEC instances: batches convert to f16 for the MMA kernel, decode with GQA takes the
+    // GQA kernel (tried first in ggml_cuda_flash_attn_ext)
+    if (K->type == GGML_TYPE_Q5_0 && V->type == GGML_TYPE_Q5_0) {
+        return turing_mma_available(cc) && K->ne[0] == V->ne[0] && K->ne[0] <= 256 ? BEST_FATTN_KERNEL_MMA_F16 : BEST_FATTN_KERNEL_NONE;
+    }
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
     switch (K->type) {
@@ -668,16 +673,20 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
-    switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
+    const best_fattn_kernel best = ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst);
+    // decode with quantized K/V and grouped-query attention: one block per GQA group beats the per-head VEC
+    // kernel and the MMA kernel (which would first convert the whole cache to f16)
+    if (best != BEST_FATTN_KERNEL_NONE && ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst)) {
+        return;
+    }
+    switch (best) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
         case BEST_FATTN_KERNEL_TILE:
             ggml_cuda_flash_attn_ext_tile(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_VEC:
-            if (!ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst)) {
-                ggml_cuda_flash_attn_ext_vec(ctx, dst);
-            }
+            ggml_cuda_flash_attn_ext_vec(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_WMMA_F16:
             ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
