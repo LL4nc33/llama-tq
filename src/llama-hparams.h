@@ -53,6 +53,9 @@ struct llama_hparams {
     uint32_t n_expert_used = 0;
     uint32_t n_rel_attn_bkts = 0;
 
+    // K2 Horizon MoVA
+    uint32_t n_value_expert = 0;
+    uint32_t n_value_expert_used = 0;
     // different head size for full_attention and SWA layers
     uint32_t n_embd_head_k_full; // dimension of keys (d_k). d_q is assumed to be the same, but there are n_head q heads, and only n_head_kv k-v heads
     uint32_t n_embd_head_v_full; // dimension of values (d_v) aka n_embd_head

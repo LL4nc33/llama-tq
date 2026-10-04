@@ -503,6 +503,11 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 };
                 byte_encode = false; // uses raw UTF-8, not GPT-2 byte encoding
                 break;
+            case LLAMA_VOCAB_PRE_TYPE_K2_HORIZON:
+                regex_exprs = {
+                    "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?(?:\\p{L}|\\p{M}|\\u200C|\\u200D)+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+                };
+                break;
             default:
                 // default regex for BPE tokenization pre-processing
                 regex_exprs = {
@@ -2162,6 +2167,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             } else if (
                 tokenizer_pre == "solar-open") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_SOLAR_OPEN;
+                clean_spaces = false;
+            } else if (
+                tokenizer_pre == "k2-horizon") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_K2_HORIZON;
                 clean_spaces = false;
             } else {
                 throw std::runtime_error(format("unknown pre-tokenizer type: '%s'", tokenizer_pre.c_str()));
