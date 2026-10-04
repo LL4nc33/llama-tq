@@ -8225,6 +8225,10 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_KTQ2_1:  result = quantize_ktq2_1(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_KTQ3_1:  result = quantize_ktq3_1(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_KTQ4_1:  result = quantize_ktq4_1(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_VTQ1_1:  quantize_row_vtq1_1_ref(src + start, (block_vtq1_1 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ2_1:  quantize_row_vtq2_1_ref(src + start, (block_vtq2_1 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ3_1:  quantize_row_vtq3_1_ref(src + start, (block_vtq3_1 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ4_1:  quantize_row_vtq4_1_ref(src + start, (block_vtq4_1 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_IQ2_XXS: result = quantize_iq2_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XS:  result = quantize_iq2_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;

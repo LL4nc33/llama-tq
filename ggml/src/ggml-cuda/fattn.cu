@@ -7,6 +7,9 @@
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
+// fattn-vec-gqa.cu: TurboQuant decode with one block per GQA group
+bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 // one list per group of ncols1 queries: a column is selected if any query of the group can see it
 template <int ncols1, bool oob>
@@ -672,7 +675,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             ggml_cuda_flash_attn_ext_tile(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_VEC:
-            ggml_cuda_flash_attn_ext_vec(ctx, dst);
+            if (!ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst)) {
+                ggml_cuda_flash_attn_ext_vec(ctx, dst);
+            }
             break;
         case BEST_FATTN_KERNEL_WMMA_F16:
             ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
