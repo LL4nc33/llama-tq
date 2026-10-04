@@ -2915,7 +2915,7 @@ llm_graph_params llama_context::graph_params(
         /*.loras       =*/ loras.get(),
         /*.mctx        =*/ mctx,
         /*.cross       =*/ &cross,
-        /*.diffusion   =*/ &diffusion_cond,
+        /*.diffusion   =*/ llm_arch_is_diffusion(model.arch) ? &diffusion_cond : nullptr,
         /*.hadamard_rotations =*/ model.hadamard_rotations.empty() ? nullptr : &model.hadamard_rotations,
         /*.hadamard_inverses  =*/ model.hadamard_inverses .empty() ? nullptr : &model.hadamard_inverses,
         /*.samplers    =*/ sampling.samplers,
