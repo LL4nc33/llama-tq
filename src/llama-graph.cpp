@@ -61,12 +61,20 @@ static bool can_reuse_kq_mask(
 static ggml_tensor * ggml_mul_mat_aux(
         ggml_context * ctx,
         ggml_tensor * cur,
-        ggml_tensor * rot) {
+        ggml_tensor * rot,
+        bool keep_rows = false) {
     const auto n = rot->ne[0];
 
     ggml_tensor * res;
 
-    res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);
+    // keep_rows: keep the blocks of a row and the next axis separate from the rest, so that a
+    // tensor split along the row (attention output) or along the heads (q/k/v) maps back onto the
+    // same axis after the rotation
+    if (keep_rows && cur->ne[0] % n == 0 && ggml_is_contiguous(cur)) {
+        res = ggml_reshape_4d(ctx, cur, n, cur->ne[0]/n, cur->ne[1], cur->ne[2]*cur->ne[3]);
+    } else {
+        res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);
+    }
     res = ggml_mul_mat   (ctx, rot, res);
     res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
 
@@ -2568,12 +2576,12 @@ ggml_tensor * llm_graph_context::build_attn(
     GGML_ASSERT(v_mla == nullptr);
 
     if (inp->self_k_rot) {
-        q_cur = ggml_mul_mat_aux(ctx0, q_cur, inp->self_k_rot);
-        k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot);
+        q_cur = ggml_mul_mat_aux(ctx0, q_cur, inp->self_k_rot, cparams.split_tensor);
+        k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot, cparams.split_tensor);
     }
 
     if (inp->self_v_rot) {
-        v_cur = ggml_mul_mat_aux(ctx0, v_cur, inp->self_v_rot);
+        v_cur = ggml_mul_mat_aux(ctx0, v_cur, inp->self_v_rot, cparams.split_tensor);
     }
 
     // these nodes are added to the graph together so that they are not reordered
@@ -2607,7 +2615,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (inp->self_v_rot) {
-        cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot);
+        cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot, cparams.split_tensor);
     }
 
     if (wo) {
@@ -2736,14 +2744,14 @@ ggml_tensor * llm_graph_context::build_attn(
     auto * v_rot = is_swa ? inp->self_v_rot_swa : inp->self_v_rot;
 
     if (k_rot) {
-        q_cur = ggml_mul_mat_aux(ctx0, q_cur, k_rot);
+        q_cur = ggml_mul_mat_aux(ctx0, q_cur, k_rot, cparams.split_tensor);
         if (k_cur) {
-            k_cur = ggml_mul_mat_aux(ctx0, k_cur, k_rot);
+            k_cur = ggml_mul_mat_aux(ctx0, k_cur, k_rot, cparams.split_tensor);
         }
     }
     if (v_rot) {
         if (v_cur) {
-            v_cur = ggml_mul_mat_aux(ctx0, v_cur, v_rot);
+            v_cur = ggml_mul_mat_aux(ctx0, v_cur, v_rot, cparams.split_tensor);
         }
     }
 
@@ -2786,7 +2794,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (v_rot) {
-        cur = ggml_mul_mat_aux(ctx0, cur, v_rot);
+        cur = ggml_mul_mat_aux(ctx0, cur, v_rot, cparams.split_tensor);
     }
 
     if (wo) {

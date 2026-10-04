@@ -279,12 +279,14 @@ llama_context::llama_context(
 
     // the folded gate activations of the gated delta net op exist on CPU and CUDA only
     cparams.gdn_raw_gates = getenv("LLAMA_GDN_RAW_GATES_DISABLE") == nullptr;
+    cparams.split_tensor  = false;
     for (const auto & d : model.devices) {
         ggml_backend_reg_t reg  = d.dev ? ggml_backend_dev_backend_reg(d.dev) : nullptr;
         const char *       name = reg ? ggml_backend_reg_name(reg) : nullptr;
         if (d.is_meta || name == nullptr || (strcmp(name, "CUDA") != 0 && strcmp(name, "CPU") != 0)) {
             cparams.gdn_raw_gates = false;
         }
+        cparams.split_tensor = cparams.split_tensor || d.is_meta;
     }
     cparams.fused_hc     = model.arch == LLM_ARCH_QWEN4EXP;
 
