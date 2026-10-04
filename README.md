@@ -63,8 +63,8 @@ Actively maintained and used daily on Turing GPUs. Upstream fixes are cherry-pic
 upstream features are integrated case by case. New kernels and model paths are checked
 against the CPU backend (`test-backend-ops`) and by perplexity against reference builds.
 [ROADMAP.md](ROADMAP.md) lists what is shipped, in flight and known to be broken;
-[CHANGELOG.md](CHANGELOG.md) lists recent changes. Detailed benchmarks with settings will be
-published separately.
+[CHANGELOG.md](CHANGELOG.md) lists recent changes, [docs/models.md](docs/models.md) the tested setups per model,
+[docs/turboquant.md](docs/turboquant.md) the KV types and kernels.
 
 ## License
 
