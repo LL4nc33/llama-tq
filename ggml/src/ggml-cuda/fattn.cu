@@ -548,9 +548,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // Previously KTQ3_1/4_1 were gated off because ggml_cuda_flash_attn_ext_mma_ktq_split
         // passed byte strides instead of block-unit strides to ggml_get_to_fp16_nc_cuda;
         // fixed in fattn-mma-ktq.cu.
-        if ((K->type == GGML_TYPE_KTQ2_1 || K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1)
-            && !is_tq_v && !is_vtq_v && V->type == GGML_TYPE_F16 &&
-            turing_mma_available(cc) && Q->ne[1] >= 8) {
+        // Batches (prefill): expand TurboQuant K (KTQ) and/or V (VTQ) to f16 and use the MMA kernel;
+        // the VEC kernel is slow for many query columns at long context.
+        const bool k_split = K->type == GGML_TYPE_F16 || K->type == GGML_TYPE_KTQ1_1 || K->type == GGML_TYPE_KTQ2_1 ||
+                             K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1;
+        const bool v_split = V->type == GGML_TYPE_F16 || (is_vtq_v && ggml_get_to_fp16_nc_cuda(V->type) != nullptr);
+        const bool d_split = K->ne[0] == V->ne[0] && (K->ne[0] == 64 || K->ne[0] == 80 || K->ne[0] == 96 ||
+                             K->ne[0] == 112 || K->ne[0] == 128 || K->ne[0] == 256);
+        if (k_split && v_split && d_split && turing_mma_available(cc) && Q->ne[1] >= 8) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
         return BEST_FATTN_KERNEL_VEC;
