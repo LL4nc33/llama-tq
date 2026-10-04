@@ -689,9 +689,20 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(co
                 return src_ss[0];
             }
         }
+        if (axis == GGML_BACKEND_SPLIT_AXIS_0 && tensor->ne[0] == tensor->src[0]->ne[0] && tensor->nb[0] == tensor->src[0]->nb[0] &&
+                tensor->view_offs % tensor->src[0]->nb[1] == 0) {
+            // whole rows of a tensor split along its rows (e.g. the slices of a MUL_MAT_ID result that are summed up)
+            return src_ss[0];
+        }
         if (!ggml_is_permuted(tensor) && !ggml_is_permuted(tensor->src[0]) && axis >= 0 && axis < GGML_MAX_DIMS-1) {
             for (int dim = 0; dim < GGML_MAX_DIMS-1; dim++) {
                 if (tensor->nb[dim+1] == tensor->src[0]->nb[axis+1]) {
+                    if (tensor->ne[dim] == tensor->src[0]->ne[axis]) {
+                        // the whole split axis is in the view: keep the slices of the devices
+                        ggml_backend_meta_split_state ret = src_ss[0];
+                        ret.axis = ggml_backend_meta_split_axis(dim);
+                        return ret;
+                    }
                     return {ggml_backend_meta_split_axis(dim), {0}, 1};
                 }
             }

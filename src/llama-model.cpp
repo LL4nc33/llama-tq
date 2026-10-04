@@ -348,13 +348,13 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     };
 
     const std::regex pattern_q_weight        ("blk\\.\\d*\\.attn_q.weight");
-    const std::regex pattern_kv_weight       ("blk\\.\\d*\\.attn_(k|v).weight");
+    const std::regex pattern_kv_weight       ("blk\\.\\d*\\.attn_(k|v|v_exps).weight"); // attn_v_exps: K2 Horizon routed value experts
     const std::regex pattern_qkv_weight      ("blk\\.\\d*\\.attn_qkv.weight");
     const std::regex pattern_q_bias          ("blk\\.\\d*\\.attn_q\\.bias");
     const std::regex pattern_kv_bias         ("blk\\.\\d*\\.attn_(k|v)\\.bias");
     const std::regex pattern_qkv_bias        ("blk\\.\\d*\\.attn_qkv.bias");
     const std::regex pattern_qk_norm         ("blk\\.\\d*\\.attn_(q|k)_norm\\.weight");
-    const std::regex pattern_kv_cache        ("cache_(k|v)_l\\d*");
+    const std::regex pattern_kv_cache        ("cache_(k|v)(_staging)?_l\\d*"); // _staging: f16 staging of a deferred TurboQuant cache
     const std::regex pattern_attn_sinks      ("blk\\.\\d*\\.attn_sinks.weight");
     const std::regex pattern_attn_out_weight ("blk\\.\\d*\\.attn_output.weight");
     const std::regex pattern_attn_out_bias   ("blk\\.\\d*\\.attn_output.bias");
