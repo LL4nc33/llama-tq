@@ -28,15 +28,14 @@ doc — this file is the index. Feedback and PRs welcome.
 
 ## 🎯 Planned
 
-- Fast decode kernels for head size 512 (Gemma 4 global layers).
 - Full-capability fine-tuning (attention backward, dense gradient flow through
   quantised activations, SSM training). → [finetune.md](docs/finetune.md)
 
 ## Known issues
 
-- **Gemma 4:** `llama-perplexity` reports implausible values even with an f16 cache, and
-  decode slows down steeply as the context fills. Generation itself is correct. Under
-  investigation. → [models.md](docs/models.md)
+- **Gemma 4 perplexity:** the instruction-tuned models score implausibly high on raw wikitext
+  with any engine (upstream gives the same values); use other measures for their KV quality.
+  → [models.md](docs/models.md)
 - **Small models and 2-bit K:** Qwen3-4B and Ministral-3B are sensitive to low-bit K; use
   `ktq4_1` or q8_0 there. → [turboquant.md](docs/turboquant.md)
 

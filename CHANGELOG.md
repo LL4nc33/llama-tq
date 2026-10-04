@@ -17,6 +17,7 @@
 - Fixed: the fused Gated DeltaNet state gather could read freed row ids (illegal memory access on long prompts with hybrid Qwen3.5 / 3.8 models).
 - Fixed: Gemma 4 prompt processing with TurboQuant KV fell back to the vector kernel at head size 512 and was several times slower.
 - Fixed: gpt-oss (and other graphs without an output-ids null check) crashed while reserving the compute graph.
+- Tensor-core decode kernel at head size 512 (Gemma 4 global layers with GQA 8-16): Gemma-4-12B with `ktq4_1`/`vtq4_1` decodes 28.8 t/s at 32k context instead of 16.4 (f16 KV: 31.0). q5_0 K/V at head size 512 no longer falls back to the CPU.
 
 ## 2026-10-03
 

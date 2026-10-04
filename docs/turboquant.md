@@ -217,7 +217,7 @@ Decode (one query token per sequence) has two dedicated CUDA kernels for quantiz
 
 | Kernel | Source | How it works | Covers |
 |---|---|---|---|
-| Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128) or 32 (D=256) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group). | `ktq{2,3,4}_1` × `vtq{2,3,4}_1`, q5_0, and KTQ or VTQ mixed with f16 at D=256 |
+| Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group). | `ktq{2,3,4}_1` × `vtq{2,3,4}_1` and q5_0 at D=128/256/512; KTQ or VTQ mixed with f16 at D=256/512; q8_0 at D=512 |
 | GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4 or 8 query heads), one warp per K/V row, the column dot products reduced together; 3/4-bit codebooks in shared memory. Supports the sparse index lists of Qwen3.8-Flash-Next. | KTQ, VTQ v1, q8_0, q5_0, f16 mixes at D=128/256 |
 
 Attention time at 16k context (one RTX 2060, from `test-backend-ops perf`):
@@ -225,6 +225,7 @@ Attention time at 16k context (one RTX 2060, from `test-backend-ops perf`):
 | Shape | f16 | q8_0 | `ktq4_1`/`vtq4_1` | q5_0 |
 |---|---:|---:|---:|---:|
 | D=128, GQA 4 (K2-Horizon) | 229 µs | 216 µs | 212 µs | 226 µs |
+| D=512, GQA 16 (Gemma-4-12B global layers, 32k) | 315 µs | 410 µs | 372 µs (before: 6636 µs) | – |
 
 End to end on 2× RTX 2060: Qwen3.8-27B with `ktq4_1`/`vtq4_1` decodes 17.2 t/s at 118k context; Ternary-Bonsai-2-27B with two 200k slots 31 t/s at 27k.
 

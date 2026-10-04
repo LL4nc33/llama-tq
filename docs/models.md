@@ -96,8 +96,10 @@ Decode: 61 t/s short, 37 t/s at 72k. KV PPL +0.1 % over f16.
 
 ## Known limitations
 
-- **Gemma 4:** generation is correct, but `llama-perplexity` reports implausible values even
-  with an f16 cache, and decode slows down steeply as the context fills. Both are under
-  investigation.
+- **Gemma 4:** wikitext perplexity of the instruction-tuned models is in the hundreds to tens of
+  thousands with any engine (upstream llama.cpp gives the same values, and they swing by a third
+  between its own FA and non-FA paths), so it is no measure of KV quality for these models.
+  Decode with a quantized cache at head size 512 is fixed since 2026-10-04: Gemma-4-12B with
+  `ktq4_1`/`vtq4_1` decodes 28.8 t/s at 32k context (f16 KV 31.0, before the fix 16.4).
 - **gpt-oss:** loading crashed while reserving the compute graph; fixed on 2026-10-04,
   benchmark pending.
