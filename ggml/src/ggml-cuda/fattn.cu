@@ -9,6 +9,8 @@
 
 // fattn-vec-gqa.cu: TurboQuant decode with one block per GQA group
 bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+// fattn-tq-wmma.cu: tensor-core decode for quantized KV (GGML_CUDA_TQ_WMMA=0 disables it)
+bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 // one list per group of ncols1 queries: a column is selected if any query of the group can see it
@@ -676,7 +678,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     const best_fattn_kernel best = ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst);
     // decode with quantized K/V and grouped-query attention: one block per GQA group beats the per-head VEC
     // kernel and the MMA kernel (which would first convert the whole cache to f16)
-    if (best != BEST_FATTN_KERNEL_NONE && ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst)) {
+    if (best != BEST_FATTN_KERNEL_NONE && (ggml_cuda_flash_attn_ext_tq_wmma(ctx, dst) || ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst))) {
         return;
     }
     switch (best) {
