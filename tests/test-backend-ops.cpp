@@ -9283,6 +9283,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // TurboQuant K/V at head 64 with attention sinks (gpt-oss: 8 KV heads, GQA 8)
+    for (bool sinks : {false, true}) {
+        for (int64_t nb : {1, 2, 8}) {
+            for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+                    {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}}) {
+                test_cases.emplace_back(new test_flash_attn_ext(64, 64, 8, {8, 1}, 512, nb, true, sinks, 0, 0,
+                            GGML_PREC_F32, kv_types.first, kv_types.second));
+            }
+        }
+    }
+
     // quantized K/V decode at head 512 (Gemma 4 global layers: GQA 8 or 16)
     for (int nr2 : {8, 16}) {
         for (int64_t nb : {1, 2}) {

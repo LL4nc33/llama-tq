@@ -81,7 +81,12 @@ static __global__ void flash_attn_ext_vec(
 #endif // GGML_USE_HIP
 
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
-    constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_KQ_q;
+    // KTQ dots Q in the Hadamard domain with one lane per element of a 32-block, so it needs whole warps
+    // (D/4 = 16 threads at D=64 would take the q8_1 branch, which gets no Q_q8 here)
+    constexpr bool K_is_ktq   = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 ||
+                                type_K == GGML_TYPE_KTQ4_1 || type_K == GGML_TYPE_XKTQ2_1;
+    constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb :
+                                K_is_ktq ? WARP_SIZE : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
 
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
@@ -668,7 +673,12 @@ static __global__ void flash_attn_ext_vec_paired(
 #endif // GGML_USE_HIP
 
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
-    constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_KQ_q;
+    // KTQ dots Q in the Hadamard domain with one lane per element of a 32-block, so it needs whole warps
+    // (D/4 = 16 threads at D=64 would take the q8_1 branch, which gets no Q_q8 here)
+    constexpr bool K_is_ktq   = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 ||
+                                type_K == GGML_TYPE_KTQ4_1 || type_K == GGML_TYPE_XKTQ2_1;
+    constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb :
+                                K_is_ktq ? WARP_SIZE : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
 
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");

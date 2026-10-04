@@ -142,7 +142,10 @@ static __global__ void flash_attn_ext_vec_vtq2_cached(
     constexpr int nthreads_V_q  = (D/4 < 32 ? D/4 : 32);
 
     constexpr int nthreads    = ggml_cuda_fattn_vec_vtq2_get_nthreads_device();
-    constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_KQ_q;
+    // KTQ needs whole warps (see fattn-vec.cuh)
+    constexpr bool K_is_ktq   = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 || type_K == GGML_TYPE_KTQ4_1;
+    constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb :
+                                K_is_ktq ? WARP_SIZE : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
 
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
