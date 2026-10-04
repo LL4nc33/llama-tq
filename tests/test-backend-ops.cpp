@@ -7941,6 +7941,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_get_rows(GGML_TYPE_I32, 256, 5, 4, b, 1, v));
         }
     }
+    // TurboQuant K-cache types: the dequantization (sign bits, codebook, inverse rotation) against the
+    // CPU reference, at the head sizes the KV cache uses
+    for (ggml_type type : {GGML_TYPE_KTQ1_1, GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ4_1}) {
+        for (int n : {128, 256}) {
+            test_cases.emplace_back(new test_get_rows(type, n, 64, 16, 1, 1, false));
+            test_cases.emplace_back(new test_get_rows(type, n, 64, 16, 4, 1, true));
+        }
+    }
 
     test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_F32, 1, 8, 2, 1, false));
     for (ggml_type type : all_types) {

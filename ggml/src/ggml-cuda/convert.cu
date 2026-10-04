@@ -893,7 +893,7 @@ static __global__ void dequantize_block_ktq1_1_nc(const void * __restrict__ vx, 
             float val = PQ_CUDA_CB_1BIT[idx] * PQ_CUDA_CB_SCALE;
             val = ktq_cuda_fwht_warp(val);
             const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-            val *= (1.0f - 2.0f * sb) * norm;
+            val *= (2.0f * sb - 1.0f) * norm;
             if (ib_in_row * QK_KTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
         }
     }
@@ -930,7 +930,7 @@ static __global__ void dequantize_block_ktq2_1_nc(const void * __restrict__ vx, 
             float val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
             val = ktq_cuda_fwht_warp(val);
             const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-            val *= (1.0f - 2.0f * sb) * norm;
+            val *= (2.0f * sb - 1.0f) * norm;
             if (ib_in_row * QK_KTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
         }
     }
@@ -968,7 +968,7 @@ static __global__ void dequantize_block_ktq3_1_nc(const void * __restrict__ vx, 
             float val = PQ_CUDA_CB_3BIT[cb_idx] * PQ_CUDA_CB_SCALE;
             val = ktq_cuda_fwht_warp(val);
             const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-            val *= (1.0f - 2.0f * sb) * norm;
+            val *= (2.0f * sb - 1.0f) * norm;
             if (ib_in_row * QK_KTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
         }
     }
@@ -1001,7 +1001,7 @@ static __global__ void dequantize_block_ktq4_1_nc(const void * __restrict__ vx, 
             float val = PQ_CUDA_CB_4BIT[idx] * PQ_CUDA_CB_SCALE;
             val = ktq_cuda_fwht_warp(val);
             const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-            val *= (1.0f - 2.0f * sb) * norm;
+            val *= (2.0f * sb - 1.0f) * norm;
             if (ib_in_row * QK_KTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
         }
     }

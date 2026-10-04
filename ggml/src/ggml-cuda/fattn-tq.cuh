@@ -95,7 +95,7 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq1_1(
 
     // Inverse RHT part 2 + scale: branchless sign flip; norm==0 zeros result.
     const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
-    return val * (1.0f - 2.0f * sign_bit) * norm;
+    return val * (2.0f * sign_bit - 1.0f) * norm;
 }
 
 static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq2_1(
@@ -112,7 +112,7 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq2_1(
 
     // Inverse RHT part 2 + scale.
     const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
-    return val * (1.0f - 2.0f * sign_bit) * norm;
+    return val * (2.0f * sign_bit - 1.0f) * norm;
 }
 
 static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq3_1(
@@ -133,7 +133,7 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq3_1(
 
     // Step 3: Fused sign×norm — branchless
     const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
-    return val * (1.0f - 2.0f * sign_bit) * norm;
+    return val * (2.0f * sign_bit - 1.0f) * norm;
 }
 
 static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq4_1(
@@ -149,7 +149,7 @@ static __device__ __forceinline__ float ktq_fattn_dequant_elem_ktq4_1(
 
     // Step 3: Fused sign×norm — branchless
     const int sign_bit = (x[ib].sb[lane / 8] >> (lane % 8)) & 1;
-    return val * (1.0f - 2.0f * sign_bit) * norm;
+    return val * (2.0f * sign_bit - 1.0f) * norm;
 }
 
 // Legacy serial dequant — kept for non-FA paths (e.g. standalone dequantize kernels)
@@ -169,7 +169,7 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq1_1(const bloc
     #pragma unroll
     for (int j = 0; j < 32; ++j) {
         const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-        buf[j] *= (1.0f - 2.0f * sb) * norm;
+        buf[j] *= (2.0f * sb - 1.0f) * norm;
     }
 }
 
@@ -189,7 +189,7 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq2_1(const bloc
     #pragma unroll
     for (int j = 0; j < 32; ++j) {
         const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-        buf[j] *= (1.0f - 2.0f * sb) * norm;
+        buf[j] *= (2.0f * sb - 1.0f) * norm;
     }
 }
 
@@ -222,7 +222,7 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_xktq2_1_paired(
     #pragma unroll
     for (int j = 0; j < 32; ++j) {
         const int sb = (x_dom[ib].sb[j / 8] >> (j % 8)) & 1;
-        buf[j] *= (1.0f - 2.0f * sb) * norm;
+        buf[j] *= (2.0f * sb - 1.0f) * norm;
     }
 }
 
@@ -247,7 +247,7 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq3_1(const bloc
     #pragma unroll
     for (int j = 0; j < 32; ++j) {
         const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-        buf[j] *= (1.0f - 2.0f * sb) * norm;
+        buf[j] *= (2.0f * sb - 1.0f) * norm;
     }
 }
 
@@ -267,7 +267,7 @@ static __device__ __forceinline__ void ktq_fattn_dequant_block_ktq4_1(const bloc
     #pragma unroll
     for (int j = 0; j < 32; ++j) {
         const int sb = (x[ib].sb[j / 8] >> (j % 8)) & 1;
-        buf[j] *= (1.0f - 2.0f * sb) * norm;
+        buf[j] *= (2.0f * sb - 1.0f) * norm;
     }
 }
 
@@ -312,7 +312,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq1_1(
 
             // 1. Sign-flip Q for this K-block (branchless)
             const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
 
             // 2. FWHT(Q_signed) -> rotate Q into Hadamard space (5 shuffles)
             float Q_rot = ktq_cuda_fwht_warp(Q_signed);
@@ -388,7 +388,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq2_1(
             // 1. Apply D_s (diagonal signs from sb[]) to Q — pushing the
             //    inverse of the quantizer's RHT onto the query side.
             const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
 
             // 2. Rotate Q into Hadamard space: H_n · (D_s · Q).
             float Q_rot = ktq_cuda_fwht_warp(Q_signed);
@@ -470,7 +470,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_xktq2_1_paired(
         for (int bi = 0; bi < nblocks; ++bi) {
             const float norm = (float)K_sub[bi].d;     // subordinate's own scale
             const int sb  = (K_dom[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
             float Q_rot    = ktq_cuda_fwht_warp(Q_signed);
             const int idx  = (K_dom[bi].qs[lane / 4] >> (2 * (lane % 4))) & 0x3;
             accum += PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE * Q_rot * norm;
@@ -526,7 +526,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq3_1(
             // NOTE: no early-exit — all lanes must participate in FWHT warp shuffle
 
             const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
             float Q_rot = ktq_cuda_fwht_warp(Q_signed);
 
             // 3-bit unpack
@@ -585,7 +585,7 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq4_1(
             // NOTE: no early-exit — all lanes must participate in FWHT warp shuffle
 
             const int sb = (K_tq[bi].sb[lane / 8] >> (lane % 8)) & 1;
-            float Q_signed = Q_f32[bi] * (1.0f - 2.0f * sb);
+            float Q_signed = Q_f32[bi] * (2.0f * sb - 1.0f);
             float Q_rot = ktq_cuda_fwht_warp(Q_signed);
 
             // 4-bit nibble unpack

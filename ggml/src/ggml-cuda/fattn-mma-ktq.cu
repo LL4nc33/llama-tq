@@ -68,7 +68,14 @@ void ggml_cuda_flash_attn_ext_mma_ktq(ggml_backend_cuda_context & ctx, ggml_tens
     const ggml_tensor * V = dst->src[2];
 
     // Inline path: DKQ=DV=128, GQA ratio 4, KTQ2_1 K + f16 V (Ministral-3 family).
-    if (K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
+    // Its output does not match flash attention over the dequantized K (relative error ~0.8 at
+    // 32 queries), while the split-dequant path below matches exactly, so it is opt-in for
+    // debugging only (GGML_CUDA_KTQ_INLINE=1).
+    static const bool inline_enabled = [] {
+        const char * env = getenv("GGML_CUDA_KTQ_INLINE");
+        return env != nullptr && atoi(env) == 1;
+    }();
+    if (inline_enabled && K->type == GGML_TYPE_KTQ2_1 && V->type == GGML_TYPE_F16 &&
         Q->ne[0] == 128 && V->ne[0] == 128) {
         const int gqa_ratio = Q->ne[2] / K->ne[2];
         if (gqa_ratio == 4) {

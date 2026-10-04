@@ -419,7 +419,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_ktq_load_tile_K_ktq2_1
                     val = PQ_CUDA_CB_2BIT[idx] * PQ_CUDA_CB_SCALE;
                     val = ktq_cuda_fwht_warp(val);
                     const int sb = (row[ib].sb[tid >> 3] >> (tid & 7)) & 1;
-                    val *= (1.0f - 2.0f * sb) * norm;
+                    val *= (2.0f * sb - 1.0f) * norm;
                 }
             }
             tile_row_h[ib * QK_KTQ + tid] = __float2half(val);

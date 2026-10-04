@@ -129,6 +129,10 @@ __device__ __constant__ static float PQ_CUDA_CB_4BIT[16] = {
 
 #define PQ_CUDA_CB_SCALE 0.17677669529663689f // 1/sqrt(32), cancels the normalized-FWHT scaling
 
+// KTQ sign bits (block.sb): bit j set means the RHT sign of element j is +1, clear means -1
+// (written by the CPU reference and the CUDA quantizers as philox & 1). Readers apply
+// (2*bit - 1); the inverted form (1 - 2*bit) negates every dequantized K value.
+
 // VTQ codebooks — tuned for the post-graph-rotation marginal.
 // The graph-level rotation (a fixed D·H·D with per-channel signs, applied
 // once in the compute graph before cache write) does not re-randomize on
@@ -227,6 +231,19 @@ static __device__ __forceinline__ uint16_t ktq_cuda_derive_seed(int64_t block_in
 // Probabilistically chooses between two nearest centroids.
 // This eliminates first-order softmax perturbation when K+V are both quantized.
 // ============================================================
+// Nearest centroid (as the CPU reference quantizer does). For the K cache this is clearly better than
+// stochastic rounding: the softmax amplifies per-element variance, while a small bias is harmless.
+template <int N_CB>
+static __device__ __forceinline__ int pq_nearest(float val, const float * codebook) {
+    int best = 0;
+    float best_d = 1e30f;
+    for (int c = 0; c < N_CB; c++) {
+        const float d = fabsf(val - codebook[c] * PQ_CUDA_CB_SCALE);
+        if (d < best_d) { best = c; best_d = d; }
+    }
+    return best;
+}
+
 template <int N_CB>
 static __device__ __forceinline__ int pq_stochastic_round(float val, const float * codebook, uint32_t rng) {
     // Find two nearest centroids
@@ -350,7 +367,7 @@ static __global__ void dequantize_block_ktq1_1_v2(
     // Inverse RHT, part 2 + scale: sb[] stores the original diagonal sign.
     // (1 − 2·b) maps {0,1} → {+1,−1} without a branch.
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (base + tid < ne) yy[base + tid] = ggml_cuda_cast<dst_t>(val);
 }
@@ -394,7 +411,7 @@ static __global__ void dequantize_block_ktq2_1_v2(
 
     // Inverse RHT part 2 + scale: branchless sign flip from sb[].
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (base + tid < ne) yy[base + tid] = ggml_cuda_cast<dst_t>(val);
 }
@@ -437,7 +454,7 @@ static __global__ void dequantize_block_ktq3_1_v2(
 
     // Inverse RHT part 2 + scale.
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (base + tid < ne) yy[base + tid] = ggml_cuda_cast<dst_t>(val);
 }
@@ -567,11 +584,10 @@ static __device__ void ktq_cuda_quantize_ktq2_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: codebook quantize — stochastic rounding (makes E[K_q] = K, unbiased)
+    // Step 4: codebook quantize — nearest centroid (as the CPU reference)
     memset(y->qs, 0, 8);
     for (int j = 0; j < 32; j++) {
-        const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
-        const int best = pq_stochastic_round<4>(rotated[j], PQ_CUDA_CB_2BIT, rng);
+        const int best = pq_nearest<4>(rotated[j], PQ_CUDA_CB_2BIT);
         y->qs[j / 4] |= (uint8_t)(best << (2 * (j % 4)));
     }
 
@@ -626,11 +642,10 @@ static __device__ void ktq_cuda_quantize_ktq3_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // 3-bit codebook quantize — stochastic rounding
+    // 3-bit codebook quantize — nearest centroid
     memset(y->qs, 0, 12);
     for (int j = 0; j < 32; j++) {
-        const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
-        const int best = pq_stochastic_round<8>(rotated[j], PQ_CUDA_CB_3BIT, rng);
+        const int best = pq_nearest<8>(rotated[j], PQ_CUDA_CB_3BIT);
         // Pack 3-bit
         const int bit_off = j * 3;
         const int byte_idx = bit_off / 8;
@@ -726,7 +741,7 @@ static __global__ void k_get_rows_ktq1_1(
     // Inverse RHT: normalized FWHT (self-inverse) + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
 }
@@ -774,7 +789,7 @@ static __global__ void k_get_rows_ktq2_1(
     // Inverse RHT: normalized FWHT + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
 }
@@ -826,7 +841,7 @@ static __global__ void k_get_rows_ktq3_1(
     // Inverse RHT: normalized FWHT + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
 }
@@ -941,7 +956,7 @@ static __global__ void dequantize_block_ktq4_1_v2(
 
     // Inverse RHT part 2 + scale: branchless sign flip from sb[].
     const int sb = (x[ib].sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (base + tid < ne) yy[base + tid] = ggml_cuda_cast<dst_t>(val);
 }
@@ -988,11 +1003,10 @@ static __device__ void ktq_cuda_quantize_ktq4_1_block(const float * __restrict__
     }
     ktq_cuda_fwht_32_serial(rotated);
 
-    // Step 4: codebook quantize — stochastic rounding with 16 centroids
+    // Step 4: codebook quantize — nearest of 16 centroids
     memset(y->qs, 0, 16);
     for (int j = 0; j < 32; j++) {
-        const uint32_t rng = ktq_cuda_philox_6r(j + 32, seed);
-        const int best = pq_stochastic_round<16>(rotated[j], PQ_CUDA_CB_4BIT, rng);
+        const int best = pq_nearest<16>(rotated[j], PQ_CUDA_CB_4BIT);
         y->qs[j / 2] |= (uint8_t)(best << (4 * (j % 2)));
     }
 
@@ -1065,7 +1079,7 @@ static __global__ void k_get_rows_ktq4_1(
     // Inverse RHT: normalized FWHT + stored sign flip + scale.
     val = ktq_cuda_fwht_warp(val);
     const int sb = (xb->sb[tid / 8] >> (tid % 8)) & 1;
-    val *= (1.0f - 2.0f * sb) * norm;
+    val *= (2.0f * sb - 1.0f) * norm;
 
     if (out_base + tid < ne00) dst_row[out_base + tid] = ggml_cuda_cast<dst_t>(val);
 }

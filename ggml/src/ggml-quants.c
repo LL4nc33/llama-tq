@@ -2521,6 +2521,39 @@ size_t quantize_tq2_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst,
 // TurboQuant weight-quant wrappers: reuse the existing per-row _ref kernels.
 // quant_weights (imatrix) is currently unused — the RHT + Lloyd-Max codebook
 // is data-independent at the block level.
+size_t quantize_ktq1_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    const size_t row_size = ggml_row_size(GGML_TYPE_KTQ1_1, n_per_row);
+    for (int64_t r = 0; r < nrow; ++r) {
+        quantize_row_ktq1_1_ref(src + r*n_per_row,
+                                (block_ktq1_1 *)((char *)dst + r*row_size),
+                                n_per_row);
+    }
+    return nrow * row_size;
+}
+
+size_t quantize_ktq2_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    const size_t row_size = ggml_row_size(GGML_TYPE_KTQ2_1, n_per_row);
+    for (int64_t r = 0; r < nrow; ++r) {
+        quantize_row_ktq2_1_ref(src + r*n_per_row,
+                                (block_ktq2_1 *)((char *)dst + r*row_size),
+                                n_per_row);
+    }
+    return nrow * row_size;
+}
+
+size_t quantize_ktq4_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    const size_t row_size = ggml_row_size(GGML_TYPE_KTQ4_1, n_per_row);
+    for (int64_t r = 0; r < nrow; ++r) {
+        quantize_row_ktq4_1_ref(src + r*n_per_row,
+                                (block_ktq4_1 *)((char *)dst + r*row_size),
+                                n_per_row);
+    }
+    return nrow * row_size;
+}
+
 size_t quantize_ktq3_1(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     (void)quant_weights;
     const size_t row_size = ggml_row_size(GGML_TYPE_KTQ3_1, n_per_row);
