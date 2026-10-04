@@ -563,8 +563,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         const bool k_split = K->type == GGML_TYPE_F16 || K->type == GGML_TYPE_KTQ1_1 || K->type == GGML_TYPE_KTQ2_1 ||
                              K->type == GGML_TYPE_KTQ3_1 || K->type == GGML_TYPE_KTQ4_1;
         const bool v_split = V->type == GGML_TYPE_F16 || (is_vtq_v && ggml_get_to_fp16_nc_cuda(V->type) != nullptr);
+        // the MMA kernel takes head size 512 (Gemma 4 global layers) only with GQA batching
         const bool d_split = K->ne[0] == V->ne[0] && (K->ne[0] == 64 || K->ne[0] == 80 || K->ne[0] == 96 ||
-                             K->ne[0] == 112 || K->ne[0] == 128 || K->ne[0] == 256);
+                             K->ne[0] == 112 || K->ne[0] == 128 || K->ne[0] == 256 || (K->ne[0] == 512 && gqa_opt_applies));
         if (k_split && v_split && d_split && turing_mma_available(cc) && Q->ne[1] >= 8) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
