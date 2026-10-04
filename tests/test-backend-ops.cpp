@@ -9283,6 +9283,20 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // quantized K/V decode at head 512 (Gemma 4 global layers: GQA 8 or 16)
+    for (int nr2 : {8, 16}) {
+        for (int64_t nb : {1, 2}) {
+            for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+                    {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1},
+                    {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}, {GGML_TYPE_F16, GGML_TYPE_VTQ4_1},
+                    {GGML_TYPE_F16, GGML_TYPE_VTQ2_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0},
+                    {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}}) {
+                test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {nr2, 1}, 1024, nb, true, false, 0, 0,
+                            GGML_PREC_F32, kv_types.first, kv_types.second));
+            }
+        }
+    }
+
     // TurboQuant K/V with sparse attention (qwen4exp: head 256, 2 KV heads, GQA 12, n_kv_max cells per query)
     for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
             {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ2_1, GGML_TYPE_F16}, {GGML_TYPE_F16, GGML_TYPE_VTQ2_1}}) {
@@ -9717,6 +9731,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_KTQ2_1, GGML_TYPE_F16},
             {GGML_TYPE_F16, GGML_TYPE_VTQ2_1}, {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}}) {
         test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {6, 1}, 32768, 1, true, false, 0, 0,
+                    GGML_PREC_F32, kv_types.first, kv_types.second));
+    }
+
+    // KV decode, Gemma-4-12B global attention (head 512, 1 KV head, GQA 16) at 32k
+    for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},
+            {GGML_TYPE_F16, GGML_TYPE_VTQ4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}}) {
+        test_cases.emplace_back(new test_flash_attn_ext(512, 512, 1, {16, 1}, 32768, 1, true, false, 0, 0,
                     GGML_PREC_F32, kv_types.first, kv_types.second));
     }
 

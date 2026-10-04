@@ -17,7 +17,7 @@ namespace tq_wmma = nvcuda::wmma;
 #define GGML_CUDA_TQ_WMMA_NWARPS 4
 #endif
 #ifndef GGML_CUDA_TQ_WMMA_T
-#define GGML_CUDA_TQ_WMMA_T(D) ((D) == 256 ? 32 : 64) // K/V rows per tile (64 measured faster at D 128, 32 keeps D 256 in 48 KB)
+#define GGML_CUDA_TQ_WMMA_T(D) ((D) == 512 ? 16 : (D) == 256 ? 32 : 64) // K/V rows per tile (64 measured faster at D 128, 32/16 keep D 256/512 in 48 KB)
 #endif
 #ifndef GGML_CUDA_TQ_WMMA_MIN_BLOCKS
 #define GGML_CUDA_TQ_WMMA_MIN_BLOCKS 1
@@ -139,10 +139,16 @@ static __global__ void flash_attn_ext_tq_wmma(
     constexpr int bits_K   = fattn_gqa_tq<type_K>::bits;
     constexpr int bits_V   = fattn_gqa_tq<type_V>::bits;
     constexpr float LOG2E  = 1.4426950408f;
+    constexpr int nrt      = T/16;                            // 16-row tiles of S
+    constexpr int nsplit   = D >= 512 ? nwarps/nrt : 1;       // warps per S row tile, each over D/nsplit (partial sums)
+    // the partial O of a tile goes through the tile buffer as float, in nphase slices of the head dimension
+    constexpr int nphase   = (D*ncols*sizeof(float) + T*ldt*sizeof(half) - 1) / (T*ldt*sizeof(half));
+    static_assert(nrt*nsplit <= nwarps, "too few warps for the S tiles");
+    static_assert((D/nphase) % (D/nwarps) == 0, "an O slice must hold whole warp ranges");
 
     __shared__ __align__(32) half  tile[T*ldt];  // K tile, then V tile, then the partial O as float
     __shared__ __align__(32) half  Qs[ncols*ldt];
-    __shared__ __align__(32) float S[T*ncols];
+    __shared__ __align__(32) float S[nsplit*T*ncols];
     __shared__ __align__(32) half  P[T*ldp];
     __shared__ float m_s[ncols];
     __shared__ float l_s[ncols];
@@ -196,6 +202,7 @@ static __global__ void flash_attn_ext_tq_wmma(
 
     // this thread's share of O [D][ncols]: elements tid + i*nthreads
     constexpr int n_own = D*ncols/nthreads;
+    static_assert(n_own % nphase == 0, "O slices must split the thread's elements evenly");
     float O[n_own];
 #pragma unroll
     for (int i = 0; i < n_own; ++i) {
@@ -207,18 +214,20 @@ static __global__ void flash_attn_ext_tq_wmma(
         // S = K·Qᵀ for the T rows of this tile
         fattn_tq_wmma_load_tile<type_K, D, T, ldt, nthreads>(K + int64_t(k0)*nb11, nb11, tile, cb_K, tid);
         __syncthreads();
-        if (warp < T/16) {
+        if (warp < nrt*nsplit) {
+            const int rt = warp % nrt;
+            const int ks = warp / nrt;
             tq_wmma::fragment<tq_wmma::accumulator, 16, 16, 16, float> s_acc;
             tq_wmma::fill_fragment(s_acc, 0.0f);
 #pragma unroll
-            for (int kk = 0; kk < D/16; ++kk) {
+            for (int kk = ks*(D/16/nsplit); kk < (ks + 1)*(D/16/nsplit); ++kk) {
                 tq_wmma::fragment<tq_wmma::matrix_a, 16, 16, 16, half, tq_wmma::row_major> a;
                 tq_wmma::fragment<tq_wmma::matrix_b, 16, 16, 16, half, tq_wmma::col_major> b;
-                tq_wmma::load_matrix_sync(a, tile + warp*16*ldt + kk*16, ldt);
+                tq_wmma::load_matrix_sync(a, tile + rt*16*ldt + kk*16, ldt);
                 tq_wmma::load_matrix_sync(b, Qs + kk*16, ldt);
                 tq_wmma::mma_sync(s_acc, a, b, s_acc);
             }
-            tq_wmma::store_matrix_sync(S + warp*16*ncols, s_acc, ncols, tq_wmma::mem_row_major);
+            tq_wmma::store_matrix_sync(S + ks*T*ncols + rt*16*ncols, s_acc, ncols, tq_wmma::mem_row_major);
         }
         __syncthreads();
 
@@ -230,6 +239,10 @@ static __global__ void flash_attn_ext_tq_wmma(
             float mx = -FLT_MAX/2.0f;
             for (int r = sub; r < T; r += tpc) {
                 float s = S[r*ncols + c];
+#pragma unroll
+                for (int j = 1; j < nsplit; ++j) {
+                    s += S[j*T*ncols + r*ncols + c];
+                }
                 if (use_logit_softcap) {
                     s = logit_softcap*tanhf(s);
                 }
@@ -285,17 +298,23 @@ static __global__ void flash_attn_ext_tq_wmma(
 
         float * Ot = (float *) tile;
 #pragma unroll
-        for (int mt = 0; mt < mt_per_warp; ++mt) {
-            const int d0 = warp*(D/nwarps) + mt*16;
-            tq_wmma::store_matrix_sync(Ot + d0*ncols, o_acc[mt], ncols, tq_wmma::mem_row_major);
-        }
-        __syncthreads();
+        for (int ph = 0; ph < nphase; ++ph) {
+            constexpr int Dp = D/nphase;
+            if (warp*(D/nwarps) / Dp == ph) {
 #pragma unroll
-        for (int i = 0; i < n_own; ++i) {
-            const int e = tid + i*nthreads;
-            O[i] = O[i]*alpha_s[e % ncols] + Ot[e];
+                for (int mt = 0; mt < mt_per_warp; ++mt) {
+                    const int d0 = warp*(D/nwarps) + mt*16;
+                    tq_wmma::store_matrix_sync(Ot + (d0 - ph*Dp)*ncols, o_acc[mt], ncols, tq_wmma::mem_row_major);
+                }
+            }
+            __syncthreads();
+#pragma unroll
+            for (int i = ph*(n_own/nphase); i < (ph + 1)*(n_own/nphase); ++i) {
+                const int e = tid + i*nthreads;
+                O[i] = O[i]*alpha_s[e % ncols] + Ot[e - ph*Dp*ncols];
+            }
+            __syncthreads(); // before the next slice or tile overwrites tile, S and P
         }
-        __syncthreads(); // before the next tile overwrites tile, S and P
     }
 
 #pragma unroll
@@ -385,6 +404,14 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1)
+    // head 512 (Gemma 4 global layers, GQA 8-16) has no GQA decode kernel, so q8_0 comes here too
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1)
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1)
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
 
     return false;
 }
