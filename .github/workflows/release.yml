@@ -1108,8 +1108,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.name }}
+          release_name: llama-tq ${{ steps.tag.outputs.name }}
           body: |
-            <details open>
+            Changes: [CHANGELOG.md](https://github.com/LL4nc33/llama-tq/blob/${{ steps.tag.outputs.name }}/CHANGELOG.md)
+
+            <details>
 
             ${{ github.event.head_commit.message }}
 

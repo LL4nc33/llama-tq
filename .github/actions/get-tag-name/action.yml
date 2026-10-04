@@ -14,7 +14,18 @@ runs:
       run: |
         BUILD_NUMBER="$(git rev-list --count HEAD)"
         SHORT_HASH="$(git rev-parse --short=7 HEAD)"
-        if [[ "${{ env.BRANCH_NAME }}" == "master" ]]; then
+        if [[ "${{ env.BRANCH_NAME }}" == "turboquant" ]]; then
+          # llama-tq releases: vYYYY.MM.DD from the commit date (the same in every job), .1, .2, ... for further
+          # releases of the same day
+          DATE="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y.%m.%d HEAD)"
+          NAME="v${DATE}"
+          N=0
+          while git rev-parse -q --verify "refs/tags/${NAME}" > /dev/null; do
+            N=$((N + 1))
+            NAME="v${DATE}.${N}"
+          done
+          echo "name=${NAME}" >> $GITHUB_OUTPUT
+        elif [[ "${{ env.BRANCH_NAME }}" == "master" ]]; then
           echo "name=b${BUILD_NUMBER}" >> $GITHUB_OUTPUT
         else
           SAFE_NAME=$(echo "${{ env.BRANCH_NAME }}" | tr '/' '-')
