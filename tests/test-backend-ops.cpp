@@ -9745,6 +9745,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                     GGML_PREC_F32, kv_types.first, kv_types.second));
     }
 
+    // TurboQuant KV decode, gpt-oss attention (head 64, 8 KV heads, GQA 8, attention sinks) at 16k
+    for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}}) {
+        test_cases.emplace_back(new test_flash_attn_ext(64, 64, 8, {8, 1}, 16384, 1, true, true, 0, 0,
+                    GGML_PREC_F32, kv_types.first, kv_types.second));
+    }
+
     // KV decode, Gemma-4-12B global attention (head 512, 1 KV head, GQA 16) at 32k
     for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
             {GGML_TYPE_F16, GGML_TYPE_F16}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},

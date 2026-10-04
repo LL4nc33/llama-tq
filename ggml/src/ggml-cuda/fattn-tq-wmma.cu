@@ -126,7 +126,7 @@ static __global__ void flash_attn_ext_tq_wmma(
                             const int32_t ne31, const int32_t ne32, const int32_t ne33,
                             const int32_t nb31, const int32_t nb32, const int64_t nb33) {
 #if defined(FATTN_TQ_WMMA_AVAILABLE) && defined(FLASH_ATTN_AVAILABLE) && __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
-    GGML_UNUSED_VARS(sinks, KV_max, max_bias, m0, m1, n_head_log2, ne00, ne01, ne03, nb01,
+    GGML_UNUSED_VARS(KV_max, max_bias, m0, m1, n_head_log2, ne00, ne01, ne03, nb01,
                      ne10, ne13, ne31, ne32, nb31, nb32);
 
     constexpr int nwarps   = GGML_CUDA_TQ_WMMA_NWARPS;
@@ -317,6 +317,26 @@ static __global__ void flash_attn_ext_tq_wmma(
         }
     }
 
+    // attention sinks (gpt-oss): one extra logit per Q head in the softmax denominator, added once (first KV block)
+    if (sinks && blockIdx.y == 0) {
+        if (tid < ncols) {
+            float alpha = 1.0f;
+            if (tid < ncols_valid) {
+                const float sink  = ((const float *) sinks)[head0 + tid];
+                const float m_new = fmaxf(sink, m_s[tid]);
+                alpha    = exp2f((m_s[tid] - m_new) * LOG2E);
+                l_s[tid] = l_s[tid]*alpha + exp2f((sink - m_new) * LOG2E);
+                m_s[tid] = m_new;
+            }
+            alpha_s[tid] = alpha;
+        }
+        __syncthreads();
+#pragma unroll
+        for (int i = 0; i < n_own; ++i) {
+            O[i] *= alpha_s[(tid + i*nthreads) % ncols];
+        }
+    }
+
 #pragma unroll
     for (int i = 0; i < n_own; ++i) {
         const int e = tid + i*nthreads;
@@ -367,7 +387,6 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     const ggml_tensor * K     = dst->src[1];
     const ggml_tensor * V     = dst->src[2];
     const ggml_tensor * mask  = dst->src[3];
-    const ggml_tensor * sinks = dst->src[4];
 
     static const bool enabled = [] {
         const char * e = getenv("GGML_CUDA_TQ_WMMA");
@@ -385,12 +404,17 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     memcpy(&max_bias, (const float *) dst->op_params + 1, sizeof(float));
     const int gqa_ratio = Q->ne[2] / K->ne[2];
     const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
-    if (Q->ne[1] != 1 || Q->ne[3] != 1 || gqa_ratio < 2 || gqa_ratio > 16 || !mask || sinks || max_bias != 0.0f ||
+    if (Q->ne[1] != 1 || Q->ne[3] != 1 || gqa_ratio < 2 || gqa_ratio > 16 || !mask || max_bias != 0.0f ||
             n_kv_max > 0 || K->ne[1] % 64 != 0 || Q->ne[0] != V->ne[0]) {
         return false;
     }
     const int64_t D = Q->ne[0];
 
+    // head 64 (gpt-oss, with attention sinks) has no GQA decode kernel either
+    FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
+    FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
+    FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
+    FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
