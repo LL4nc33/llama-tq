@@ -18,6 +18,10 @@
 - Fixed: Gemma 4 prompt processing with TurboQuant KV fell back to the vector kernel at head size 512 and was several times slower.
 - Fixed: gpt-oss (and other graphs without an output-ids null check) crashed while reserving the compute graph.
 - Tensor-core decode kernel at head size 512 (Gemma 4 global layers with GQA 8-16): Gemma-4-12B with `ktq4_1`/`vtq4_1` decodes 28.8 t/s at 32k context instead of 16.4 (f16 KV: 31.0). q5_0 K/V at head size 512 no longer falls back to the CPU.
+- **Aleph Alpha Kolibri-1** (`kolibri1`): 78B MoE, 3.5B active, German/English; router that selects on logits plus bias and weights by the unbiased sigmoid, NoPE full-attention layers. Port based on the patches by Seraphiel102. Q3_K_S on 2× RTX 2060 with part of the experts in RAM: ~38 t/s decode.
+- Tensor-core decode kernel at head size 64 with attention sinks: gpt-oss-20b with `ktq4_1`/`vtq4_1` decodes 40 t/s at 64k context instead of 6.8.
+- Fixed: the vector flash-attention kernel with KTQ K at head size 64 trapped on the GPU (gpt-oss crashed on the first decode with TurboQuant KV).
+- Chat templates: a null left operand of `in` is a plain lookup (upstream fix, needed for the Kolibri-1 template).
 
 ## 2026-10-03
 

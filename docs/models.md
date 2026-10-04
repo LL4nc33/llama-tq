@@ -94,6 +94,48 @@ llama-server -m Qwen3-Coder-Next-UD-TQ1_0.gguf \
 
 Decode: 61 t/s short, 37 t/s at 72k. KV PPL +0.1 % over f16.
 
+## Aleph Alpha Kolibri-1 (`kolibri1`)
+
+78B MoE with 3.46B active parameters, trained on English and German with a tokenizer tuned for
+German (about 4.7 bytes per token). 384 routed experts (top 6) plus one shared expert per layer;
+four of five layers use a 513-token sliding window with RoPE, the other ten layers attend to the
+full context without positional encoding, so the KV cache stays small and 262k context needs no
+RoPE scaling. The router selects experts on logits plus bias and weights them with the unbiased
+sigmoid. Sources: [Aleph-Alpha/Kolibri-1](https://huggingface.co/Aleph-Alpha/Kolibri-1),
+GGUF [Eliasfpv28/Kolibri-1-Q3_K_S-GGUF](https://huggingface.co/Eliasfpv28/Kolibri-1-Q3_K_S-GGUF).
+The port is based on the patches by Seraphiel102.
+
+At Q3_K_S (31.5 GiB) the experts of 20 layers stay in RAM. The early layers sit on the first GPU
+under layer split, so the first GPU gets them (cheap) plus half of the rest:
+
+```bash
+llama-server -m Kolibri-1-Q3_K_S.gguf -ngl 99 -fa on -ts 35,15 -c 32768 -ub 1024 -t 4 \
+  -ot "blk\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19)\.ffn_(up|gate|down)_exps\.weight=CPU" \
+  --temp 1.0 --top-p 0.97 --top-k 128 --jinja --reasoning off
+```
+
+Decode 38-43 t/s and still 38 t/s at 10k context; prompt processing about 195 t/s (the experts in
+RAM bound it). Reasoning effort is set per request through `chat_template_kwargs`
+(`reasoning_effort`: none, low, medium, high); tool calls use the Hermes format.
+
+## gpt-oss-20b
+
+Head size 64 with attention sinks. Quantized KV goes through the tensor-core decode kernel:
+
+```bash
+llama-server -m gpt-oss-20b-MXFP4.gguf -ngl 99 -fa on -c 131072 \
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
+```
+
+Decode 77 t/s short, 57 t/s at 22k, 40 t/s at 64k. Prompt processing 1100-2300 t/s.
+
+## Gemma 4
+
+Global layers use head size 512 with GQA 8-16 and a quantized cache runs through the tensor-core
+decode kernel. Decode at 32k context (llama-bench, `ktq4_1`/`vtq4_1`, f16 KV in brackets):
+12B Q4_K_M 28.8 (31.0), 26B-A4B UD-IQ2_XXS 53.7 (62.9), 26B-A4B UD-Q4_K_M 45.0 (51.3),
+31B UD-IQ2_XXS 11.1 (12.1), 31B Q4_K_M 11.3 (12.2).
+
 ## Known limitations
 
 - **Gemma 4:** wikitext perplexity of the instruction-tuned models is in the hundreds to tens of
@@ -101,5 +143,3 @@ Decode: 61 t/s short, 37 t/s at 72k. KV PPL +0.1 % over f16.
   between its own FA and non-FA paths), so it is no measure of KV quality for these models.
   Decode with a quantized cache at head size 512 is fixed since 2026-10-04: Gemma-4-12B with
   `ktq4_1`/`vtq4_1` decodes 28.8 t/s at 32k context (f16 KV 31.0, before the fix 16.4).
-- **gpt-oss:** loading crashed while reserving the compute graph; fixed on 2026-10-04,
-  benchmark pending.

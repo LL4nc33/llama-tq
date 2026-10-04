@@ -10,8 +10,12 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for **long conte
 - **Tensor split without P2P or NCCL** — `-sm tensor` sums the partial results through mapped pinned host memory, GPU to GPU without a host thread (`GGML_CUDA_HOST_ALLREDUCE_BF16=1` halves the traffic). Qwen3.8-27B Q4_K_M on 2× RTX 2060: 24.0 t/s decode instead of 16.5 with layer split; Ternary-Bonsai-2-27B at 171k context: 21.6 instead of 16.0 t/s. Perplexity identical to layer split.
 - **Ternary weights (PQ2_0, PTQ1_0)** — group-128 ternary types with Hadamard-rotated activations, CUDA mat-vec / MMQ kernels and a fast Walsh-Hadamard transform. Ternary-Bonsai-2-27B: 200k context with f16 KV and vision on 2× 12 GB, ~40 t/s decode with tensor split.
 - **Qwen3.8 family** — Qwen3.8-Flash-Next (qwen4exp: per-layer n-gram embeddings, hyper-connections, compressed-attention indexer with sparse flash attention) and faster Gated DeltaNet layers for the hybrid Qwen3.5/3.8 models (state gather and gate activations inside the kernel).
-- **TurboQuant KV cache** — KTQ × VTQ at 2.78 bpw. Drop in: `--cache-type-k ktq2 --cache-type-v vtq2`. A dedicated decode kernel reads each K/V row once per GQA group (also for q8_0 and q5_0 KV): Qwen3.8-27B at 256k context decodes 15.8 t/s at 118k with 2-bit KV. Details in [docs/turboquant.md](docs/turboquant.md).
-- **K2-Horizon-MoVA-36B-A4B** — MoE with routed value experts in attention; Q3_K_M at 47 t/s on 2× RTX 2060, `ktq4_1`/`vtq4_1` KV with `--tq-protect-layers 4` at +0.8 % PPL.
+- **TurboQuant KV cache** — KTQ × VTQ; `-ctk ktq4_1 -ctv vtq4_1` matches f16 perplexity at about a third of the memory, `ktq2_1`/`vtq2_1` goes further for maximum context. Dedicated decode kernels read each K/V row once per GQA group at head sizes 64, 128, 256 and 512, also for q8_0 and q5_0 KV and with attention sinks: Qwen3.8-27B decodes 17.2 t/s at 118k context, Gemma-4-12B 28.8 t/s at 32k, gpt-oss-20b 40 t/s at 64k. Details in [docs/turboquant.md](docs/turboquant.md).
+- **Models beyond upstream** — see [docs/models.md](docs/models.md) for tested setups:
+  - **Aleph Alpha Kolibri-1** (`kolibri1`): 78B MoE with 3.5B active parameters, German/English, sliding-window attention with NoPE full-attention layers. Q3_K_S on 2× RTX 2060 with part of the experts in RAM: ~38 t/s decode, flat up to long contexts.
+  - **K2-Horizon-MoVA-36B-A4B** (`k2-horizon`): MoE with routed value experts in attention; Q3_K_M at 47 t/s, `ktq4_1`/`vtq4_1` KV with `--tq-protect-layers 4` at +0.8 % PPL.
+  - **Qwen3.8-Flash-Next** (`qwen4exp`) and **Ternary-Bonsai-2-27B** (`PQ2_0`, `PTQ1_0`), see above.
+  - Quantized KV on **gpt-oss** (head 64, attention sinks) and **Gemma 4** (head 512) runs through the fast decode kernels.
 - **Speculation stack** — MTP + n-gram hybrid, mmproj+spec coexistence, and DFlash / DFlash2 block-diffusion drafting. Details in [docs/speculative.md](docs/speculative.md).
 - **MoE LoRA on quantised** — fine-tune `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS in 12 GB. Mechanics in [docs/finetune.md](docs/finetune.md).
 
@@ -26,6 +30,9 @@ Measured on 2× RTX 2060 12 GB (Turing, no P2P). Every run with its settings, st
 | Qwen3.8-27B UD-Q4_K_M, tensor split, `ktq2_1`/`vtq2_1` KV | 256k | 24 t/s short, 15.8 t/s at 118k |
 | Ternary-Bonsai-2-27B, tensor split, `ktq4_1`/`vtq4_1` KV (PPL = f16), 2 slots | 2× 200k | 34 t/s short, 21 t/s at 118k |
 | K2-Horizon-MoVA-36B-A4B Q3_K_M, `ktq4_1`/`vtq4_1` + 4 protected layers | 64k | 47 t/s short, 22 t/s at 40k |
+| Aleph Alpha Kolibri-1 Q3_K_S, experts of 20 layers in RAM, f16 KV | 32k | 38-43 t/s, 38 t/s at 10k |
+| gpt-oss-20b MXFP4, `ktq4_1`/`vtq4_1` KV | 128k | 77 t/s short, 40 t/s at 64k |
+| Gemma-4-26B-A4B UD-IQ2_XXS, `ktq4_1`/`vtq4_1` KV | 256k | 72 t/s short, 54 t/s at 32k |
 | Qwen3.8-27B Q4_K_M + DFlash2 draft (code) | — | 26-28 t/s instead of 15.5 |
 | 35B-class MoE (IQ2), single GPU, vision | 100k | — |
 
