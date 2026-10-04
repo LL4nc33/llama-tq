@@ -9309,7 +9309,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     // q5_0 K/V batches (converted to f16 for the MMA kernel)
-    for (int hs : {128, 256}) {
+    for (int hs : {128, 256, 512}) {
         for (int64_t nb : {8, 32}) {
             test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {4, 1}, 1024, nb, true, false, 0, 0,
                         GGML_PREC_F32, GGML_TYPE_Q5_0, GGML_TYPE_Q5_0));

@@ -495,9 +495,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return BEST_FATTN_KERNEL_NONE;
     }
     // q5_0 K/V without VEC instances: batches convert to f16 for the MMA kernel, decode with GQA takes the
-    // GQA kernel (tried first in ggml_cuda_flash_attn_ext)
+    // GQA or tensor-core decode kernel (tried first in ggml_cuda_flash_attn_ext)
     if (K->type == GGML_TYPE_Q5_0 && V->type == GGML_TYPE_Q5_0) {
-        return turing_mma_available(cc) && K->ne[0] == V->ne[0] && K->ne[0] <= 256 ? BEST_FATTN_KERNEL_MMA_F16 : BEST_FATTN_KERNEL_NONE;
+        return turing_mma_available(cc) && K->ne[0] == V->ne[0] && (K->ne[0] <= 256 || (K->ne[0] == 512 && gqa_opt_applies)) ?
+            BEST_FATTN_KERNEL_MMA_F16 : BEST_FATTN_KERNEL_NONE;
     }
 #endif // GGML_CUDA_FA_ALL_QUANTS
 
