@@ -1702,8 +1702,8 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
 
     if (probs_in == nullptr) {
         logits = build_lora_mm(gate_inp, cur); // [n_expert, n_tokens]
-        if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID_LOGIT_ADD) {
-            ggml_prec_set_acc(logits, GGML_PREC_F32);
+        if (gating_op == LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID_LOGIT_ADD && logits->op == GGML_OP_MUL_MAT) {
+            ggml_mul_mat_set_prec(logits, GGML_PREC_F32);
         }
         cb(logits, "ffn_moe_logits", il);
     } else {
