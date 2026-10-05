@@ -54,23 +54,6 @@ struct llama_sampler_chain_params llama_sampler_chain_default_params() {
     return result;
 }
 
-
-// Stub: full implementation lives in upstream commit fd1c0ec3f/cfe9838d2 which depends on
-// post-#22004 model-class API. TurboQuant fork keeps callers happy by returning success
-// without modifying any params (caller falls back to user-supplied values).
-extern "C" enum llama_params_fit_status llama_params_fit(
-    const char *,
-    struct llama_model_params *,
-    struct llama_context_params *,
-    float *,
-    struct llama_model_tensor_buft_override *,
-    size_t *,
-    uint32_t,
-    enum ggml_log_level
-) {
-    return LLAMA_PARAMS_FIT_STATUS_SUCCESS;
-}
-
 size_t llama_max_devices(void) {
     return 16;
 }

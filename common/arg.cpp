@@ -650,7 +650,7 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
         params.kv_overrides.back().key[0] = 0;
     }
 
-    // pad tensor_buft_overrides for llama_params_fit:
+    // pad tensor_buft_overrides for common_fit_params:
     const size_t ntbo = llama_max_tensor_buft_overrides();
     while (params.tensor_buft_overrides.size() < ntbo) {
         params.tensor_buft_overrides.push_back({nullptr, nullptr});
@@ -1271,7 +1271,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, int value) {
             params.n_ctx = value;
             if (value == 0) {
-                // disable context reduction in llama_params_fit if the user explicitly requests the full context size:
+                // disable context reduction in common_fit_params if the user explicitly requests the full context size:
                 params.fit_params_min_ctx = UINT32_MAX;
             }
         }
