@@ -16,6 +16,9 @@ public:
 
     ggml_backend_t backend() const;
 
+    // the device of the layers that keep the most expert bytes in host memory (nullptr if none)
+    static ggml_backend_dev_t host_expert_device(const llama_model & model);
+
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
 
     // ggml_backend_sched callbacks, user_data is the llama_moe_cache

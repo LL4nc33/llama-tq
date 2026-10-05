@@ -505,17 +505,23 @@ llama_context::llama_context(
             if (!cparams.op_offload) {
                 throw std::runtime_error("MoE cache requires op offload");
             }
-            if (cparams.pipeline_parallel || model.n_devices() > 1) {
-                throw std::runtime_error("MoE cache does not support multiple devices");
+            if (cparams.pipeline_parallel) {
+                // the cache remaps the expert ids of a single graph copy
+                cparams.pipeline_parallel = false;
+                LLAMA_LOG_INFO("%s: pipeline parallelism disabled for the MoE cache\n", __func__);
             }
-            for (size_t i = 0; i < backend_ptrs.size(); ++i) {
-                const auto type = ggml_backend_dev_type(ggml_backend_get_device(backend_ptrs[i]));
-                if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            // with several GPUs the cache sits on the device whose layers keep the most experts in host memory;
+            // it serves the layers of that device
+            const ggml_backend_dev_t dev = llama_moe_cache::host_expert_device(model);
+            for (size_t i = 0; dev != nullptr && i < backend_ptrs.size(); ++i) {
+                if (ggml_backend_get_device(backend_ptrs[i]) == dev) {
                     moe_cache = std::make_unique<llama_moe_cache>(model, backend_ptrs[i], backend_buft[i], cparams.moe_cache_size);
                     break;
                 }
             }
-            if (!moe_cache) {
+            if (dev == nullptr) {
+                LLAMA_LOG_WARN("%s: no layer keeps its experts in host memory, MoE cache is disabled\n", __func__);
+            } else if (!moe_cache) {
                 throw std::runtime_error("MoE cache requires a GPU backend");
             }
         }

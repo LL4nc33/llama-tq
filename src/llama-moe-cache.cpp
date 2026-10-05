@@ -446,6 +446,28 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_moe_cache::memory_breakdown()
     return res;
 }
 
+ggml_backend_dev_t llama_moe_cache::host_expert_device(const llama_model & model) {
+    std::unordered_map<ggml_backend_dev_t, size_t> bytes;
+    for (size_t il = 0; il < model.layers.size(); ++il) {
+        const auto experts = llama_moe_cache_layer_experts(model.layers[il]);
+        if (experts.empty() || !std::all_of(experts.begin(), experts.end(), llama_moe_cache_is_host_weight)) {
+            continue;
+        }
+        for (const ggml_tensor * t : experts) {
+            bytes[model.dev_layer(il)] += ggml_nbytes(t);
+        }
+    }
+    ggml_backend_dev_t best = nullptr;
+    size_t best_bytes = 0;
+    for (const auto & [dev, n] : bytes) {
+        if (n > best_bytes) {
+            best = dev;
+            best_bytes = n;
+        }
+    }
+    return best;
+}
+
 bool llama_moe_cache::sched_resolve(void * user_data, const ggml_tensor * node, ggml_backend_t backend, ggml_tensor ** cached_weight, void ** cache_entry) {
     return static_cast<llama_moe_cache *>(user_data)->pimpl->resolve(node, backend, cached_weight, cache_entry);
 }
