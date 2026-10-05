@@ -16,8 +16,7 @@
 		DialogModelInformation,
 		ModelId,
 		ModelsSelectorList,
-		SearchInput,
-		TruncatedText
+		SearchInput
 	} from '$lib/components/app';
 	import type { ModelOption } from '$lib/types/models';
 	import { filterModelOptions, groupModelOptions } from './utils';
@@ -235,11 +234,7 @@
 				<Package class="h-3.5 w-3.5" />
 
 				{#if selectedOption}
-					<ModelId
-						modelId={selectedOption.model}
-						class="min-w-0 overflow-hidden"
-						showOrgName
-					/>
+					<ModelId modelId={selectedOption.model} class="min-w-0 overflow-hidden" showOrgName />
 				{:else}
 					<span class="min-w-0 font-medium">Select model</span>
 				{/if}
@@ -317,11 +312,7 @@
 				<Package class="h-3.5 w-3.5" />
 
 				{#if selectedOption}
-					<ModelId
-						modelId={selectedOption.model}
-						class="min-w-0 overflow-hidden"
-						showOrgName
-					/>
+					<ModelId modelId={selectedOption.model} class="min-w-0 overflow-hidden" showOrgName />
 				{/if}
 
 				{#if updating}

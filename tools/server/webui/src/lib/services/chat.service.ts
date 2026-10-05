@@ -17,11 +17,7 @@ import {
 	UrlProtocol
 } from '$lib/enums';
 import type { ApiChatMessageContentPart, ApiChatCompletionToolCall } from '$lib/types/api';
-import type {
-	ChatStreamCallbacks,
-	DatabaseMessageExtraMcpPrompt,
-	DatabaseMessageExtraMcpResource
-} from '$lib/types';
+import type { DatabaseMessageExtraMcpPrompt, DatabaseMessageExtraMcpResource } from '$lib/types';
 import { modelsStore } from '$lib/stores/models.svelte';
 
 export class ChatService {
@@ -58,7 +54,6 @@ export class ChatService {
 			onToolCallChunk,
 			onModel,
 			onTimings,
-			onDiffusionStep,
 			// Tools for function calling
 			tools,
 			// Generation parameters
@@ -154,10 +149,7 @@ export class ChatService {
 			}),
 			stream,
 			return_progress: stream ? true : undefined,
-			tools: tools && tools.length > 0 ? tools : undefined,
-			// Request per-step denoise previews only when the UI will render them
-			// (text-diffusion models honour this; other models ignore it).
-			diffusing: stream && onDiffusionStep ? true : undefined
+			tools: tools && tools.length > 0 ? tools : undefined
 		};
 
 		// Include model in request if provided (required in ROUTER mode)
@@ -273,8 +265,7 @@ export class ChatService {
 					onModel,
 					onTimings,
 					conversationId,
-					signal,
-					onDiffusionStep
+					signal
 				);
 
 				return;
@@ -459,8 +450,7 @@ export class ChatService {
 		onModel?: (model: string) => void,
 		onTimings?: (timings?: ChatMessageTimings, promptProgress?: ChatMessagePromptProgress) => void,
 		conversationId?: string,
-		abortSignal?: AbortSignal,
-		onDiffusionStep?: ChatStreamCallbacks['onDiffusionStep']
+		abortSignal?: AbortSignal
 	): Promise<void> {
 		const reader = response.body?.getReader();
 
@@ -549,7 +539,6 @@ export class ChatService {
 							const content = parsed.choices[0]?.delta?.content;
 							const reasoningContent = parsed.choices[0]?.delta?.reasoning_content;
 							const toolCalls = parsed.choices[0]?.delta?.tool_calls;
-							const diffusionCanvas = parsed.choices[0]?.delta?.diffusion_canvas;
 							const timings = parsed.timings;
 							const promptProgress = parsed.prompt_progress;
 
@@ -574,19 +563,6 @@ export class ChatService {
 								if (!abortSignal?.aborted) {
 									onChunk?.(content);
 								}
-							}
-
-							// DiffusionGemma live preview: REPLACE the shown text with this
-							// step's canvas. Not accumulated — the final answer still arrives
-							// as a normal `content` delta at the end.
-							if (diffusionCanvas !== undefined && !abortSignal?.aborted) {
-								onDiffusionStep?.({
-									canvas: diffusionCanvas,
-									step: parsed.choices[0]?.delta?.diffusion_step ?? 0,
-									total: parsed.choices[0]?.delta?.diffusion_total ?? 0,
-									block: parsed.choices[0]?.delta?.diffusion_block ?? 0,
-									settled: parsed.choices[0]?.delta?.diffusion_settled
-								});
 							}
 
 							if (reasoningContent) {

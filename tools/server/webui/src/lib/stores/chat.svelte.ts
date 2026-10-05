@@ -602,20 +602,6 @@ class ChatStore {
 				streamedContent += chunk;
 				updateStreamingUI();
 			},
-			onDiffusionStep: (preview) => {
-				// Live denoise preview: REPLACE the in-progress view with this step's
-				// canvas. Kept in a separate field so the final `content` (which arrives
-				// as a normal chunk at the end) cleanly takes over.
-				const idx = conversationsStore.findMessageIndex(currentMessageId);
-				conversationsStore.updateMessageAtIndex(idx, {
-					diffusionPreview: {
-						canvas: preview.canvas,
-						step: preview.step,
-						total: preview.total,
-						settled: preview.settled
-					}
-				});
-			},
 			onReasoningChunk: (chunk: string) => {
 				streamedReasoningContent += chunk;
 				// Update UI to show reasoning is being received
@@ -771,8 +757,7 @@ class ChatStore {
 				if (partialContent) {
 					const keepData: Record<string, unknown> = {
 						content: streamedContent,
-						reasoningContent: streamedReasoningContent || undefined,
-						diffusionPreview: undefined
+						reasoningContent: streamedReasoningContent || undefined
 					};
 					if (resolvedModel && !modelPersisted) keepData.model = resolvedModel;
 					DatabaseService.updateMessage(currentMessageId, keepData).catch(console.error);
@@ -780,7 +765,6 @@ class ChatStore {
 					conversationsStore.updateMessageAtIndex(keepIdx, {
 						content: streamedContent,
 						reasoningContent: streamedReasoningContent || undefined,
-						diffusionPreview: undefined,
 						...(resolvedModel ? { model: resolvedModel } : {})
 					});
 					conversationsStore.updateCurrentNode(currentMessageId).catch(console.error);
@@ -827,7 +811,6 @@ class ChatStore {
 				stream: true,
 				onChunk: streamCallbacks.onChunk,
 				onReasoningChunk: streamCallbacks.onReasoningChunk,
-				onDiffusionStep: streamCallbacks.onDiffusionStep,
 				onModel: streamCallbacks.onModel,
 				onTimings: streamCallbacks.onTimings,
 				onComplete: async (
@@ -850,9 +833,7 @@ class ChatStore {
 					const uiUpdate: Partial<DatabaseMessage> = {
 						content,
 						reasoningContent: reasoning || undefined,
-						toolCalls: toolCalls || '',
-						// clear the denoise preview — the final content takes over
-						diffusionPreview: undefined
+						toolCalls: toolCalls || ''
 					};
 					if (timings) uiUpdate.timings = timings;
 					if (resolvedModel) uiUpdate.model = resolvedModel;

@@ -210,8 +210,6 @@ export interface ApiChatCompletionRequest {
 	model?: string;
 	return_progress?: boolean;
 	tools?: ApiChatCompletionTool[];
-	// Text-diffusion (DiffusionGemma): stream per-denoise-step canvas previews
-	diffusing?: boolean;
 	// Reasoning parameters
 	reasoning_format?: string;
 	// Chat-template variables passed through to the Jinja template (e.g. reasoning_effort)
@@ -274,13 +272,6 @@ export interface ApiChatCompletionStreamChunk {
 			reasoning_content?: string;
 			model?: string;
 			tool_calls?: ApiChatCompletionToolCallDelta[];
-			// DiffusionGemma live denoise preview (opt-in via diffusing:true).
-			// diffusion_canvas REPLACES the shown text each step (not append).
-			diffusion_canvas?: string;
-			diffusion_step?: number;
-			diffusion_total?: number;
-			diffusion_block?: number;
-			diffusion_settled?: number[]; // per-token settle step (0=masked) for the heatmap
 		};
 		finish_reason?: string | null;
 	}>;
@@ -290,13 +281,6 @@ export interface ApiChatCompletionStreamChunk {
 		predicted_n?: number;
 		predicted_ms?: number;
 		cache_n?: number;
-		diffusion?: {
-			n_steps?: number;
-			canvas_tokens?: number;
-			ms_per_step?: number;
-			steps_per_second?: number;
-			canvas_tokens_per_second?: number;
-		};
 	};
 	prompt_progress?: ChatMessagePromptProgress;
 }

@@ -102,17 +102,6 @@ export interface DatabaseMessage {
 	extra?: DatabaseMessageExtra[];
 	timings?: ChatMessageTimings;
 	model?: string;
-	/**
-	 * Live denoise preview for text-diffusion models (DiffusionGemma). Set per
-	 * denoise step while streaming with `diffusing:true`, cleared on completion.
-	 * Not persisted — transient UI state only.
-	 */
-	diffusionPreview?: {
-		canvas: string;
-		step: number;
-		total: number;
-		settled?: number[];
-	};
 }
 
 export type ExportedConversation = {

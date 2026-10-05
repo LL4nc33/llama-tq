@@ -6,7 +6,6 @@
 		ModelBadge,
 		ModelsSelector
 	} from '$lib/components/app';
-	import DiffusionCanvas from './DiffusionCanvas.svelte';
 	import { getMessageEditContext } from '$lib/contexts';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
@@ -302,9 +301,6 @@
 			</div>
 		</div>
 	{:else if message.role === MessageRole.ASSISTANT}
-		{#if message.diffusionPreview}
-			<DiffusionCanvas preview={message.diffusionPreview} />
-		{/if}
 		{#if showRawOutput}
 			<pre class="raw-output">{rawOutputContent || ''}</pre>
 		{:else}
@@ -365,7 +361,6 @@
 						promptMs={agentic ? agentic.llm.prompt_ms : message.timings.prompt_ms}
 						predictedTokens={agentic ? agentic.llm.predicted_n : message.timings.predicted_n}
 						predictedMs={agentic ? agentic.llm.predicted_ms : message.timings.predicted_ms}
-						canvasTokensPerSecond={message.timings.diffusion?.canvas_tokens_per_second}
 						agenticTimings={agentic}
 						onActiveViewChange={handleStatsViewChange}
 					/>

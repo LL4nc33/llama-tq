@@ -65,14 +65,6 @@ export interface ChatMessageTimings {
 	prompt_ms?: number;
 	prompt_n?: number;
 	agentic?: ChatMessageAgenticTimings;
-	// Text-diffusion (DiffusionGemma) throughput; present only for diffusion models.
-	diffusion?: {
-		n_steps?: number;
-		canvas_tokens?: number;
-		ms_per_step?: number;
-		steps_per_second?: number;
-		canvas_tokens_per_second?: number;
-	};
 }
 
 export interface ChatMessageAgenticTimings {
@@ -113,15 +105,6 @@ export interface ChatMessageToolCallTiming {
 export interface ChatStreamCallbacks {
 	onChunk?: (chunk: string) => void;
 	onReasoningChunk?: (chunk: string) => void;
-	// DiffusionGemma live denoise preview: each call REPLACES the preview text
-	// (the canvas refines in place over the denoise steps).
-	onDiffusionStep?: (preview: {
-		canvas: string;
-		step: number;
-		total: number;
-		block: number;
-		settled?: number[];
-	}) => void;
 	onToolCallsStreaming?: (toolCalls: ApiChatCompletionToolCall[]) => void;
 	onAttachments?: (messageId: string, extras: DatabaseMessageExtra[]) => void;
 	onModel?: (model: string) => void;
