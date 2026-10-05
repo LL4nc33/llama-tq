@@ -105,23 +105,36 @@ sigmoid. Sources: [Aleph-Alpha/Kolibri-1](https://huggingface.co/Aleph-Alpha/Kol
 GGUF [Eliasfpv28/Kolibri-1-Q3_K_S-GGUF](https://huggingface.co/Eliasfpv28/Kolibri-1-Q3_K_S-GGUF).
 The port is based on the patches by Seraphiel102.
 
-At Q3_K_S (31.5 GiB) the routed experts of the first layers stay in RAM. Those layers sit on the first
-GPU under layer split, and prompt batches stream their weights to it, so the larger the batch, the
-faster the prompt. With 131k context and a quantized KV cache, 28 layers in RAM leave room for a
-4096-token batch:
+At Q3_K_S (31.5 GiB) part of the routed experts has to stay in RAM. The simplest setup lets `-fit`
+(on by default) decide: it measures weights, KV cache and compute buffers and picks the layer split
+and which layers keep their experts in RAM. Raise the CPU/GPU crossover for prompts with
+`GGML_OP_OFFLOAD_MIN_BATCH`: below it, the RAM experts run on the CPU instead of being streamed to the
+GPU for every batch, which cuts the time to the first token of short prompts by about 4x.
 
 ```bash
-llama-server -m Kolibri-1-Q3_K_S.gguf -ngl 99 -fa on -ts 37,13 -c 131072 -b 4096 -ub 4096 -t 4 \
-  -ot "blk\.([0-9]|1[0-9]|2[0-7])\.ffn_(up|gate|down)_exps\.weight=CPU" \
+GGML_OP_OFFLOAD_MIN_BATCH=1024 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 131072 -b 4096 -ub 4096 -t 4 \
   -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v \
   --temp 1.0 --top-p 0.97 --top-k 128 --jinja --reasoning off
 ```
 
-| Experts in RAM | Batch | Prompt (llama-bench pp4096) | Decode |
-|---|---:|---:|---:|
-| 20 layers | 512 | 122 t/s | 43 t/s |
-| 20 layers | 4096 | 452 t/s (32k context only) | 43 t/s |
-| 28 layers | 4096 | 370-386 t/s | 36-38 t/s |
+By hand, put the RAM experts on the early layers: those sit on the first GPU under layer split, and
+large prompt batches stream their weights over its link, which is faster when the first GPU has the
+wider PCIe link (here x16 vs x4):
+
+```bash
+llama-server ... -ngl 99 -ts 37,13 \
+  -ot "blk\.([0-9]|1[0-9]|2[0-7])\.ffn_(up|gate|down)_exps\.weight=CPU"
+```
+
+2x RTX 2060 12 GB, 131k context, `-ub 4096`, `GGML_OP_OFFLOAD_MIN_BATCH=1024`, server timings:
+
+| Placement | Decode | Prompt 81 tok | Prompt 1.3k | Prompt 3.4k |
+|---|---:|---:|---:|---:|
+| `-fit` (automatic) | 37.4 t/s | 0.9 s | 7.0 s (191 t/s) | 10.3 s (331 t/s) |
+| experts of layers 0-27 in RAM | 34.7 t/s | 1.0 s | 5.5 s (246 t/s) | 7.5 s (454 t/s) |
+
+The MoE expert cache (`--moe-cache-mib`) does not pay off here: with 5 GB of cache and a 91 % hit
+rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU.
 
 Decode barely drops with context (38 t/s at 10k). KV accuracy: perplexity +0.5 % with
 `ktq4_1`/`vtq4_1` against f16. Reasoning effort is set per request through `chat_template_kwargs`

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-06
+
+- **`-fit` works:** automatic placement of layers, experts and context to free device memory (upstream `common/fit.cpp`); until now the option was a stub without effect. Parameters set by hand (`-ngl`, `-ts`, `-ot`, `-ncmoe`) are kept. Kolibri-1 Q3_K_S with only `-fit` decodes 37 t/s (hand placement 35 t/s).
+- q4_0 K/V in the tensor-core decode kernel: Qwen3.8-27B with q4_0 KV decodes 18.3 t/s at 74k context instead of 10.8 (attention 865 -> 249 µs per step at 32k).
+- Fixed: the CUDA `ktq1_1` quantizer still rounded stochastically; it now matches the CPU reference.
+- TurboQuant code cleanup: one template per role for the KTQ helpers instead of one copy per bit width, type-family macros (`GGML_TYPE_IS_KTQ`, `GGML_TYPE_IS_VTQ`) instead of hand-written type chains (about 1200 lines less). Perplexity unchanged.
+
 ## 2026-10-05
 
 - **MoE expert cache** (`--moe-cache-mib N`, upstream PR #29887): an LRU cache in VRAM for experts kept in host memory (`-cmoe` / `-ncmoe` / `-ot`). Decode batches (up to 32 tokens) remap the selected experts to cached copies instead of reading them over PCIe. With several GPUs the cache sits on the device whose layers keep the most experts in host memory; pipeline parallelism is turned off while the cache is active.
