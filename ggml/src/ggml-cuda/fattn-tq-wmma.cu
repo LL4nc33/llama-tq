@@ -88,7 +88,7 @@ static __device__ __forceinline__ void fattn_tq_wmma_load_tile(
             } else {
 #pragma unroll
                 for (int k = 0; k < 16; ++k) {
-                    v[k] = __floats2half2_rn(cb[fattn_gqa_tq_index<bits>(b->qs, 2*k)] * d, cb[fattn_gqa_tq_index<bits>(b->qs, 2*k + 1)] * d);
+                    v[k] = __floats2half2_rn(cb[tq_code_index<bits>(b->qs, 2*k)] * d, cb[tq_code_index<bits>(b->qs, 2*k + 1)] * d);
                 }
             }
         }
@@ -135,7 +135,7 @@ static __global__ void flash_attn_ext_tq_wmma(
     constexpr int T        = GGML_CUDA_TQ_WMMA_T(D);
     constexpr int ldt      = D + 8;              // tile row stride in halves (avoids bank conflicts, keeps 32 B alignment)
     constexpr int ldp      = ncols + 8;
-    constexpr bool K_tq    = type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 || type_K == GGML_TYPE_KTQ4_1;
+    constexpr bool K_tq    = GGML_TYPE_IS_KTQ(type_K);
     constexpr int bits_K   = fattn_gqa_tq<type_K>::bits;
     constexpr int bits_V   = fattn_gqa_tq<type_V>::bits;
     constexpr float LOG2E  = 1.4426950408f;

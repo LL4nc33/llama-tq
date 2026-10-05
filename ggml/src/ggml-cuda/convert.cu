@@ -767,13 +767,13 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
         case GGML_TYPE_BF16:
             return convert_unary_cont_cuda<nv_bfloat16>;
         case GGML_TYPE_KTQ1_1:
-            return dequantize_row_ktq1_1_cuda<half>;
+            return dequantize_row_ktq_cuda<block_ktq1_1, half>;
         case GGML_TYPE_KTQ2_1:
-            return dequantize_row_ktq2_1_cuda<half>;
+            return dequantize_row_ktq_cuda<block_ktq2_1, half>;
         case GGML_TYPE_KTQ3_1:
-            return dequantize_row_ktq3_1_cuda<half>;
+            return dequantize_row_ktq_cuda<block_ktq3_1, half>;
         case GGML_TYPE_KTQ4_1:
-            return dequantize_row_ktq4_1_cuda<half>;
+            return dequantize_row_ktq_cuda<block_ktq4_1, half>;
         case GGML_TYPE_VTQ1_1:
             return dequantize_row_vtq1_1_cuda<half>;
         case GGML_TYPE_VTQ2_1:

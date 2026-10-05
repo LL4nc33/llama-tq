@@ -70,25 +70,6 @@ template <> struct fattn_gqa_tq<GGML_TYPE_VTQ2_1> { static constexpr int bits = 
 template <> struct fattn_gqa_tq<GGML_TYPE_VTQ3_1> { static constexpr int bits = 3; using block = block_vtq3_1; };
 template <> struct fattn_gqa_tq<GGML_TYPE_VTQ4_1> { static constexpr int bits = 4; using block = block_vtq4_1; };
 
-// codebook index of element j of a block
-template <int bits>
-static __device__ __forceinline__ int fattn_gqa_tq_index(const uint8_t * qs, const int j) {
-    if constexpr (bits == 2) {
-        return (qs[j / 4] >> (2 * (j % 4))) & 0x3;
-    } else if constexpr (bits == 4) {
-        return (qs[j / 2] >> (4 * (j % 2))) & 0xF;
-    } else {
-        const int bit_offset = j * 3;
-        const int byte_idx   = bit_offset / 8;
-        const int bit_pos    = bit_offset % 8;
-        int idx = qs[byte_idx] >> bit_pos;
-        if (bit_pos > 5) {
-            idx |= qs[byte_idx + 1] << (8 - bit_pos);
-        }
-        return idx & 0x7;
-    }
-}
-
 // codebook of a type, scaled by PQ_CUDA_CB_SCALE (as the decoders of fattn-tq.cuh apply it)
 template <ggml_type type>
 static __device__ __forceinline__ float fattn_gqa_tq_centroid(const int i) {
@@ -141,7 +122,7 @@ static __global__ void flash_attn_ext_vec_gqa(
 
     constexpr int nthreads = 128;
     constexpr int nwarps   = nthreads / WARP_SIZE;
-    constexpr bool K_tq = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 || type_K == GGML_TYPE_KTQ4_1;
+    constexpr bool K_tq = GGML_TYPE_IS_KTQ(type_K);
     constexpr bool K_q8 = type_K == GGML_TYPE_Q8_0;
     constexpr bool V_q8 = type_V == GGML_TYPE_Q8_0;
     constexpr bool K_q5 = type_K == GGML_TYPE_Q5_0;
@@ -268,7 +249,7 @@ static __global__ void flash_attn_ext_vec_gqa(
                 const typename fattn_gqa_tq<type_K>::block * K_b = (const typename fattn_gqa_tq<type_K>::block *) K_row;
 #pragma unroll
                 for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
-                    const float k = cb_K[fattn_gqa_tq_index<bits_K>(K_b[bi].qs, threadIdx.x)] * __half2float(K_b[bi].d);
+                    const float k = cb_K[tq_code_index<bits_K>(K_b[bi].qs, threadIdx.x)] * __half2float(K_b[bi].d);
 #pragma unroll
                     for (int j = 0; j < ncols; ++j) {
                         s[j] += k * Q_f32[j][bi];
@@ -345,8 +326,8 @@ static __global__ void flash_attn_ext_vec_gqa(
                 const float d = __half2float(V_b->d);
 #pragma unroll
                 for (int l = 0; l < V_rows_per_thread; l += 2) {
-                    tmp[l/2].x = cb_V[fattn_gqa_tq_index<bits_V>(V_b->qs, i0 % QK_VTQ + l + 0)] * d;
-                    tmp[l/2].y = cb_V[fattn_gqa_tq_index<bits_V>(V_b->qs, i0 % QK_VTQ + l + 1)] * d;
+                    tmp[l/2].x = cb_V[tq_code_index<bits_V>(V_b->qs, i0 % QK_VTQ + l + 0)] * d;
+                    tmp[l/2].y = cb_V[tq_code_index<bits_V>(V_b->qs, i0 % QK_VTQ + l + 1)] * d;
                 }
             } else if constexpr (V_q5) {
                 const int i0 = threadIdx.x*V_rows_per_thread;
