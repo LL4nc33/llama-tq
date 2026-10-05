@@ -409,66 +409,6 @@ void llm_graph_input_cross_embd::set_input(const llama_ubatch * ubatch) {
     }
 }
 
-void llm_graph_input_diffusion_self_cond::set_input(const llama_ubatch * ubatch) {
-    GGML_UNUSED(ubatch);
-
-    if (!probs) {
-        return;
-    }
-    assert(probs->type == GGML_TYPE_F32);
-
-    const size_t n_bytes = ggml_nbytes(probs);
-    if (diffusion && diffusion->probs.size() * sizeof(float) == n_bytes) {
-        ggml_backend_tensor_set(probs, diffusion->probs.data(), 0, n_bytes);
-    } else {
-        // no self-conditioning this step (e.g. first denoising step) -> zeros
-        std::vector<uint8_t> zeros(n_bytes, 0);
-        ggml_backend_tensor_set(probs, zeros.data(), 0, n_bytes);
-    }
-}
-
-void llm_graph_input_diffusion_self_cond_topk::set_input(const llama_ubatch * ubatch) {
-    GGML_UNUSED(ubatch);
-
-    if (!ids || !probs) {
-        return;
-    }
-    assert(ids->type   == GGML_TYPE_I32);
-    assert(probs->type == GGML_TYPE_F32);
-
-    const size_t n_id_bytes = ggml_nbytes(ids);
-    const size_t n_pr_bytes = ggml_nbytes(probs);
-
-    const bool have_device = diffusion
-        && diffusion->sc_topk > 0
-        && diffusion->sc_topk_device_ready
-        && diffusion->sc_topk_device_ids_data    == ids->data
-        && diffusion->sc_topk_device_probs_data  == probs->data
-        && diffusion->sc_topk_device_ids_bytes   == n_id_bytes
-        && diffusion->sc_topk_device_probs_bytes == n_pr_bytes;
-
-    if (have_device) {
-        return;
-    }
-
-    const bool have = diffusion
-        && diffusion->sc_topk > 0
-        && diffusion->sc_topk_ids.size()   * sizeof(int32_t) == n_id_bytes
-        && diffusion->sc_topk_probs.size() * sizeof(float)   == n_pr_bytes;
-
-    if (have) {
-        ggml_backend_tensor_set(ids,   diffusion->sc_topk_ids.data(),   0, n_id_bytes);
-        ggml_backend_tensor_set(probs, diffusion->sc_topk_probs.data(), 0, n_pr_bytes);
-    } else {
-        // no self-conditioning this step (e.g. first denoising step):
-        // ids -> 0 (any valid row), probs -> 0 so the gathered embeddings contribute nothing
-        std::vector<uint8_t> zeros_id(n_id_bytes, 0);
-        std::vector<uint8_t> zeros_pr(n_pr_bytes, 0);
-        ggml_backend_tensor_set(ids,   zeros_id.data(), 0, n_id_bytes);
-        ggml_backend_tensor_set(probs, zeros_pr.data(), 0, n_pr_bytes);
-    }
-}
-
 static void print_mask(const float * data, int64_t n_tokens, int64_t n_kv, int64_t n_swa, llama_swa_type swa_type) {
     LLAMA_LOG_DEBUG("%s: === Attention mask ===\n", __func__);
     const char * swa_type_str = "unknown";
@@ -566,42 +506,6 @@ void llm_graph_input_attn_no_cache::set_input(const llama_ubatch * ubatch) {
 
         if (debug) {
             print_mask(data, n_tokens, n_kv, hparams.n_swa, hparams.swa_type);
-        }
-    }
-}
-
-void llm_graph_input_attn_no_cache_prefix::set_input(const llama_ubatch * ubatch) {
-    // block-diffusion prefix mask over [prompt(0..P-1) ; canvas(P..n_tokens-1)]:
-    //   - prompt queries attend causally to the prompt only (no canvas)
-    //   - canvas queries attend to everything (bidirectional + cross to the prompt)
-    const int64_t n_kv     = ubatch->n_tokens;
-    const int64_t n_tokens = ubatch->n_tokens;
-    const int64_t P        = n_prompt; // causal prompt prefix length
-
-    GGML_ASSERT(self_kq_mask);
-    GGML_ASSERT(ggml_backend_buffer_is_host(self_kq_mask->buffer));
-
-    float * data = (float *) self_kq_mask->data;
-    std::fill(data, data + ggml_nelements(self_kq_mask), -INFINITY);
-
-    for (int64_t i1 = 0; i1 < n_tokens; ++i1) {          // query
-        const llama_seq_id s1 = ubatch->seq_id[i1][0];
-        const uint64_t idst = i1*n_kv;
-        for (int64_t i0 = 0; i0 < n_tokens; ++i0) {      // key
-            if (ubatch->seq_id[i0][0] != s1) {
-                continue;
-            }
-            bool allow;
-            if (i1 < P) {
-                // prompt query: causal, prompt keys only (no canvas)
-                allow = (i0 < P) && (i0 <= i1);
-            } else {
-                // canvas query: attend to everything (bidirectional + cross to prompt)
-                allow = true;
-            }
-            if (allow) {
-                data[idst + i0] = 0.0f;
-            }
         }
     }
 }
@@ -1115,16 +1019,6 @@ llm_graph_input_i * llm_graph_result::add_input(llm_graph_input_ptr input) {
     return inputs.back().get();
 }
 
-llm_graph_input_diffusion_self_cond_topk * llm_graph_result::get_inp_diffusion_self_cond_topk() const {
-    for (auto & input : inputs) {
-        if (auto * topk = dynamic_cast<llm_graph_input_diffusion_self_cond_topk *>(input.get())) {
-            return topk;
-        }
-    }
-
-    return nullptr;
-}
-
 void llm_graph_result::set_params(const llm_graph_params & params) {
     this->params = params;
 }
@@ -1170,7 +1064,6 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     loras            (params.loras),
     mctx             (params.mctx),
     cross            (params.cross),
-    diffusion        (params.diffusion),
     hadamard_rotations(params.hadamard_rotations),
     hadamard_inverses(params.hadamard_inverses),
     samplers         (params.samplers),
@@ -1184,35 +1077,6 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
 void llm_graph_context::cb(ggml_tensor * cur, const char * name, int il) const {
     if (cb_func) {
         cb_func(ubatch, cur, name, il);
-    }
-}
-
-void llm_graph_context::set_diffusion_input_backend(ggml_tensor * tensor, uint32_t group) const {
-    if (!diffusion || !diffusion->decoder_phase || !sched || !tensor) {
-        return;
-    }
-
-    static const uint32_t enabled_groups = [] {
-        const char * env = getenv("DG_GPU_INPUT_GROUPS");
-        // Keep the default to inputs used by the fixed diffusion decoder graph:
-        // canvas/self-cond, positions, attention scale, KV indices, masks and
-        // rotary helpers. Mark them as outputs too, matching ggml-backend's
-        // existing copy-tensor convention, so the allocator will not overwrite
-        // them between denoising replays.
-        return env ? (uint32_t) strtoul(env, nullptr, 0) : 63u; // 1|2|4|8|16|32
-    }();
-    if ((enabled_groups & group) == 0) {
-        return;
-    }
-
-    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
-        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
-        if (backend && backend != backend_cpu &&
-            ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_GPU) {
-            ggml_set_output(tensor);
-            ggml_backend_sched_set_tensor_backend(sched, tensor, backend);
-            break;
-        }
     }
 }
 
@@ -2151,10 +2015,6 @@ ggml_tensor * llm_graph_context::build_inp_attn_scale() const {
 }
 
 ggml_tensor * llm_graph_context::build_inp_out_ids() const {
-    if (diffusion && diffusion->decoder_phase && n_outputs == n_tokens) {
-        return nullptr;
-    }
-
     // note: when all tokens are output, we could skip this optimization to spare the ggml_get_rows() calls,
     //       but this would make the graph topology depend on the number of output tokens, which can interfere with
     //       features that require constant topology such as pipeline parallelism
@@ -2223,39 +2083,6 @@ ggml_tensor * llm_graph_context::build_inp_cross_embd() const {
     res->add_input(std::move(inp));
 
     return cur;
-}
-
-ggml_tensor * llm_graph_context::build_inp_diffusion_self_cond(int64_t n_vocab) const {
-    auto inp = std::make_unique<llm_graph_input_diffusion_self_cond>(diffusion);
-
-    auto & cur = inp->probs;
-
-    cur = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_vocab, n_tokens);
-    ggml_set_input(cur);
-    set_diffusion_input_backend(cur);
-
-    res->add_input(std::move(inp));
-
-    return cur;
-}
-
-llm_graph_input_diffusion_self_cond_topk * llm_graph_context::build_inp_diffusion_self_cond_topk(int64_t k) const {
-    auto inp = std::make_unique<llm_graph_input_diffusion_self_cond_topk>(diffusion);
-
-    // ids are flat [k*n_tokens] (ggml_get_rows treats higher dims of the index tensor as batch
-    // dims that must match the data tensor; a flat index list gathers into [n_embd, k*n_tokens]).
-    inp->ids = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, k * n_tokens);
-    ggml_set_input(inp->ids);
-    set_diffusion_input_backend(inp->ids);
-
-    inp->probs = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, k, n_tokens);
-    ggml_set_input(inp->probs);
-    set_diffusion_input_backend(inp->probs);
-
-    auto * ptr = inp.get();
-    res->add_input(std::move(inp));
-
-    return ptr;
 }
 
 ggml_tensor * llm_graph_context::build_inp_pos_bucket_enc() const {
@@ -2468,21 +2295,6 @@ llm_graph_input_attn_no_cache * llm_graph_context::build_attn_inp_no_cache() con
     }
 
     return (llm_graph_input_attn_no_cache *) res->add_input(std::move(inp));
-}
-
-llm_graph_input_attn_no_cache_prefix * llm_graph_context::build_attn_inp_no_cache_prefix(int64_t n_prompt) const {
-    auto inp = std::make_unique<llm_graph_input_attn_no_cache_prefix>(hparams, cparams, n_prompt);
-
-    inp->self_kq_mask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, n_tokens, n_tokens, 1, 1);
-    ggml_set_input(inp->self_kq_mask);
-    set_diffusion_input_backend(inp->self_kq_mask, 128);
-    inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask, GGML_TYPE_F16) : inp->self_kq_mask;
-
-    // sliding-window layers reuse the same prefix mask (valid while n_tokens <= sliding_window)
-    inp->self_kq_mask_swa     = inp->self_kq_mask;
-    inp->self_kq_mask_swa_cnv = inp->self_kq_mask_cnv;
-
-    return (llm_graph_input_attn_no_cache_prefix *) res->add_input(std::move(inp));
 }
 
 ggml_tensor * llm_graph_context::build_attn(

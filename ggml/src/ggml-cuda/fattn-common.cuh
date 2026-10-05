@@ -13,7 +13,7 @@
 //
 // TUs that actually instantiate TQ paths must include fattn-tq.cuh:
 //   • fattn-vec.cuh, fattn-vec-vtq2.cuh
-//   • fattn-mma-ktq.cuh, fattn-mma-ktq-inline.cuh
+//   • fattn-mma-ktq.cuh
 // The pure-f16 paths (fattn-mma-f16.cuh, fattn-tile.cu, fattn-wmma-f16.cu)
 // must NOT include it — that is the entire point of the split.
 
