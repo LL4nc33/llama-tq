@@ -139,8 +139,6 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_gemma4(params);
         case LLM_ARCH_GEMMA4_ASSISTANT:
             return new llama_model_gemma4_assistant(params);
-        case LLM_ARCH_DIFFUSION_GEMMA:
-            return new llama_model_diffusion_gemma(params);
         case LLM_ARCH_GEMMA_EMBEDDING:
             return new llama_model_gemma_embedding(params);
         case LLM_ARCH_STARCODER2:
@@ -1602,9 +1600,6 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    // per-arch precompute of derived tensors (data is now available)
-    load_arch_post(ml);
-
     create_hadamard_tensors();
 
     if (use_mmap_buffer) {
@@ -2475,7 +2470,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     llama_memory_i::layer_reuse_cb reuse = nullptr;
                     llama_kv_cache::layer_share_cb share = nullptr;
 
-                    if (arch == LLM_ARCH_GEMMA3N || arch == LLM_ARCH_GEMMA4 || arch == LLM_ARCH_DIFFUSION_GEMMA) {
+                    if (arch == LLM_ARCH_GEMMA3N || arch == LLM_ARCH_GEMMA4) {
                         reuse = [&](int32_t il) {
                             if (il >= (int32_t) hparams.n_layer_kv_from_start) {
                                 return (int32_t) hparams.n_layer_kv_from_start - (hparams.is_swa(il) ? 2 : 1);
@@ -2808,7 +2803,6 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_GEMMA3N:
         case LLM_ARCH_GEMMA4:
         case LLM_ARCH_GEMMA4_ASSISTANT:
-        case LLM_ARCH_DIFFUSION_GEMMA:
         case LLM_ARCH_GEMMA_EMBEDDING:
         case LLM_ARCH_STARCODER2:
         case LLM_ARCH_OPENELM:

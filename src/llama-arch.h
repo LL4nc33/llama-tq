@@ -63,7 +63,6 @@ enum llm_arch {
     LLM_ARCH_GEMMA3N,
     LLM_ARCH_GEMMA4,
     LLM_ARCH_GEMMA4_ASSISTANT,
-    LLM_ARCH_DIFFUSION_GEMMA,
     LLM_ARCH_GEMMA_EMBEDDING,
     LLM_ARCH_STARCODER2,
     LLM_ARCH_MAMBA,
@@ -443,10 +442,6 @@ enum llm_tensor {
     LLM_TENSOR_LAYER_OUT_NORM,
     LLM_TENSOR_LAYER_OUT_SCALE,
     LLM_TENSOR_ENC_LAYER_OUT_SCALE,  // diffusion-gemma (encoder-phase per-layer output scale)
-    LLM_TENSOR_SELF_COND_NORM,   // diffusion-gemma
-    LLM_TENSOR_SELF_COND_GATE,   // diffusion-gemma
-    LLM_TENSOR_SELF_COND_UP,     // diffusion-gemma
-    LLM_TENSOR_SELF_COND_DOWN,   // diffusion-gemma
     LLM_TENSOR_POST_ATTN_NORM,
     LLM_TENSOR_POST_MLP_NORM,
     LLM_TENSOR_PER_LAYER_TOKEN_EMBD, // gemma3n
