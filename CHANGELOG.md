@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-05
+
+- **MoE expert cache** (`--moe-cache-mib N`, upstream PR #29887): an LRU cache in VRAM for experts kept in host memory (`-cmoe` / `-ncmoe` / `-ot`). Decode batches (up to 32 tokens) remap the selected experts to cached copies instead of reading them over PCIe. With several GPUs the cache sits on the device whose layers keep the most experts in host memory; pipeline parallelism is turned off while the cache is active.
+- Fixed: the server crashed with a null context when the context could not be created (for example out of memory); it now exits with an error.
+- Removed: the DiffusionGemma text-diffusion model, its examples, CUDA sampler, context API and WebUI preview.
+- Removed: the inline KTQ MMA flash-attention path (dead since the split dequant + tensor-core path); `vtq_mixed` is no longer offered on the command line (the type enum stays for compatibility).
+
 ## 2026-10-04
 
 - **TurboQuant KV fix:** the CUDA readers applied the KTQ sign bits inverted, so every dequantized K value was negated, and the CUDA quantizers used stochastic rounding. CUDA now writes bytes identical to the CPU reference (Qwen3.8-27B `ktq2_1` K: PPL 16.8 -> 6.09, f16 6.04).
