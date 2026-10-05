@@ -105,17 +105,26 @@ sigmoid. Sources: [Aleph-Alpha/Kolibri-1](https://huggingface.co/Aleph-Alpha/Kol
 GGUF [Eliasfpv28/Kolibri-1-Q3_K_S-GGUF](https://huggingface.co/Eliasfpv28/Kolibri-1-Q3_K_S-GGUF).
 The port is based on the patches by Seraphiel102.
 
-At Q3_K_S (31.5 GiB) the experts of 20 layers stay in RAM. The early layers sit on the first GPU
-under layer split, so the first GPU gets them (cheap) plus half of the rest:
+At Q3_K_S (31.5 GiB) the routed experts of the first layers stay in RAM. Those layers sit on the first
+GPU under layer split, and prompt batches stream their weights to it, so the larger the batch, the
+faster the prompt. With 131k context and a quantized KV cache, 28 layers in RAM leave room for a
+4096-token batch:
 
 ```bash
-llama-server -m Kolibri-1-Q3_K_S.gguf -ngl 99 -fa on -ts 35,15 -c 32768 -ub 1024 -t 4 \
-  -ot "blk\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19)\.ffn_(up|gate|down)_exps\.weight=CPU" \
+llama-server -m Kolibri-1-Q3_K_S.gguf -ngl 99 -fa on -ts 37,13 -c 131072 -b 4096 -ub 4096 -t 4 \
+  -ot "blk\.([0-9]|1[0-9]|2[0-7])\.ffn_(up|gate|down)_exps\.weight=CPU" \
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v \
   --temp 1.0 --top-p 0.97 --top-k 128 --jinja --reasoning off
 ```
 
-Decode 38-43 t/s and still 38 t/s at 10k context; prompt processing about 195 t/s (the experts in
-RAM bound it). Reasoning effort is set per request through `chat_template_kwargs`
+| Experts in RAM | Batch | Prompt (llama-bench pp4096) | Decode |
+|---|---:|---:|---:|
+| 20 layers | 512 | 122 t/s | 43 t/s |
+| 20 layers | 4096 | 452 t/s (32k context only) | 43 t/s |
+| 28 layers | 4096 | 370-386 t/s | 36-38 t/s |
+
+Decode barely drops with context (38 t/s at 10k). KV accuracy: perplexity +0.5 % with
+`ktq4_1`/`vtq4_1` against f16. Reasoning effort is set per request through `chat_template_kwargs`
 (`reasoning_effort`: none, low, medium, high); tool calls use the Hermes format.
 
 ## gpt-oss-20b
