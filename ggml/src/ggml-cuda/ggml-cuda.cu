@@ -2391,10 +2391,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     // TurboQuant weight formats (KTQ/VTQ) are quantized but have no MMVQ/MMQ dispatch.
     // They use the cuBLAS + dequant-to-fp16 fallback path via ggml_get_to_fp16_cuda.
     const bool is_tq_weight_type =
-        src0->type == GGML_TYPE_KTQ1_1 || src0->type == GGML_TYPE_KTQ2_1 ||
-        src0->type == GGML_TYPE_KTQ3_1 || src0->type == GGML_TYPE_KTQ4_1 ||
-        src0->type == GGML_TYPE_VTQ1_1 || src0->type == GGML_TYPE_VTQ2_1 ||
-        src0->type == GGML_TYPE_VTQ3_1 || src0->type == GGML_TYPE_VTQ4_1;
+        GGML_TYPE_IS_KTQ(src0->type) || GGML_TYPE_IS_VTQ_CODEBOOK(src0->type);
 
     bool use_mul_mat_vec_f = (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_BF16)
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
@@ -2487,10 +2484,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     // TurboQuant weight formats use the cuBLAS + dequant-to-fp16 fallback path.
     const bool is_tq_weight_type =
-        src0->type == GGML_TYPE_KTQ1_1 || src0->type == GGML_TYPE_KTQ2_1 ||
-        src0->type == GGML_TYPE_KTQ3_1 || src0->type == GGML_TYPE_KTQ4_1 ||
-        src0->type == GGML_TYPE_VTQ1_1 || src0->type == GGML_TYPE_VTQ2_1 ||
-        src0->type == GGML_TYPE_VTQ3_1 || src0->type == GGML_TYPE_VTQ4_1;
+        GGML_TYPE_IS_KTQ(src0->type) || GGML_TYPE_IS_VTQ_CODEBOOK(src0->type);
 
     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
     if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
@@ -5227,20 +5221,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             } break;
         case GGML_OP_SET_ROWS:
             {
+                // trellis VTQ: the CUDA encoder writes the backbone; the outliers of VTQ*_3 / VTQ3_V8 are picked CPU-side
                 return (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16 || op->type == GGML_TYPE_BF16 ||
                        op->type == GGML_TYPE_Q4_0 || op->type == GGML_TYPE_Q4_1 || op->type == GGML_TYPE_Q5_0 ||
                        op->type == GGML_TYPE_Q5_1 || op->type == GGML_TYPE_Q8_0 || op->type == GGML_TYPE_IQ4_NL ||
-                       op->type == GGML_TYPE_KTQ1_1 || op->type == GGML_TYPE_KTQ2_1 || op->type == GGML_TYPE_KTQ3_1 || op->type == GGML_TYPE_KTQ4_1 ||
-                       op->type == GGML_TYPE_VTQ1_1 || op->type == GGML_TYPE_VTQ2_1 || op->type == GGML_TYPE_VTQ3_1 || op->type == GGML_TYPE_VTQ4_1 ||
-                       // VTQ{2,3,4}_2 (Trellis v2): CUDA Viterbi encoder landed in Phase-2b (see trellis-encode.cuh).
-                       op->type == GGML_TYPE_VTQ2_2 || op->type == GGML_TYPE_VTQ3_2 || op->type == GGML_TYPE_VTQ4_2 ||
-                       // VTQ{2,3,4}_3 (Phase 3): Trellis backbone + 4 fp16 outliers/block.
-                       // TODO(phase3): set-rows currently writes only the trellis backbone via the
-                       // VTQ_2 encoder; outlier_pos/outlier_val are picked CPU-side via
-                       // ggml_trellis_outliers_pick before the prefill→decode handoff.
-                       op->type == GGML_TYPE_VTQ2_3 || op->type == GGML_TYPE_VTQ3_3 || op->type == GGML_TYPE_VTQ4_3 ||
-                       // VTQ3_V8 (TurboQuant v8): trellis-3bit + 2 outliers (3.625 bpw).
-                       op->type == GGML_TYPE_VTQ3_V8) &&
+                       GGML_TYPE_IS_KTQ(op->type) || GGML_TYPE_IS_VTQ(op->type)) &&
                        op->src[0]->type == GGML_TYPE_F32 &&
                        (op->src[1]->type == GGML_TYPE_I64 || op->src[1]->type == GGML_TYPE_I32);
             } break;

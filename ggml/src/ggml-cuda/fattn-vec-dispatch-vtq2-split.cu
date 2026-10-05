@@ -19,16 +19,6 @@ extern bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
 #ifdef FATTN_VTQ2_SPLIT_ENABLE
 
-static bool is_vtq2_family(ggml_type t) {
-    return t == GGML_TYPE_VTQ2_2 || t == GGML_TYPE_VTQ3_2 || t == GGML_TYPE_VTQ4_2 ||
-           // VTQ_3 reuses the same trellis backbone + outlier sidecar; the
-           // split-decode path bulk-dequants via ggml_get_to_fp16_nc_cuda which
-           // already covers VTQ_3 (convert.cu Phase-3 wiring).
-           t == GGML_TYPE_VTQ2_3 || t == GGML_TYPE_VTQ3_3 || t == GGML_TYPE_VTQ4_3 ||
-           // VTQ3_V8 (TurboQuant v8) — same backbone, OUTLIER_K=2.
-           t == GGML_TYPE_VTQ3_V8;
-}
-
 // Attempt the E14 split-decode path.
 // Returns true if this function handled the dispatch (and the FA kernel ran).
 // Returns false if the fast-path preconditions are not met (caller should
@@ -38,7 +28,7 @@ bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * 
     ggml_tensor * V = dst->src[2];
 
     // Preconditions: VTQ_2 V-cache + ncols=1 (decode path).
-    if (!is_vtq2_family(V->type)) {
+    if (!GGML_TYPE_IS_VTQ_TRELLIS(V->type)) {
         return false;
     }
     if (Q->ne[1] != 1) {

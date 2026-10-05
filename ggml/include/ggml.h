@@ -453,6 +453,17 @@ extern "C" {
         GGML_TYPE_COUNT   = 144,
     };
 
+    // TurboQuant KV cache type families. Macros so that the same list works in C, in C++
+    // constant expressions and in CUDA device code. VTQ_MIXED and XKTQ2_1 are not included.
+    #define GGML_TYPE_IS_KTQ(t) \
+        ((t) == GGML_TYPE_KTQ1_1 || (t) == GGML_TYPE_KTQ2_1 || (t) == GGML_TYPE_KTQ3_1 || (t) == GGML_TYPE_KTQ4_1)
+    #define GGML_TYPE_IS_VTQ_CODEBOOK(t) \
+        ((t) == GGML_TYPE_VTQ1_1 || (t) == GGML_TYPE_VTQ2_1 || (t) == GGML_TYPE_VTQ3_1 || (t) == GGML_TYPE_VTQ4_1)
+    #define GGML_TYPE_IS_VTQ_TRELLIS(t) \
+        ((t) == GGML_TYPE_VTQ2_2 || (t) == GGML_TYPE_VTQ3_2 || (t) == GGML_TYPE_VTQ4_2 || \
+         (t) == GGML_TYPE_VTQ2_3 || (t) == GGML_TYPE_VTQ3_3 || (t) == GGML_TYPE_VTQ4_3 || (t) == GGML_TYPE_VTQ3_V8)
+    #define GGML_TYPE_IS_VTQ(t) (GGML_TYPE_IS_VTQ_CODEBOOK(t) || GGML_TYPE_IS_VTQ_TRELLIS(t))
+
     // precision
     enum ggml_prec {
         GGML_PREC_DEFAULT =  0, // stored as ggml_tensor.op_params, 0 by default

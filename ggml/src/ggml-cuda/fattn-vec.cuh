@@ -83,8 +83,7 @@ static __global__ void flash_attn_ext_vec(
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
     // KTQ dots Q in the Hadamard domain with one lane per element of a 32-block, so it needs whole warps
     // (D/4 = 16 threads at D=64 would take the q8_1 branch, which gets no Q_q8 here)
-    constexpr bool K_is_ktq   = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 ||
-                                type_K == GGML_TYPE_KTQ4_1 || type_K == GGML_TYPE_XKTQ2_1;
+    constexpr bool K_is_ktq   = type_K == GGML_TYPE_XKTQ2_1 || GGML_TYPE_IS_KTQ(type_K);
     constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb :
                                 K_is_ktq ? WARP_SIZE : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
@@ -99,17 +98,14 @@ static __global__ void flash_attn_ext_vec(
     //   VTQ_2 family (trellis):  reloads (d, start_state, qs ptr) per call.
     // Both benefit from larger ne. Conservative: only at D >= 256 to avoid
     // register pressure regression on Qwen3.6's D=128 path.
-    constexpr bool is_vtq1_family = type_V == GGML_TYPE_VTQ1_1 || type_V == GGML_TYPE_VTQ2_1
-                                 || type_V == GGML_TYPE_VTQ3_1 || type_V == GGML_TYPE_VTQ4_1;
-    constexpr bool is_vtq2_family = type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2
-                                 || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3
-                                 || type_V == GGML_TYPE_VTQ3_V8;
+    constexpr bool is_vtq1_family = GGML_TYPE_IS_VTQ_CODEBOOK(type_V);
+    constexpr bool is_vtq2_family = GGML_TYPE_IS_VTQ_TRELLIS(type_V);
     constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne
                                     : ((is_vtq1_family || is_vtq2_family) && D >= 256 ? 8 : 4);
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, D, nthreads_KQ>();
-    constexpr bool Q_tq = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 || type_K == GGML_TYPE_KTQ4_1;
+    constexpr bool Q_tq = GGML_TYPE_IS_KTQ(type_K);
     constexpr bool Q_q8_1 = !Q_tq && type_K != GGML_TYPE_F16 && type_K != GGML_TYPE_BF16;
 #ifdef V_DOT2_F32_F16_AVAILABLE
     constexpr dequantize_V_t dequantize_V = get_dequantize_V<type_V, half,  V_rows_per_thread>();
@@ -675,8 +671,7 @@ static __global__ void flash_attn_ext_vec_paired(
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
     // KTQ dots Q in the Hadamard domain with one lane per element of a 32-block, so it needs whole warps
     // (D/4 = 16 threads at D=64 would take the q8_1 branch, which gets no Q_q8 here)
-    constexpr bool K_is_ktq   = type_K == GGML_TYPE_KTQ1_1 || type_K == GGML_TYPE_KTQ2_1 || type_K == GGML_TYPE_KTQ3_1 ||
-                                type_K == GGML_TYPE_KTQ4_1 || type_K == GGML_TYPE_XKTQ2_1;
+    constexpr bool K_is_ktq   = type_K == GGML_TYPE_XKTQ2_1 || GGML_TYPE_IS_KTQ(type_K);
     constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb :
                                 K_is_ktq ? WARP_SIZE : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
@@ -684,11 +679,8 @@ static __global__ void flash_attn_ext_vec_paired(
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
     static_assert(WARP_SIZE % nthreads_V  == 0, "bad nthreads_V");
 
-    constexpr bool is_vtq1_family = type_V == GGML_TYPE_VTQ1_1 || type_V == GGML_TYPE_VTQ2_1
-                                 || type_V == GGML_TYPE_VTQ3_1 || type_V == GGML_TYPE_VTQ4_1;
-    constexpr bool is_vtq2_family = type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2
-                                 || type_V == GGML_TYPE_VTQ2_3 || type_V == GGML_TYPE_VTQ3_3 || type_V == GGML_TYPE_VTQ4_3
-                                 || type_V == GGML_TYPE_VTQ3_V8;
+    constexpr bool is_vtq1_family = GGML_TYPE_IS_VTQ_CODEBOOK(type_V);
+    constexpr bool is_vtq2_family = GGML_TYPE_IS_VTQ_TRELLIS(type_V);
     constexpr int V_rows_per_thread = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 2*cpy_ne
                                     : ((is_vtq1_family || is_vtq2_family) && D >= 256 ? 8 : 4);
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
