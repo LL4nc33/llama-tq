@@ -27,7 +27,7 @@ template <ggml_type type>
 static constexpr bool fattn_tq_wmma_supported() {
     return type == GGML_TYPE_KTQ2_1 || type == GGML_TYPE_KTQ3_1 || type == GGML_TYPE_KTQ4_1 ||
            type == GGML_TYPE_VTQ2_1 || type == GGML_TYPE_VTQ3_1 || type == GGML_TYPE_VTQ4_1 ||
-           type == GGML_TYPE_Q8_0   || type == GGML_TYPE_Q5_0   || type == GGML_TYPE_F16;
+           type == GGML_TYPE_Q8_0   || type == GGML_TYPE_Q5_0   || type == GGML_TYPE_Q4_0   || type == GGML_TYPE_F16;
 }
 
 // dequantize rows [0, T) of a K/V tile (row stride nb bytes) to f16, row r at tile + r*ldt
@@ -56,6 +56,17 @@ static __device__ __forceinline__ void fattn_tq_wmma_load_tile(
             for (int k = 0; k < 16; ++k) {
                 const uint16_t w = q16[k];
                 v[k] = __floats2half2_rn(d*(int8_t) (w & 0xFF), d*(int8_t) (w >> 8));
+            }
+        } else if constexpr (type == GGML_TYPE_Q4_0) {
+            // element j < 16 in the low nibble of qs[j], element j + 16 in the high nibble, offset by 8
+            const block_q4_0 * b = (const block_q4_0 *) (base + r*nb) + bi;
+            const float d = __half2float(b->d);
+#pragma unroll
+            for (int k = 0; k < 8; ++k) {
+                const int q0 = b->qs[2*k + 0];
+                const int q1 = b->qs[2*k + 1];
+                v[k]     = __floats2half2_rn(d*((q0 & 0xF) - 8), d*((q1 & 0xF) - 8));
+                v[k + 8] = __floats2half2_rn(d*((q0 >>  4) - 8), d*((q1 >>  4) - 8));
             }
         } else if constexpr (type == GGML_TYPE_Q5_0) {
             const block_q5_0 * b = (const block_q5_0 *) (base + r*nb) + bi;
@@ -415,6 +426,7 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
     FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
     FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
+    FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
@@ -422,6 +434,9 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     // (q8_0 stays with the GQA kernel, which is faster for it)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
+    // q4_0 has no GQA decode kernel, only the per-head VEC kernel
+    FATTN_TQ_WMMA_CASE(128, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)
+    FATTN_TQ_WMMA_CASE(256, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
@@ -436,6 +451,7 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     FATTN_TQ_WMMA_CASE(512, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1)
     FATTN_TQ_WMMA_CASE(512, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
     FATTN_TQ_WMMA_CASE(512, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
+    FATTN_TQ_WMMA_CASE(512, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)
 
     return false;
 }
