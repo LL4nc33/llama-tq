@@ -235,6 +235,9 @@ private:
 public:
     uint32_t graph_max_nodes(uint32_t n_tokens) const;
 
+    // (re)create the scheduler for graphs of up to max_nodes nodes, with the MoE cache hooks if any
+    void sched_create(size_t max_nodes, bool parallel);
+
     // can reuse the llm_graph_result instance of the context (for example to update a memory module)
     llm_graph_result * get_gf_res_reserve() const;
 

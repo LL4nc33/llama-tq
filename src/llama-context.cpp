@@ -35,6 +35,10 @@
 // llama_context
 //
 
+// headroom of the training graphs (forward + backward + optimizer step) over the forward graph, in nodes;
+// ggml-opt sizes gb_grad / gb_opt with the same factor
+static constexpr size_t LLAMA_OPT_GRAPH_SIZE_FACTOR = 8;
+
 // Verify that every Hadamard-folded weight consumed by the graph receives its
 // activation-side transform, and every latent lookup table gets the inverse.
 // A matmul path that bypasses build_lora_mm / build_lora_mm_id would otherwise
@@ -589,14 +593,7 @@ void llama_context::sched_reserve() {
     gf_res_prev.reset(new llm_graph_result(max_nodes));
     gf_res_reserve.reset(new llm_graph_result(max_nodes));
 
-    auto create_sched = [&](bool parallel) {
-        sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, parallel, cparams.op_offload));
-        if (moe_cache) {
-            ggml_backend_sched_set_moe_cache(sched.get(), moe_cache->backend(),
-                llama_moe_cache::sched_resolve, llama_moe_cache::sched_begin, llama_moe_cache::sched_prepare, moe_cache.get());
-        }
-    };
-    create_sched(cparams.pipeline_parallel);
+    sched_create(max_nodes, cparams.pipeline_parallel);
 
     llama_memory_context_ptr mctx;
     if (memory) {
@@ -790,7 +787,7 @@ void llama_context::sched_reserve() {
             if (cparams.pipeline_parallel) {
                 LLAMA_LOG_WARN("%s: compute buffer allocation failed, retrying without pipeline parallelism\n", __func__);
                 cparams.pipeline_parallel = false;
-                create_sched(false);
+                sched_create(max_nodes, false);
                 gf = graph_reserve(n_tokens, n_seqs, n_tokens, mctx.get());
             }
             if (!gf) {
@@ -2645,6 +2642,14 @@ void llama_context::output_reorder() {
 // graph
 //
 
+void llama_context::sched_create(size_t max_nodes, bool parallel) {
+    sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, parallel, cparams.op_offload));
+    if (moe_cache) {
+        ggml_backend_sched_set_moe_cache(sched.get(), moe_cache->backend(),
+            llama_moe_cache::sched_resolve, llama_moe_cache::sched_begin, llama_moe_cache::sched_prepare, moe_cache.get());
+    }
+}
+
 uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     if (model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_KIMI_LINEAR || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE ||
         model.arch == LLM_ARCH_QWEN4EXP) {
@@ -3471,6 +3476,14 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
     GGML_ASSERT(model->hparams.n_ctx_train % n_batch  == 0);
     GGML_ASSERT(n_batch                    % n_ubatch == 0);
 
+    // the scheduler was sized for the inference graph, before the training adapter existed; the training graphs
+    // (forward + backward + optimizer step) get LLAMA_OPT_GRAPH_SIZE_FACTOR x the forward graph size
+    {
+        const size_t max_nodes = graph_max_nodes(n_ubatch);
+        gf_res_prev.reset(new llm_graph_result(max_nodes));
+        sched_create(LLAMA_OPT_GRAPH_SIZE_FACTOR * max_nodes, false);
+    }
+
     ggml_opt_params opt_params = ggml_opt_default_params(sched.get(), GGML_OPT_LOSS_TYPE_CROSS_ENTROPY);
     opt_params.opt_period      = n_batch / n_ubatch;
     opt_params.get_opt_pars    = lopt_params.get_opt_pars;
@@ -3579,7 +3592,7 @@ void llama_context::opt_epoch_iter(
             struct ggml_context * ctx_compute_opt;
             {
                 const size_t size_gf = ggml_graph_size(gf);
-                // ggml-opt allocates gb_grad/gb_opt with gb_size_factor x size_gf headroom so
+                // ggml-opt allocates gb_grad/gb_opt with LLAMA_OPT_GRAPH_SIZE_FACTOR x size_gf headroom so
                 // backward-expand (which can grow the graph significantly on MoE + dual-GPU
                 // layer-split) has room for cross-device copies, split-inputs, and the many
                 // gradient ops it creates. ctx_compute must hold both the tensor metadata for
@@ -3589,12 +3602,11 @@ void llama_context::opt_epoch_iter(
                 //
                 // Tensor count: forward + backward + opt_step. Forward has size_gf nodes;
                 // backward roughly doubles that with grad ops + scatter/reduce kernels; opt_step
-                // adds one node per param. Empirically gb_size_factor=8 covers 35B MoE without
-                // overflow on dual-GPU; bumped from 4 because earlier attempts with 4x still hit
-                // the cap when build_backward_expand fired on the second batch.
-                const size_t gb_size_factor = 8;
-                const size_t size_meta = gb_size_factor * size_gf * ggml_tensor_overhead()
-                                       + 2*ggml_graph_overhead_custom(gb_size_factor * size_gf, /*grads = */ true);
+                // adds one node per param. Empirically a factor of 8 covers 35B MoE without
+                // overflow on dual-GPU (4x still hit the cap when build_backward_expand fired on the
+                // second batch); see LLAMA_OPT_GRAPH_SIZE_FACTOR.
+                const size_t size_meta = LLAMA_OPT_GRAPH_SIZE_FACTOR * size_gf * ggml_tensor_overhead()
+                                       + 2*ggml_graph_overhead_custom(LLAMA_OPT_GRAPH_SIZE_FACTOR * size_gf, /*grads = */ true);
                 struct ggml_init_params params = {
                     /*.mem_size   =*/ size_meta,
                     /*.mem_buffer =*/ nullptr,
