@@ -5182,8 +5182,10 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             // cuBLAS Sgemm rejects degenerate shapes that arise from scalar/gate
             // gradients in MoE finetune (e.g. ne1==1 or src0->ne[1]==1). Fall
             // back to CPU which handles arbitrary shapes via plain loops.
+            // a quantized src0 (frozen weight in a LoRA input gradient) is dequantized in chunks
             return op->type == GGML_TYPE_F32
-                && op->src[0]->type == GGML_TYPE_F32
+                && (op->src[0]->type == GGML_TYPE_F32 ||
+                    (ggml_is_contiguous(op->src[0]) && ggml_get_to_fp32_cuda(op->src[0]->type) != nullptr))
                 && op->src[1]->type == GGML_TYPE_F32
                 && op->ne[1]       > 1   // N > 1
                 && op->src[0]->ne[1] > 1;  // K > 1
