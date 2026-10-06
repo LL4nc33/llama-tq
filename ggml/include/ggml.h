@@ -546,6 +546,7 @@ extern "C" {
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_ID,
         GGML_OP_MUL_MAT_ID_GRAD_AS,
+        GGML_OP_MUL_MAT_ID_GRAD_B,
         GGML_OP_QUANTIZE_DEQUANTIZE_FAKE,
         GGML_OP_OUT_PROD,
 
@@ -1495,6 +1496,18 @@ extern "C" {
             struct ggml_tensor  * b,
             struct ggml_tensor  * ids,
             int64_t               n_expert);
+
+    // Backward of ggml_mul_mat_id w.r.t. b (the expert input). as may be quantized (frozen experts in LoRA training).
+    //   as:     [cols, rows, n_expert]   ids: [n_used, n_tokens] i32   grad_c: [rows, n_used, n_tokens] f32
+    //   output: [cols, n_used_b, n_tokens] f32 (same shape as b)
+    //
+    // grad_b[c, e_b, t] = sum over e with e mod n_used_b == e_b of sum_r as[c, r, ids[e, t]] * grad_c[r, e, t]
+    GGML_API struct ggml_tensor * ggml_mul_mat_id_grad_b(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * as,
+            struct ggml_tensor  * grad_c,
+            struct ggml_tensor  * ids,
+            int64_t               n_used_b);
 
     // QAT fake-quantize op: round-trip a F32 tensor through `target_quant`
     // format, returning a F32 tensor with the quantization error baked in.

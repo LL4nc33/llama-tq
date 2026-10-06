@@ -1148,6 +1148,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "MUL_MAT",
     "MUL_MAT_ID",
     "MUL_MAT_ID_GRAD_AS",
+    "MUL_MAT_ID_GRAD_B",
     "QUANTIZE_DEQUANTIZE_FAKE",
     "OUT_PROD",
 
@@ -1225,7 +1226,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1262,6 +1263,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "X*Y",
     "X[i]*Y",
     "X[i]*Y_back_as",
+    "X[i]*Y_back_b",
     "fake_quant(X)",
     "X*Y",
 
@@ -1339,7 +1341,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 100, "GGML_OP_COUNT != 100");
+static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3505,6 +3507,39 @@ struct ggml_tensor * ggml_mul_mat_id_grad_as(
     result->op     = GGML_OP_MUL_MAT_ID_GRAD_AS;
     result->src[0] = grad_c;
     result->src[1] = b;
+    result->src[2] = ids;
+
+    return result;
+}
+
+// ggml_mul_mat_id_grad_b
+//
+// Backward pass for ggml_mul_mat_id w.r.t. b. With the forward
+//   c[r, e, t] = sum_c as[c, r, ids[e, t]] * b[c, e mod n_used_b, t]
+// the gradient is
+//   grad_b[c, e_b, t] = sum over e with e mod n_used_b == e_b of sum_r as[c, r, ids[e, t]] * grad_c[r, e, t]
+// i.e. the expert weight is applied untransposed to the incoming gradient. as may be quantized.
+struct ggml_tensor * ggml_mul_mat_id_grad_b(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * as,
+        struct ggml_tensor  * grad_c,
+        struct ggml_tensor  * ids,
+        int64_t               n_used_b) {
+    GGML_ASSERT(ids->type    == GGML_TYPE_I32);
+    GGML_ASSERT(grad_c->type == GGML_TYPE_F32);
+    GGML_ASSERT(as->ne[3] == 1 && grad_c->ne[3] == 1);
+    GGML_ASSERT(ids->ne[2] == 1 && ids->ne[3] == 1);
+    GGML_ASSERT(grad_c->ne[0] == as->ne[1]);  // rows
+    GGML_ASSERT(ids->ne[0] == grad_c->ne[1]); // n_used
+    GGML_ASSERT(ids->ne[1] == grad_c->ne[2]); // n_tokens
+    GGML_ASSERT(n_used_b > 0 && ids->ne[0] % n_used_b == 0);
+
+    const int64_t ne[4] = { as->ne[0], n_used_b, grad_c->ne[2], 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_MUL_MAT_ID_GRAD_B;
+    result->src[0] = as;
+    result->src[1] = grad_c;
     result->src[2] = ids;
 
     return result;
@@ -6944,57 +6979,17 @@ static void ggml_compute_backward(
             // grad = grad_c   [D_out, n_used, n_tokens]
             //
             // grad_as = scatter_outer_product(grad, b, ids)
-            // grad_b  = mul_mat_id(transpose(as), grad, ids)   (assumes n_used_b == n_used)
+            // grad_b  = per (e, t): as[:, :, ids[e, t]] applied to grad, summed over broadcast slots
             // grad_ids = 0  (i32, discrete routing decisions)
             if (src0_needs_grads) {
                 ggml_add_or_set(ctx, cgraph, isrc0,
                     ggml_mul_mat_id_grad_as(ctx, grad, src1, src2, src0->ne[2]));
             }
             if (src1_needs_grads) {
-                // Quantised weights cannot be transposed cheaply: the
-                // backward path needs cont(transpose(as)) which would force
-                // a strided block-copy of a multi-GiB expert tensor every
-                // step. For LoRA training the weight is frozen anyway, so
-                // dropping grad_b just truncates an already-finalised
-                // sub-graph without harming the LoRA gradient flow.
-                if (src0->type != GGML_TYPE_F32 &&
-                    src0->type != GGML_TYPE_F16 &&
-                    src0->type != GGML_TYPE_BF16) {
-                    static int warned_quant_T = 0;
-                    if (!warned_quant_T) {
-                        fprintf(stderr,
-                            "ggml_compute_backward: MUL_MAT_ID grad_b skipped — src0 is %s (transpose+cont of quantised weight is prohibitive). LoRA path still flows via grad_as.\n",
-                            ggml_type_name(src0->type));
-                        warned_quant_T = 1;
-                    }
-                    return;
-                }
-                if (src1->ne[1] == src2->ne[0]) {
-                    // Standard case: n_used_b == n_used (no broadcast).
-                    struct ggml_tensor * as_T = ggml_cont(ctx, ggml_transpose(ctx, src0));
-                    ggml_add_or_set(ctx, cgraph, isrc1,
-                        ggml_mul_mat_id(ctx, as_T, grad, src2));
-                } else {
-                    // Broadcast case (n_used_b == 1, n_used > 1) used by Qwen3.6-A35B etc.:
-                    // every expert slot reads the same b-row, so the full grad_b is the
-                    // sum of contributions across all expert routings. Computing that
-                    // would need an extra reduce-sum kernel. For LoRA training, b carries
-                    // gradient only through the lora_a → lora_b path which lives in src0;
-                    // src1 (the activation feeding the experts) is downstream from the
-                    // LoRA-merged weight, so dropping its gradient just truncates an
-                    // already-trained subgraph. Warn once, skip grad_b, but still keep
-                    // grad_as (which we computed above) — return early so the trailing
-                    // shape-asserts don't deref the never-allocated cgraph->grads[isrc1].
-                    static int warned_bcast = 0;
-                    if (!warned_bcast) {
-                        fprintf(stderr,
-                            "ggml_compute_backward: MUL_MAT_ID broadcast b (n_used_b=%lld, n_used=%lld) "
-                            "— grad_b dropped (follow-up: needs reduce_sum kernel). LoRA grad_as still flows.\n",
-                            (long long) src1->ne[1], (long long) src2->ne[0]);
-                        warned_bcast = 1;
-                    }
-                    return;
-                }
+                // grad_b applies each selected expert untransposed to the gradient; works for quantized experts
+                // and sums the slots of a broadcast b (n_used_b < n_used)
+                ggml_add_or_set(ctx, cgraph, isrc1,
+                    ggml_mul_mat_id_grad_b(ctx, src0, grad, src2, src1->ne[1]));
             }
         } break;
         case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE: {

@@ -4485,6 +4485,53 @@ struct test_mul_mat_id : public test_case {
     }
 };
 
+// GGML_OP_MUL_MAT_ID_GRAD_B (gradient of mul_mat_id w.r.t. b, experts may be quantized)
+struct test_mul_mat_id_grad_b : public test_case {
+    const ggml_type type_a;
+    const int n_mats;
+    const int n_used;
+    const bool b; // broadcast b matrix
+    const int64_t m;
+    const int64_t n;
+    const int64_t k;
+
+    std::string vars() override {
+        return VARS_TO_STR7(type_a, n_mats, n_used, b, m, n, k);
+    }
+
+    double max_nmse_err() override {
+        return 5e-4;
+    }
+
+    test_mul_mat_id_grad_b(ggml_type type_a = GGML_TYPE_F32, int n_mats = 8, int n_used = 2, bool b = false,
+            int64_t m = 32, int64_t n = 32, int64_t k = 256)
+        : type_a(type_a), n_mats(n_mats), n_used(n_used), b(b), m(m), n(n), k(k) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * as = ggml_new_tensor_3d(ctx, type_a, k, m, n_mats);
+        ggml_set_name(as, "as");
+
+        ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_mats, n);
+        ggml_set_name(ids, "ids");
+        if (n_used != n_mats) {
+            ids = ggml_view_2d(ctx, ids, n_used, n, ids->nb[1], 0);
+            ggml_set_name(ids, "view_of_ids");
+        }
+
+        ggml_tensor * grad_c = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, m, n_used, n);
+        ggml_set_name(grad_c, "grad_c");
+
+        ggml_tensor * out = ggml_mul_mat_id_grad_b(ctx, as, grad_c, ids, b ? 1 : n_used);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        init_mul_mat_id_tensors(ctx, n_mats);
+    }
+};
+
 // GGML_OP_MUL_MAT_ID + GGML_OP_ADD or GGML_OP_MUL
 struct test_mul_mat_id_fusion : public test_case {
     const ggml_type type_a;
@@ -8820,6 +8867,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ4_XS}) {
+        for (int n_used : {1, 2, 4}) {
+            for (bool b : {false, true}) {
+                for (int n : {1, 17, 64}) {
+                    test_cases.emplace_back(new test_mul_mat_id_grad_b(type_a, 8, n_used, b, 48, n, 256));
                 }
             }
         }

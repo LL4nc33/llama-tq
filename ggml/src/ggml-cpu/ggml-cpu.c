@@ -1944,6 +1944,85 @@ static void ggml_compute_forward_mul_mat_id_grad_as(
     }
 }
 
+// ggml_compute_forward_mul_mat_id_grad_b
+//
+// Backward pass for mul_mat_id with respect to b (the expert input):
+//   grad_b[c, e_b, t] = sum over e with e mod n_used_b == e_b of sum_r as[c, r, ids[e, t]] * grad_c[r, e, t]
+// dst:    [D_in, n_used_b, n_tokens]  F32
+// src[0]: as     [D_in, D_out, n_expert]  any type with to_float (rows of D_in are dequantized)
+// src[1]: grad_c [D_out, n_used, n_tokens] F32
+// src[2]: ids    [n_used, n_tokens] I32
+// Threads split the token axis, so every dst row has one writer.
+static void ggml_compute_forward_mul_mat_id_grad_b(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * as     = dst->src[0];
+    const struct ggml_tensor * grad_c = dst->src[1];
+    const struct ggml_tensor * ids    = dst->src[2];
+
+    GGML_ASSERT(grad_c->type == GGML_TYPE_F32);
+    GGML_ASSERT(ids->type    == GGML_TYPE_I32);
+    GGML_ASSERT(dst->type    == GGML_TYPE_F32);
+    GGML_ASSERT(dst->nb[0]   == sizeof(float));
+    GGML_ASSERT(as->nb[0]    == ggml_type_size(as->type));
+
+    const int64_t D_in     = as->ne[0];
+    const int64_t D_out    = as->ne[1];
+    const int64_t n_expert = as->ne[2];
+    const int64_t n_used   = ids->ne[0];
+    const int64_t n_tokens = ids->ne[1];
+    const int64_t n_used_b = dst->ne[1];
+
+    const ggml_to_float_t to_float = as->type == GGML_TYPE_F32 ? NULL : ggml_get_type_traits(as->type)->to_float;
+    GGML_ASSERT(as->type == GGML_TYPE_F32 || to_float != NULL);
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+    const int64_t t_per_thread = (n_tokens + nth - 1) / nth;
+    const int64_t t_start      = MIN(ith * t_per_thread,     n_tokens);
+    const int64_t t_end        = MIN(t_start + t_per_thread, n_tokens);
+    if (t_start >= t_end) {
+        return;
+    }
+
+    float * row = (float *) malloc(D_in * sizeof(float));
+    GGML_ASSERT(row);
+
+    for (int64_t t = t_start; t < t_end; ++t) {
+        for (int64_t e_b = 0; e_b < n_used_b; ++e_b) {
+            memset((char *) dst->data + e_b*dst->nb[1] + t*dst->nb[2], 0, D_in*sizeof(float));
+        }
+        for (int64_t e = 0; e < n_used; ++e) {
+            const int32_t k = *(const int32_t *) ((const char *) ids->data + e*ids->nb[0] + t*ids->nb[1]);
+            GGML_ASSERT(k >= 0 && k < n_expert);
+
+            const float * g   = (const float *) ((const char *) grad_c->data + e*grad_c->nb[1] + t*grad_c->nb[2]);
+            float       * out = (float *) ((char *) dst->data + (e % n_used_b)*dst->nb[1] + t*dst->nb[2]);
+
+            for (int64_t r = 0; r < D_out; ++r) {
+                const float gr = g[r];
+                if (gr == 0.0f) {
+                    continue;
+                }
+                const char * w = (const char *) as->data + r*as->nb[1] + k*as->nb[2];
+                const float * wr;
+                if (to_float) {
+                    to_float(w, row, D_in);
+                    wr = row;
+                } else {
+                    wr = (const float *) w;
+                }
+                for (int64_t c = 0; c < D_in; ++c) {
+                    out[c] += gr * wr[c];
+                }
+            }
+        }
+    }
+
+    free(row);
+}
+
 // ggml_compute_forward_quantize_dequantize_fake
 //
 // Stage-4 QAT op: round-trip each F32 row through `target_quant` to bake the
@@ -2127,6 +2206,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_MUL_MAT_ID_GRAD_AS:
             {
                 ggml_compute_forward_mul_mat_id_grad_as(params, tensor);
+            } break;
+        case GGML_OP_MUL_MAT_ID_GRAD_B:
+            {
+                ggml_compute_forward_mul_mat_id_grad_b(params, tensor);
             } break;
         case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE:
             {
@@ -2608,6 +2691,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_MUL_MAT:
         case GGML_OP_MUL_MAT_ID:
         case GGML_OP_MUL_MAT_ID_GRAD_AS:
+        case GGML_OP_MUL_MAT_ID_GRAD_B:
         case GGML_OP_QUANTIZE_DEQUANTIZE_FAKE:
         case GGML_OP_OUT_PROD:
             {
