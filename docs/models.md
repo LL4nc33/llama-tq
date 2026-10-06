@@ -107,31 +107,24 @@ The port is based on the patches by Seraphiel102.
 
 At Q3_K_S (31.5 GiB) part of the routed experts has to stay in RAM. The simplest setup lets `-fit`
 (on by default) decide: it measures weights, KV cache and compute buffers and picks the layer split
-and which layers keep their experts in RAM. Raise the CPU/GPU crossover for prompts with
-`GGML_OP_OFFLOAD_MIN_BATCH`: below it, the RAM experts run on the CPU instead of being streamed to the
-GPU for every batch, which cuts the time to the first token of short prompts by about 4x.
+and which layers keep their experts in RAM. fit gives those layers to the last device, and prompt
+batches stream their weights to that GPU, so list the GPU with the widest PCIe link last (here GPU0,
+x16, next to GPU1 on x4). Below `GGML_OP_OFFLOAD_MIN_BATCH` tokens the RAM experts run on the CPU
+instead of being streamed, which cuts the time to the first token of short prompts by about 4x:
 
 ```bash
-GGML_OP_OFFLOAD_MIN_BATCH=1024 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 131072 -b 4096 -ub 4096 -t 4 \
-  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v \
+GGML_OP_OFFLOAD_MIN_BATCH=256 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 131072 -b 4096 -ub 4096 -t 4 \
+  --device CUDA1,CUDA0 -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v \
   --temp 1.0 --top-p 0.97 --top-k 128 --jinja --reasoning off
 ```
 
-By hand, put the RAM experts on the early layers: those sit on the first GPU under layer split, and
-large prompt batches stream their weights over its link, which is faster when the first GPU has the
-wider PCIe link (here x16 vs x4):
+2x RTX 2060 12 GB, 131k context, `-ub 4096`, server timings (time to the first token):
 
-```bash
-llama-server ... -ngl 99 -ts 37,13 \
-  -ot "blk\.([0-9]|1[0-9]|2[0-7])\.ffn_(up|gate|down)_exps\.weight=CPU"
-```
-
-2x RTX 2060 12 GB, 131k context, `-ub 4096`, `GGML_OP_OFFLOAD_MIN_BATCH=1024`, server timings:
-
-| Placement | Decode | Prompt 81 tok | Prompt 1.3k | Prompt 3.4k |
-|---|---:|---:|---:|---:|
-| `-fit` (automatic) | 37.4 t/s | 0.9 s | 7.0 s (191 t/s) | 10.3 s (331 t/s) |
-| experts of layers 0-27 in RAM | 34.7 t/s | 1.0 s | 5.5 s (246 t/s) | 7.5 s (454 t/s) |
+| Placement | Decode | 81 tok | 562 tok | 1.3k tok | 3.4k tok |
+|---|---:|---:|---:|---:|---:|
+| `-fit`, `--device CUDA1,CUDA0`, min batch 256 | 34.8 t/s | 1.0 s | 1.7 s | 2.7 s | 5.7 s (596 t/s) |
+| `-fit`, default device order, min batch 1024 | 37.4 t/s | 0.9 s | 4.5 s | 7.0 s | 10.3 s (331 t/s) |
+| `-fit`, default device order, min batch 32 (default) | 37.4 t/s | 3.7 s | 5.5 s | 7.0 s | 10.3 s |
 
 The MoE expert cache (`--moe-cache-mib`) does not pay off here: with 5 GB of cache and a 91 % hit
 rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU.
