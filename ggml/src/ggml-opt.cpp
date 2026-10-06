@@ -815,8 +815,22 @@ void ggml_opt_prepare_alloc(
 
 void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
     GGML_ASSERT(!opt_ctx->eval_ready);
-    if (opt_ctx->build_type == GGML_OPT_BUILD_TYPE_OPT && opt_ctx->opt_period > 1 && opt_ctx->opt_i == 0) {
-        ggml_graph_reset(opt_ctx->gb_grad);
+    // after an optimizer step the gradient accumulation starts over
+    if (opt_ctx->build_type == GGML_OPT_BUILD_TYPE_OPT && opt_ctx->opt_i == 0) {
+        if (opt_ctx->static_graphs) {
+            if (opt_ctx->opt_period > 1) {
+                ggml_graph_reset(opt_ctx->gb_grad);
+            }
+        } else {
+            // the graphs are rebuilt for every batch, but the parameter accumulators persist (and the backward
+            // graph adds into them even with opt_period == 1), so clear them directly; the loss gradient stays 1
+            for (size_t i = 0; i < opt_ctx->grad_accs.size(); ++i) {
+                ggml_tensor * acc = opt_ctx->grad_accs[i];
+                if (acc && acc->buffer && acc->buffer != opt_ctx->buf_static) { // the loss accumulator lives in buf_static
+                    ggml_backend_tensor_memset(acc, 0, 0, ggml_nbytes(acc));
+                }
+            }
+        }
     }
     if (backward) {
         const int32_t opt_i_next = (opt_ctx->opt_i + 1) % opt_ctx->opt_period;
