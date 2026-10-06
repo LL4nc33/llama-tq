@@ -58,8 +58,8 @@ struct ggml_opt_context {
     std::vector<struct ggml_tensor *> grad_accs;
     std::vector<struct ggml_tensor *> grad_m;
     std::vector<struct ggml_tensor *> grad_v;
-    std::vector<struct ggml_context *>  ctx_momenta; // one per buffer type of the parameters
-    std::vector<ggml_backend_buffer_t>  buf_momenta;
+    std::vector<struct ggml_context *>  ctx_param_state; // gradient accumulators and moments, one per buffer type of the parameters
+    std::vector<ggml_backend_buffer_t>  buf_param_state;
 
     int64_t iter               = 1;
     int32_t opt_period         = 1;
@@ -461,10 +461,33 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         GGML_ASSERT(opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_GRAD);
 
         const int n_nodes = opt_ctx->gf->n_nodes;
+
+        // The optimizer step updates a parameter in place and reads its gradient accumulator and AdamW moments,
+        // so those live in the parameter's buffer type (with several GPUs the parameters are spread over them).
+        ggml_backend_buffer_type_t buft_default = ggml_backend_get_default_buffer_type(
+            ggml_backend_sched_get_backend(opt_ctx->backend_sched, 0));
+        std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_by_buft;
+        auto ctx_of_param = [&](const ggml_tensor * node) {
+            ggml_backend_buffer_t      buf  = node->view_src ? node->view_src->buffer : node->buffer;
+            ggml_backend_buffer_type_t buft = buf ? ggml_backend_buffer_get_type(buf) : buft_default;
+            ggml_context *& ctx = ctx_by_buft[buft];
+            if (!ctx) {
+                const ggml_init_params params = {
+                    /*.mem_size   =*/ 3*n_nodes*ggml_tensor_overhead(),
+                    /*.mem_buffer =*/ nullptr,
+                    /*.no_alloc   =*/ true,
+                };
+                ctx = ggml_init(params);
+            }
+            return ctx;
+        };
+
         opt_ctx->grad_accs.resize(n_nodes);
         for (int i = 0; i < n_nodes; ++i) {
             ggml_tensor * node = opt_ctx->gf->nodes[i];
-            if ((accumulate && (node->flags & GGML_TENSOR_FLAG_PARAM)) || (node->flags & GGML_TENSOR_FLAG_LOSS)) {
+            if (accumulate && (node->flags & GGML_TENSOR_FLAG_PARAM)) {
+                opt_ctx->grad_accs[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+            } else if (node->flags & GGML_TENSOR_FLAG_LOSS) {
                 opt_ctx->grad_accs[i] = ggml_new_tensor(opt_ctx->ctx_static, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
             } else {
                 opt_ctx->grad_accs[i] = nullptr;
@@ -472,41 +495,26 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         }
 
         if (need_momenta && opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_OPT) {
-            // OPT_STEP_ADAMW updates the parameter and its moments in place, so the moments are allocated in the
-            // parameter's buffer type (with several GPUs the parameters are spread over them)
-            ggml_backend_buffer_type_t buft_default = ggml_backend_get_default_buffer_type(
-                ggml_backend_sched_get_backend(opt_ctx->backend_sched, 0));
-            std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_by_buft;
             opt_ctx->grad_m.resize(n_nodes);
             opt_ctx->grad_v.resize(n_nodes);
             for (int i = 0; i < n_nodes; ++i) {
                 ggml_tensor * node = opt_ctx->gf->nodes[i];
-                if (!(node->flags & GGML_TENSOR_FLAG_PARAM)) {
+                if (node->flags & GGML_TENSOR_FLAG_PARAM) {
+                    opt_ctx->grad_m[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                    opt_ctx->grad_v[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                } else {
                     opt_ctx->grad_m[i] = nullptr;
                     opt_ctx->grad_v[i] = nullptr;
-                    continue;
                 }
-                ggml_backend_buffer_t      buf  = node->view_src ? node->view_src->buffer : node->buffer;
-                ggml_backend_buffer_type_t buft = buf ? ggml_backend_buffer_get_type(buf) : buft_default;
-                ggml_context *& ctx = ctx_by_buft[buft];
-                if (!ctx) {
-                    const ggml_init_params params = {
-                        /*.mem_size   =*/ 2*n_nodes*ggml_tensor_overhead(),
-                        /*.mem_buffer =*/ nullptr,
-                        /*.no_alloc   =*/ true,
-                    };
-                    ctx = ggml_init(params);
-                }
-                opt_ctx->grad_m[i] = ggml_new_tensor(ctx, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
-                opt_ctx->grad_v[i] = ggml_new_tensor(ctx, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
             }
-            for (auto & [buft, ctx] : ctx_by_buft) {
-                ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
-                GGML_ASSERT(buf && "ggml-opt: failed to allocate the optimizer moments");
-                ggml_backend_buffer_clear(buf, 0);
-                opt_ctx->ctx_momenta.push_back(ctx);
-                opt_ctx->buf_momenta.push_back(buf);
-            }
+        }
+
+        for (auto & [buft, ctx] : ctx_by_buft) {
+            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
+            GGML_ASSERT(buf && "ggml-opt: failed to allocate the optimizer state");
+            ggml_backend_buffer_clear(buf, 0);
+            opt_ctx->ctx_param_state.push_back(ctx);
+            opt_ctx->buf_param_state.push_back(buf);
         }
     }
 
@@ -637,10 +645,10 @@ void ggml_opt_free(ggml_opt_context_t opt_ctx) {
     }
     ggml_backend_buffer_free(opt_ctx->buf_static);
     ggml_backend_buffer_free(opt_ctx->buf_cpu);
-    for (ggml_backend_buffer_t buf : opt_ctx->buf_momenta) {
+    for (ggml_backend_buffer_t buf : opt_ctx->buf_param_state) {
         ggml_backend_buffer_free(buf);
     }
-    for (ggml_context * ctx : opt_ctx->ctx_momenta) {
+    for (ggml_context * ctx : opt_ctx->ctx_param_state) {
         ggml_free(ctx);
     }
     ggml_free(opt_ctx->ctx_static);
