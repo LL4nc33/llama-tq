@@ -441,7 +441,6 @@ enum llm_tensor {
     LLM_TENSOR_ATTN_K_NORM,
     LLM_TENSOR_LAYER_OUT_NORM,
     LLM_TENSOR_LAYER_OUT_SCALE,
-    LLM_TENSOR_ENC_LAYER_OUT_SCALE,  // diffusion-gemma (encoder-phase per-layer output scale)
     LLM_TENSOR_POST_ATTN_NORM,
     LLM_TENSOR_POST_MLP_NORM,
     LLM_TENSOR_PER_LAYER_TOKEN_EMBD, // gemma3n

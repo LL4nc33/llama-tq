@@ -516,9 +516,6 @@ struct llama_layer {
     // gemma4 layer output scale
     struct ggml_tensor * out_scale = nullptr;
 
-    // diffusion-gemma encoder-phase per-layer output scale (decoder reuses out_scale)
-    struct ggml_tensor * out_scale_enc = nullptr;
-
     // DFlash2 local convolution (per-layer dynamic + static conv coefficients)
     struct ggml_tensor * dflash_attn_conv_base = nullptr;
     struct ggml_tensor * dflash_attn_conv_proj = nullptr;

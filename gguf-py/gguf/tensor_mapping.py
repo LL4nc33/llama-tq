@@ -712,25 +712,10 @@ class TensorNameMap:
             "model.layers.{bid}.layer_scalar", # gemma4
         ),
 
-        MODEL_TENSOR.ENC_LAYER_OUT_SCALE: (
-            "model.encoder.layers.{bid}.layer_scalar", # diffusion-gemma (encoder phase)
-        ),
 
-        MODEL_TENSOR.SELF_COND_NORM: (
-            "model.self_conditioning.pre_norm", # diffusion-gemma
-        ),
 
-        MODEL_TENSOR.SELF_COND_GATE: (
-            "model.self_conditioning.gate_proj", # diffusion-gemma
-        ),
 
-        MODEL_TENSOR.SELF_COND_UP: (
-            "model.self_conditioning.up_proj", # diffusion-gemma
-        ),
 
-        MODEL_TENSOR.SELF_COND_DOWN: (
-            "model.self_conditioning.down_proj", # diffusion-gemma
-        ),
 
         MODEL_TENSOR.PER_LAYER_TOKEN_EMBD: (
             "model.embed_tokens_per_layer",  # gemma3n
