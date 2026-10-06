@@ -69,7 +69,7 @@ void ggml_trellis_outliers_apply(
 }
 #else
 // LOCAL FALLBACK reference implementations matching the planned API exactly.
-// These are also useful as the spec the production code must satisfy.
+// These are also useful as the spec the kernels must satisfy.
 //
 // pick: select the n_out indices with largest |x|, write their positions
 //       (uint8_t) and original fp32 values; produce x_masked which equals x
@@ -167,7 +167,7 @@ static double run_vtq3(int K, const std::vector<float> & x,
         }
     }
 
-    // Step 2: convert outlier values to fp16 (production stores fp16).
+    // Step 2: convert outlier values to fp16 (the cache stores fp16).
     std::vector<ggml_fp16_t> outlier_val_h(K_OUT);
     for (int k = 0; k < K_OUT; ++k) {
         outlier_val_h[k] = ggml_fp32_to_fp16(out_val[k]);
