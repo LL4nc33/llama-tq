@@ -11,12 +11,30 @@ name: Publish Docker image
 
 on:
   workflow_dispatch: # allows manual triggering
-  schedule:
-    # Rebuild daily rather than on every push because it is expensive
-    - cron: '12 4 * * *'
+  # build what is on the public branch, only when its code changes (same paths as the release)
+  push:
+    branches:
+      - turboquant
+    paths: [
+      '.github/workflows/docker.yml',
+      '**/CMakeLists.txt',
+      '**/.cmake',
+      '**/*.h',
+      '**/*.hpp',
+      '**/*.c',
+      '**/*.cpp',
+      '**/*.cu',
+      '**/*.cuh',
+      '**/*.swift',
+      '**/*.m',
+      '**/*.metal',
+      '**/*.comp',
+      '**/*.glsl',
+      'tools/server/public/**'
+    ]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.ref }} # a newer push cancels the build of an older one
   cancel-in-progress: true
 
 # Fine-grant permission

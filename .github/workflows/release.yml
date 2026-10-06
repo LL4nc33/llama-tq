@@ -9,7 +9,7 @@ on:
         type: boolean
   push:
     branches:
-      - master
+      - turboquant
     paths: [
       '.github/workflows/release.yml',
       '**/CMakeLists.txt',
@@ -24,11 +24,12 @@ on:
       '**/*.m',
       '**/*.metal',
       '**/*.comp',
-      '**/*.glsl'
+      '**/*.glsl',
+      'tools/server/public/**'
     ]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.ref }} # a newer push cancels the build of an older one
   cancel-in-progress: true
 
 env:
@@ -253,7 +254,7 @@ jobs:
 
 
   release:
-    if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
+    if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/turboquant' ) || github.event.inputs.create_release == 'true' }}
 
     # Fine-grant permission
     # https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#modifying-the-permissions-for-the-github_token
