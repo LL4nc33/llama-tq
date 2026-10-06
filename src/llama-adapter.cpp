@@ -559,15 +559,18 @@ llama_adapter_lora * llama_adapter_lora_init_for_training(
     }
 
     {
+        // A ~ U(-1/sqrt(n_in), 1/sqrt(n_in)) (Kaiming-uniform with a = sqrt(5), as PEFT does), B = 0: the adapter
+        // starts as a no-op and A x has the scale of the input. The former N(0, 1/sqrt(rank)) made A ~17x too large
+        // for n_in = 2560, so the update scale*B*A outgrew the base weights within a few hundred AdamW steps.
         std::mt19937 rng(0x10ad1234u);
-        const float std_a = 1.0f / std::sqrt((float) rank);
-        std::normal_distribution<float> dist(0.0f, std_a);
 
         std::vector<float> tmp;
         for (auto & kv : adapter->ab_map) {
             ggml_tensor * a = kv.second.a;
             ggml_tensor * b = kv.second.b;
 
+            const float bound = 1.0f / std::sqrt((float) a->ne[0]);
+            std::uniform_real_distribution<float> dist(-bound, bound);
             tmp.assign(ggml_nelements(a), 0.0f);
             for (auto & v : tmp) {
                 v = dist(rng);
