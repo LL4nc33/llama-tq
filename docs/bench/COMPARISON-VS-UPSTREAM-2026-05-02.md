@@ -1,6 +1,6 @@
 # llama-tq vs upstream llama.cpp — A/B Benchmark (2026-05-02 Refresh)
 
-> Historical snapshot (2026-05-02). Current measurements will be published on the benchmark page.
+> Historical snapshot (2026-05-02).
 
 **Date:** 2026-05-02
 **Hardware:** test-box — 2× RTX 2060 12GB (CC 7.5), CUDA, FA on, KVM guest of Ryzen 7 3700X

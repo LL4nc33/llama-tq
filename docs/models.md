@@ -1,9 +1,7 @@
 # Models and tested setups
 
 Architectures and weight types that this fork adds or runs differently from upstream
-llama.cpp, with the settings we use on 2× RTX 2060 12 GB (Turing, no P2P). Measurements for
-every run, including the models upstream already supports, are on the
-[interactive benchmark page](https://ll4nc33.github.io/llama-tq/docs/benchmarks/).
+llama.cpp, with the settings we use on 2× RTX 2060 12 GB (Turing, no P2P).
 
 All commands assume a CUDA build and `-fa on`. TurboQuant KV types are described in
 [turboquant.md](turboquant.md), tensor split in [tp-tq-design.md](tp-tq-design.md).

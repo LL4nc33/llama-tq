@@ -1,6 +1,6 @@
 # TurboQuant — KTQ/VTQ KV Cache Quantization for CUDA
 
-**Status (2026-10-04):** the CUDA readers applied the KTQ sign bits inverted and the CUDA quantizers rounded stochastically; both are fixed and CUDA now writes bytes identical to the CPU reference. KTQ quality numbers measured before that date are kept below as history only. Current measurements for every model and KV combination are on the [interactive benchmark page](https://ll4nc33.github.io/llama-tq/docs/benchmarks/).
+**Status (2026-10-04):** the CUDA readers applied the KTQ sign bits inverted and the CUDA quantizers rounded stochastically; both are fixed and CUDA now writes bytes identical to the CPU reference. KTQ quality numbers measured before that date are kept below as history only.
 
 **Default recommendation:** `-ctk ktq4_1 -ctv vtq4_1`. It matches f16 perplexity on the dense and hybrid models we tested and needs about a third of the f16 KV memory. Use `ktq2_1`/`vtq2_1` only when you need the extra context (about +2.6 % PPL on Qwen3.8-27B).
 

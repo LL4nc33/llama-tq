@@ -1,6 +1,6 @@
 # Live Numbers
 
-> Historical snapshot (2026-04-26). Current measurements will be published on the benchmark page.
+> Historical snapshot (2026-04-26).
 
 **Measured:** 2026-04-26 (Phase 4: adaptive split + OMP_active + prefetch)
 

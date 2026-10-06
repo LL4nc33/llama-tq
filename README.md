@@ -21,7 +21,7 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for **long conte
 
 ## What it does
 
-Measured on 2× RTX 2060 12 GB (Turing, no P2P). Every run with its settings, start command, decode by context depth and KV accuracy: [interactive benchmark page](https://ll4nc33.github.io/llama-tq/docs/benchmarks/) ([source](docs/benchmarks/index.html)).
+Measured on 2× RTX 2060 12 GB (Turing, no P2P).
 
 | Setup | Context | Decode |
 |---|---|---|
