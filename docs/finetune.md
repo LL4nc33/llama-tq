@@ -48,18 +48,21 @@ When `--lora-train-target REGEX` is set, a fresh LoRA adapter is bootstrapped
 at training start:
 
 1. Every tensor matching the regex gets a new `(lora_a, lora_b)` pair
-   (A ~ Normal(0, 1/√rank), B = zero-initialised). 3D tensors (per-expert MoE
-   weights) get rank-1 / rank-2 LoRA pairs per expert slice.
+   (A ~ Uniform(±1/√n_in) as in PEFT, B = zero-initialised, so the adapter starts
+   as a no-op). 3D tensors (per-expert MoE weights) get one pair per expert slice.
 2. The base tensor is added to the skip regex internally — only A and B
    receive gradients.
 3. The LoRA-merged matmul lives in `build_lora_mm` / `build_lora_mm_id` and
    participates in the forward graph from the first step.
 4. `MUL_MAT_ID` backward computes `grad_as` (the adapter gradient) via the
-   new `ggml_mul_mat_id_grad_as` op (CPU + CUDA). The matching `grad_b`
-   (gradient flowing into activations) is **skipped** when `src0` is a
-   quantised tensor — building `cont(transpose(W_q))` would copy a multi-GiB
-   block-quant tensor per step, and the base is frozen anyway, so dropping
-   that path is mathematically a no-op for the LoRA setup.
+   new `ggml_mul_mat_id_grad_as` op (CPU + CUDA). The gradient into the
+   activations goes through `ggml_mul_mat_id_grad_b`, which applies each
+   selected (quantised) expert untransposed to the incoming gradient; CUDA groups
+   the routing by expert, dequantises each used expert once and multiplies with
+   cuBLAS. Dense matmuls with a frozen quantised weight get their input gradient
+   from `out_prod`, which on CUDA dequantises the weight in row chunks. Without
+   these input gradients the layers below an expert FFN would only receive
+   gradient through the residual stream.
 5. The trained adapter is serialised by `llama_adapter_lora_save_to_file` at
    the end of training, in the same GGUF format the `--lora` loader expects.
 6. A SIGTERM/SIGINT handler triggers the same save path before exit, so
@@ -138,20 +141,54 @@ llama-cli -m /tmp/smoke.gguf -p "test" -n 5 -ngl 99 --simple-io
 If the smoke GGUF loads in `llama-cli` and generates output, the saver +
 loader path is healthy.
 
+## Correctness fixes (2026-10-06)
+
+Earlier runs only converged for a few hundred steps. The causes, all fixed:
+
+- **Gradient accumulators were never cleared.** With graphs rebuilt per batch and
+  `opt_period == 1`, every optimizer step used the sum of all previous gradients,
+  so the effective step size grew until training diverged. This, not "gradient
+  noise", was behind the old "100–500 samples × 3 epochs" limit.
+- **LoRA A was initialised ~17× too large** (N(0, 1/√rank) instead of
+  U(±1/√n_in)).
+- **Missing input gradients:** `MUL_MAT_ID` dropped the gradient into the expert
+  input for quantised experts and for the broadcast input of every MoE FFN, and
+  `GET_ROWS` dropped it for the batched routing weights. Both now flow
+  (`ggml_mul_mat_id_grad_b`, batched `get_rows_back`).
+- **Speed:** the input gradient of every quantised dense matmul ran on the CPU
+  (`out_prod` with a quantised weight); now on CUDA (Qwen3-4B: ~90 s → ~1 s per
+  256-token step).
+- **Two GPUs with AdamW:** moments and gradient accumulators are allocated next to
+  their parameter (the optimizer step is in place); the scheduler is sized for the
+  training graphs.
+
+Verified on 2× RTX 2060 (layer split), AdamW lr 1e-4, 360 lines of wikitext, perplexity
+of the base model vs. base + adapter on the held-out last 40 lines:
+
+| Model | LoRA target | Context | s/step | Train loss | Perplexity base → adapter |
+|---|---|---:|---:|---|---|
+| Qwen3-4B Q4_K_M | attention, rank 8, 2 epochs | 256 | 1.2 | 2.92 → 2.41 | 15.26 → 12.72 |
+| Qwen3-Coder-30B-A3B IQ4_XS | experts, rank 2, 1 epoch | 128 | 3.3 | 3.09 → 2.59 | 14.84 → 14.62 |
+| Qwen3-Coder-30B-A3B IQ4_XS | attention, rank 8, 1 epoch | 128 | 1.5 | 2.95 → 2.49 | 14.84 → 14.34 |
+
+The adapters load with `--lora`. Larger, task-specific datasets are needed for meaningful quality
+numbers; these runs show convergence and that the gradient paths are complete.
+
+**Models larger than VRAM.** Kolibri-1 Q3_K_S (31.5 GiB) trains with the routed experts of the first
+32 layers in RAM (`-ot "blk\.(0|1|…|31)\.ffn_(up|gate|down)_exps\.weight=CPU"`, `-ts 36,14`). Pass
+`--no-op-offload`: otherwise the scheduler copies every RAM expert used by the training graph to the GPU
+at once (a 21.8 GB allocation). The RAM experts then run forward and backward on the CPU, ~26 s per
+128-token step with 4 threads. Attention LoRA rank 8 on 60 lines: with lr 1e-4 the loss rose
+(validation 5.94); with lr 1e-5 it fell from 4.5 to 3.7 (validation 3.54). Start large models at a low
+learning rate.
+
 ## Trade-offs
 
 ### LoRA path
 
-- **`MUL_MAT_ID` `grad_b` skipped for quantised `src0`.** Mathematically safe
-  for LoRA-only training (base is frozen, LoRA gradient flows via `grad_as`),
-  but means deeper LoRA stacks won't see end-to-end gradients through
-  activations. Dequant-on-the-fly would lift this; not implemented yet.
-- **rank ≤ 2 for 282 LoRA pairs on 12 GB VRAM** (rank=4 OOMs by ~1.3 GB).
-  AdamW also doesn't fit; SGD is mandatory at this VRAM budget. Dual-GPU
-  tensor-split or 8-bit optimiser state would lift the rank ceiling.
-- **Convergence sweet spot is 100–500 sample subsets × 3 epochs, lr ≤ 1e-5.**
-  Bigger single-runs (28k lines × 1 epoch) diverge with the current grad-skip
-  setup. Split larger datasets into sequential subsets.
+- **VRAM:** AdamW keeps two moments and a gradient accumulator per trainable
+  element. For MoE expert LoRA keep the rank low (2–4) and the context short, or
+  use SGD.
 
 ### Sparse path
 
@@ -220,28 +257,27 @@ quantisation error.
 
 ## Roadmap — toward full-capability fine-tuning
 
-Where we stand on the capability surfaces (2026-05-18):
+Where we stand on the capability surfaces (2026-10-06):
 
 | Component | Today | Needed for capability training |
 |-----------|-------|--------------------------------|
 | Token embeddings | trainable | extends vocab, but no new skills |
 | LM head | trainable | only output distribution shift |
-| Attention | frozen | **required** for reasoning + context tracking |
+| Attention | **trainable via LoRA** (with `-fa off`) | reasoning + context tracking |
 | MoE experts (`MUL_MAT_ID`) | **trainable via LoRA** (2026-05-18) | unlocks domain knowledge |
 | Mamba / SSM | frozen | sequential state — nice-to-have |
 
 ### ✅ Phase A — MUL_MAT_ID backward (done 2026-05-18)
 
-`ggml_mul_mat_id_grad_as` implemented on CPU + CUDA for the `as`-gradient. The `b`-broadcast case used by Qwen3.6-A35B (`n_used_b=1, n_used=8`) is dropped with a one-time warning — mathematically safe for the LoRA setup because the base weight is frozen and the LoRA path flows via `grad_as`. The strided `cont(transpose(W_q))` path that would otherwise force a multi-GiB block-copy of the quantised weight is gated out for quantised `src0`. Full LoRA training of `ffn_*_exps` converges on a single 12 GB GPU.
+`ggml_mul_mat_id_grad_as` implemented on CPU + CUDA for the `as`-gradient; since 2026-10-06 `ggml_mul_mat_id_grad_b` provides the input gradient for quantised experts and the broadcast input (see "Correctness fixes").
 
-### Phase B — Attention backward without FlashAttn
+### Phase B — Attention backward
 
-Either port FA backward to CUDA or fall back to standard attention backward (exists but memory-expensive). Unlocks full block-level (attention + FFN) LoRA training in addition to the current expert-only path. Not started.
+Attention LoRA works with the standard (non-flash) attention backward (`-fa off`), verified 2026-10-06. A flash-attention backward would cut the activation memory for long contexts; not started.
 
 ### Phase C — Research-grade
 
 - **Stage-4 QAT — wire-up.** The ggml op is in. Remaining work: `--qat-target-quant` CLI flag, `common_params.qat_target_quant` field, and the `ab_cur` wrap in `build_lora_mm` / `build_lora_mm_id`. Once landed, the LoRA adapter can be trained to compensate for the base-model's quantisation error.
-- **Dense LoRA gradient flow through quantised activations.** The autograd currently skips `MUL_MAT_ID grad_b` when `src0` is quantised. A dequant-on-the-fly path would let deeper LoRA stacks see end-to-end gradients through activations. Open research.
 - **SSM_SCAN / SSM_CONV backward** for Mamba state training (mathematically non-trivial — selective state spaces).
 - **Periodic mid-training checkpoint** — flush adapter every N steps so a crash mid-batch keeps progress. Currently flushes only at epoch boundary and on SIGTERM/SIGINT.
 
