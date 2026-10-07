@@ -1121,7 +1121,8 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
         float norm;
         ggml_backend_tensor_get(opt_ctx->grad_norm, &norm, 0, sizeof(float));
         GGML_LOG_INFO("%s: step %" PRId64 " gradient norm %g\n", __func__, opt_ctx->iter, (double) norm);
-        if (!std::isfinite(norm) || norm > 1e3f) {
+        static const bool print_all = getenv("GGML_OPT_PRINT_GRAD_NORM")[0] == '2';
+        if (print_all || !std::isfinite(norm) || norm > 1e3f) {
             // the parameters with the largest (or non-finite) gradients
             std::vector<std::pair<float, std::string>> sq_by_param;
             for (const auto & [name, s] : opt_ctx->grad_sq) {
@@ -1130,7 +1131,7 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
                 sq_by_param.emplace_back(std::isfinite(sq) ? sq : INFINITY, name);
             }
             std::sort(sq_by_param.rbegin(), sq_by_param.rend());
-            for (size_t i = 0; i < sq_by_param.size() && i < 8; ++i) {
+            for (size_t i = 0; i < sq_by_param.size() && (print_all || i < 8); ++i) {
                 GGML_LOG_INFO("%s:   gradient norm of %s: %g\n", __func__, sq_by_param[i].second.c_str(), sqrt((double) sq_by_param[i].first));
             }
         }
