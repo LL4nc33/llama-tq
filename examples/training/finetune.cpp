@@ -175,8 +175,9 @@ static void finetune_epoch_callback_with_checkpoint(
 //   {"text": "..."}                                                               plain text; every token is trained
 // A chat is rendered with the model's chat template. Each assistant turn is the difference between the conversation
 // up to it with the generation prompt and the conversation including it (compared as tokens of whole strings), so the
-// trained tokens are what the model generates at inference, end-of-turn token included. Examples whose turns do not
-// tokenize as prefixes of the whole conversation are skipped.
+// trained tokens are what the model generates at inference, end-of-turn token included. Some templates render the last
+// assistant turn differently (Qwen3: with an empty <think> block); an earlier turn then ends at its first
+// end-of-generation token in the whole conversation. Examples where neither works are skipped.
 static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, const std::string & chat_template,
         std::vector<llama_token> & tokens, std::vector<uint8_t> & train) {
     const llama_model * model = llama_get_model(ctx);
@@ -244,9 +245,9 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
             return common_chat_templates_apply(tmpls.get(), inputs).prompt;
         };
 
-        // each assistant turn j trains the tokens of render(j + 1) beyond the common token prefix with the prompt
-        // render(j, generation prompt); the spans are placed in the tokenization of the whole conversation, which
-        // must agree with every render(j + 1) up to its end
+        // each assistant turn i is placed in the tokenization of the whole conversation: it starts where the prompt
+        // render(i, generation prompt) stops agreeing with it and ends at its first end-of-generation token, or else
+        // where render(i + 1) ends, if that is a prefix of the conversation
         const std::vector<llama_token> conv = tokenize(render(msgs.size(), false));
         std::vector<uint8_t> conv_train(conv.size(), 0);
         bool ok      = true;
@@ -258,14 +259,22 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
             const std::vector<llama_token> prompt = tokenize(render(i, true));
             const std::vector<llama_token> full   = tokenize(render(i + 1, false));
             size_t start = 0;
-            while (start < prompt.size() && start < full.size() && prompt[start] == full[start]) {
+            while (start < prompt.size() && start < conv.size() && prompt[start] == conv[start]) {
                 ++start;
             }
-            if (full.size() > conv.size() || !std::equal(full.begin(), full.end(), conv.begin()) || start >= full.size()) {
+            // what follows the end-of-generation token (e.g. a newline) is never generated, so it is not trained
+            size_t end = full.size() <= conv.size() && std::equal(full.begin(), full.end(), conv.begin()) ? full.size() : 0;
+            for (size_t k = start; k < conv.size() && (end == 0 || k < end); ++k) {
+                if (llama_vocab_is_eog(vocab, conv[k])) {
+                    end = k + 1;
+                    break;
+                }
+            }
+            if (end <= start) {
                 ok = false;
                 break;
             }
-            std::fill(conv_train.begin() + start, conv_train.begin() + full.size(), 1);
+            std::fill(conv_train.begin() + start, conv_train.begin() + end, 1);
             trained = true;
         }
         if (!ok || !trained) {
@@ -295,7 +304,7 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
     for (uint8_t t : train) {
         n_train += t;
     }
-    LOG_INF("%s: %" PRId64 " chats, %" PRId64 " texts, %" PRId64 " skipped (turns not a token prefix of the chat); "
+    LOG_INF("%s: %" PRId64 " chats, %" PRId64 " texts, %" PRId64 " skipped (assistant turns not found in the chat); "
             "%zu tokens, %" PRId64 " trained (%.1f %%)\n", __func__, n_chat, n_text, n_skipped,
             tokens.size(), n_train, tokens.empty() ? 0.0 : 100.0*n_train/tokens.size());
     if (n_skipped > 0 && n_chat == 0) {
