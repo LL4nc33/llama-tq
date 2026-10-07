@@ -7319,6 +7319,13 @@ static void ggml_compute_backward(
                 } //break;
             }
         } break;
+        case GGML_OP_ADD_ID: {
+            // a + b[ids] (the expert biases of gpt-oss): the gradient of a is the output gradient
+            if (src0_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, isrc0, grad);
+            }
+            GGML_ASSERT(!src1_needs_grads && "backward pass for the rows added by add_id not implemented");
+        } break;
         case GGML_OP_CONCAT: {
             // the gradient of each input is its part of the output gradient
             const int32_t dim = ggml_get_op_params_i32(tensor, 0);
