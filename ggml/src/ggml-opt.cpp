@@ -51,6 +51,7 @@ struct ggml_opt_context {
     struct ggml_tensor * loss     = nullptr;
     struct ggml_tensor * pred     = nullptr;
     struct ggml_tensor * ncorrect = nullptr;
+    struct ggml_tensor * nlabeled = nullptr;
 
     struct ggml_cgraph * gf      = nullptr;
     struct ggml_cgraph * gb_grad = nullptr;
@@ -83,6 +84,7 @@ struct ggml_opt_result {
     std::vector<float>   loss;
     std::vector<int32_t> pred;
     int64_t              ncorrect = 0;
+    int64_t              nlabeled = 0; // datapoints with a label, the base of the accuracy
 
     int64_t opt_period         = -1;
     bool    loss_per_datapoint = false;
@@ -358,10 +360,10 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         //   - labels (if using static graphs)
         //   - loss (if using static graphs, up to 5 tensors)
         //   - pred (if using static graphs)
-        //   - ncorrect (if using static graphs, 2 tensors).
+        //   - ncorrect and nlabeled (if using static graphs, 12 tensors).
         constexpr size_t n_loss = 1;
         const size_t tensors_per_param = (accumulate ? 1 : 0) + (need_momenta ? 2 : 0);
-        const size_t tensors_const = opt_ctx->static_graphs ? 9 : 0;
+        const size_t tensors_const = opt_ctx->static_graphs ? 19 : 0;
         const size_t size_meta = (n_loss + tensors_per_param*n_param + tensors_const) * ggml_tensor_overhead();
         struct ggml_init_params params = {
             /*.mem_size   =*/ size_meta,
@@ -447,10 +449,22 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         ggml_set_output(opt_ctx->pred);
         ggml_build_forward_expand(opt_ctx->gf, opt_ctx->pred);
 
-        opt_ctx->ncorrect = ggml_count_equal(ctx_results, opt_ctx->pred, ggml_argmax(ctx_results, opt_ctx->labels));
+        // correct predictions among the datapoints with a label; a datapoint without one (an all-zero label row, e.g. a
+        // prompt token of a chat example that is not trained) counts neither as correct nor as labeled
+        ggml_tensor * label   = ggml_argmax(ctx_results, opt_ctx->labels);
+        ggml_tensor * labeled = ggml_step(ctx_results, ggml_reshape_1d(ctx_results,
+            ggml_sum_rows(ctx_results, opt_ctx->labels), opt_ctx->labels->ne[1]));
+        ggml_tensor * differs = ggml_step(ctx_results, ggml_abs(ctx_results, ggml_sub(ctx_results,
+            ggml_cast(ctx_results, opt_ctx->pred, GGML_TYPE_F32), ggml_cast(ctx_results, label, GGML_TYPE_F32))));
+        opt_ctx->ncorrect = ggml_sum(ctx_results, ggml_sub(ctx_results, labeled, ggml_mul(ctx_results, labeled, differs)));
         ggml_set_name(opt_ctx->ncorrect, "ncorrect");
         ggml_set_output(opt_ctx->ncorrect);
         ggml_build_forward_expand(opt_ctx->gf, opt_ctx->ncorrect);
+
+        opt_ctx->nlabeled = ggml_sum(ctx_results, labeled);
+        ggml_set_name(opt_ctx->nlabeled, "nlabeled");
+        ggml_set_output(opt_ctx->nlabeled);
+        ggml_build_forward_expand(opt_ctx->gf, opt_ctx->nlabeled);
     }
 
     if (opt_ctx->buf_static) {
@@ -848,6 +862,7 @@ void ggml_opt_result_reset(ggml_opt_result_t result) {
     result->loss.clear();
     result->pred.clear();
     result->ncorrect = 0;
+    result->nlabeled = 0;
 }
 
 void ggml_opt_result_ndata(ggml_opt_result_t result, int64_t * ndata) {
@@ -896,14 +911,14 @@ void ggml_opt_result_pred(ggml_opt_result_t result, int32_t * pred) {
 }
 
 void ggml_opt_result_accuracy(ggml_opt_result_t result, double * accuracy, double * unc) {
-    *accuracy = result->ncorrect >= 0 ? double(result->ncorrect) / double(result->ndata) : NAN;
+    *accuracy = result->ncorrect >= 0 && result->nlabeled > 0 ? double(result->ncorrect) / double(result->nlabeled) : NAN;
 
     if (!unc) {
         return;
     }
 
-    *unc = result->ncorrect >= 0 && result->ndata >= 2 ?
-        sqrt((*accuracy) * (1.0 - (*accuracy)) / double(result->ndata - 1)) : NAN;
+    *unc = result->ncorrect >= 0 && result->nlabeled >= 2 ?
+        sqrt((*accuracy) * (1.0 - (*accuracy)) / double(result->nlabeled - 1)) : NAN;
 }
 
 // ====== Computation ======
@@ -939,6 +954,7 @@ void ggml_opt_prepare_alloc(
         opt_ctx->labels               = nullptr;
         opt_ctx->pred                 = nullptr;
         opt_ctx->ncorrect             = nullptr;
+        opt_ctx->nlabeled             = nullptr;
         opt_ctx->opt_step_params      = nullptr; // lives in ctx_cpu which opt_build recreates
     }
 
@@ -1126,11 +1142,14 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
         return;
     }
 
-    GGML_ASSERT(ggml_is_scalar(opt_ctx->ncorrect));
-    GGML_ASSERT(opt_ctx->ncorrect->type == GGML_TYPE_I64);
-    int64_t ncorrect;
-    ggml_backend_tensor_get(opt_ctx->ncorrect, &ncorrect, 0, ggml_nbytes(opt_ctx->ncorrect));
-    result->ncorrect += ncorrect;
+    GGML_ASSERT(ggml_is_scalar(opt_ctx->ncorrect) && ggml_is_scalar(opt_ctx->nlabeled));
+    GGML_ASSERT(opt_ctx->ncorrect->type == GGML_TYPE_F32 && opt_ctx->nlabeled->type == GGML_TYPE_F32);
+    float ncorrect;
+    float nlabeled;
+    ggml_backend_tensor_get(opt_ctx->ncorrect, &ncorrect, 0, sizeof(float));
+    ggml_backend_tensor_get(opt_ctx->nlabeled, &nlabeled, 0, sizeof(float));
+    result->ncorrect += llroundf(ncorrect);
+    result->nlabeled += llroundf(nlabeled);
 }
 
 // ====== High-Level Functions ======
