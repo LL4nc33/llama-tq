@@ -10790,6 +10790,230 @@ void ggml_compute_forward_gated_delta_net(
     }
 }
 
+// ggml_compute_forward_gated_delta_net_back
+//
+// Per head, with M = S^T (row j holds S[:, j], as in the forward pass) and a = exp(g):
+//   M^ = a*M_prev,  u_j = dot(M^[j], k),  d_j = beta*(v_j - u_j),  M[j] = M^[j] + d_j*k,  o_j = c*dot(M[j], q)
+// The backward pass walks the tokens in reverse with dM = dL/dM. The states are recomputed per segment of
+// GGML_GDN_BACK_SEG tokens from checkpoints, so the memory stays at (n_tokens/SEG + SEG) states per thread.
+
+#define GGML_GDN_BACK_SEG 32
+
+void ggml_compute_forward_gated_delta_net_back(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * src_q     = dst->src[0];
+    const ggml_tensor * src_k     = dst->src[1];
+    const ggml_tensor * src_v     = dst->src[2];
+    const ggml_tensor * src_g     = dst->src[3];
+    const ggml_tensor * src_beta  = dst->src[4];
+    const ggml_tensor * src_state = dst->src[5];
+    const ggml_tensor * src_grad  = dst->src[6];
+
+    const int64_t S_v      = src_v->ne[0];
+    const int64_t H        = src_v->ne[1];
+    const int64_t n_tokens = src_v->ne[2];
+    const int64_t n_seqs   = src_v->ne[3];
+    const int64_t SS       = S_v*S_v;
+
+    GGML_TENSOR_LOCALS(int64_t, neq, src_q, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbq, src_q, nb);
+    GGML_TENSOR_LOCALS(int64_t, nek, src_k, ne);
+    GGML_TENSOR_LOCALS(size_t,  nbk, src_k, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbv, src_v, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbg, src_g, nb);
+    GGML_TENSOR_LOCALS(size_t,  nbb, src_beta, nb);
+
+    const bool    kda   = src_g->ne[0] == S_v;
+    const int64_t n_g0  = src_g->ne[0];
+    const float   scale = 1.0f / sqrtf((float) S_v);
+
+    const int64_t n_seg     = (n_tokens + GGML_GDN_BACK_SEG - 1) / GGML_GDN_BACK_SEG;
+    const int64_t per_thread = (n_seg + GGML_GDN_BACK_SEG + 1)*SS + 8*S_v + CACHE_LINE_SIZE_F32;
+
+    float * work   = (float *) params->wdata + params->ith*per_thread;
+    float * ckpt   = work;                              // [n_seg][SS]: state before each segment
+    float * states = ckpt + n_seg*SS;                   // [SEG][SS]: state after each token of the segment
+    float * dM     = states + GGML_GDN_BACK_SEG*SS;     // [SS]
+    float * a_vec  = dM + SS;                           // [S_v]
+    float * u      = a_vec + S_v;                       // [S_v]
+    float * d      = u + S_v;                           // [S_v]
+    float * dd     = d + S_v;                           // [S_v]
+    float * da     = dd + S_v;                          // [S_v]
+
+    const int64_t n_v = S_v*H*n_tokens*n_seqs;
+    float * out_dq = (float *) dst->data;
+    float * out_dk = out_dq + n_v;
+    float * out_dv = out_dk + n_v;
+    float * out_dg = out_dv + n_v;
+    float * out_db = out_dg + ggml_nelements(src_g);
+
+    const float * grad_attn  = (const float *) src_grad->data;
+    const float * grad_state = grad_attn + n_v;
+    const float * state_in   = (const float *) src_state->data;
+    const int64_t state_seq_stride = src_state->nb[2] / sizeof(float);
+
+    const int64_t rq3 = n_seqs / neq3;
+    const int64_t rk3 = n_seqs / nek3;
+
+    const int64_t nr  = H*n_seqs;
+    const int64_t dr  = (nr + params->nth - 1)/params->nth;
+    const int64_t ir0 = dr*params->ith;
+    const int64_t ir1 = MIN(ir0 + dr, nr);
+
+    for (int64_t ir = ir0; ir < ir1; ++ir) {
+        const int64_t iv1 = ir % H;
+        const int64_t iv3 = ir / H;
+        const int64_t iq1 = iv1 % neq1;
+        const int64_t ik1 = iv1 % nek1;
+        const int64_t iq3 = iv3 / rq3;
+        const int64_t ik3 = iv3 / rk3;
+
+        auto ptr_q = [&](int64_t t) { return (const float *)((const char *) src_q->data + iq3*nbq3 + t*nbq2 + iq1*nbq1); };
+        auto ptr_k = [&](int64_t t) { return (const float *)((const char *) src_k->data + ik3*nbk3 + t*nbk2 + ik1*nbk1); };
+        auto ptr_v = [&](int64_t t) { return (const float *)((const char *) src_v->data + iv3*nbv3 + t*nbv2 + iv1*nbv1); };
+        auto ptr_g = [&](int64_t t) { return (const float *)((const char *) src_g->data + iv3*nbg3 + t*nbg2 + iv1*nbg1); };
+        auto val_b = [&](int64_t t) { return *(const float *)((const char *) src_beta->data + iv3*nbb3 + t*nbb2 + iv1*nbb1); };
+        auto gate  = [&](int64_t t) { // a = exp(g), one value or one per row i of S
+            const float * g_d = ptr_g(t);
+            for (int64_t i = 0; i < S_v; ++i) {
+                a_vec[i] = expf(g_d[kda ? i : 0]);
+            }
+        };
+        // one forward step on M (in place)
+        auto step = [&](float * M, int64_t t) {
+            const float * k_d = ptr_k(t);
+            const float * v_d = ptr_v(t);
+            const float   b   = val_b(t);
+            gate(t);
+            for (int64_t j = 0; j < S_v; ++j) {
+                float * Mj = M + j*S_v;
+                float   s  = 0.0f;
+                for (int64_t i = 0; i < S_v; ++i) {
+                    Mj[i] *= a_vec[i];
+                    s += Mj[i]*k_d[i];
+                }
+                const float dj = (v_d[j] - s)*b;
+                for (int64_t i = 0; i < S_v; ++i) {
+                    Mj[i] += dj*k_d[i];
+                }
+            }
+        };
+
+        // forward pass: keep the state before every segment
+        float * M = states; // scratch for the running state
+        memcpy(M, state_in + iv3*state_seq_stride + iv1*SS, SS*sizeof(float));
+        for (int64_t t = 0; t < n_tokens; ++t) {
+            if (t % GGML_GDN_BACK_SEG == 0) {
+                memcpy(ckpt + (t/GGML_GDN_BACK_SEG)*SS, M, SS*sizeof(float));
+            }
+            step(M, t);
+        }
+
+        // gradient of the final state (usually zero: it is only written to the cache)
+        memcpy(dM, grad_state + (iv3*H + iv1)*SS, SS*sizeof(float));
+
+        for (int64_t is = n_seg - 1; is >= 0; --is) {
+            const int64_t t0 = is*GGML_GDN_BACK_SEG;
+            const int64_t t1 = MIN(t0 + GGML_GDN_BACK_SEG, n_tokens);
+
+            // recompute the states of the segment
+            const float * prev = ckpt + is*SS;
+            for (int64_t t = t0; t < t1; ++t) {
+                float * Mt = states + (t - t0)*SS;
+                memcpy(Mt, prev, SS*sizeof(float));
+                step(Mt, t);
+                prev = Mt;
+            }
+
+            for (int64_t t = t1 - 1; t >= t0; --t) {
+                const float * Mt    = states + (t - t0)*SS;
+                const float * Mprev = t > t0 ? states + (t - t0 - 1)*SS : ckpt + is*SS;
+                const float * q_d   = ptr_q(t);
+                const float * k_d   = ptr_k(t);
+                const float * v_d   = ptr_v(t);
+                const float   b     = val_b(t);
+                const int64_t io    = ((iv3*n_tokens + t)*H + iv1)*S_v; // [S_v, H, T, n_seqs]
+                const float * do_t  = grad_attn + io;
+                float * dq = out_dq + io;
+                float * dk = out_dk + io;
+                float * dv = out_dv + io;
+                gate(t);
+
+                // u = M^ k with M^ = a*M_prev, d = beta*(v - u)
+                for (int64_t j = 0; j < S_v; ++j) {
+                    const float * Pj = Mprev + j*S_v;
+                    float s = 0.0f;
+                    for (int64_t i = 0; i < S_v; ++i) {
+                        s += a_vec[i]*Pj[i]*k_d[i];
+                    }
+                    u[j] = s;
+                    d[j] = b*(v_d[j] - s);
+                }
+
+                // output: dM += c*do q^T (row j: do_j*q), dq = c*M^T do
+                for (int64_t i = 0; i < S_v; ++i) {
+                    dq[i] = 0.0f;
+                    dk[i] = 0.0f;
+                    da[i] = 0.0f;
+                }
+                for (int64_t j = 0; j < S_v; ++j) {
+                    const float   cj = scale*do_t[j];
+                    const float * Mj = Mt + j*S_v;
+                    float *       Dj = dM + j*S_v;
+                    for (int64_t i = 0; i < S_v; ++i) {
+                        dq[i] += cj*Mj[i];
+                        Dj[i] += cj*q_d[i];
+                    }
+                }
+
+                // M = M^ + d k^T: dd_j = dot(dM[j], k), dk += sum_j d_j dM[j]
+                float db = 0.0f;
+                for (int64_t j = 0; j < S_v; ++j) {
+                    const float * Dj = dM + j*S_v;
+                    float s = 0.0f;
+                    for (int64_t i = 0; i < S_v; ++i) {
+                        s += Dj[i]*k_d[i];
+                        dk[i] += d[j]*Dj[i];
+                    }
+                    dd[j] = s;
+                    dv[j] = b*s;
+                    db   += s*(v_d[j] - u[j]);
+                }
+
+                // u = M^ k: du = -beta*dd; dM^ = dM + du k^T; dk += M^^T du
+                // M^ = a*M_prev: da = sum dM^ .* M_prev, dM_prev = a*dM^
+                for (int64_t j = 0; j < S_v; ++j) {
+                    const float   du = -b*dd[j];
+                    const float * Pj = Mprev + j*S_v;
+                    float *       Dj = dM + j*S_v;
+                    for (int64_t i = 0; i < S_v; ++i) {
+                        dk[i] += du*a_vec[i]*Pj[i];
+                        Dj[i] += du*k_d[i];
+                        da[i] += Dj[i]*Pj[i];
+                        Dj[i] *= a_vec[i];
+                    }
+                }
+
+                // g: dg = da*a (a = exp(g))
+                float * dg = out_dg + ((iv3*n_tokens + t)*H + iv1)*n_g0;
+                if (kda) {
+                    for (int64_t i = 0; i < S_v; ++i) {
+                        dg[i] = da[i]*a_vec[i];
+                    }
+                } else {
+                    float s = 0.0f;
+                    for (int64_t i = 0; i < S_v; ++i) {
+                        s += da[i];
+                    }
+                    dg[0] = s*a_vec[0];
+                }
+                out_db[(iv3*n_tokens + t)*H + iv1] = db;
+            }
+        }
+    }
+}
+
 // ggml_compute_forward_dsv4_hc_pre
 
 static void ggml_compute_forward_dsv4_hc_pre_f32(

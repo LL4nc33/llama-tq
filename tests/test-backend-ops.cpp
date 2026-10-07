@@ -3984,6 +3984,121 @@ struct test_dsv4_hc_post : public test_case {
 };
 
 // GGML_OP_GATED_DELTA_NET
+// gradient of GATED_DELTA_NET with respect to q, k, v, g and beta (ggml_gated_delta_net_back)
+struct test_gated_delta_net_grad : public test_case {
+    const int64_t head_count;
+    const int64_t head_size;
+    const int64_t n_seq_tokens;
+    const int64_t n_seqs;
+    const int     v_repeat;
+    const bool    kda;
+
+    std::string vars() override {
+        return VARS_TO_STR6(head_count, head_size, n_seq_tokens, n_seqs, v_repeat, kda);
+    }
+
+    test_gated_delta_net_grad(int64_t head_count = 2, int64_t head_size = 4, int64_t n_seq_tokens = 5,
+            int64_t n_seqs = 1, int v_repeat = 1, bool kda = false)
+        : head_count(head_count), head_size(head_size), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs),
+          v_repeat(v_repeat), kda(kda) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int64_t H_v = head_count*v_repeat;
+        ggml_tensor * q    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_count, n_seq_tokens, n_seqs);
+        ggml_tensor * k    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_count, n_seq_tokens, n_seqs);
+        ggml_tensor * v    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * g    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kda ? head_size : 1, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * beta = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * s    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_size*head_size*H_v, 1, n_seqs);
+        for (ggml_tensor * t : { q, k, v, g, beta }) {
+            ggml_set_param(t);
+        }
+        ggml_set_name(q, "q");
+        ggml_set_name(k, "k");
+        ggml_set_name(v, "v");
+        ggml_set_name(g, "g");
+        ggml_set_name(beta, "beta");
+        ggml_set_name(s, "state");
+        ggml_tensor * out = ggml_gated_delta_net(ctx, q, k, v, g, beta, s);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "g") == 0) {
+                init_tensor_uniform(t, -0.5f, -0.05f); // decay
+            } else if (strcmp(t->name, "beta") == 0) {
+                init_tensor_uniform(t, 0.1f, 0.9f);
+            } else {
+                init_tensor_uniform(t, -0.5f, 0.5f);
+            }
+        }
+    }
+
+    float grad_eps() override {
+        return 1e-1f;
+    }
+
+    // the numerical gradient through the recurrence is noisy in f32 (up to a few 1e-3); a wrong gradient is off
+    // by the order of the gradient itself (checked against a float64 reference to ~1e-7 relative)
+    double max_maa_err() override {
+        return 1e-2;
+    }
+
+    bool grad_precise() override {
+        return true;
+    }
+};
+
+// GGML_OP_GATED_DELTA_NET_BACK on its own, to compare backends exactly (longer sequences than the numerical
+// gradient check above can resolve in f32)
+struct test_gated_delta_net_back : public test_case {
+    const int64_t head_count;
+    const int64_t head_size;
+    const int64_t n_seq_tokens;
+    const int64_t n_seqs;
+    const int     v_repeat;
+    const bool    kda;
+
+    std::string vars() override {
+        return VARS_TO_STR6(head_count, head_size, n_seq_tokens, n_seqs, v_repeat, kda);
+    }
+
+    test_gated_delta_net_back(int64_t head_count = 2, int64_t head_size = 16, int64_t n_seq_tokens = 40,
+            int64_t n_seqs = 1, int v_repeat = 1, bool kda = false)
+        : head_count(head_count), head_size(head_size), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs),
+          v_repeat(v_repeat), kda(kda) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int64_t H_v = head_count*v_repeat;
+        ggml_tensor * q    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_count, n_seq_tokens, n_seqs);
+        ggml_tensor * k    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_count, n_seq_tokens, n_seqs);
+        ggml_tensor * v    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * g    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kda ? head_size : 1, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * beta = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, H_v, n_seq_tokens, n_seqs);
+        ggml_tensor * s    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_size*head_size*H_v, 1, n_seqs);
+        ggml_tensor * grad = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, head_size*H_v, (n_seq_tokens + head_size)*n_seqs);
+        ggml_set_name(g, "g");
+        ggml_set_name(beta, "beta");
+        ggml_tensor * out = ggml_gated_delta_net_back(ctx, q, k, v, g, beta, s, grad);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "g") == 0) {
+                init_tensor_uniform(t, -0.5f, -0.05f);
+            } else if (strcmp(t->name, "beta") == 0) {
+                init_tensor_uniform(t, 0.1f, 0.9f);
+            } else {
+                init_tensor_uniform(t, -0.5f, 0.5f);
+            }
+        }
+    }
+};
+
 struct test_gated_delta_net : public test_case {
     const ggml_type type;
 
@@ -9496,6 +9611,21 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    for (int64_t n_tokens : {1, 5}) {
+        for (int v_repeat : {1, 2}) {
+            for (bool kda : {false, true}) {
+                test_cases.emplace_back(new test_gated_delta_net_grad(2, 4, n_tokens, 1, v_repeat, kda));
+            }
+        }
+    }
+    test_cases.emplace_back(new test_gated_delta_net_grad(2, 4, 5, 2, 1, false));
+    for (int64_t head_size : {16, 128}) {
+        for (int64_t n_tokens : {1, 33, 100}) {
+            test_cases.emplace_back(new test_gated_delta_net_back(2, head_size, n_tokens, 1, 1, false));
+            test_cases.emplace_back(new test_gated_delta_net_back(2, head_size, n_tokens, 1, 2, true));
+        }
+    }
+    test_cases.emplace_back(new test_gated_delta_net_back(4, 128, 64, 2, 2, false));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));
     // gate activations folded into the op, with and without rollback slots and a gathered state
     for (int64_t n_tokens : {1, 5}) {

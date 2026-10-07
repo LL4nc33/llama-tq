@@ -1207,6 +1207,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "RWKV_WKV7",
     "SOLVE_TRI",
     "GATED_DELTA_NET",
+    "GATED_DELTA_NET_BACK",
     "DSV4_HC_PRE",
     "DSV4_HC_POST",
 
@@ -1226,7 +1227,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1322,6 +1323,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "rwkv_wkv7(r, w, k, v, a, b, s)",
     "A X = B, A triangular, solve X",
     "gated_delta_net(q, k, v, g, beta, s)",
+    "gated_delta_net_back(q, k, v, g, beta, s, grad)",
     "dsv4_hc_pre(x, weights)",
     "dsv4_hc_post(x, residual, post, comb)",
 
@@ -1341,7 +1343,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6512,6 +6514,36 @@ struct ggml_tensor * ggml_gated_delta_net(
     return result;
 }
 
+struct ggml_tensor * ggml_gated_delta_net_back(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        struct ggml_tensor  * g,
+        struct ggml_tensor  * beta,
+        struct ggml_tensor  * state,
+        struct ggml_tensor  * grad) {
+    GGML_ASSERT(state->ne[1] == 1 && "backward pass with state snapshots not implemented");
+    GGML_ASSERT(q->ne[3] == v->ne[3] && k->ne[3] == v->ne[3]);
+    GGML_ASSERT(grad->type == GGML_TYPE_F32 && ggml_is_contiguous(grad));
+    GGML_ASSERT(grad->ne[0] == v->ne[0]*v->ne[1] && grad->ne[1] == v->ne[2]*v->ne[3] + v->ne[0]*v->ne[3]);
+
+    const int64_t n_v = ggml_nelements(v);
+    const int64_t n   = 3*n_v + ggml_nelements(g) + ggml_nelements(beta);
+    struct ggml_tensor * result = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
+
+    result->op     = GGML_OP_GATED_DELTA_NET_BACK;
+    result->src[0] = q;
+    result->src[1] = k;
+    result->src[2] = v;
+    result->src[3] = g;
+    result->src[4] = beta;
+    result->src[5] = state;
+    result->src[6] = grad;
+
+    return result;
+}
+
 void ggml_gated_delta_net_set_raw_gates(
         struct ggml_tensor  * gdn,
         struct ggml_tensor  * dt_bias,
@@ -7274,6 +7306,99 @@ static void ggml_compute_backward(
                         __func__, ggml_unary_op_name(ggml_get_unary_op(tensor)));
                     GGML_ABORT("fatal error");
                 } //break;
+            }
+        } break;
+        case GGML_OP_CONCAT: {
+            // the gradient of each input is its part of the output gradient
+            const int32_t dim = ggml_get_op_params_i32(tensor, 0);
+            struct ggml_tensor * srcs[2] = { src0, src1 };
+            const bool needs[2] = { src0_needs_grads, src1_needs_grads };
+            const size_t isrcs[2] = { isrc0, isrc1 };
+            for (int j = 0; j < 2; ++j) {
+                if (!needs[j]) {
+                    continue;
+                }
+                const size_t offset = j == 0 ? 0 : src0->ne[dim]*grad->nb[dim];
+                struct ggml_tensor * part = ggml_view_4d(ctx, grad,
+                    srcs[j]->ne[0], srcs[j]->ne[1], srcs[j]->ne[2], srcs[j]->ne[3],
+                    grad->nb[1], grad->nb[2], grad->nb[3], offset);
+                ggml_add_or_set(ctx, cgraph, isrcs[j], ggml_cont(ctx, part));
+            }
+        } break;
+        case GGML_OP_SSM_CONV: {
+            // y[c, t] = sum_k sx[t + k, c] * w[k, c]  with sx [n_t + d_conv - 1, d_inner, n_s], w [d_conv, d_inner]
+            const int64_t d_conv  = src1->ne[0];
+            const int64_t d_inner = src1->ne[1];
+            const int64_t n_t     = tensor->ne[1];
+            const int64_t n_s     = tensor->ne[2];
+            struct ggml_tensor * dy_t = ggml_cont(ctx, ggml_permute(ctx, grad, 1, 0, 2, 3)); // [n_t, d_inner, n_s]
+            if (src0_needs_grads) {
+                // dsx[t + k, c] += dy[c, t] * w[k, c]
+                struct ggml_tensor * dsx = NULL;
+                for (int64_t kk = 0; kk < d_conv; ++kk) {
+                    struct ggml_tensor * w_k = ggml_cont(ctx, ggml_view_2d(ctx, src1, 1, d_inner, src1->nb[1], kk*src1->nb[0]));
+                    struct ggml_tensor * term = ggml_pad_ext(ctx, ggml_mul(ctx, dy_t, w_k),
+                        (int) kk, (int) (d_conv - 1 - kk), 0, 0, 0, 0, 0, 0);
+                    dsx = dsx ? ggml_add(ctx, dsx, term) : term;
+                }
+                ggml_add_or_set(ctx, cgraph, isrc0, dsx);
+            }
+            if (src1_needs_grads) {
+                // dw[k, c] = sum_t dy[c, t] * sx[t + k, c]
+                struct ggml_tensor * dw = NULL;
+                for (int64_t kk = 0; kk < d_conv; ++kk) {
+                    struct ggml_tensor * sx_k = ggml_view_3d(ctx, src0, n_t, d_inner, n_s, src0->nb[1], src0->nb[2], kk*src0->nb[0]);
+                    struct ggml_tensor * col = ggml_sum_rows(ctx, ggml_mul(ctx, dy_t, sx_k)); // [1, d_inner, n_s]
+                    if (n_s > 1) {
+                        col = ggml_repeat_back(ctx, col, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, d_inner));
+                    }
+                    col = ggml_reshape_2d(ctx, col, 1, d_inner);
+                    dw = dw ? ggml_concat(ctx, dw, col, 0) : col;
+                }
+                ggml_add_or_set(ctx, cgraph, isrc1, dw);
+            }
+        } break;
+        case GGML_OP_GATED_DELTA_NET: {
+            GGML_ASSERT(ggml_get_op_params_i32(tensor, 1) == 0 && "backward pass with raw gates not implemented");
+            struct ggml_tensor * g    = tensor->src[3];
+            struct ggml_tensor * beta = tensor->src[4];
+            const size_t ig = ggml_hash_find(hash_set, g);
+            const size_t ib = ggml_hash_find(hash_set, beta);
+            const bool g_needs_grads    = ig != GGML_HASHSET_FULL && ggml_bitset_get(hash_set->used, ig) && grads_needed[ig];
+            const bool beta_needs_grads = ib != GGML_HASHSET_FULL && ggml_bitset_get(hash_set->used, ib) && grads_needed[ib];
+            if (!src0_needs_grads && !src1_needs_grads && !src2_needs_grads && !g_needs_grads && !beta_needs_grads) {
+                break;
+            }
+            struct ggml_tensor * back = ggml_gated_delta_net_back(ctx, src0, src1, src2, g, beta, tensor->src[5],
+                ggml_is_contiguous(grad) ? grad : ggml_cont(ctx, grad));
+            const int64_t n_v = ggml_nelements(src2);
+            const size_t  fs  = sizeof(float);
+            // dq, dk per value head: sum over the value heads that share a q/k head (tiled, as ggml_repeat)
+            struct ggml_tensor * dq = ggml_view_4d(ctx, back, src2->ne[0], src2->ne[1], src2->ne[2], src2->ne[3],
+                src2->ne[0]*fs, src2->ne[0]*src2->ne[1]*fs, src2->ne[0]*src2->ne[1]*src2->ne[2]*fs, 0);
+            struct ggml_tensor * dk = ggml_view_4d(ctx, back, src2->ne[0], src2->ne[1], src2->ne[2], src2->ne[3],
+                dq->nb[1], dq->nb[2], dq->nb[3], n_v*fs);
+            struct ggml_tensor * dv = ggml_view_4d(ctx, back, src2->ne[0], src2->ne[1], src2->ne[2], src2->ne[3],
+                dq->nb[1], dq->nb[2], dq->nb[3], 2*n_v*fs);
+            struct ggml_tensor * dg = ggml_view_4d(ctx, back, g->ne[0], g->ne[1], g->ne[2], g->ne[3],
+                g->ne[0]*fs, g->ne[0]*g->ne[1]*fs, g->ne[0]*g->ne[1]*g->ne[2]*fs, 3*n_v*fs);
+            struct ggml_tensor * db = ggml_view_4d(ctx, back, beta->ne[0], beta->ne[1], beta->ne[2], beta->ne[3],
+                beta->ne[0]*fs, beta->ne[0]*beta->ne[1]*fs, beta->ne[0]*beta->ne[1]*beta->ne[2]*fs,
+                (3*n_v + ggml_nelements(g))*fs);
+            if (src0_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, isrc0, ggml_are_same_shape(dq, src0) ? ggml_cont(ctx, dq) : ggml_repeat_back(ctx, dq, src0));
+            }
+            if (src1_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, isrc1, ggml_are_same_shape(dk, src1) ? ggml_cont(ctx, dk) : ggml_repeat_back(ctx, dk, src1));
+            }
+            if (src2_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, isrc2, ggml_cont(ctx, dv));
+            }
+            if (g_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, ig, ggml_cont(ctx, dg));
+            }
+            if (beta_needs_grads) {
+                ggml_add_or_set(ctx, cgraph, ib, ggml_cont(ctx, db));
             }
         } break;
         case GGML_OP_CROSS_ENTROPY_LOSS: {

@@ -2430,6 +2430,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_gated_delta_net(params, tensor);
             } break;
+        case GGML_OP_GATED_DELTA_NET_BACK:
+            {
+                ggml_compute_forward_gated_delta_net_back(params, tensor);
+            } break;
         case GGML_OP_DSV4_HC_PRE:
             {
                 ggml_compute_forward_dsv4_hc_pre(params, tensor);
@@ -2618,6 +2622,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_COUNT_EQUAL:
         case GGML_OP_SOLVE_TRI:
         case GGML_OP_GATED_DELTA_NET:
+        case GGML_OP_GATED_DELTA_NET_BACK:
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:
             {
@@ -3346,6 +3351,14 @@ struct ggml_cplan ggml_graph_plan(
                         const int64_t S_v = node->src[2]->ne[0];
                         const int64_t K   = node->src[5]->ne[1];  // state is (D, K, n_seqs)
                         const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
+                        cur = per_thread * sizeof(float) * n_tasks;
+                    } break;
+                case GGML_OP_GATED_DELTA_NET_BACK:
+                    {
+                        // keep in sync with ggml_compute_forward_gated_delta_net_back
+                        const int64_t S_v   = node->src[2]->ne[0];
+                        const int64_t n_seg = (node->src[2]->ne[2] + 31)/32;
+                        const int64_t per_thread = (n_seg + 32 + 1)*S_v*S_v + 8*S_v + CACHE_LINE_SIZE_F32;
                         cur = per_thread * sizeof(float) * n_tasks;
                     } break;
                 case GGML_OP_COUNT:

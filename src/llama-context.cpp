@@ -3466,6 +3466,8 @@ static void llama_set_param(struct ggml_tensor * tensor, llama_opt_param_filter 
 void llama_context::opt_init(struct llama_model * model, struct llama_opt_params lopt_params) {
     GGML_ASSERT(!opt_ctx);
     cparams.training = true;
+    // the backward pass of gated_delta_net takes the gate activations as separate ops
+    cparams.gdn_raw_gates = false;
     // Stash the model's *real* n_ctx_train into orig_n_ctx_train so that the model-saver
     // can restore it on save. Otherwise the in-memory n_ctx_train gets clobbered by the
     // training batch ctx (often 256) and the saved GGUF advertises a useless context_length.
