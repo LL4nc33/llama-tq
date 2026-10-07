@@ -1735,8 +1735,12 @@ ggml_tensor * llama_kv_cache::get_v_train(ggml_context * ctx, int32_t il, ggml_t
                 n_embd_head*sizeof(float), n_embd_v_gqa*sizeof(float), n_embd_v_gqa*n_kv*sizeof(float), 0);
     }
 
-    // transposed: one row per element of the embedding, one column per cell
+    // transposed: one row per element of the embedding, one column per cell (a strided view unless n_kv == kv_size,
+    // ggml_set needs it contiguous)
     ggml_tensor * cells = ggml_view_2d(ctx, v, n_kv, n_embd_v_gqa, kv_size*sizeof(float), 0);
+    if (!ggml_is_contiguous(cells)) {
+        cells = ggml_cont(ctx, cells);
+    }
     ggml_tensor * res   = ggml_set_2d(ctx, cells, ggml_cont(ctx, ggml_transpose(ctx, cur)), n_kv*sizeof(float), first*sizeof(float));
     return ggml_view_4d(ctx, res,
             n_kv, n_head_kv, n_embd_head, 1,
