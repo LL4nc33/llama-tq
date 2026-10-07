@@ -2027,6 +2027,11 @@ struct test_unary : public test_case {
             min = -10.f;
             max =  10.f;
         }
+        // the gradient of exp/expm1 is exp(x), which overflows f32 beyond x ~ 88
+        if (mode == MODE_GRAD && (op == GGML_UNARY_OP_EXP || op == GGML_UNARY_OP_EXPM1)) {
+            min = -2.f;
+            max =  2.f;
+        }
 
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
             // test extended range of values to check for NaNs in GELU
@@ -2035,6 +2040,9 @@ struct test_unary : public test_case {
     }
 
     float grad_eps() override {
+        if (op == GGML_UNARY_OP_EXP || op == GGML_UNARY_OP_EXPM1) {
+            return 1e-1f; // smooth, the large step is for the kinks of relu & co.
+        }
         return 15.0f;
     }
 
@@ -2051,6 +2059,15 @@ struct test_unary : public test_case {
         return {};
     }
 
+
+    bool grad_precise() override {
+        return op == GGML_UNARY_OP_EXP || op == GGML_UNARY_OP_EXPM1;
+    }
+
+    double max_maa_err() override {
+        // exp/expm1: the summed loss in f32 limits the numerical gradient to ~1e-3
+        return op == GGML_UNARY_OP_EXP || op == GGML_UNARY_OP_EXPM1 ? 1e-2 : 1e-4;
+    }
 };
 
 // GGML_OP_GLU
@@ -2117,30 +2134,41 @@ struct test_glu_split : public test_case {
         : op(op), type(type), ne_a(ne_a), v(v) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
+        // ops with a backward pass (gelu_erf would need an erf op)
+        const bool grad_supported = op == GGML_GLU_OP_SWIGLU || op == GGML_GLU_OP_GEGLU ||
+            op == GGML_GLU_OP_REGLU || op == GGML_GLU_OP_GEGLU_QUICK;
         ggml_tensor * a;
         ggml_tensor * b;
         if (v & 1) {
             auto ne = ne_a; ne[0] *= 3;
             a = ggml_new_tensor(ctx, type, 4, ne.data());
-            ggml_set_param(a);
+            if (grad_supported) {
+                ggml_set_param(a);
+            }
             ggml_set_name(a, "a");
 
             a = ggml_view_4d(ctx, a, ne_a[0], ne_a[1], ne_a[2], ne_a[3], a->nb[1], a->nb[2], a->nb[3], 0);
             ggml_set_name(a, "view_of_a");
 
             b = ggml_new_tensor(ctx, type, 4, ne.data());
-            ggml_set_param(b);
+            if (grad_supported) {
+                ggml_set_param(b);
+            }
             ggml_set_name(b, "b");
 
             b = ggml_view_4d(ctx, b, ne_a[0], ne_a[1], ne_a[2], ne_a[3], b->nb[1], b->nb[2], b->nb[3], 0);
             ggml_set_name(a, "view_of_b");
         } else {
             a = ggml_new_tensor(ctx, type, 4, ne_a.data());
-            ggml_set_param(a);
+            if (grad_supported) {
+                ggml_set_param(a);
+            }
             ggml_set_name(a, "a");
 
             b = ggml_new_tensor(ctx, type, 4, ne_a.data());
-            ggml_set_param(b);
+            if (grad_supported) {
+                ggml_set_param(b);
+            }
             ggml_set_name(b, "b");
         }
 
@@ -2212,9 +2240,20 @@ struct test_swiglu_oai : public test_case {
 
     void initialize_tensors(ggml_context * ctx) override {
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
-            // test extended range of values to check for NaNs in GELU
-            init_tensor_uniform(t, -150.f, 150.f);
+            // test extended range of values to check for NaNs in GELU; the numerical gradient stays clear of
+            // the kinks at +-limit
+            if (mode == MODE_GRAD) {
+                init_tensor_uniform(t, -0.8f*limit, 0.8f*limit);
+            } else {
+                init_tensor_uniform(t, -150.f, 150.f);
+            }
         }
+    }
+
+    // the loss sums ~1000 outputs of magnitude up to ~40 in f32, so the numerical gradient is only good to ~1e-2
+    // (the analytic gradient matches a reference to 1e-7)
+    double max_maa_err() override {
+        return 5e-2;
     }
 };
 

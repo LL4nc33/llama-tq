@@ -7425,6 +7425,69 @@ static void ggml_compute_backward(
                         ggml_add_or_set(ctx, cgraph, isrc1, ggml_mul(ctx, ggml_silu(ctx, src0), grad));
                     }
                 } break;
+                case GGML_GLU_OP_GEGLU: {
+                    // gelu(a) * b with the tanh approximation of gelu (Gemma):
+                    // gelu'(x) = 0.5*(1 + t) + 0.5*c*x*(1 - t^2)*(1 + 3*A*x^2),  t = tanh(c*x*(1 + A*x^2))
+                    GGML_ASSERT(src1 && "backward pass only implemented for split geglu");
+                    if (src0_needs_grads) {
+                        struct ggml_tensor * src0c = ggml_is_contiguous(src0) ? src0 : ggml_cont(ctx, src0);
+                        const float A = 0.044715f;
+                        const float c = 0.79788456080286535587989211986876f; // sqrt(2/pi)
+                        struct ggml_tensor * x2    = ggml_sqr(ctx, src0c);
+                        struct ggml_tensor * t     = ggml_tanh(ctx, ggml_scale(ctx, ggml_mul(ctx, src0c, ggml_scale_bias(ctx, x2, A, 1.0f)), c));
+                        struct ggml_tensor * term1 = ggml_scale_bias(ctx, t, 0.5f, 0.5f);
+                        struct ggml_tensor * term2 = ggml_scale(ctx, ggml_mul(ctx, ggml_mul(ctx, src0c,
+                            ggml_scale_bias(ctx, ggml_sqr(ctx, t), -1.0f, 1.0f)), ggml_scale_bias(ctx, x2, 3.0f*A, 1.0f)), 0.5f*c);
+                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, ggml_mul(ctx, grad, src1), ggml_add(ctx, term1, term2)));
+                    }
+                    if (src1_needs_grads) {
+                        ggml_add_or_set(ctx, cgraph, isrc1, ggml_mul(ctx, ggml_gelu(ctx, src0), grad));
+                    }
+                } break;
+                case GGML_GLU_OP_REGLU: {
+                    GGML_ASSERT(src1 && "backward pass only implemented for split reglu");
+                    if (src0_needs_grads) {
+                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, ggml_mul(ctx, grad, src1), ggml_step(ctx, src0)));
+                    }
+                    if (src1_needs_grads) {
+                        ggml_add_or_set(ctx, cgraph, isrc1, ggml_mul(ctx, ggml_relu(ctx, src0), grad));
+                    }
+                } break;
+                case GGML_GLU_OP_GEGLU_QUICK: {
+                    // x*sigmoid(1.702*x): derivative s + 1.702*x*s*(1 - s)
+                    GGML_ASSERT(src1 && "backward pass only implemented for split geglu_quick");
+                    if (src0_needs_grads) {
+                        struct ggml_tensor * src0c  = ggml_is_contiguous(src0) ? src0 : ggml_cont(ctx, src0);
+                        struct ggml_tensor * s      = ggml_sigmoid(ctx, ggml_scale(ctx, src0c, 1.702f));
+                        struct ggml_tensor * fprime = ggml_add(ctx, s, ggml_scale(ctx,
+                            ggml_mul(ctx, src0c, ggml_mul(ctx, s, ggml_scale_bias(ctx, s, -1.0f, 1.0f))), 1.702f));
+                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, ggml_mul(ctx, grad, src1), fprime));
+                    }
+                    if (src1_needs_grads) {
+                        ggml_add_or_set(ctx, cgraph, isrc1, ggml_mul(ctx, ggml_gelu_quick(ctx, src0), grad));
+                    }
+                } break;
+                case GGML_GLU_OP_SWIGLU_OAI: {
+                    // gpt-oss: (x*sigmoid(alpha*x)) * (y + 1) with x = min(a, limit), y = clamp(b, -limit, limit)
+                    GGML_ASSERT(src1 && "backward pass only implemented for split swiglu_oai");
+                    const float alpha = ggml_get_op_params_f32(tensor, 2);
+                    const float limit = ggml_get_op_params_f32(tensor, 3);
+                    struct ggml_tensor * a = ggml_is_contiguous(src0) ? src0 : ggml_cont(ctx, src0);
+                    struct ggml_tensor * b = ggml_is_contiguous(src1) ? src1 : ggml_cont(ctx, src1);
+                    struct ggml_tensor * x = ggml_clamp(ctx, a, -INFINITY, limit);
+                    struct ggml_tensor * s = ggml_sigmoid(ctx, ggml_scale(ctx, x, alpha));
+                    if (src0_needs_grads) {
+                        struct ggml_tensor * y1     = ggml_scale_bias(ctx, ggml_clamp(ctx, b, -limit, limit), 1.0f, 1.0f);
+                        struct ggml_tensor * gprime = ggml_add(ctx, s, ggml_scale(ctx,
+                            ggml_mul(ctx, x, ggml_mul(ctx, s, ggml_scale_bias(ctx, s, -1.0f, 1.0f))), alpha));
+                        struct ggml_tensor * mask_a = ggml_step(ctx, ggml_scale_bias(ctx, a, -1.0f, limit)); // a < limit
+                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, ggml_mul(ctx, ggml_mul(ctx, grad, y1), gprime), mask_a));
+                    }
+                    if (src1_needs_grads) {
+                        struct ggml_tensor * mask_b = ggml_step(ctx, ggml_scale_bias(ctx, ggml_abs(ctx, b), -1.0f, limit)); // |b| < limit
+                        ggml_add_or_set(ctx, cgraph, isrc1, ggml_mul(ctx, ggml_mul(ctx, grad, ggml_mul(ctx, x, s)), mask_b));
+                    }
+                } break;
                 default: {
                     GGML_ABORT("unsupported glu op for backward pass: %s", ggml_glu_op_name(ggml_get_glu_op(tensor)));
                 } //break;
