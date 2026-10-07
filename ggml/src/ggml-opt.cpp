@@ -71,6 +71,7 @@ struct ggml_opt_context {
     struct ggml_tensor *          opt_step_params = nullptr; // Stores output of get_opt_pars.
 
     enum ggml_opt_optimizer_type optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+    float                        grad_clip = 0.0f;
 };
 
 struct ggml_opt_result {
@@ -258,6 +259,7 @@ struct ggml_opt_params ggml_opt_default_params(
         /*get_opt_pars    =*/ ggml_opt_get_default_optimizer_params,
         /*get_opt_pars_ud =*/ nullptr,
         /*optimizer       =*/ GGML_OPT_OPTIMIZER_TYPE_ADAMW,
+        /*grad_clip       =*/ 0.0f,
     };
 }
 
@@ -566,9 +568,33 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     ggml_set_input(adamw_params);
     const char * optimizer_name = ggml_opt_optimizer_name(opt_ctx->optimizer);
     ggml_format_name(adamw_params, "%s_params", optimizer_name);
+
+    // gradient clipping by global norm: every gradient is divided by max(1, ||g|| / grad_clip)
+    struct ggml_tensor * clip_div = nullptr;
+    if (opt_ctx->grad_clip > 0.0f) {
+        struct ggml_tensor * sum_sq = nullptr;
+        for (int i = opt_ctx->gf->n_nodes-1; i >= 0; --i) {
+            struct ggml_tensor * node = opt_ctx->gb_opt->nodes[i];
+            struct ggml_tensor * grad = ggml_graph_get_grad(opt_ctx->gb_opt, node);
+            if (grad && (node->flags & GGML_TENSOR_FLAG_PARAM)) {
+                struct ggml_tensor * s = ggml_sum(opt_ctx->ctx_compute, ggml_sqr(opt_ctx->ctx_compute, grad));
+                sum_sq = sum_sq ? ggml_add(opt_ctx->ctx_compute, sum_sq, s) : s;
+            }
+        }
+        if (sum_sq) {
+            struct ggml_tensor * norm = ggml_sqrt(opt_ctx->ctx_compute, sum_sq);
+            ggml_set_name(norm, "grad_norm");
+            clip_div = ggml_clamp(opt_ctx->ctx_compute, ggml_scale(opt_ctx->ctx_compute, norm, 1.0f/opt_ctx->grad_clip), 1.0f, INFINITY);
+            ggml_set_name(clip_div, "grad_clip_div");
+        }
+    }
+
     for (int i = opt_ctx->gf->n_nodes-1; i >= 0; --i) {
         struct ggml_tensor * node = opt_ctx->gb_opt->nodes[i];
         struct ggml_tensor * grad = ggml_graph_get_grad(opt_ctx->gb_opt, node);
+        if (grad && clip_div && (node->flags & GGML_TENSOR_FLAG_PARAM)) {
+            grad = ggml_div(opt_ctx->ctx_compute, grad, clip_div);
+        }
 
         if (grad && (node->flags & GGML_TENSOR_FLAG_PARAM)) {
             struct ggml_tensor * m = nullptr;
@@ -617,6 +643,7 @@ ggml_opt_context_t ggml_opt_init(struct ggml_opt_params params) {
     result->get_opt_pars     = params.get_opt_pars;
     result->get_opt_pars_ud  = params.get_opt_pars_ud;
     result->optimizer        = params.optimizer;
+    result->grad_clip        = params.grad_clip;
 
     GGML_ASSERT(result->opt_period >= 1);
 

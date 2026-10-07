@@ -127,6 +127,9 @@ extern "C" {
 
         // only GGML_OPT_OPTIMIZER_TYPE_ADAMW needs m, v momenta per parameter tensor
         enum ggml_opt_optimizer_type optimizer;
+
+        // if > 0, the gradients are scaled down so that their global L2 norm is at most grad_clip
+        float grad_clip;
     };
 
     // get parameters for an optimization context with defaults set where possible
