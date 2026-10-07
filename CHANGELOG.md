@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-07
+
+- **LoRA finetuning directly on quantized GGUFs works end to end**, including the experts of MoE models and models larger than VRAM (see [docs/finetune.md](docs/finetune.md)). Fixed:
+  - gradient accumulators were never cleared with `llama-finetune`'s per-batch graphs, so every step used the sum of all previous gradients and longer runs diverged;
+  - LoRA A was initialised ~17x too large (now Kaiming-uniform as in PEFT);
+  - the input gradient through quantized MoE experts (and the broadcast expert input) was dropped; new op `MUL_MAT_ID_GRAD_B` on CPU and CUDA; the routing-weight gradient (`get_rows_back`, batched) as well;
+  - the input gradient of quantized dense matmuls (`out_prod`) ran on the CPU; now on CUDA (Qwen3-4B: ~90 s -> ~1 s per step);
+  - AdamW with two GPUs (optimizer state now next to its parameter) and the scheduler size for training graphs.
+- Verified: Qwen3-4B attention LoRA perplexity 15.3 -> 12.7 on held-out text; Qwen3-Coder-30B-A3B expert and attention LoRA converge; Kolibri-1 (31.5 GiB, experts in RAM) trains with `--no-op-offload` at lr 1e-5.
+
 ## 2026-10-06
 
 - **`-fit` works:** automatic placement of layers, experts and context to free device memory (upstream `common/fit.cpp`); until now the option was a stub without effect. Parameters set by hand (`-ngl`, `-ts`, `-ot`, `-ncmoe`) are kept. Kolibri-1 Q3_K_S with `-fit` and the GPUs listed so that the RAM-expert layers land on the x16 GPU: prompts at 596 t/s instead of 454 with the hand placement; `GGML_OP_OFFLOAD_MIN_BATCH=256` cuts the time to the first token of short prompts from 3.7 s to 1.0 s.
