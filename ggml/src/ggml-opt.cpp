@@ -58,9 +58,18 @@ struct ggml_opt_context {
     struct ggml_cgraph * gb_opt  = nullptr;
     bool static_graphs           = false;
     bool eval_ready              = false;
-    std::vector<struct ggml_tensor *> grad_accs;
-    std::vector<struct ggml_tensor *> grad_m;
-    std::vector<struct ggml_tensor *> grad_v;
+    std::vector<struct ggml_tensor *> grad_accs; // per node of the current forward graph (for ggml_build_backward_expand)
+
+    // per parameter: gradient accumulator and AdamW moments. Keyed by the parameter tensor, as the node indices
+    // change whenever a rebuilt (dynamic) graph differs from the previous one.
+    struct param_state {
+        struct ggml_tensor * acc = nullptr;
+        struct ggml_tensor * m   = nullptr;
+        struct ggml_tensor * v   = nullptr;
+    };
+    std::map<const struct ggml_tensor *, param_state> params;
+    struct ggml_tensor * loss_acc   = nullptr;
+    bool                 has_momenta = false;
     std::vector<struct ggml_context *>  ctx_param_state; // gradient accumulators and moments, one per buffer type of the parameters
     std::vector<ggml_backend_buffer_t>  buf_param_state;
 
@@ -482,11 +491,13 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
         return;
     }
 
-    if (opt_ctx->grad_accs.empty()) {
+    {
         GGML_ASSERT(opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_GRAD);
 
-        const int n_nodes = opt_ctx->gf->n_nodes;
+        const int  n_nodes     = opt_ctx->gf->n_nodes;
+        const bool want_momenta = need_momenta && opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_OPT;
 
+        // allocate the state of parameters seen for the first time (all of them with the first graph)
         // The optimizer step updates a parameter in place and reads its gradient accumulator and AdamW moments,
         // so those live in the parameter's buffer type (with several GPUs the parameters are spread over them).
         ggml_backend_buffer_type_t buft_default = ggml_backend_get_default_buffer_type(
@@ -506,43 +517,44 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
             }
             return ctx;
         };
-
-        opt_ctx->grad_accs.resize(n_nodes);
         for (int i = 0; i < n_nodes; ++i) {
             ggml_tensor * node = opt_ctx->gf->nodes[i];
-            if (accumulate && (node->flags & GGML_TENSOR_FLAG_PARAM)) {
-                opt_ctx->grad_accs[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
-            } else if (node->flags & GGML_TENSOR_FLAG_LOSS) {
-                opt_ctx->grad_accs[i] = ggml_new_tensor(opt_ctx->ctx_static, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
-            } else {
-                opt_ctx->grad_accs[i] = nullptr;
+            if (!(node->flags & GGML_TENSOR_FLAG_PARAM)) {
+                continue;
+            }
+            ggml_opt_context::param_state & ps = opt_ctx->params[node];
+            if (accumulate && !ps.acc) {
+                ps.acc = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+            }
+            if (want_momenta && !ps.m) {
+                ps.m = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                ps.v = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                // the names identify the moments in a saved optimizer state (ggml_opt_save_state)
+                ggml_format_name(ps.m, "%s.m", node->name);
+                ggml_format_name(ps.v, "%s.v", node->name);
             }
         }
-
-        if (need_momenta && opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_OPT) {
-            opt_ctx->grad_m.resize(n_nodes);
-            opt_ctx->grad_v.resize(n_nodes);
-            for (int i = 0; i < n_nodes; ++i) {
-                ggml_tensor * node = opt_ctx->gf->nodes[i];
-                if (node->flags & GGML_TENSOR_FLAG_PARAM) {
-                    opt_ctx->grad_m[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
-                    opt_ctx->grad_v[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
-                    // the names identify the moments in a saved optimizer state (ggml_opt_save_state)
-                    ggml_format_name(opt_ctx->grad_m[i], "%s.m", node->name);
-                    ggml_format_name(opt_ctx->grad_v[i], "%s.v", node->name);
-                } else {
-                    opt_ctx->grad_m[i] = nullptr;
-                    opt_ctx->grad_v[i] = nullptr;
-                }
-            }
-        }
-
+        opt_ctx->has_momenta = opt_ctx->has_momenta || want_momenta;
         for (auto & [buft, ctx] : ctx_by_buft) {
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
             GGML_ASSERT(buf && "ggml-opt: failed to allocate the optimizer state");
             ggml_backend_buffer_clear(buf, 0);
             opt_ctx->ctx_param_state.push_back(ctx);
             opt_ctx->buf_param_state.push_back(buf);
+        }
+
+        // the accumulators by node index of this graph
+        opt_ctx->grad_accs.assign(n_nodes, nullptr);
+        for (int i = 0; i < n_nodes; ++i) {
+            ggml_tensor * node = opt_ctx->gf->nodes[i];
+            if (accumulate && (node->flags & GGML_TENSOR_FLAG_PARAM)) {
+                opt_ctx->grad_accs[i] = opt_ctx->params[node].acc;
+            } else if (node->flags & GGML_TENSOR_FLAG_LOSS) {
+                if (!opt_ctx->loss_acc) {
+                    opt_ctx->loss_acc = ggml_new_tensor(opt_ctx->ctx_static, GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                }
+                opt_ctx->grad_accs[i] = opt_ctx->loss_acc;
+            }
         }
     }
 
@@ -643,8 +655,9 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
             struct ggml_tensor * m = nullptr;
             struct ggml_tensor * v = nullptr;
             if (need_momenta) {
-                m = opt_ctx->grad_m[i];
-                v = opt_ctx->grad_v[i];
+                const ggml_opt_context::param_state & ps = opt_ctx->params.at(node);
+                m = ps.m;
+                v = ps.v;
             }
             struct ggml_tensor * opt_step;
             switch (optimizer) {
@@ -770,11 +783,11 @@ struct ggml_tensor * ggml_opt_grad_acc(ggml_opt_context_t opt_ctx, struct ggml_t
 bool ggml_opt_save_state(ggml_opt_context_t opt_ctx, const char * fname) {
     std::vector<ggml_tensor *> state; // moments in the parameter buffers
     size_t nbytes = 0;
-    for (size_t i = 0; i < opt_ctx->grad_m.size(); ++i) {
-        if (opt_ctx->grad_m[i]) {
-            state.push_back(opt_ctx->grad_m[i]);
-            state.push_back(opt_ctx->grad_v[i]);
-            nbytes += 2*ggml_nbytes(opt_ctx->grad_m[i]);
+    for (const auto & [param, ps] : opt_ctx->params) {
+        if (ps.m) {
+            state.push_back(ps.m);
+            state.push_back(ps.v);
+            nbytes += 2*ggml_nbytes(ps.m);
         }
     }
 
@@ -813,11 +826,11 @@ static bool ggml_opt_apply_state(ggml_opt_context_t opt_ctx, const char * fname)
     }
     bool ok = true;
     int  n  = 0;
-    for (size_t i = 0; ok && i < opt_ctx->grad_m.size(); ++i) {
-        if (!opt_ctx->grad_m[i]) {
+    for (auto it = opt_ctx->params.begin(); ok && it != opt_ctx->params.end(); ++it) {
+        if (!it->second.m) {
             continue;
         }
-        for (ggml_tensor * dst : { opt_ctx->grad_m[i], opt_ctx->grad_v[i] }) {
+        for (ggml_tensor * dst : { it->second.m, it->second.v }) {
             const ggml_tensor * src = ggml_get_tensor(ctx, dst->name);
             if (!src || src->type != GGML_TYPE_F32 || !ggml_are_same_shape(src, dst)) {
                 GGML_LOG_ERROR("%s: '%s' has no matching tensor '%s'\n", __func__, fname, dst->name);
@@ -860,7 +873,7 @@ bool ggml_opt_load_state(ggml_opt_context_t opt_ctx, const char * fname) {
     if (!ok || !has_moments) {
         return ok;
     }
-    if (opt_ctx->grad_m.empty()) {
+    if (!opt_ctx->has_momenta) {
         opt_ctx->state_pending = fname; // the moments are allocated with the first optimizer graph
         return true;
     }
@@ -962,7 +975,7 @@ void ggml_opt_prepare_alloc(
     //
     // PERSISTENT state is NOT touched: ctx_static + buf_static (holding the
     // F32 grad_acc / m / v tensors that carry optimiser momenta across batches),
-    // ctx_cpu + buf_cpu, opt_step_params, and the grad_accs / grad_m / grad_v
+    // ctx_cpu + buf_cpu, opt_step_params, and the per-parameter accumulators and moments
     // vectors themselves (which hold pointers into ctx_static, not into the
     // per-batch ctx_compute).
     if (opt_ctx->ctx_compute != ctx_compute) {
@@ -997,10 +1010,9 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         } else {
             // the graphs are rebuilt for every batch, but the parameter accumulators persist (and the backward
             // graph adds into them even with opt_period == 1), so clear them directly; the loss gradient stays 1
-            for (size_t i = 0; i < opt_ctx->grad_accs.size(); ++i) {
-                ggml_tensor * acc = opt_ctx->grad_accs[i];
-                if (acc && acc->buffer && acc->buffer != opt_ctx->buf_static) { // the loss accumulator lives in buf_static
-                    ggml_backend_tensor_memset(acc, 0, 0, ggml_nbytes(acc));
+            for (const auto & [param, ps] : opt_ctx->params) {
+                if (ps.acc && ps.acc->buffer) {
+                    ggml_backend_tensor_memset(ps.acc, 0, 0, ggml_nbytes(ps.acc));
                 }
             }
         }
@@ -1070,7 +1082,7 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
 
 void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
     GGML_ASSERT(opt_ctx->eval_ready);
-    if (!opt_ctx->state_pending.empty() && !opt_ctx->grad_m.empty()) {
+    if (!opt_ctx->state_pending.empty() && opt_ctx->has_momenta) {
         if (!ggml_opt_apply_state(opt_ctx, opt_ctx->state_pending.c_str())) {
             GGML_ABORT("failed to apply the optimizer state '%s'", opt_ctx->state_pending.c_str());
         }
