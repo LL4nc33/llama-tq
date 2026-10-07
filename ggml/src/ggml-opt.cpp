@@ -532,8 +532,10 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     // ctx_compute pre-sizing in llama-context). 4x was not enough for batch
     // 2 builds on 35B MoE — build_backward expands ~2x forward count, plus
     // dual-GPU scheduler cross-device copies push the total higher.
+    // Static graphs (ggml_opt_init with ctx_compute, e.g. ggml_opt_fit) keep the documented contract of a ctx_compute
+    // for graphs of gf->size; the headroom is for the dynamic graphs of llama_opt_epoch, whose ctx_compute is sized for it.
     {
-        const size_t gb_grad_size = (size_t) opt_ctx->gf->size * 8;
+        const size_t gb_grad_size = (size_t) opt_ctx->gf->size * (opt_ctx->static_graphs ? 1 : 8);
         opt_ctx->gb_grad = ggml_new_graph_custom(opt_ctx->ctx_compute, gb_grad_size, /*grads =*/ true);
         GGML_ASSERT(opt_ctx->gb_grad && "ggml-opt: gb_grad allocation failed — ctx_compute too small");
         ggml_graph_cpy(opt_ctx->gf, opt_ctx->gb_grad);
