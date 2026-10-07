@@ -1074,7 +1074,10 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         ggml_backend_sched_invalidate_prev_backend_ids(opt_ctx->backend_sched);
     }
 
-    ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
+    if (!ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy)) {
+        GGML_ABORT("ggml-opt: failed to allocate the training graph (out of memory?) - try a smaller context, "
+                   "physical batch (-ub) or LoRA rank");
+    }
     opt_ctx->allocated_graph = graph;
 
     opt_ctx->eval_ready = true;
