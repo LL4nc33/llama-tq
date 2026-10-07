@@ -8908,6 +8908,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // input gradient of an output head or FFN matrix: many rows (vocabulary or FFN size), transposed gradient
+    for (int64_t k : {4096, 32000}) {
+        for (int64_t n : {16, 64}) {
+            test_cases.emplace_back(new test_out_prod(GGML_TYPE_F32, GGML_TYPE_F32, 128, n, k, {1, 1}, {1, 1}, true));
+            test_cases.emplace_back(new test_out_prod(GGML_TYPE_F32, GGML_TYPE_F32, 128, n, k, {1, 1}, {1, 1}, false));
+        }
+    }
+
     // ne2 sweep to cover the cublasSgemmStridedBatched path (dps2 == 1, ne2 > 1)
     for (int64_t ne2 : {1, 8, 16, 32}) {
         test_cases.emplace_back(new test_out_prod(GGML_TYPE_F32, GGML_TYPE_F32,
