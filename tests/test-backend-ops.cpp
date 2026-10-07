@@ -3782,6 +3782,38 @@ struct test_ssm_conv : public test_case {
     }
 };
 
+// gradient of SSM_CONV with respect to its input and kernel, and of the CONCAT of the conv state with the new
+// input before it (as the gated delta net layers build it)
+struct test_ssm_conv_grad : public test_case {
+    const int64_t d_conv;
+    const int64_t d_inner;
+    const int64_t n_t;
+    const int64_t n_s;
+
+    std::string vars() override {
+        return VARS_TO_STR4(d_conv, d_inner, n_t, n_s);
+    }
+
+    test_ssm_conv_grad(int64_t d_conv = 4, int64_t d_inner = 8, int64_t n_t = 5, int64_t n_s = 1)
+        : d_conv(d_conv), d_inner(d_inner), n_t(n_t), n_s(n_s) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * state = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d_conv - 1, d_inner, n_s);
+        ggml_tensor * x     = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, d_inner, n_t, n_s); // channels first
+        ggml_tensor * w     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d_conv, d_inner);
+        ggml_set_param(x);
+        ggml_set_param(w);
+        ggml_set_name(state, "state");
+        ggml_set_name(x, "x");
+        ggml_set_name(w, "w");
+        ggml_tensor * x_t = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3)); // [n_t, d_inner, n_s]
+        ggml_tensor * sx  = ggml_concat(ctx, state, x_t, 0);
+        ggml_tensor * out = ggml_ssm_conv(ctx, sx, w);
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 // GGML_OP_SSM_CONV + GGML_OP_ADD (channel-wise bias, optional) + GGML_OP_UNARY(SILU) (fused operation)
 struct test_ssm_conv_bias_silu : public test_case {
     const ggml_type type;
@@ -8720,6 +8752,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+    for (int64_t n_t : {1, 5, 40}) {
+        test_cases.emplace_back(new test_ssm_conv_grad(4, 8, n_t, 1));
+    }
+    test_cases.emplace_back(new test_ssm_conv_grad(4, 8, 5, 2));
     for (int64_t d_conv : {3, 4, 9}) {
         for (int64_t d_inner: {1024, 1536, 2048}) {
             test_cases.emplace_back(new test_ssm_conv(GGML_TYPE_F32, {d_conv, d_inner, 1, 1}, {d_conv, d_inner, 1, 1}));
