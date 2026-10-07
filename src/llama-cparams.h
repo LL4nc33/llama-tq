@@ -49,6 +49,7 @@ struct llama_cparams {
     bool fused_hc;           // use the fused hyper-connection ops (qwen4exp)
     bool no_perf;
     bool warmup;
+    bool training; // graphs are built for llama_opt_epoch
     bool op_offload;
     bool kv_unified;
 

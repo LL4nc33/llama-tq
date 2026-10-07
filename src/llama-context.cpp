@@ -163,6 +163,7 @@ llama_context::llama_context(
     cparams.no_perf          = params.no_perf;
     cparams.pooling_type     = params.pooling_type;
     cparams.warmup           = false;
+    cparams.training         = false;
 
     cparams.n_ctx            = params.n_ctx           == 0    ? hparams.n_ctx_train           : params.n_ctx;
     cparams.rope_freq_base   = params.rope_freq_base  == 0.0f ? hparams.rope_freq_base_train  : params.rope_freq_base;
@@ -3464,6 +3465,7 @@ static void llama_set_param(struct ggml_tensor * tensor, llama_opt_param_filter 
 
 void llama_context::opt_init(struct llama_model * model, struct llama_opt_params lopt_params) {
     GGML_ASSERT(!opt_ctx);
+    cparams.training = true;
     // Stash the model's *real* n_ctx_train into orig_n_ctx_train so that the model-saver
     // can restore it on save. Otherwise the in-memory n_ctx_train gets clobbered by the
     // training batch ctx (often 256) and the saved GGUF advertises a useless context_length.

@@ -7050,10 +7050,11 @@ static void ggml_compute_backward(
             // same as cpy
             if (src0_needs_grads) {
                 GGML_ASSERT(!cgraph->grads[isrc0] || ggml_is_contiguous(cgraph->grads[isrc0]));
-                GGML_ASSERT(ggml_is_contiguous(grad));
                 GGML_ASSERT(ggml_nelements(tensor) == ggml_nelements(src0));
+                // the gradient can arrive as a view (e.g. through a permute of the K/V cache in training)
+                struct ggml_tensor * grad_cont = ggml_is_contiguous(grad) ? grad : ggml_cont(ctx, grad);
                 ggml_add_or_set(ctx, cgraph, isrc0,
-                    ggml_are_same_shape(tensor, src0) ? grad : ggml_reshape(ctx, grad, src0));
+                    ggml_are_same_shape(tensor, src0) ? grad_cont : ggml_reshape(ctx, grad_cont, src0));
             }
         } break;
         case GGML_OP_RESHAPE: {

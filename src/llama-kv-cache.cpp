@@ -1673,6 +1673,76 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
             ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
 }
 
+// first cell of the current ubatch if its cells are consecutive in one stream, else -1
+static int64_t llama_kv_train_first_cell(const llama_kv_cache::slot_info & sinfo) {
+    if (sinfo.idxs.size() != 1 || sinfo.idxs[0].empty()) {
+        return -1;
+    }
+    const auto & idxs = sinfo.idxs[0];
+    for (size_t i = 1; i < idxs.size(); ++i) {
+        if (idxs[i] != idxs[0] + i) {
+            return -1;
+        }
+    }
+    return idxs[0];
+}
+
+ggml_tensor * llama_kv_cache::get_k_train(ggml_context * ctx, int32_t il, ggml_tensor * k_cur, uint32_t n_kv, const slot_info & sinfo) const {
+    const int32_t ikv = map_layer_ids.at(il);
+    ggml_tensor * k = layers[ikv].k;
+    const int64_t first = llama_kv_train_first_cell(sinfo);
+    if (k->type != GGML_TYPE_F32 || k->ne[2] != 1 || first < 0 || first + k_cur->ne[2] > n_kv) {
+        return nullptr;
+    }
+
+    const int64_t n_embd_head  = hparams.n_embd_head_k(il);
+    const int64_t n_embd_k_gqa = k->ne[0];
+    const int64_t n_tokens     = k_cur->ne[2];
+    GGML_ASSERT(n_embd_k_gqa == k_cur->ne[0]*k_cur->ne[1]);
+
+    // cells [0, n_kv) of the layer, one row per cell; the result of ggml_set is contiguous
+    ggml_tensor * cells = ggml_view_2d(ctx, k, n_embd_k_gqa, n_kv, k->nb[1], 0);
+    ggml_tensor * cur   = ggml_cont_2d(ctx, k_cur, n_embd_k_gqa, n_tokens);
+    ggml_tensor * res   = ggml_set_2d(ctx, cells, cur, n_embd_k_gqa*sizeof(float), first*n_embd_k_gqa*sizeof(float));
+
+    return ggml_view_4d(ctx, res,
+            n_embd_head, hparams.n_head_kv(il), n_kv, 1,
+            n_embd_head*sizeof(float), n_embd_k_gqa*sizeof(float), n_embd_k_gqa*n_kv*sizeof(float), 0);
+}
+
+ggml_tensor * llama_kv_cache::get_v_train(ggml_context * ctx, int32_t il, ggml_tensor * v_cur, uint32_t n_kv, const slot_info & sinfo) const {
+    const int32_t ikv = map_layer_ids.at(il);
+    ggml_tensor * v = layers[ikv].v;
+    const int64_t first = llama_kv_train_first_cell(sinfo);
+    if (v->type != GGML_TYPE_F32 || v->ne[2] != 1 || first < 0 || first + v_cur->ne[2] > n_kv) {
+        return nullptr;
+    }
+
+    const int64_t n_embd_head  = hparams.n_embd_head_v(il);
+    const int64_t n_head_kv    = hparams.n_head_kv(il);
+    const int64_t n_embd_v_gqa = n_embd_head*n_head_kv;
+    const int64_t n_tokens     = v_cur->ne[2];
+    const int64_t kv_size      = get_size();
+    GGML_ASSERT(n_embd_v_gqa == v_cur->ne[0]*v_cur->ne[1]);
+
+    ggml_tensor * cur = ggml_cont_2d(ctx, v_cur, n_embd_v_gqa, n_tokens);
+
+    if (!v_trans) {
+        ggml_tensor * cells = ggml_view_2d(ctx, v, n_embd_v_gqa, n_kv, v->nb[1], 0);
+        ggml_tensor * res   = ggml_set_2d(ctx, cells, cur, n_embd_v_gqa*sizeof(float), first*n_embd_v_gqa*sizeof(float));
+        return ggml_view_4d(ctx, res,
+                n_embd_head, n_head_kv, n_kv, 1,
+                n_embd_head*sizeof(float), n_embd_v_gqa*sizeof(float), n_embd_v_gqa*n_kv*sizeof(float), 0);
+    }
+
+    // transposed: one row per element of the embedding, one column per cell
+    ggml_tensor * cells = ggml_view_2d(ctx, v, n_kv, n_embd_v_gqa, kv_size*sizeof(float), 0);
+    ggml_tensor * res   = ggml_set_2d(ctx, cells, ggml_cont(ctx, ggml_transpose(ctx, cur)), n_kv*sizeof(float), first*sizeof(float));
+    return ggml_view_4d(ctx, res,
+            n_kv, n_head_kv, n_embd_head, 1,
+            n_kv*n_embd_head*sizeof(float), n_kv*sizeof(float), n_kv*n_embd_v_gqa*sizeof(float), 0);
+}
+
 // XQuant Phase 3 — accessors for sibling K view.
 //
 // `xq_dominant_layer(il)` returns the dominant layer index for a subordinate
@@ -3298,6 +3368,16 @@ ggml_tensor * llama_kv_cache_context::get_k(ggml_context * ctx, int32_t il) cons
 
 ggml_tensor * llama_kv_cache_context::get_v(ggml_context * ctx, int32_t il) const {
     return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);
+}
+
+ggml_tensor * llama_kv_cache_context::get_k_train(ggml_context * ctx, int32_t il, ggml_tensor * k_cur) const {
+    ggml_tensor * k = kv->get_k_train(ctx, il, k_cur, n_kv, sinfos[i_cur]);
+    return k ? k : get_k(ctx, il);
+}
+
+ggml_tensor * llama_kv_cache_context::get_v_train(ggml_context * ctx, int32_t il, ggml_tensor * v_cur) const {
+    ggml_tensor * v = kv->get_v_train(ctx, il, v_cur, n_kv, sinfos[i_cur]);
+    return v ? v : get_v(ctx, il);
 }
 
 ggml_tensor * llama_kv_cache_context::get_dominant_k(ggml_context * ctx, int32_t il) const {

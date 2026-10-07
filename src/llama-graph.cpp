@@ -2427,8 +2427,9 @@ ggml_tensor * llm_graph_context::build_attn(
     const auto & kq_mask = inp->get_kq_mask();
 
     ggml_tensor * q = q_cur;
-    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
-    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+    // training reads the current rows from k_cur/v_cur, so that the gradient reaches them through the cache
+    ggml_tensor * k = cparams.training ? mctx_cur->get_k_train(ctx0, il, k_cur) : mctx_cur->get_k(ctx0, il);
+    ggml_tensor * v = cparams.training ? mctx_cur->get_v_train(ctx0, il, v_cur) : mctx_cur->get_v(ctx0, il);
     // XQuant Phase 3b: fetch dominant K view for subordinate layers.
     // Returns nullptr when xquant_enabled=false or il is standalone.
     ggml_tensor * sibling_k = mctx_cur->get_dominant_k(ctx0, il);
@@ -2609,8 +2610,9 @@ ggml_tensor * llm_graph_context::build_attn(
     const auto & kq_mask = is_swa ? inp->get_kq_mask_swa() : inp->get_kq_mask();
 
     ggml_tensor * q = q_cur;
-    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
-    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+    // training reads the current rows from k_cur/v_cur (when they are stored here), so that the gradient reaches them
+    ggml_tensor * k = cparams.training && k_cur ? mctx_cur->get_k_train(ctx0, il, k_cur) : mctx_cur->get_k(ctx0, il);
+    ggml_tensor * v = cparams.training && v_cur ? mctx_cur->get_v_train(ctx0, il, v_cur) : mctx_cur->get_v(ctx0, il);
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, sinks, v_mla, kq_scale, il);
     cb(cur, "kqv_out", il);

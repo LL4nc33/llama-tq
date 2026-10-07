@@ -219,6 +219,12 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 
+    // for training: get_k/get_v with the rows of the current ubatch taken from k_cur/v_cur instead of the cache
+    // (the same values once cpy_k/cpy_v ran), so that the gradient of the attention reaches k_cur/v_cur;
+    // nullptr if the cache is not F32 with one stream or the ubatch does not occupy consecutive cells
+    ggml_tensor * get_k_train(ggml_context * ctx, int32_t il, ggml_tensor * k_cur, uint32_t n_kv, const slot_info & sinfo) const;
+    ggml_tensor * get_v_train(ggml_context * ctx, int32_t il, ggml_tensor * v_cur, uint32_t n_kv, const slot_info & sinfo) const;
+
     // XQuant Phase 3 hook — return the dominant layer's K view for an XQuant
     // subordinate layer, or nullptr if standalone. The graph builder will
     // consume this when wiring sibling-tensor-aware FA-vec dispatch.
@@ -468,6 +474,10 @@ public:
     // get views of the current state of the cache
     ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
+
+    // training variants: the gradient reaches k_cur/v_cur (falls back to get_k/get_v where that is not possible)
+    ggml_tensor * get_k_train(ggml_context * ctx, int32_t il, ggml_tensor * k_cur) const;
+    ggml_tensor * get_v_train(ggml_context * ctx, int32_t il, ggml_tensor * v_cur) const;
 
     // XQuant Phase 3 hooks (passthrough to underlying llama_kv_cache).
     // Used by graph builder to construct paired K-views for subordinate layers.
