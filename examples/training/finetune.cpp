@@ -182,8 +182,9 @@ static void finetune_epoch_callback_with_checkpoint(
 // trained tokens are what the model generates at inference, end-of-turn token included. Some templates render the last
 // assistant turn differently (Qwen3: with an empty <think> block); an earlier turn then ends at its first
 // end-of-generation token in the whole conversation. Examples where neither works are skipped.
-static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, const std::string & chat_template,
+static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, const common_params & params,
         std::vector<llama_token> & tokens, std::vector<uint8_t> & train) {
+    const std::string & chat_template = params.chat_template;
     const llama_model * model = llama_get_model(ctx);
     const llama_vocab * vocab = llama_model_get_vocab(model);
     auto tmpls = common_chat_templates_init(model, chat_template);
@@ -246,6 +247,9 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
             inputs.messages.assign(msgs.begin(), msgs.begin() + n);
             inputs.add_generation_prompt = add_generation_prompt;
             inputs.use_jinja             = true;
+            // render as the server does with the same --reasoning, so the prompts match at inference
+            inputs.enable_thinking       = params.enable_reasoning != 0;
+            inputs.chat_template_kwargs  = params.default_template_kwargs;
             return common_chat_templates_apply(tmpls.get(), inputs).prompt;
         };
 
@@ -381,7 +385,7 @@ int main(int argc, char ** argv) {
     std::vector<uint8_t>     train; // empty: every token is trained
     const std::string & data_path = params.prompt_file;
     if (data_path.size() >= 6 && data_path.compare(data_path.size() - 6, 6, ".jsonl") == 0) {
-        if (!finetune_load_jsonl(ctx, data_path, params.chat_template, tokens, train)) {
+        if (!finetune_load_jsonl(ctx, data_path, params, tokens, train)) {
             return 1;
         }
     } else {

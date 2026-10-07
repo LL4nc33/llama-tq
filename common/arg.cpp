@@ -3440,7 +3440,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                     string_format("error: unknown value for --reasoning: '%s'\n", value.c_str()));
             }
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_REASONING"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_FINETUNE}).set_env("LLAMA_ARG_REASONING"));
     add_opt(common_arg(
         {"--reasoning-budget"}, "N",
         "token budget for thinking: -1 for unrestricted, 0 for immediate end, N>0 for token budget (default: -1)",
