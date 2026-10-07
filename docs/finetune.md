@@ -65,9 +65,9 @@ at training start:
    gradient through the residual stream.
 5. The trained adapter is serialised by `llama_adapter_lora_save_to_file` at
    the end of training, in the same GGUF format the `--lora` loader expects.
-6. A SIGTERM/SIGINT handler triggers the same save path before exit, so
-   training runs that hit a `timeout` or Ctrl+C still leave a usable
-   checkpoint behind.
+6. SIGTERM/SIGINT request a stop: the adapter, the optimizer state and the
+   position are saved after the current context window, and `--resume`
+   continues from there (a second signal exits immediately).
 
 ## CLI flags and env vars
 
@@ -78,6 +78,11 @@ at training start:
 | `--lora-train-rank N` | `llama-finetune` CLI | LoRA rank (default 8; use 1–2 for 282-pair MoE-expert sets on 12 GB). |
 | `--lora-train-alpha FLOAT` | `llama-finetune` CLI | LoRA alpha (default 16). Effective scale = alpha / rank. |
 | `-opt sgd` / `--optimizer sgd` | `llama-finetune` CLI | SGD optimiser. AdamW also supported but uses 2× VRAM. |
+| `-f data.jsonl` | `llama-finetune` CLI | Chat data (`{"messages": [...]}` per line, rendered with the model's chat template) or `{"text": ...}`; with chat data only the assistant turns are trained. `LLAMA_FINETUNE_SHOW_MASK=1` prints the first examples with the trained spans in `[[ ]]`. |
+| `--grad-clip N` | `llama-finetune` CLI | Clip the global gradient norm to N before each optimizer step (default 1.0, 0 = off). |
+| `--lr-warmup N` | `llama-finetune` CLI | Raise the learning rate linearly over the first N optimizer steps. |
+| `--resume` | `llama-finetune` CLI | Continue from the adapter (`-o`), optimizer state (`<adapter>.opt`) and position (`<adapter>.state`) of a stopped run; bit-identical to an uninterrupted run. |
+| `--stop-after N` | `llama-finetune` CLI | Stop after N context windows and save everything for `--resume`. |
 | `GGML_BACKWARD_SKIP_INPLACE=1` | env | Skip inplace-op assert; required for Mamba/SSM models. |
 | `GGML_OPT_LINE_PROGRESS=1` | env | Emit newlines between training steps for tee/pipe-friendly logs. |
 | `LLAMA_SAVER_ALLOW_UNTESTED=1` | env | Force-save GGUFs for architectures not on the saver whitelist. |
@@ -181,6 +186,58 @@ at once (a 21.8 GB allocation). The RAM experts then run forward and backward on
 128-token step with 4 threads. Attention LoRA rank 8 on 60 lines: with lr 1e-4 the loss rose
 (validation 5.94); with lr 1e-5 it fell from 4.5 to 3.7 (validation 3.54). Start large models at a low
 learning rate.
+
+## Chat data, gradient clipping, exact resume (2026-10-07)
+
+- **Chat JSONL with an assistant-only loss.** Each conversation is rendered with the model's chat
+  template (`--chat-template` overrides it). The trained tokens of an assistant turn are the
+  difference between the rendering up to the turn's generation prompt and the rendering including
+  the turn, so the template's own end-of-turn token is trained and the prompt is not. Labels of
+  untrained positions are `-1`; their rows of the one-hot target stay zero and the trained rows are
+  weighted so the loss is the mean over trained tokens. The cross-entropy backward (CPU and CUDA)
+  now uses the exact gradient `softmax·Σlabels − labels`, which equals the old one for rows summing
+  to 1 (`test-backend-ops` covers masked rows).
+- **Gradient clipping** by global norm in the optimizer graph: `g / max(1, ‖g‖ / clip)`.
+- **Exact resume.** Checkpoints and stops happen at the end of a context window (its later ubatches
+  are already applied within the window). The optimizer state — step count and AdamW moments of
+  every parameter — is saved with `ggml_opt_save_state` and restored on the first optimizer step.
+  On the CPU, stopping (`--stop-after` or SIGTERM, within and across epochs) and resuming gives a
+  bit-identical adapter to an uninterrupted run with SGD and with AdamW + warmup.
+- **Gradient through the KV cache.** The attention read K and V from the cache tensor, which `set_rows`
+  writes without a backward pass. So adapters on `attn_k`/`attn_v` never moved (B stayed exactly 0;
+  with gradient clipping on, the adapters on Q and O did not move either in that configuration), and every
+  layer below an attention got its gradient only through Q and the residual stream. Training graphs
+  now read the cache with the current ubatch's rows taken from `k_cur`/`v_cur` via `ggml_set`
+  (identical forward, verified on the first-step loss), so the gradient reaches K, V and the layers
+  below. Earlier ubatches of the same window stay constants (truncated backpropagation over the
+  window). The 2026-10-06 numbers above predate this fix.
+- **CUDA `out_prod` read the LoRA activations with a wrong stride.** A clamp of the cuBLAS leading
+  dimension used K instead of N as the minimum for a non-transposed `src1`, which is exactly the
+  shape of every LoRA A gradient, `out_prod(x, d(Ax))` with N = rank and K = tokens per ubatch.
+  The A gradients were garbage (global norm 10^7–10^14 on CUDA vs. ~1 on the CPU); with gradient
+  clipping the whole update fell below the AdamW epsilon and nothing was learned. Now the CUDA
+  norms match the CPU (Qwen3-4B, q/k/v/o rank 16: 3.3, 2.2, 1.7 for the first steps).
+- **CPU `RMS_NORM_BACK` destroyed its input when run inplace.** The allocator may run it inplace, and the
+  kernel copied `x` into the output (= the incoming gradient) before reading the gradient. Every gradient
+  below an RMS norm was wrong on the CPU; with op offload to a GPU the op ran elsewhere, which hid it. The
+  CPU gradient now matches CUDA exactly. (Found by a finite-difference step: the CUDA gradient lowered the
+  loss as predicted, the CPU direction did no better than a random one.)
+- **Hybrid models (Gated DeltaNet).** New `GATED_DELTA_NET_BACK` op (CPU and CUDA; states recomputed per
+  32-token segment from checkpoints) plus backward passes for `SSM_CONV` and `CONCAT`, so Qwen3.5/3.6/3.8-style
+  layers pass the gradient instead of dropping it. Checked against a float64 reference (relative error
+  1–2e-7) and end to end (an SGD step lowers the loss by 0.92 of the first-order prediction). Raw gate
+  folding is off during training.
+- **`TANH` backward** (Gemma's logit soft-capping).
+- **Optimizer state per parameter.** Accumulators and AdamW moments were looked up by node index of the
+  first graph; any rebuilt graph that differed (e.g. a longer KV window) shifted them onto other tensors.
+- **Long context**: `-c 8192 -b 512 -ub 512` trains with the gradient truncated at the ubatch (earlier
+  ubatches of the window are KV constants).
+- **CPU weight repacking is off for training** (the backward ops read the plain layout; repacked
+  Q4_K crashed).
+- **LoRA trains only A and B.** Previously the F32 norms were trained too but not saved with the
+  adapter. Flash attention is switched off for training (it has no backward pass).
+- `test-opt` passes again (118 AdamW, 46 SGD cases); the gradient-graph headroom for llama's
+  dynamic graphs had broken the static-graph API (`ggml_opt_fit`).
 
 ## Trade-offs
 
