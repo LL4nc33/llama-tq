@@ -70,10 +70,12 @@ static __global__ void cross_entropy_loss_back_f32(
     }
     maxval = warp_reduce_max(maxval);
 
-    float sum = 0.0f;
+    float sum       = 0.0f;
+    float label_sum = 0.0f;
     for (int i = threadIdx.x; i < nclasses; i += WARP_SIZE) {
         const float val = expf((use_shared ? tmp[i] : logits[i]) - maxval);
-        sum += val;
+        sum       += val;
+        label_sum += labels[i];
 
         if (use_shared) {
             tmp[i] = val;
@@ -81,8 +83,11 @@ static __global__ void cross_entropy_loss_back_f32(
             dst[i] = val;
         }
     }
-    sum = warp_reduce_sum(sum);
-    const float sm_scale = 1.0f/sum;
+    sum       = warp_reduce_sum(sum);
+    label_sum = warp_reduce_sum(label_sum);
+    // d loss / d logits = softmax * sum(labels) - labels: sum(labels) is 1 for normalized labels and 0 for a masked
+    // (all-zero) row, which then gets no gradient
+    const float sm_scale = label_sum/sum;
 
     const float d_by_nrows = *grad/gridDim.x;
     for (int i = threadIdx.x; i < nclasses; i += WARP_SIZE) {
