@@ -340,6 +340,11 @@ int main(int argc, char ** argv) {
         LOG_INF("%s: force disabling flash attention because it has no backward pass\n", __func__);
         params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     }
+    if (!params.no_extra_bufts) {
+        // the backward ops cannot read weights in a repacked CPU layout
+        LOG_INF("%s: force disabling weight repacking because the backward pass needs the plain layout\n", __func__);
+        params.no_extra_bufts = true;
+    }
     if (params.cache_type_k != GGML_TYPE_F32) {
         LOG_INF("%s: force changing k cache type to f32 due to a lack of f16 support for OUT_PROD\n", __func__);
         params.cache_type_k = GGML_TYPE_F32;
