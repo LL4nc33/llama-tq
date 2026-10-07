@@ -32,18 +32,19 @@
 // shell-level timeout fires before the final llama_adapter_lora_save call.
 static llama_adapter_lora * g_lora_adapter_for_signal = nullptr;
 static std::string          g_adapter_out_for_signal;
-static volatile sig_atomic_t g_signal_save_done = 0;
 
-[[noreturn]] static void finetune_save_adapter_on_signal(int signum) {
-    if (g_signal_save_done || !g_lora_adapter_for_signal || g_adapter_out_for_signal.empty()) {
+static void finetune_write_current_state();
+
+// SIGINT/SIGTERM ask the training loop to stop: the callbacks save the adapter and the position after the current
+// optimizer step completes, so the saved state is consistent (a save in the middle of a step would mix updated and
+// not yet updated tensors). A second signal exits at once.
+static volatile sig_atomic_t g_stop_requested = 0;
+
+static void finetune_on_signal(int signum) {
+    if (g_stop_requested || !g_lora_adapter_for_signal || g_adapter_out_for_signal.empty()) {
         _exit(128 + signum);
     }
-    g_signal_save_done = 1;
-    // Best-effort save — the rest of the process may already be in an
-    // inconsistent state, but the adapter buffers are independent.
-    llama_adapter_lora_save_to_file(g_lora_adapter_for_signal,
-                                    g_adapter_out_for_signal.c_str());
-    _exit(128 + signum);
+    g_stop_requested = signum;
 }
 
 // Regex-based parameter filter for selective fine-tuning (e.g. skip Mamba/SSM layers).
@@ -53,18 +54,58 @@ static bool finetune_param_filter_skip_regex(const struct ggml_tensor * t, void 
     return !std::regex_search(t->name, *re);
 }
 
+// LoRA training: every model tensor stays frozen, only the adapter's A and B (marked trainable when the adapter is
+// created) are trained. Otherwise F32 model tensors such as the norms would change too, but they are not part of the
+// saved adapter, so inference with --lora (and --resume) would not see those changes.
+static bool finetune_param_filter_none(const struct ggml_tensor * t, void * ud) {
+    GGML_UNUSED(t);
+    GGML_UNUSED(ud);
+    return false;
+}
+
 // C.4: Periodic mid-training checkpoint state. Tracks how many training
 // batches have been seen since process start and the target path / adapter
 // to flush. Hooked into ggml_opt_epoch via a wrapper callback that calls
 // the progress bar AND triggers a save every N batches.
 struct finetune_checkpoint_state {
     llama_adapter_lora * adapter         = nullptr;
+    llama_context      * ctx             = nullptr;
+    const lr_opt       * lr              = nullptr;
     std::string          path;
     int                  every_n         = 0;   // 0 = disabled
     int64_t              batches_seen    = 0;   // monotonically increasing
     int64_t              last_save_batch = 0;   // batches_seen at most recent save
+
+    // training position for --resume, written next to the adapter as <adapter>.state
+    int                  epoch                = 0;
+    int64_t              datapoint_offset     = 0; // datapoints skipped at the start of this epoch (resume)
+    int64_t              ubatches_done        = 0; // training ubatches done in this epoch
+    int64_t              ubatches_per_datapoint = 1;
+    int64_t              stop_after           = 0; // stop (and save) after this many training windows in this run
+    int64_t              windows_done         = 0;
 };
 static finetune_checkpoint_state g_checkpoint_state;
+
+static void finetune_write_state(int epoch, int64_t datapoints_done) {
+    const auto & cs = g_checkpoint_state;
+    if (cs.path.empty()) {
+        return;
+    }
+    // optimizer state (AdamW moments) as <adapter>.opt, position and learning-rate step as <adapter>.state
+    if (llama_opt_save_state(cs.ctx, (cs.path + ".opt").c_str()) != 0) {
+        fprintf(stderr, "\n%s: failed to write the optimizer state '%s.opt'\n", __func__, cs.path.c_str());
+    }
+    if (FILE * f = fopen((cs.path + ".state").c_str(), "w")) {
+        fprintf(f, "{\"epoch\": %d, \"datapoints_done\": %" PRId64 ", \"lr_step\": %" PRId64 "}\n",
+                epoch, datapoints_done, cs.lr->step);
+        fclose(f);
+    }
+}
+
+static void finetune_write_current_state() {
+    const auto & cs = g_checkpoint_state;
+    finetune_write_state(cs.epoch, cs.datapoint_offset + cs.ubatches_done / cs.ubatches_per_datapoint);
+}
 
 static void finetune_epoch_callback_with_checkpoint(
         bool                train,
@@ -79,16 +120,43 @@ static void finetune_epoch_callback_with_checkpoint(
     ggml_opt_epoch_callback_progress_bar(train, opt_ctx, dataset, result,
                                          ibatch, ibatch_max, t_start_us);
 
+    auto & cs = g_checkpoint_state;
+    // a window (one datapoint of n_ctx tokens) is complete after every ubatches_per_datapoint ubatches;
+    // stopping is only exact there, as the next ubatches of a started window were already applied
+    const bool window_complete = !train || ibatch % cs.ubatches_per_datapoint == 0;
+    if (train && window_complete && cs.stop_after > 0 && ++cs.windows_done >= cs.stop_after) {
+        g_stop_requested = -1; // --stop-after reached: stop like on a signal
+    }
+    if (g_stop_requested && window_complete) {
+        // stopped in the training pass: resume at the next datapoint; in the evaluation pass: at the next epoch
+        if (train) {
+            cs.ubatches_done = ibatch;
+        }
+        if (llama_adapter_lora_save_to_file(cs.adapter, cs.path.c_str()) == 0) {
+            if (train) {
+                finetune_write_current_state();
+            } else {
+                finetune_write_state(cs.epoch + 1, 0);
+            }
+            if (g_stop_requested > 0) {
+                fprintf(stderr, "\nstopped by signal %d, saved '%s' (continue with --resume)\n", (int) g_stop_requested, cs.path.c_str());
+            } else {
+                fprintf(stderr, "\nstopped after %" PRId64 " windows (--stop-after), saved '%s' (continue with --resume)\n", cs.windows_done, cs.path.c_str());
+            }
+        }
+        _exit(g_stop_requested > 0 ? 128 + g_stop_requested : 0);
+    }
+
     // Only count training batches; eval-pass callbacks don't modify weights.
     if (!train) {
         return;
     }
-    auto & cs = g_checkpoint_state;
+    cs.ubatches_done = ibatch;
     if (cs.every_n <= 0 || !cs.adapter || cs.path.empty()) {
         return;
     }
     cs.batches_seen++;
-    if (cs.batches_seen - cs.last_save_batch < cs.every_n) {
+    if (!window_complete || cs.batches_seen - cs.last_save_batch < cs.every_n) {
         return;
     }
     cs.last_save_batch = cs.batches_seen;
@@ -96,6 +164,7 @@ static void finetune_epoch_callback_with_checkpoint(
         fprintf(stderr, "\n%s: checkpoint flush at batch %" PRId64 " FAILED to '%s'\n",
                 __func__, cs.batches_seen, cs.path.c_str());
     } else {
+        finetune_write_current_state();
         fprintf(stderr, "\n%s: checkpoint at batch %" PRId64 " → '%s'\n",
                 __func__, cs.batches_seen, cs.path.c_str());
     }
@@ -257,6 +326,11 @@ int main(int argc, char ** argv) {
                 __func__);
         params.use_mmap = false;
     }
+    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED) {
+        // flash attention has no backward pass: with it, attention (and everything below it) would get no gradient
+        LOG_INF("%s: force disabling flash attention because it has no backward pass\n", __func__);
+        params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
     if (params.cache_type_k != GGML_TYPE_F32) {
         LOG_INF("%s: force changing k cache type to f32 due to a lack of f16 support for OUT_PROD\n", __func__);
         params.cache_type_k = GGML_TYPE_F32;
@@ -285,23 +359,31 @@ int main(int argc, char ** argv) {
         LOG_INF("%s\n", common_params_get_system_info(params).c_str());
     }
 
-    ggml_opt_dataset_t dataset;
+    std::vector<llama_token> tokens;
+    std::vector<uint8_t>     train; // empty: every token is trained
     const std::string & data_path = params.prompt_file;
     if (data_path.size() >= 6 && data_path.compare(data_path.size() - 6, 6, ".jsonl") == 0) {
-        std::vector<llama_token> tokens;
-        std::vector<uint8_t>     train;
         if (!finetune_load_jsonl(ctx, data_path, params.chat_template, tokens, train)) {
             return 1;
         }
-        if ((int64_t) tokens.size() <= (int64_t) llama_n_ctx(ctx) + 1) {
-            LOG_ERR("%s: %zu tokens of training data, need more than the context size %u\n", __func__, tokens.size(), llama_n_ctx(ctx));
-            return 1;
-        }
-        dataset = common_opt_dataset_init_masked(ctx, tokens, train, llama_n_ctx(ctx) / 2);
     } else {
-        std::vector<llama_token> tokens = common_tokenize(ctx, params.prompt, true);
-        dataset = common_opt_dataset_init(ctx, tokens, llama_n_ctx(ctx) / 2);
+        tokens = common_tokenize(ctx, params.prompt, true);
     }
+    if ((int64_t) tokens.size() <= (int64_t) llama_n_ctx(ctx) + 1) {
+        LOG_ERR("%s: %zu tokens of training data, need more than the context size %u\n", __func__, tokens.size(), llama_n_ctx(ctx));
+        return 1;
+    }
+    const int64_t stride = llama_n_ctx(ctx) / 2;
+    // the dataset starting skip datapoints later (to resume within an epoch)
+    auto make_dataset = [&](int64_t skip) {
+        const std::vector<llama_token> t(tokens.begin() + skip*stride, tokens.end());
+        if (train.empty()) {
+            return common_opt_dataset_init(ctx, t, stride);
+        }
+        const std::vector<uint8_t> m(train.begin() + skip*stride, train.end());
+        return common_opt_dataset_init_masked(ctx, t, m, stride);
+    };
+    ggml_opt_dataset_t dataset = make_dataset(0);
 
     struct lr_opt & lr = params.lr;
     LOG_INF("-optimizer %s -lr0 %.2g -wd %.2g -lr-min %.2g -min-epochs %.2g -epochs %d -period %.2g -val %.2g\n",
@@ -363,15 +445,19 @@ int main(int argc, char ** argv) {
                 g_adapter_out_for_signal += ".lora.gguf";
             }
         }
-        std::signal(SIGTERM, finetune_save_adapter_on_signal);
-        std::signal(SIGINT,  finetune_save_adapter_on_signal);
+        std::signal(SIGTERM, finetune_on_signal);
+        std::signal(SIGINT,  finetune_on_signal);
 
         // C.4: arm periodic mid-training checkpoint, if requested. Saves to
         // the same path as the signal handler / final save so a crashed run
         // can be resumed via --lora <path>.
+        g_checkpoint_state.adapter = lora_adapter;
+        g_checkpoint_state.ctx     = ctx;
+        g_checkpoint_state.lr      = &params.lr;
+        g_checkpoint_state.path    = g_adapter_out_for_signal;
+        g_checkpoint_state.ubatches_per_datapoint = std::max<int64_t>(1, llama_n_ctx(ctx) / llama_n_ubatch(ctx));
+        g_checkpoint_state.stop_after = params.train_stop_after;
         if (params.checkpoint_every_n_batches > 0) {
-            g_checkpoint_state.adapter = lora_adapter;
-            g_checkpoint_state.path    = g_adapter_out_for_signal;
             g_checkpoint_state.every_n = params.checkpoint_every_n_batches;
             LOG_INF("%s: periodic checkpoint enabled — flushing every %d training batches to '%s'\n",
                     __func__, params.checkpoint_every_n_batches, g_adapter_out_for_signal.c_str());
@@ -380,7 +466,8 @@ int main(int argc, char ** argv) {
 
     struct llama_opt_params lopt_params{
         /*n_ctx_train     =*/0,
-        /*param_filter    =*/skip_re_active ? finetune_param_filter_skip_regex : llama_opt_param_filter_all,
+        /*param_filter    =*/lora_adapter ? finetune_param_filter_none :
+                             skip_re_active ? finetune_param_filter_skip_regex : llama_opt_param_filter_all,
         /*param_filter_ud =*/skip_re_active ? (void *) &skip_re : nullptr,
         /*get_opt_pars    =*/common_opt_lr_pars,
         /*get_opt_pars_ud =*/&params.lr,
@@ -389,24 +476,63 @@ int main(int argc, char ** argv) {
     };
     llama_opt_init(ctx, model, lopt_params);
 
+    // --resume: continue from the adapter, optimizer state and position saved at -o (by a checkpoint, a signal or the
+    // end of an epoch)
+    int     start_epoch     = 0;
+    int64_t start_datapoint = 0;
+    if (params.train_resume && lora_adapter) {
+        const std::string & path = g_adapter_out_for_signal;
+        std::ifstream state_file(path + ".state");
+        if (!state_file) {
+            LOG_WRN("%s: --resume: no '%s.state', starting from scratch\n", __func__, path.c_str());
+        } else {
+            const nlohmann::json state = nlohmann::json::parse(state_file);
+            start_epoch     = state.at("epoch").get<int>();
+            start_datapoint = state.at("datapoints_done").get<int64_t>();
+            params.lr.step  = state.value("lr_step", (int64_t) 0);
+            const int32_t n_pairs = llama_adapter_lora_load_weights(lora_adapter, path.c_str());
+            if (n_pairs < 0) {
+                LOG_ERR("%s: --resume: cannot load the adapter '%s' (different targets or rank?)\n", __func__, path.c_str());
+                return 1;
+            }
+            if (llama_opt_load_state(ctx, (path + ".opt").c_str()) != 0) {
+                LOG_ERR("%s: --resume: cannot load the optimizer state '%s.opt' (same optimizer and targets?)\n", __func__, path.c_str());
+                return 1;
+            }
+            LOG_INF("%s: --resume: %d LoRA pairs from '%s', continuing at epoch %d, datapoint %" PRId64 "\n",
+                    __func__, n_pairs, path.c_str(), start_epoch + 1, start_datapoint);
+        }
+    }
+
     const int64_t idata_split = ggml_opt_dataset_ndata(dataset) * (1.0f - params.val_split);
 
     ggml_opt_result_t result_train = ggml_opt_result_init();
     ggml_opt_result_t result_eval  = ggml_opt_result_init();
 
-    // Use the checkpoint-aware callback only when the periodic checkpoint
-    // feature is active; otherwise fall through to the upstream progress
-    // bar with zero overhead. Eval pass keeps the plain progress bar — we
-    // don't want a stray flush triggered from validation batches.
-    ggml_opt_epoch_callback train_cb =
-        (params.checkpoint_every_n_batches > 0 && lora_adapter)
-            ? finetune_epoch_callback_with_checkpoint
-            : ggml_opt_epoch_callback_progress_bar;
+    // The callback shows the progress bar, tracks the position (for --resume), flushes periodic checkpoints and handles
+    // a stop request; it only counts training batches.
+    ggml_opt_epoch_callback train_cb = lora_adapter ? finetune_epoch_callback_with_checkpoint : ggml_opt_epoch_callback_progress_bar;
 
-    for (lr.epoch = 0; lr.epoch < lr.epochs; ++lr.epoch) {
-        llama_opt_epoch(ctx, dataset, result_train, result_eval, idata_split,
-                        train_cb, ggml_opt_epoch_callback_progress_bar);
+    for (lr.epoch = start_epoch; lr.epoch < lr.epochs; ++lr.epoch) {
+        const int64_t skip = lr.epoch == (unsigned) start_epoch ? std::min(start_datapoint, idata_split) : 0;
+        g_checkpoint_state.epoch            = lr.epoch;
+        g_checkpoint_state.datapoint_offset = skip;
+        g_checkpoint_state.ubatches_done    = 0;
+        if (skip > 0) {
+            ggml_opt_dataset_t dataset_rest = make_dataset(skip);
+            llama_opt_epoch(ctx, dataset_rest, result_train, result_eval, idata_split - skip, train_cb, train_cb);
+            ggml_opt_dataset_free(dataset_rest);
+        } else {
+            llama_opt_epoch(ctx, dataset, result_train, result_eval, idata_split, train_cb, train_cb);
+        }
         fprintf(stderr, "\n");
+
+        if (lora_adapter) {
+            // epoch boundary: flush adapter and position, so a later --resume starts at the next epoch
+            if (llama_adapter_lora_save_to_file(lora_adapter, g_adapter_out_for_signal.c_str()) == 0) {
+                finetune_write_state(lr.epoch + 1, 0);
+            }
+        }
 
         ggml_opt_result_reset(result_train);
         ggml_opt_result_reset(result_eval);

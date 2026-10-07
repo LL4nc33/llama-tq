@@ -737,6 +737,13 @@ extern "C" {
             const struct llama_adapter_lora * adapter,
             const char * path_lora);
 
+    // Load the (lora_a, lora_b) values of a file written by llama_adapter_lora_save_to_file into an existing adapter
+    // with the same tensors (e.g. a freshly bootstrapped training adapter, to resume training).
+    // Returns the number of pairs loaded, or -1 on failure (missing file, missing tensor or shape mismatch).
+    LLAMA_API int32_t llama_adapter_lora_load_weights(
+            struct llama_adapter_lora * adapter,
+            const char * path_lora);
+
     // Get the invocation tokens if the current lora is an alora
     LLAMA_API uint64_t            llama_adapter_get_alora_n_invocation_tokens(const struct llama_adapter_lora * adapter);
     LLAMA_API const llama_token * llama_adapter_get_alora_invocation_tokens  (const struct llama_adapter_lora * adapter);
@@ -1650,6 +1657,11 @@ extern "C" {
             int64_t                   idata_split,
             ggml_opt_epoch_callback   callback_train,
             ggml_opt_epoch_callback   callback_eval);
+
+    // optimizer state (step count, AdamW moments) of a running training, to resume it exactly; returns 0 on success.
+    // Loading right after llama_opt_init applies the moments with the first optimizer step.
+    LLAMA_API int32_t llama_opt_save_state(struct llama_context * lctx, const char * path);
+    LLAMA_API int32_t llama_opt_load_state(struct llama_context * lctx, const char * path);
 
 #ifdef __cplusplus
 }

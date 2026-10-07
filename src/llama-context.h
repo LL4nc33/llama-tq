@@ -193,6 +193,9 @@ struct llama_context {
 
     void opt_init(struct llama_model * model, struct llama_opt_params lopt_params);
 
+    bool opt_save_state(const char * path) const;
+    bool opt_load_state(const char * path);
+
     // TODO: more flexible combinations of logical/physical batch size and context size
     void opt_epoch(
             ggml_opt_dataset_t      dataset,

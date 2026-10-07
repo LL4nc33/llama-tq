@@ -659,6 +659,46 @@ const llama_token * llama_adapter_get_alora_invocation_tokens(const llama_adapte
     return adapter->alora_invocation_tokens.data();
 }
 
+int32_t llama_adapter_lora_load_weights(llama_adapter_lora * adapter, const char * path_lora) {
+    if (!adapter || !path_lora) {
+        return -1;
+    }
+    ggml_context * ctx_data = nullptr;
+    gguf_init_params params = {
+        /*.no_alloc =*/ false,
+        /*.ctx      =*/ &ctx_data,
+    };
+    gguf_context * ctx_gguf = gguf_init_from_file(path_lora, params);
+    if (!ctx_gguf) {
+        LLAMA_LOG_ERROR("%s: failed to read '%s'\n", __func__, path_lora);
+        return -1;
+    }
+
+    int32_t n_loaded = 0;
+    bool ok = true;
+    for (auto & kv : adapter->ab_map) {
+        for (const auto & [suffix, dst] : { std::make_pair(std::string(".lora_a"), kv.second.a),
+                                            std::make_pair(std::string(".lora_b"), kv.second.b) }) {
+            const std::string name = kv.first + suffix;
+            ggml_tensor * src = ggml_get_tensor(ctx_data, name.c_str());
+            if (!dst || !src || src->type != dst->type || !ggml_are_same_shape(src, dst)) {
+                LLAMA_LOG_ERROR("%s: '%s' is missing in '%s' or differs in type/shape\n", __func__, name.c_str(), path_lora);
+                ok = false;
+                break;
+            }
+            ggml_backend_tensor_set(dst, src->data, 0, ggml_nbytes(dst));
+        }
+        if (!ok) {
+            break;
+        }
+        ++n_loaded;
+    }
+
+    gguf_free(ctx_gguf);
+    ggml_free(ctx_data);
+    return ok ? n_loaded : -1;
+}
+
 int32_t llama_adapter_lora_save_to_file(const llama_adapter_lora * adapter, const char * path_lora) {
     if (!adapter || !path_lora) {
         return -1;

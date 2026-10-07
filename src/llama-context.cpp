@@ -3518,6 +3518,14 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
     }
 }
 
+bool llama_context::opt_save_state(const char * path) const {
+    return opt_ctx && ggml_opt_save_state(opt_ctx, path);
+}
+
+bool llama_context::opt_load_state(const char * path) {
+    return opt_ctx && ggml_opt_load_state(opt_ctx, path);
+}
+
 void llama_context::opt_epoch_iter(
         ggml_opt_dataset_t               dataset,
         ggml_opt_result_t                result,
@@ -4668,6 +4676,14 @@ void llama_opt_epoch(
         idata_split,
         callback_train,
         callback_eval);
+}
+
+int32_t llama_opt_save_state(struct llama_context * ctx, const char * path) {
+    return ctx->opt_save_state(path) ? 0 : -1;
+}
+
+int32_t llama_opt_load_state(struct llama_context * ctx, const char * path) {
+    return ctx->opt_load_state(path) ? 0 : -1;
 }
 
 llama_context * llama_get_ctx_other(struct llama_context * ctx) {

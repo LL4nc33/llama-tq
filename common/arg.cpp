@@ -4110,6 +4110,23 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) { params.grad_clip = std::stof(value); }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--lr-warmup"}, "N",
+        string_format("raise the learning rate linearly over the first N optimizer steps (default: %u)", params.lr.warmup),
+        [](common_params & params, int value) { params.lr.warmup = value; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
+        {"--stop-after"}, "N",
+        "stop after N training windows (n_ctx tokens each) of this run, saving the adapter and the position for --resume (default: no limit)",
+        [](common_params & params, int value) { params.train_stop_after = value; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
+        {"--resume"},
+        "continue training from the LoRA adapter and position saved at the output path (-o) by a checkpoint, a signal "
+        "or the end of an epoch (with <adapter>.opt for the optimizer state and <adapter>.state for the position); "
+        "continues exactly as if the training had not stopped",
+        [](common_params & params) { params.train_resume = true; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
         {"--checkpoint-every"}, "N",
         string_format("Flush the LoRA adapter to disk every N training batches (0 = only at epoch end / signal; default: %d). "
                       "Useful for long runs that may crash or be killed mid-epoch — recovery loads the last checkpoint via --lora.",

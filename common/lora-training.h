@@ -3,7 +3,7 @@
 // LoRA training adapter bootstrapping for llama-finetune.
 //
 // Instead of loading A and B from a pre-trained .gguf adapter file, this
-// initialises fresh A (gauss / sqrt(rank)) and B (zeros) adapter tensors for
+// initialises fresh A (uniform +-1/sqrt(n_in)) and B (zeros) adapter tensors for
 // every base-model tensor whose name matches a user-supplied regex. The
 // adapter is registered with the model so the existing forward graph builders
 // (`build_lora_mm` / `build_lora_mm_id`) pick it up automatically, and the

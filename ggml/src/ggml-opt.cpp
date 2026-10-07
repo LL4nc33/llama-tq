@@ -4,6 +4,7 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-impl.h"
+#include "gguf.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <cinttypes>
 #include <map>
 #include <random>
+#include <string>
 #include <vector>
 
 struct ggml_opt_dataset {
@@ -72,6 +74,8 @@ struct ggml_opt_context {
 
     enum ggml_opt_optimizer_type optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
     float                        grad_clip = 0.0f;
+
+    std::string state_pending; // optimizer state file to apply once the moments are allocated
 };
 
 struct ggml_opt_result {
@@ -504,6 +508,9 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
                 if (node->flags & GGML_TENSOR_FLAG_PARAM) {
                     opt_ctx->grad_m[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
                     opt_ctx->grad_v[i] = ggml_new_tensor(ctx_of_param(node), GGML_TYPE_F32, GGML_MAX_DIMS, node->ne);
+                    // the names identify the moments in a saved optimizer state (ggml_opt_save_state)
+                    ggml_format_name(opt_ctx->grad_m[i], "%s.m", node->name);
+                    ggml_format_name(opt_ctx->grad_v[i], "%s.v", node->name);
                 } else {
                     opt_ctx->grad_m[i] = nullptr;
                     opt_ctx->grad_v[i] = nullptr;
@@ -604,8 +611,6 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
             if (need_momenta) {
                 m = opt_ctx->grad_m[i];
                 v = opt_ctx->grad_v[i];
-                ggml_format_name(m, "AdamW m for %s", node->name);
-                ggml_format_name(v, "AdamW v for %s", node->name);
             }
             struct ggml_tensor * opt_step;
             switch (optimizer) {
@@ -725,6 +730,107 @@ struct ggml_tensor * ggml_opt_ncorrect(ggml_opt_context_t opt_ctx) {
 
 struct ggml_tensor * ggml_opt_grad_acc(ggml_opt_context_t opt_ctx, struct ggml_tensor * node) {
     return ggml_graph_get_grad_acc(opt_ctx->gb_opt, node);
+}
+
+// the AdamW moments are stored under their names, "<parameter name>.m" and "<parameter name>.v"
+bool ggml_opt_save_state(ggml_opt_context_t opt_ctx, const char * fname) {
+    std::vector<ggml_tensor *> state; // moments in the parameter buffers
+    size_t nbytes = 0;
+    for (size_t i = 0; i < opt_ctx->grad_m.size(); ++i) {
+        if (opt_ctx->grad_m[i]) {
+            state.push_back(opt_ctx->grad_m[i]);
+            state.push_back(opt_ctx->grad_v[i]);
+            nbytes += 2*ggml_nbytes(opt_ctx->grad_m[i]);
+        }
+    }
+
+    const ggml_init_params params = {
+        /*.mem_size   =*/ nbytes + (state.size() + 1)*ggml_tensor_overhead(),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ false,
+    };
+    ggml_context * ctx  = ggml_init(params);
+    gguf_context * gguf = gguf_init_empty();
+    gguf_set_val_i64(gguf, "opt.iter", opt_ctx->iter);
+    gguf_set_val_u32(gguf, "opt.optimizer", opt_ctx->optimizer);
+    for (ggml_tensor * src : state) {
+        ggml_tensor * t = ggml_dup_tensor(ctx, src);
+        ggml_set_name(t, src->name);
+        ggml_backend_tensor_get(src, t->data, 0, ggml_nbytes(t));
+        gguf_add_tensor(gguf, t);
+    }
+    const bool ok = gguf_write_to_file(gguf, fname, false);
+    gguf_free(gguf);
+    ggml_free(ctx);
+    return ok;
+}
+
+// copies the moments of a state file into the allocated moments of the parameters
+static bool ggml_opt_apply_state(ggml_opt_context_t opt_ctx, const char * fname) {
+    ggml_context * ctx = nullptr;
+    const gguf_init_params params = {
+        /*.no_alloc =*/ false,
+        /*.ctx      =*/ &ctx,
+    };
+    gguf_context * gguf = gguf_init_from_file(fname, params);
+    if (!gguf) {
+        GGML_LOG_ERROR("%s: failed to read '%s'\n", __func__, fname);
+        return false;
+    }
+    bool ok = true;
+    int  n  = 0;
+    for (size_t i = 0; ok && i < opt_ctx->grad_m.size(); ++i) {
+        if (!opt_ctx->grad_m[i]) {
+            continue;
+        }
+        for (ggml_tensor * dst : { opt_ctx->grad_m[i], opt_ctx->grad_v[i] }) {
+            const ggml_tensor * src = ggml_get_tensor(ctx, dst->name);
+            if (!src || src->type != GGML_TYPE_F32 || !ggml_are_same_shape(src, dst)) {
+                GGML_LOG_ERROR("%s: '%s' has no matching tensor '%s'\n", __func__, fname, dst->name);
+                ok = false;
+                break;
+            }
+            ggml_backend_tensor_set(dst, src->data, 0, ggml_nbytes(dst));
+            ++n;
+        }
+    }
+    if (ok && n != (int) gguf_get_n_tensors(gguf)) {
+        GGML_LOG_ERROR("%s: '%s' has %d moments, the training %d\n", __func__, fname, (int) gguf_get_n_tensors(gguf), n);
+        ok = false;
+    }
+    gguf_free(gguf);
+    ggml_free(ctx);
+    return ok;
+}
+
+bool ggml_opt_load_state(ggml_opt_context_t opt_ctx, const char * fname) {
+    const gguf_init_params params = {
+        /*.no_alloc =*/ true,
+        /*.ctx      =*/ nullptr,
+    };
+    gguf_context * gguf = gguf_init_from_file(fname, params);
+    if (!gguf) {
+        GGML_LOG_ERROR("%s: failed to read '%s'\n", __func__, fname);
+        return false;
+    }
+    const int64_t key_iter = gguf_find_key(gguf, "opt.iter");
+    const int64_t key_opt  = gguf_find_key(gguf, "opt.optimizer");
+    const bool    ok       = key_iter >= 0 && key_opt >= 0 && gguf_get_val_u32(gguf, key_opt) == (uint32_t) opt_ctx->optimizer;
+    const bool has_moments = gguf_get_n_tensors(gguf) > 0; // SGD has none
+    if (ok) {
+        opt_ctx->iter = gguf_get_val_i64(gguf, key_iter);
+    } else {
+        GGML_LOG_ERROR("%s: '%s' is no optimizer state of a %s training\n", __func__, fname, ggml_opt_optimizer_name(opt_ctx->optimizer));
+    }
+    gguf_free(gguf);
+    if (!ok || !has_moments) {
+        return ok;
+    }
+    if (opt_ctx->grad_m.empty()) {
+        opt_ctx->state_pending = fname; // the moments are allocated with the first optimizer graph
+        return true;
+    }
+    return ggml_opt_apply_state(opt_ctx, fname);
 }
 
 // ====== Optimization Result ======
@@ -926,6 +1032,12 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
 
 void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
     GGML_ASSERT(opt_ctx->eval_ready);
+    if (!opt_ctx->state_pending.empty() && !opt_ctx->grad_m.empty()) {
+        if (!ggml_opt_apply_state(opt_ctx, opt_ctx->state_pending.c_str())) {
+            GGML_ABORT("failed to apply the optimizer state '%s'", opt_ctx->state_pending.c_str());
+        }
+        opt_ctx->state_pending.clear();
+    }
     if (opt_ctx->allocated_graph == opt_ctx->gb_opt) {
         const ggml_opt_optimizer_params & opt_pars = opt_ctx->get_opt_pars(opt_ctx->get_opt_pars_ud);
 

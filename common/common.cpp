@@ -1906,8 +1906,11 @@ ggml_opt_dataset_t common_opt_dataset_init_masked(struct llama_context * ctx, co
 
 ggml_opt_optimizer_params common_opt_lr_pars(void * userdata) {
     ggml_opt_optimizer_params result = ggml_opt_get_default_optimizer_params(nullptr);
-    const lr_opt &            d      = *(lr_opt *) userdata;
-    result.adamw.alpha = result.sgd.alpha = d.get_lr(d.epoch);
+    lr_opt &                  d      = *(lr_opt *) userdata;
+    // called once per optimizer step
+    ++d.step;
+    const float warmup = d.warmup > 0 ? std::min(1.0f, float(d.step) / float(d.warmup)) : 1.0f;
+    result.adamw.alpha = result.sgd.alpha = d.get_lr(d.epoch) * warmup;
     result.sgd.wd = result.adamw.wd = d.wd;
     return result;
 }

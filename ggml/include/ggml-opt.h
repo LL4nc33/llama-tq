@@ -158,6 +158,11 @@ extern "C" {
     // get the gradient accumulator for a node from the forward graph
     GGML_API struct ggml_tensor * ggml_opt_grad_acc(ggml_opt_context_t opt_ctx, struct ggml_tensor * node);
 
+    // optimizer state for resuming a training exactly: the step count and, for AdamW, the moments of every parameter,
+    // stored as GGUF; loading before the optimizer graph is allocated applies the moments at the next optimizer step
+    GGML_API bool ggml_opt_save_state(ggml_opt_context_t opt_ctx, const char * fname);
+    GGML_API bool ggml_opt_load_state(ggml_opt_context_t opt_ctx, const char * fname);
+
     GGML_API enum ggml_opt_optimizer_type ggml_opt_context_optimizer_type(ggml_opt_context_t); //TODO consistent naming scheme
 
     GGML_API const char * ggml_opt_optimizer_name(enum ggml_opt_optimizer_type);

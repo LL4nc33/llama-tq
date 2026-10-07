@@ -494,6 +494,8 @@ struct lr_opt {
     float    scale_epoch  = 0;
     float    wd           = 0;
     unsigned epochs       = 2;
+    unsigned warmup       = 0;  // optimizer steps over which the learning rate rises linearly from 0 (also after --resume)
+    int64_t  step         = 0;  // optimizer steps taken in this run, counted by common_opt_lr_pars
 
     unsigned epoch; // set by optimizer outer (epochs) loop
     // learning rate decay - constant LR per epoch only for now
@@ -727,6 +729,8 @@ struct common_params {
     // would otherwise discard everything since the last epoch boundary.
     int         checkpoint_every_n_batches = 0;
     float       grad_clip                  = 1.0f; // global gradient norm limit (0 = off)
+    bool        train_resume               = false; // continue from the adapter + position saved at the output path
+    int64_t     train_stop_after           = 0;     // stop and save after this many training windows (0 = no limit)
                                   // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
                                   // Default empty = train every F32 parameter (original behavior).
 
