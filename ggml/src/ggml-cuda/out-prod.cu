@@ -43,11 +43,11 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     int64_t                 ldb            = (src1_T ?        nb10 :        nb11) /  sizeof(float);
     GGML_ASSERT(                             (src1_T ?        nb11 :        nb10) == sizeof(float));
     // When the leading dim collapses (e.g. src1 inner dim==1 for a gate/scalar
-    // gradient), nb11 == nb10 == sizeof(float) yields ldb=1. cuBLAS reference
-    // requires ldb >= K when opB=CUBLAS_OP_T (B stored as K rows × N cols) and
-    // ldb >= N when opB=CUBLAS_OP_N. Clamp accordingly to avoid
-    // CUBLAS_STATUS_INVALID_VALUE on collapsed shapes.
-    const int64_t ldb_min = src1_T ? ne11 : ne01;  // ne01 == K
+    // gradient), nb11 == nb10 == sizeof(float) yields ldb=1. cuBLAS requires
+    // ldb >= N (= ne1) when opB=CUBLAS_OP_T (B stored as N rows x K cols) and
+    // ldb >= K (= ne01) when opB=CUBLAS_OP_N (B stored as K rows x N cols).
+    // Raising ldb beyond that would read B with a wrong stride.
+    const int64_t ldb_min = src1_T ? ne01 : ne1;
     if (ldb < ldb_min) {
         ldb = ldb_min;
     }

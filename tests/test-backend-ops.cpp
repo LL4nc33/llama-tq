@@ -8899,6 +8899,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // LoRA gradients: few columns (the rank) and many rows (the tokens), with an f32 or quantized src0
+    for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_Q4_K}) {
+        for (int64_t n : {1, 8, 16}) {
+            for (bool trans_b : {false, true}) {
+                test_cases.emplace_back(new test_out_prod(type_a, GGML_TYPE_F32, 256, n, 512, {1, 1}, {1, 1}, trans_b));
+            }
+        }
+    }
+
     // ne2 sweep to cover the cublasSgemmStridedBatched path (dps2 == 1, ne2 > 1)
     for (int64_t ne2 : {1, 8, 16, 32}) {
         test_cases.emplace_back(new test_out_prod(GGML_TYPE_F32, GGML_TYPE_F32,
