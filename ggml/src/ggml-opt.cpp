@@ -77,6 +77,11 @@ struct ggml_opt_context {
     float                        grad_clip = 0.0f;
 
     std::string state_pending; // optimizer state file to apply once the moments are allocated
+
+    // GGML_OPT_PRINT_GRAD_NORM=1: the global gradient norm of every optimizer step, and the parameters with a
+    // non-finite gradient if it is not finite
+    struct ggml_tensor *                                       grad_norm = nullptr;
+    std::vector<std::pair<std::string, struct ggml_tensor *>> grad_sq;   // per parameter: sum of squared gradient
 };
 
 struct ggml_opt_result {
@@ -594,7 +599,10 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
 
     // gradient clipping by global norm: every gradient is divided by max(1, ||g|| / grad_clip)
     struct ggml_tensor * clip_div = nullptr;
-    if (opt_ctx->grad_clip > 0.0f) {
+    static const bool print_grad_norm = getenv("GGML_OPT_PRINT_GRAD_NORM") != nullptr;
+    opt_ctx->grad_norm = nullptr;
+    opt_ctx->grad_sq.clear();
+    if (opt_ctx->grad_clip > 0.0f || print_grad_norm) {
         struct ggml_tensor * sum_sq = nullptr;
         for (int i = opt_ctx->gf->n_nodes-1; i >= 0; --i) {
             struct ggml_tensor * node = opt_ctx->gb_opt->nodes[i];
@@ -602,13 +610,25 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
             if (grad && (node->flags & GGML_TENSOR_FLAG_PARAM)) {
                 struct ggml_tensor * s = ggml_sum(opt_ctx->ctx_compute, ggml_sqr(opt_ctx->ctx_compute, grad));
                 sum_sq = sum_sq ? ggml_add(opt_ctx->ctx_compute, sum_sq, s) : s;
+                if (print_grad_norm) {
+                    ggml_set_output(s);
+                    ggml_build_forward_expand(opt_ctx->gb_opt, s);
+                    opt_ctx->grad_sq.emplace_back(node->name, s);
+                }
             }
         }
         if (sum_sq) {
             struct ggml_tensor * norm = ggml_sqrt(opt_ctx->ctx_compute, sum_sq);
             ggml_set_name(norm, "grad_norm");
-            clip_div = ggml_clamp(opt_ctx->ctx_compute, ggml_scale(opt_ctx->ctx_compute, norm, 1.0f/opt_ctx->grad_clip), 1.0f, INFINITY);
-            ggml_set_name(clip_div, "grad_clip_div");
+            if (print_grad_norm) {
+                ggml_set_output(norm);
+                ggml_build_forward_expand(opt_ctx->gb_opt, norm);
+                opt_ctx->grad_norm = norm;
+            }
+            if (opt_ctx->grad_clip > 0.0f) {
+                clip_div = ggml_clamp(opt_ctx->ctx_compute, ggml_scale(opt_ctx->ctx_compute, norm, 1.0f/opt_ctx->grad_clip), 1.0f, INFINITY);
+                ggml_set_name(clip_div, "grad_clip_div");
+            }
         }
     }
 
@@ -955,6 +975,8 @@ void ggml_opt_prepare_alloc(
         opt_ctx->pred                 = nullptr;
         opt_ctx->ncorrect             = nullptr;
         opt_ctx->nlabeled             = nullptr;
+        opt_ctx->grad_norm            = nullptr;
+        opt_ctx->grad_sq.clear();
         opt_ctx->opt_step_params      = nullptr; // lives in ctx_cpu which opt_build recreates
     }
 
@@ -1095,6 +1117,20 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
     }
 
     ggml_backend_sched_graph_compute(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
+    if (opt_ctx->allocated_graph == opt_ctx->gb_opt && opt_ctx->grad_norm) {
+        float norm;
+        ggml_backend_tensor_get(opt_ctx->grad_norm, &norm, 0, sizeof(float));
+        GGML_LOG_INFO("%s: step %" PRId64 " gradient norm %g\n", __func__, opt_ctx->iter, (double) norm);
+        if (!std::isfinite(norm)) {
+            for (const auto & [name, s] : opt_ctx->grad_sq) {
+                float sq;
+                ggml_backend_tensor_get(s, &sq, 0, sizeof(float));
+                if (!std::isfinite(sq)) {
+                    GGML_LOG_INFO("%s:   non-finite gradient of %s (sum of squares %g)\n", __func__, name.c_str(), (double) sq);
+                }
+            }
+        }
+    }
     opt_ctx->iter += opt_ctx->allocated_graph == opt_ctx->gb_opt;
     opt_ctx->opt_i = (opt_ctx->opt_i + 1) % opt_ctx->opt_period;
 

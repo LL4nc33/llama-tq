@@ -7544,7 +7544,14 @@ void ggml_build_backward_expand(
             }
             GGML_ASSERT(skip_inplace && "inplace op in backward graph — set GGML_BACKWARD_SKIP_INPLACE=1 to override");
             // Skip: do not allocate gradient accumulator; mark grads_needed=false so downstream
-            // consumers also see this op as having no gradient.
+            // consumers also see this op as having no gradient. Report each kind of skipped op once,
+            // as everything that only reaches the loss through it gets no gradient.
+            static char reported[GGML_OP_COUNT] = {0};
+            if (!reported[node->op]) {
+                reported[node->op] = 1;
+                GGML_LOG_WARN("%s: no gradient through inplace op %s ('%s', view of '%s') and every op of this kind\n",
+                    __func__, ggml_op_name(node->op), node->name, node->view_src->name);
+            }
             continue;
         }
 
