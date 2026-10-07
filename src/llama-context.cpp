@@ -3489,6 +3489,7 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
     opt_params.get_opt_pars    = lopt_params.get_opt_pars;
     opt_params.get_opt_pars_ud = lopt_params.get_opt_pars_ud;
     opt_params.optimizer       = lopt_params.optimizer_type;
+    opt_params.grad_clip       = lopt_params.grad_clip;
     opt_ctx = ggml_opt_init(opt_params);
 
     llama_opt_param_filter param_filter = lopt_params.param_filter;
@@ -3622,11 +3623,21 @@ void llama_context::opt_epoch_iter(
                 struct ggml_tensor * labels = ggml_opt_labels(opt_ctx);
                 GGML_ASSERT(labels->ne[1] == n_ubatch);
                 ggml_set_zero(labels);
-                const float onef = 1.0f;
+                // a negative label excludes the position from the loss (e.g. prompt tokens of a chat example): its
+                // row stays zero, and the trained rows are weighted n_ubatch/n_trained so that the loss is the mean
+                // over the trained positions (the cross-entropy gradient is softmax*sum(labels) - labels)
+                uint32_t n_trained = 0;
+                for (uint32_t pos_ubatch = 0; pos_ubatch < n_ubatch; ++pos_ubatch) {
+                    n_trained += labels_sparse[pos_ctx + pos_batch + pos_ubatch] >= 0;
+                }
+                const float weight = n_trained > 0 ? float(n_ubatch) / float(n_trained) : 0.0f;
                 for (uint32_t pos_ubatch = 0; pos_ubatch < n_ubatch; ++pos_ubatch) {
                     const uint32_t ilabel = pos_ctx + pos_batch + pos_ubatch;
+                    if (labels_sparse[ilabel] < 0) {
+                        continue;
+                    }
                     GGML_ASSERT(labels_sparse[ilabel] < labels->ne[0]);
-                    ggml_backend_tensor_set(labels, &onef, (pos_ubatch*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
+                    ggml_backend_tensor_set(labels, &weight, (pos_ubatch*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
                 }
             }
             ggml_opt_eval(opt_ctx, result);

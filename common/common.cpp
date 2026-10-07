@@ -1884,6 +1884,26 @@ ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std
     return result;
 }
 
+ggml_opt_dataset_t common_opt_dataset_init_masked(struct llama_context * ctx, const std::vector<llama_token> & tokens,
+                                                  const std::vector<uint8_t> & train, int64_t stride) {
+    GGML_ASSERT(train.size() == tokens.size());
+    ggml_opt_dataset_t result = common_opt_dataset_init(ctx, tokens, stride);
+
+    const int64_t ne_datapoint = llama_n_ctx(ctx);
+    const int64_t ndata        = ggml_opt_dataset_ndata(result);
+    llama_token * labels = (llama_token *) ggml_opt_dataset_labels(result)->data;
+
+    for (int64_t idata = 0; idata < ndata; ++idata) {
+        for (int64_t i = 0; i < ne_datapoint; ++i) {
+            if (!train[idata*stride + 1 + i]) {
+                labels[idata*ne_datapoint + i] = -1;
+            }
+        }
+    }
+
+    return result;
+}
+
 ggml_opt_optimizer_params common_opt_lr_pars(void * userdata) {
     ggml_opt_optimizer_params result = ggml_opt_get_default_optimizer_params(nullptr);
     const lr_opt &            d      = *(lr_opt *) userdata;

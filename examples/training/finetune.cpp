@@ -1,4 +1,5 @@
 #include "arg.h"
+#include "chat.h"
 #include "common.h"
 #include "log.h"
 #include "llama.h"
@@ -11,6 +12,9 @@
 #include <cstring>
 #include <ctime>
 #include <csignal>
+#include <fstream>
+
+#include <nlohmann/json.hpp>
 #include <regex>
 #include <string>
 #include <vector>
@@ -97,6 +101,141 @@ static void finetune_epoch_callback_with_checkpoint(
     }
 }
 
+// Training data as JSONL, one example per line:
+//   {"messages": [{"role": "system"|"user"|"assistant", "content": "..."}, ...]}  chat; only the assistant turns are trained
+//   {"text": "..."}                                                               plain text; every token is trained
+// A chat is rendered with the model's chat template. Each assistant turn is the difference between the conversation
+// up to it with the generation prompt and the conversation including it (compared as tokens of whole strings), so the
+// trained tokens are what the model generates at inference, end-of-turn token included. Examples whose turns do not
+// tokenize as prefixes of the whole conversation are skipped.
+static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, const std::string & chat_template,
+        std::vector<llama_token> & tokens, std::vector<uint8_t> & train) {
+    const llama_model * model = llama_get_model(ctx);
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    auto tmpls = common_chat_templates_init(model, chat_template);
+
+    std::ifstream file(path);
+    if (!file) {
+        LOG_ERR("%s: cannot open '%s'\n", __func__, path.c_str());
+        return false;
+    }
+
+    // whole strings are tokenized, as at inference, so the boundaries match what the model sees and generates
+    auto tokenize = [&](const std::string & text) {
+        std::vector<llama_token> t = common_tokenize(ctx, text, false, true);
+        if (llama_vocab_get_add_bos(vocab) && (t.empty() || t[0] != llama_vocab_bos(vocab))) {
+            t.insert(t.begin(), llama_vocab_bos(vocab));
+        }
+        return t;
+    };
+
+    int64_t n_chat = 0, n_text = 0, n_skipped = 0, n_lines = 0;
+    std::string line;
+    while (std::getline(file, line)) {
+        ++n_lines;
+        if (line.find_first_not_of(" \t\r") == std::string::npos) {
+            continue;
+        }
+        nlohmann::ordered_json j;
+        try {
+            j = nlohmann::ordered_json::parse(line);
+        } catch (const std::exception & e) {
+            LOG_ERR("%s: line %" PRId64 ": invalid JSON: %s\n", __func__, n_lines, e.what());
+            return false;
+        }
+        if (j.contains("text")) {
+            const std::vector<llama_token> t = tokenize(j.at("text").get<std::string>());
+            tokens.insert(tokens.end(), t.begin(), t.end());
+            train.insert(train.end(), t.size(), 1);
+            const llama_token eos = llama_vocab_eos(vocab);
+            if (eos != LLAMA_TOKEN_NULL) {
+                tokens.push_back(eos);
+                train.push_back(1);
+            }
+            ++n_text;
+            continue;
+        }
+        if (!j.contains("messages")) {
+            LOG_ERR("%s: line %" PRId64 ": expected \"messages\" or \"text\"\n", __func__, n_lines);
+            return false;
+        }
+
+        std::vector<common_chat_msg> msgs;
+        for (const auto & m : j.at("messages")) {
+            common_chat_msg msg;
+            msg.role    = m.at("role").get<std::string>();
+            msg.content = m.at("content").get<std::string>();
+            msgs.push_back(std::move(msg));
+        }
+        auto render = [&](size_t n, bool add_generation_prompt) {
+            common_chat_templates_inputs inputs;
+            inputs.messages.assign(msgs.begin(), msgs.begin() + n);
+            inputs.add_generation_prompt = add_generation_prompt;
+            inputs.use_jinja             = true;
+            return common_chat_templates_apply(tmpls.get(), inputs).prompt;
+        };
+
+        // each assistant turn j trains the tokens of render(j + 1) beyond the common token prefix with the prompt
+        // render(j, generation prompt); the spans are placed in the tokenization of the whole conversation, which
+        // must agree with every render(j + 1) up to its end
+        const std::vector<llama_token> conv = tokenize(render(msgs.size(), false));
+        std::vector<uint8_t> conv_train(conv.size(), 0);
+        bool ok      = true;
+        bool trained = false;
+        for (size_t i = 0; i < msgs.size() && ok; ++i) {
+            if (msgs[i].role != "assistant") {
+                continue;
+            }
+            const std::vector<llama_token> prompt = tokenize(render(i, true));
+            const std::vector<llama_token> full   = tokenize(render(i + 1, false));
+            size_t start = 0;
+            while (start < prompt.size() && start < full.size() && prompt[start] == full[start]) {
+                ++start;
+            }
+            if (full.size() > conv.size() || !std::equal(full.begin(), full.end(), conv.begin()) || start >= full.size()) {
+                ok = false;
+                break;
+            }
+            std::fill(conv_train.begin() + start, conv_train.begin() + full.size(), 1);
+            trained = true;
+        }
+        if (!ok || !trained) {
+            ++n_skipped;
+            continue;
+        }
+        tokens.insert(tokens.end(), conv.begin(), conv.end());
+        train.insert(train.end(), conv_train.begin(), conv_train.end());
+        ++n_chat;
+    }
+
+    if (getenv("LLAMA_FINETUNE_SHOW_MASK")) {
+        // the start of the data with the trained spans in [[ ]], to check the mask against the chat template
+        std::string shown;
+        bool in_train = false;
+        for (size_t i = 0; i < tokens.size() && i < 400; ++i) {
+            if (train[i] != in_train) {
+                shown += train[i] ? "[[" : "]]";
+                in_train = train[i];
+            }
+            shown += common_token_to_piece(ctx, tokens[i]);
+        }
+        LOG_INF("%s: data start:\n%s%s\n", __func__, shown.c_str(), in_train ? "]]" : "");
+    }
+
+    int64_t n_train = 0;
+    for (uint8_t t : train) {
+        n_train += t;
+    }
+    LOG_INF("%s: %" PRId64 " chats, %" PRId64 " texts, %" PRId64 " skipped (turns not a token prefix of the chat); "
+            "%zu tokens, %" PRId64 " trained (%.1f %%)\n", __func__, n_chat, n_text, n_skipped,
+            tokens.size(), n_train, tokens.empty() ? 0.0 : 100.0*n_train/tokens.size());
+    if (n_skipped > 0 && n_chat == 0) {
+        LOG_ERR("%s: no chat example could be rendered with this chat template\n", __func__);
+        return false;
+    }
+    return !tokens.empty();
+}
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267)  // possible loss of data
 #endif
@@ -146,8 +285,23 @@ int main(int argc, char ** argv) {
         LOG_INF("%s\n", common_params_get_system_info(params).c_str());
     }
 
-    std::vector<llama_token> tokens  = common_tokenize(ctx, params.prompt, true);
-    ggml_opt_dataset_t       dataset = common_opt_dataset_init(ctx, tokens, llama_n_ctx(ctx) / 2);
+    ggml_opt_dataset_t dataset;
+    const std::string & data_path = params.prompt_file;
+    if (data_path.size() >= 6 && data_path.compare(data_path.size() - 6, 6, ".jsonl") == 0) {
+        std::vector<llama_token> tokens;
+        std::vector<uint8_t>     train;
+        if (!finetune_load_jsonl(ctx, data_path, params.chat_template, tokens, train)) {
+            return 1;
+        }
+        if ((int64_t) tokens.size() <= (int64_t) llama_n_ctx(ctx) + 1) {
+            LOG_ERR("%s: %zu tokens of training data, need more than the context size %u\n", __func__, tokens.size(), llama_n_ctx(ctx));
+            return 1;
+        }
+        dataset = common_opt_dataset_init_masked(ctx, tokens, train, llama_n_ctx(ctx) / 2);
+    } else {
+        std::vector<llama_token> tokens = common_tokenize(ctx, params.prompt, true);
+        dataset = common_opt_dataset_init(ctx, tokens, llama_n_ctx(ctx) / 2);
+    }
 
     struct lr_opt & lr = params.lr;
     LOG_INF("-optimizer %s -lr0 %.2g -wd %.2g -lr-min %.2g -min-epochs %.2g -epochs %d -period %.2g -val %.2g\n",
@@ -231,6 +385,7 @@ int main(int argc, char ** argv) {
         /*get_opt_pars    =*/common_opt_lr_pars,
         /*get_opt_pars_ud =*/&params.lr,
         /*optimizer_type  =*/params.optimizer,
+        /*grad_clip       =*/params.grad_clip,
     };
     llama_opt_init(ctx, model, lopt_params);
 

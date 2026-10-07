@@ -726,6 +726,7 @@ struct common_params {
     // every N training batches. Useful for long runs where a mid-batch crash
     // would otherwise discard everything since the last epoch boundary.
     int         checkpoint_every_n_batches = 0;
+    float       grad_clip                  = 1.0f; // global gradient norm limit (0 = off)
                                   // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
                                   // Default empty = train every F32 parameter (original behavior).
 
@@ -1168,6 +1169,9 @@ inline llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
 //
 
 ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token> & tokens, int64_t stride);
+// as above, but positions whose train flag is 0 get the label -1 and are excluded from the loss
+ggml_opt_dataset_t common_opt_dataset_init_masked(struct llama_context * ctx, const std::vector<llama_token> & tokens,
+                                                  const std::vector<uint8_t> & train, int64_t stride);
 
 // "adamw" or "sgd" (case insensitive)
 enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
