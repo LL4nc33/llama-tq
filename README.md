@@ -17,7 +17,7 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for **long conte
   - **Qwen3.8-Flash-Next** (`qwen4exp`) and **Ternary-Bonsai-2-27B** (`PQ2_0`, `PTQ1_0`), see above.
   - Quantized KV on **gpt-oss** (head 64, attention sinks) and **Gemma 4** (head 512) runs through the fast decode kernels.
 - **Speculation stack** — MTP + n-gram hybrid, mmproj+spec coexistence, and DFlash / DFlash2 block-diffusion drafting. Details in [docs/speculative.md](docs/speculative.md).
-- **MoE LoRA on quantised** — fine-tune `ffn_*_exps` on Qwen3.6-A35B-IQ2_XXS in 12 GB. Mechanics in [docs/finetune.md](docs/finetune.md).
+- **LoRA fine-tuning directly on quantized GGUFs** — no conversion back to full precision: attention or MoE experts of k-quant / IQ models, on one or two GPUs, even for models larger than VRAM (experts in RAM). Qwen3-4B Q4_K_M attention LoRA: perplexity 15.3 → 12.7 on held-out text; Qwen3-Coder-30B-A3B expert and attention LoRA and Kolibri-1 (31.5 GiB on 2× 12 GB) train as well. Details in [docs/finetune.md](docs/finetune.md).
 
 ## What it does
 
@@ -30,10 +30,10 @@ Measured on 2× RTX 2060 12 GB (Turing, no P2P).
 | Qwen3.8-27B UD-Q4_K_M, tensor split, `ktq2_1`/`vtq2_1` KV | 256k | 24 t/s short, 15.8 t/s at 118k |
 | Ternary-Bonsai-2-27B, tensor split, `ktq4_1`/`vtq4_1` KV (PPL = f16), 2 slots | 2× 200k | 34 t/s short, 21 t/s at 118k |
 | K2-Horizon-MoVA-36B-A4B Q3_K_M, `ktq4_1`/`vtq4_1` + 4 protected layers | 64k | 47 t/s short, 22 t/s at 40k |
-| Aleph Alpha Kolibri-1 Q3_K_S, experts of 20 layers in RAM, f16 KV | 32k | 38-43 t/s, 38 t/s at 10k |
+| Aleph Alpha Kolibri-1 Q3_K_S, `-fit` placement (experts partly in RAM), `ktq4_1`/`vtq4_1` KV | 128k | ~35 t/s, prompts ~595 t/s |
 | gpt-oss-20b MXFP4, `ktq4_1`/`vtq4_1` KV | 128k | 77 t/s short, 40 t/s at 64k |
 | Gemma-4-26B-A4B UD-IQ2_XXS, `ktq4_1`/`vtq4_1` KV | 256k | 72 t/s short, 54 t/s at 32k |
-| Qwen3.8-27B Q4_K_M + DFlash2 draft (code) | — | 26-28 t/s instead of 15.5 |
+| Qwen3.8-27B Q4_K_M + DFlash2 draft, short code prompt (single measurement) | 32k | 26-28 t/s instead of 15.5 |
 | 35B-class MoE (IQ2), single GPU, vision | 100k | — |
 
 Two GPUs without P2P, tensor split:
@@ -44,8 +44,8 @@ GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m model.gguf -ngl 99 -fa on -sm te
 
 ## Deploy
 
-**Prebuilt:** releases carry Linux x64 binaries, including a CUDA 12.8 build (sm_75 plus PTX
-for newer GPUs). CPU Docker image:
+**Prebuilt:** releases carry Linux x64 and arm64 binaries (CPU, Vulkan) and a CUDA 12.8 build
+(sm_75 plus PTX for newer GPUs). CPU Docker image:
 
 ```bash
 docker pull ghcr.io/ll4nc33/llama-tq:server
@@ -62,7 +62,7 @@ cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
 cmake --build build -j"$(nproc)" --target llama-server
 ```
 
-Vulkan is WIP on the `vulkan` branch. See the [upstream build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) for prerequisites.
+Vulkan builds use the upstream Vulkan backend; the TurboQuant KV types are CUDA-only for now. See the [upstream build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) for prerequisites.
 
 ## Status
 

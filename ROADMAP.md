@@ -9,7 +9,7 @@ doc — this file is the index. Feedback and PRs welcome.
 |------|---------|---------|
 | **TurboQuant KV cache** | KTQ × VTQ; `ktq4_1`/`vtq4_1` matches f16 perplexity at about a third of the memory. Dedicated GQA and tensor-core decode kernels (also for q8_0 / q5_0). CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
 | **Speculation** | MTP (gemma-4 draft) + n-gram hybrid. 2.28× on Qwen3.6-35B-A3B-IQ2_XXS. | [speculative.md](docs/speculative.md) |
-| **Fine-tune on quantised** | LoRA on `ffn_*_exps` of Qwen3.6-A35B-IQ2_XXS, single 12 GB GPU. | [finetune.md](docs/finetune.md) |
+| **Fine-tune on quantised** | LoRA directly on quantized GGUFs: attention or MoE experts, one or two GPUs, models larger than VRAM. | [finetune.md](docs/finetune.md) |
 | **Vulkan backend** | Upstream `ggml-vulkan` + Turing tunings. PP parity reached. | [vulkan.md](docs/vulkan.md) |
 | **Tensor split without P2P** | `-sm tensor` across GPUs without peer access or NCCL: partial sums are reduced through mapped pinned host memory. Optional bf16 transfer via `GGML_CUDA_HOST_ALLREDUCE_BF16=1`. | [tp-tq-design.md](docs/tp-tq-design.md) |
 | **Ternary weights** | `PQ2_0` / `PTQ1_0` group-128 ternary types with Hadamard-rotated activations (Ternary-Bonsai-2-27B). CUDA mat-vec / MMQ kernels. | [models.md](docs/models.md) |
@@ -22,14 +22,15 @@ doc — this file is the index. Feedback and PRs welcome.
 
 - **Eagle3 draft head** — extraction + GGUF plumbing landed; dormant until a trained
   head loads.
-- **Vulkan KTQ/VTQ port** — PP parity reached, TG gap remaining. → [vulkan.md](docs/vulkan.md)
+- **Vulkan KTQ/VTQ port** — researched, not started: worth it for AMD, Intel Arc and Pascal (where Vulkan
+  decodes faster than CUDA), not for Turing. The KV types are CUDA-only today. → [vulkan.md](docs/vulkan.md)
 - **Stage-4 QAT wire-up** — `ggml_quantize_dequantize_fake` op landed; CLI flag +
   LoRA-graph integration queued. → [finetune.md](docs/finetune.md)
 
 ## 🎯 Planned
 
-- Full-capability fine-tuning (attention backward, dense gradient flow through
-  quantised activations, SSM training). → [finetune.md](docs/finetune.md)
+- Fine-tuning: flash-attention backward (attention LoRA needs `-fa off` today), faster CPU path for
+  experts in RAM, SSM training. → [finetune.md](docs/finetune.md)
 
 ## Known issues
 
