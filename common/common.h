@@ -731,6 +731,7 @@ struct common_params {
     float       grad_clip                  = 1.0f; // global gradient norm limit (0 = off)
     bool        train_resume               = false; // continue from the adapter + position saved at the output path
     int64_t     train_stop_after           = 0;     // stop and save after this many training windows (0 = no limit)
+    int32_t     train_early_stop           = 0;     // stop after this many epochs without a better validation loss (0 = off)
                                   // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
                                   // Default empty = train every F32 parameter (original behavior).
 

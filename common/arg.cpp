@@ -4120,6 +4120,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, int value) { params.train_stop_after = value; }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--early-stop"}, "N",
+        "stop after N epochs without a lower validation loss (the best adapter is always kept as <adapter>.best; default: off)",
+        [](common_params & params, int value) { params.train_early_stop = value; }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
         {"--resume"},
         "continue training from the LoRA adapter and position saved at the output path (-o) by a checkpoint, a signal "
         "or the end of an epoch (with <adapter>.opt for the optimizer state and <adapter>.state for the position); "

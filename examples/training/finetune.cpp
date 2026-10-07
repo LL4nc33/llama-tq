@@ -83,6 +83,8 @@ struct finetune_checkpoint_state {
     int64_t              ubatches_per_datapoint = 1;
     int64_t              stop_after           = 0; // stop (and save) after this many training windows in this run
     int64_t              windows_done         = 0;
+    double               best_val_loss        = INFINITY; // lowest validation loss at the end of an epoch
+    int                  epochs_since_best    = 0;
 };
 static finetune_checkpoint_state g_checkpoint_state;
 
@@ -96,8 +98,10 @@ static void finetune_write_state(int epoch, int64_t datapoints_done) {
         fprintf(stderr, "\n%s: failed to write the optimizer state '%s.opt'\n", __func__, cs.path.c_str());
     }
     if (FILE * f = fopen((cs.path + ".state").c_str(), "w")) {
-        fprintf(f, "{\"epoch\": %d, \"datapoints_done\": %" PRId64 ", \"lr_step\": %" PRId64 "}\n",
-                epoch, datapoints_done, cs.lr->step);
+        fprintf(f, "{\"epoch\": %d, \"datapoints_done\": %" PRId64 ", \"lr_step\": %" PRId64
+                ", \"best_val_loss\": %.9g, \"epochs_since_best\": %d}\n",
+                epoch, datapoints_done, cs.lr->step, std::isfinite(cs.best_val_loss) ? cs.best_val_loss : 1e30,
+                cs.epochs_since_best);
         fclose(f);
     }
 }
@@ -504,6 +508,8 @@ int main(int argc, char ** argv) {
             start_epoch     = state.at("epoch").get<int>();
             start_datapoint = state.at("datapoints_done").get<int64_t>();
             params.lr.step  = state.value("lr_step", (int64_t) 0);
+            g_checkpoint_state.best_val_loss     = state.value("best_val_loss", 1e30);
+            g_checkpoint_state.epochs_since_best = state.value("epochs_since_best", 0);
             const int32_t n_pairs = llama_adapter_lora_load_weights(lora_adapter, path.c_str());
             if (n_pairs < 0) {
                 LOG_ERR("%s: --resume: cannot load the adapter '%s' (different targets or rank?)\n", __func__, path.c_str());
@@ -541,7 +547,31 @@ int main(int argc, char ** argv) {
         }
         fprintf(stderr, "\n");
 
+        bool stop_early = false;
         if (lora_adapter) {
+            // the adapter with the lowest validation loss is kept as <adapter>.best; --early-stop N ends the
+            // training after N epochs without a new best
+            int64_t n_val = 0;
+            ggml_opt_result_ndata(result_eval, &n_val);
+            if (n_val > 0) {
+                double val_loss;
+                ggml_opt_result_loss(result_eval, &val_loss, nullptr);
+                auto & cs = g_checkpoint_state;
+                if (val_loss < cs.best_val_loss) {
+                    cs.best_val_loss     = val_loss;
+                    cs.epochs_since_best = 0;
+                    const std::string best = g_adapter_out_for_signal + ".best";
+                    if (llama_adapter_lora_save_to_file(lora_adapter, best.c_str()) == 0) {
+                        LOG_INF("%s: epoch %u: validation loss %.5f, the best so far, saved '%s'\n",
+                                __func__, lr.epoch + 1, val_loss, best.c_str());
+                    }
+                } else {
+                    ++cs.epochs_since_best;
+                    LOG_INF("%s: epoch %u: validation loss %.5f, best %.5f, %d epoch(s) without improvement\n",
+                            __func__, lr.epoch + 1, val_loss, cs.best_val_loss, cs.epochs_since_best);
+                    stop_early = params.train_early_stop > 0 && cs.epochs_since_best >= params.train_early_stop;
+                }
+            }
             // epoch boundary: flush adapter and position, so a later --resume starts at the next epoch
             if (llama_adapter_lora_save_to_file(lora_adapter, g_adapter_out_for_signal.c_str()) == 0) {
                 finetune_write_state(lr.epoch + 1, 0);
@@ -550,6 +580,10 @@ int main(int argc, char ** argv) {
 
         ggml_opt_result_reset(result_train);
         ggml_opt_result_reset(result_eval);
+        if (stop_early) {
+            LOG_INF("%s: early stop: no better validation loss for %d epochs\n", __func__, params.train_early_stop);
+            break;
+        }
     }
     ggml_opt_result_free(result_train);
     ggml_opt_result_free(result_eval);
