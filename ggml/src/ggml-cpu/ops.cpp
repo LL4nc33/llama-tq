@@ -5143,18 +5143,19 @@ static void ggml_compute_forward_get_rows_back_f32(
     memset(dst->data, 0, ggml_nbytes(dst));
 
     const int nc = src0->ne[0];
-    const int nr = ggml_nelements(src1);
+    const int nr = src1->ne[0];
+    const int nb = src1->ne[1]; // batches (1 for the 2D form)
 
     GGML_ASSERT( dst->ne[0] == nc);
     GGML_ASSERT(src0->nb[0] == sizeof(float));
 
-    for (int i = 0; i < nr; ++i) {
-        const int r = ((int32_t *) src1->data)[i];
+    for (int i2 = 0; i2 < nb; ++i2) {
+        for (int i = 0; i < nr; ++i) {
+            const int r = *(const int32_t *) ((const char *) src1->data + i*src1->nb[0] + i2*src1->nb[1]);
 
-        ggml_vec_add_f32(nc,
-                (float *) ((char *)  dst->data + r*dst->nb[1]),
-                (float *) ((char *)  dst->data + r*dst->nb[1]),
-                (float *) ((char *) src0->data + i*src0->nb[1]));
+            float * d = (float *) ((char *) dst->data + r*dst->nb[1] + i2*dst->nb[2]);
+            ggml_vec_add_f32(nc, d, d, (const float *) ((const char *) src0->data + i*src0->nb[1] + i2*src0->nb[2]));
+        }
     }
 }
 

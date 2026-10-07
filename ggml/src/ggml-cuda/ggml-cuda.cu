@@ -5223,7 +5223,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             } break;
         case GGML_OP_GET_ROWS_BACK:
             {
-                return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32 && op->ne[2] == 1 && op->ne[3] == 1;
+                return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32 && op->ne[3] == 1 &&
+                       op->src[1]->ne[1] == op->ne[2] && ggml_is_contiguous(op->src[0]);
             } break;
         case GGML_OP_SET_ROWS:
             {

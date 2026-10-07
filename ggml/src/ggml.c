@@ -4127,12 +4127,14 @@ struct ggml_tensor * ggml_get_rows_back(
         struct ggml_tensor  * a,
         struct ggml_tensor  * b,
         struct ggml_tensor  * c) {
-    GGML_ASSERT(ggml_is_matrix(a) && ggml_is_vector(b) && b->type == GGML_TYPE_I32);
-    GGML_ASSERT(ggml_is_matrix(c) && (a->ne[0] == c->ne[0]));
+    GGML_ASSERT(b->type == GGML_TYPE_I32 && a->ne[0] == c->ne[0]);
+    // 2D: a [nc, nr], b [nr], c [nc, n]; batched (MoE routing weights): a [nc, nr, nb], b [nr, nb], c [nc, n, nb]
+    GGML_ASSERT((ggml_is_matrix(a) && ggml_is_vector(b) && ggml_is_matrix(c)) ||
+                (a->ne[3] == 1 && b->ne[2] == 1 && b->ne[3] == 1 && c->ne[3] == 1 &&
+                 a->ne[1] == b->ne[0] && a->ne[2] == b->ne[1] && c->ne[2] == a->ne[2]));
 
     // TODO: implement non F32 return
-    //struct ggml_tensor * result = ggml_new_tensor_2d(ctx, a->type, a->ne[0], b->ne[0]);
-    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, c->ne[0], c->ne[1]);
+    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, c->ne[0], c->ne[1], c->ne[2]);
 
     result->op     = GGML_OP_GET_ROWS_BACK;
     result->src[0] = a;
@@ -7109,13 +7111,11 @@ static void ggml_compute_backward(
         } break;
         case GGML_OP_GET_ROWS: {
             if (src0_needs_grads) {
-                // ggml_get_rows_back asserts grad is a 2D matrix and src1 (indices) is a
-                // 1D vector. MoE expert-routing uses 3D get_rows with 2D indices for which
-                // there is no backward kernel. Skip with a one-time warning rather than
-                // aborting so LoRA-only finetune still works (the un-back-prop'd path is
-                // upstream of the expert routing — gradient through it would only matter
-                // if we trained router gates, which we explicitly don't).
-                if (ggml_is_matrix(grad) && ggml_is_vector(src1)) {
+                // 2D get_rows, or the batched form of the MoE routing weights (3D grad, one index row per
+                // token); the gradient reaches the router logits and through them the layer input
+                const bool batched = grad->ne[3] == 1 && src0->ne[3] == 1 && src1->ne[2] == 1 && src1->ne[3] == 1 &&
+                                     grad->ne[2] == src1->ne[1] && src0->ne[2] == src1->ne[1];
+                if ((ggml_is_matrix(grad) && ggml_is_vector(src1)) || batched) {
                     ggml_add_or_set(ctx, cgraph, isrc0, ggml_get_rows_back(ctx, grad, src1, src0));
                 } else {
                     static int warned_gr = 0;
