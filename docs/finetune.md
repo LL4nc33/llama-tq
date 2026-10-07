@@ -239,6 +239,26 @@ learning rate.
 - `test-opt` passes again (118 AdamW, 46 SGD cases); the gradient-graph headroom for llama's
   dynamic graphs had broken the static-graph API (`ggml_opt_fit`).
 
+## Results on a real task (2026-10-07/08)
+
+Extracting an appointment from a German message as JSON with a fixed schema: 700 chat examples for
+training, 100 held out, loss on the assistant turns only, greedy decoding through `llama-server`.
+
+| Model | Setup | Time | Exact match before → after | Validation loss / accuracy |
+|---|---|---|---|---|
+| Qwen3-4B-Instruct-2507 Q4_K_M | LoRA q/k/v/o r16, AdamW 2e-4, 2 epochs | 28 min | 0 % → **100 %** | 1.27 / 88.9 % → 0.131 / 98.0 % |
+| same, merged with `llama-export-lora` | | | **100 %** | perplexity equal to `--lora` |
+| Qwen3.5-0.8B Q8_0 (Gated DeltaNet hybrid) | LoRA attention + GDN projections r16, 1 epoch | 10 min | | 0.042 / 99.1 % |
+| Gemma-4-12B Q4_K_M | LoRA q/k/v/o r16, AdamW 5e-5, 1 epoch, rendered with thinking on, served with it off | 29 min | 0 % → 73 % | 0.109 / 97.0 % |
+
+Train with the `--reasoning` setting you serve with: the chat template renders the prompt differently
+(Gemma 4 adds `<|think|>` to the system turn), and an adapter trained on one form only partly transfers
+to the other.
+
+Long context (Qwen3-4B, two GPUs): `-c 4096 -ub 512` 18.6 GB, `-c 8192 -ub 256` 19.2 GB,
+`-c 16384 -ub 128` 23.0 GB. The memory is dominated by the attention probabilities every layer keeps for
+the backward pass; lower `-ub` for longer contexts.
+
 ## Trade-offs
 
 ### LoRA path
