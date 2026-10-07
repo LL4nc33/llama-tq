@@ -2947,6 +2947,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_GATED_DELTA_NET:
             ggml_cuda_op_gated_delta_net(ctx, dst);
             break;
+        case GGML_OP_GATED_DELTA_NET_BACK:
+            ggml_cuda_op_gated_delta_net_back(ctx, dst);
+            break;
         case GGML_OP_DSV4_HC_PRE:
             ggml_cuda_op_dsv4_hc_pre(ctx, dst);
             break;
@@ -5435,6 +5438,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:
             return op->src[0]->type == GGML_TYPE_F32;
+        case GGML_OP_GATED_DELTA_NET_BACK:
+            return op->src[2]->ne[0] == 16 || op->src[2]->ne[0] == 32 || op->src[2]->ne[0] == 64 || op->src[2]->ne[0] == 128;
         case GGML_OP_GATED_DELTA_NET:
             //TODO: enable once MUSA compiler is solved https://github.com/ggml-org/llama.cpp/pull/19504#issuecomment-4018634327
 #ifdef GGML_USE_MUSA
