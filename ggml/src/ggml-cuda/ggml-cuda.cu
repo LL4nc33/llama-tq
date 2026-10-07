@@ -5341,7 +5341,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_L2_NORM:
             return true;
         case GGML_OP_RMS_NORM_BACK:
-            return ggml_is_contiguous(op->src[0]);
+            // the kernel reads both the gradient and the forward input as contiguous rows
+            return ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op->src[1]);
             break;
         case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
