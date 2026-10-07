@@ -7301,6 +7301,13 @@ static void ggml_compute_backward(
                         ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, dsig));
                     }
                 } break;
+                case GGML_UNARY_OP_TANH: {
+                    // d tanh(x) = 1 - tanh(x)^2 (e.g. the logit soft-capping of Gemma)
+                    if (src0_needs_grads) {
+                        struct ggml_tensor * one_m_t2 = ggml_scale_bias(ctx, ggml_sqr(ctx, tensor), -1.0f, 1.0f);
+                        ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, grad, one_m_t2));
+                    }
+                } break;
                 default: {
                     fprintf(stderr, "%s: unsupported unary op for backward pass: %s\n",
                         __func__, ggml_unary_op_name(ggml_get_unary_op(tensor)));
