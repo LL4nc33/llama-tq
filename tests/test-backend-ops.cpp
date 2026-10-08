@@ -3812,6 +3812,12 @@ struct test_ssm_conv_grad : public test_case {
         ggml_set_name(out, "out");
         return out;
     }
+
+    // the kernel gradient sums over all tokens and channels of an f32 loss, so the numerical gradient is only
+    // good to a few 1e-4 for the longer sequences
+    double max_maa_err() override {
+        return 2e-3;
+    }
 };
 
 // GGML_OP_SSM_CONV + GGML_OP_ADD (channel-wise bias, optional) + GGML_OP_UNARY(SILU) (fused operation)
