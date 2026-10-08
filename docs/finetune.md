@@ -250,6 +250,7 @@ training, 100 held out, loss on the assistant turns only, greedy decoding throug
 | same, merged with `llama-export-lora` | | | **100 %** | perplexity equal to `--lora` |
 | Qwen3.5-0.8B Q8_0 (Gated DeltaNet hybrid) | LoRA attention + GDN projections r16, 1 epoch | 10 min | | 0.042 / 99.1 % |
 | Gemma-4-12B Q4_K_M | LoRA q/k/v/o r16, AdamW 5e-5, 1 epoch, rendered with thinking on, served with it off | 29 min | 0 % → 73 % | 0.109 / 97.0 % |
+| Gemma-4-12B Q4_K_M | same, trained and served with `--reasoning off` | 28 min | 0 % → **94 %** | 0.080 / 97.8 % |
 
 Train with the `--reasoning` setting you serve with: the chat template renders the prompt differently
 (Gemma 4 adds `<|think|>` to the system turn), and an adapter trained on one form only partly transfers
