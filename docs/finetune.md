@@ -76,7 +76,7 @@ adds or fixes:
   earlier ubatches of the same window are constants: within a window the gradient is truncated at the
   ubatch boundary (with `-ub` = `-c` it is complete).
 - **Gated DeltaNet** (Qwen3.5/3.6/3.8 hybrids and similar): new op `GATED_DELTA_NET_BACK` on CPU and CUDA;
-  the recurrent states are recomputed per 32-token segment from checkpoints. Also `SSM_CONV` and the
+  the recurrent states are recomputed per segment of ~sqrt(n_tokens) tokens from checkpoints. Also `SSM_CONV` and the
   `CONCAT` of the conv state. Raw gate folding is turned off for training.
 - **Activations and other ops:** `TANH` (logit soft-capping), `GEGLU`, `REGLU`, `GEGLU_QUICK`, `SWIGLU_OAI`
   (gpt-oss), `ADD_ID` (expert biases), `RMS_NORM` on strided views, and the cross-entropy loss with masked
@@ -101,10 +101,11 @@ training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 
 | same, trained with thinking on, served with it off | | 29 min | 0 % → 73 % | 0.109 / 97.0 % |
 | Qwen3.6-35B-A3B IQ2_XXS (MoE, Gated DeltaNet) | routed experts only, rank 2, AdamW 2e-4, 1 epoch, `--reasoning off` | 82 min | 0 % → **89 %** | 0.217 / 95.8 % |
 | Qwen3.5-0.8B Q8_0 (Gated DeltaNet) | attention + GDN projections, rank 16, 1 epoch | 10 min | | 0.042 / 99.1 % |
+| Ministral-3-3B Q4_K_M | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 10 min | 0 % → **100 %** | 0.078 |
+| gpt-oss-20b MXFP4 | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 26 min | 0 % → **100 %** | 0.062 |
 
-Short runs (60 windows, attention LoRA) also converge on Ministral-3B, gpt-oss-20b (MXFP4),
-Gemma-4-26B-A4B, Qwen3.8-27B and Ternary-Bonsai-2-27B (PTQ1_0). Gemma 4 needs a lower learning rate
-(1e-4 diverged, 5e-5 trains).
+Short runs (60 windows, attention LoRA) also converge on Gemma-4-26B-A4B, Qwen3.8-27B and
+Ternary-Bonsai-2-27B (PTQ1_0). Gemma 4 needs a lower learning rate (1e-4 diverged, 5e-5 trains).
 
 **Long context** (Qwen3-4B, two GPUs, peak memory): `-c 4096 -ub 512` 18.6 GB, `-c 8192 -ub 256`
 19.2 GB, `-c 16384 -ub 128` 23.0 GB. Without a flash-attention backward every layer keeps its attention
