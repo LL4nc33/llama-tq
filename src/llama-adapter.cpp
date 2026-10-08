@@ -674,6 +674,19 @@ int32_t llama_adapter_lora_load_weights(llama_adapter_lora * adapter, const char
         return -1;
     }
 
+    // the scale of the trained weights depends on alpha: resuming with another alpha would change it silently
+    {
+        LLM_KV llm_kv = LLM_KV(adapter->model->arch);
+        const int64_t key = gguf_find_key(ctx_gguf, llm_kv(LLM_KV_ADAPTER_LORA_ALPHA).c_str());
+        if (key >= 0 && gguf_get_val_f32(ctx_gguf, key) != adapter->alpha) {
+            LLAMA_LOG_ERROR("%s: '%s' was trained with alpha %.2f, the adapter has alpha %.2f\n", __func__, path_lora,
+                    gguf_get_val_f32(ctx_gguf, key), adapter->alpha);
+            gguf_free(ctx_gguf);
+            ggml_free(ctx_data);
+            return -1;
+        }
+    }
+
     int32_t n_loaded = 0;
     bool ok = true;
     for (auto & kv : adapter->ab_map) {
@@ -774,7 +787,10 @@ int32_t llama_adapter_lora_save_to_file(const llama_adapter_lora * adapter, cons
         gguf_add_tensor(ctx_gguf, b_host);
     }
 
-    const bool ok = gguf_write_to_file(ctx_gguf, path_lora, /*only_meta=*/false);
+    // write to a temporary file and rename it, so that an interrupted save never leaves a truncated adapter
+    const std::string path_tmp = std::string(path_lora) + ".tmp";
+    const bool ok = gguf_write_to_file(ctx_gguf, path_tmp.c_str(), /*only_meta=*/false) &&
+                    std::rename(path_tmp.c_str(), path_lora) == 0;
     gguf_free(ctx_gguf);
     ggml_free(ctx_host);
 

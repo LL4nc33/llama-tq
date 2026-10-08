@@ -7485,10 +7485,11 @@ static void ggml_compute_backward(
                     const float limit = ggml_get_op_params_f32(tensor, 3);
                     struct ggml_tensor * a = ggml_is_contiguous(src0) ? src0 : ggml_cont(ctx, src0);
                     struct ggml_tensor * b = ggml_is_contiguous(src1) ? src1 : ggml_cont(ctx, src1);
-                    struct ggml_tensor * x = ggml_clamp(ctx, a, -INFINITY, limit);
+                    // ggml_clamp runs inplace, so clamp copies and keep the forward inputs intact
+                    struct ggml_tensor * x = ggml_clamp(ctx, ggml_cont(ctx, a), -INFINITY, limit);
                     struct ggml_tensor * s = ggml_sigmoid(ctx, ggml_scale(ctx, x, alpha));
                     if (src0_needs_grads) {
-                        struct ggml_tensor * y1     = ggml_scale_bias(ctx, ggml_clamp(ctx, b, -limit, limit), 1.0f, 1.0f);
+                        struct ggml_tensor * y1     = ggml_scale_bias(ctx, ggml_clamp(ctx, ggml_cont(ctx, b), -limit, limit), 1.0f, 1.0f);
                         struct ggml_tensor * gprime = ggml_add(ctx, s, ggml_scale(ctx,
                             ggml_mul(ctx, x, ggml_mul(ctx, s, ggml_scale_bias(ctx, s, -1.0f, 1.0f))), alpha));
                         struct ggml_tensor * mask_a = ggml_step(ctx, ggml_scale_bias(ctx, a, -1.0f, limit)); // a < limit

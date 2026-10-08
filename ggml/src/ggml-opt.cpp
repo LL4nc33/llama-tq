@@ -806,7 +806,9 @@ bool ggml_opt_save_state(ggml_opt_context_t opt_ctx, const char * fname) {
         ggml_backend_tensor_get(src, t->data, 0, ggml_nbytes(t));
         gguf_add_tensor(gguf, t);
     }
-    const bool ok = gguf_write_to_file(gguf, fname, false);
+    // temporary file + rename: an interrupted save keeps the previous state intact
+    const std::string fname_tmp = std::string(fname) + ".tmp";
+    const bool ok = gguf_write_to_file(gguf, fname_tmp.c_str(), false) && std::rename(fname_tmp.c_str(), fname) == 0;
     gguf_free(gguf);
     ggml_free(ctx);
     return ok;

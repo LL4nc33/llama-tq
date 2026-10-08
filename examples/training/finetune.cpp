@@ -93,16 +93,24 @@ static void finetune_write_state(int epoch, int64_t datapoints_done) {
     if (cs.path.empty()) {
         return;
     }
-    // optimizer state (AdamW moments) as <adapter>.opt, position and learning-rate step as <adapter>.state
+    // optimizer state (AdamW moments) as <adapter>.opt, position and learning-rate step as <adapter>.state; the
+    // position is written last and only after the adapter and the optimizer state were saved, each file through a
+    // temporary file, so an interrupted save leaves the previous consistent set
     if (llama_opt_save_state(cs.ctx, (cs.path + ".opt").c_str()) != 0) {
-        fprintf(stderr, "\n%s: failed to write the optimizer state '%s.opt'\n", __func__, cs.path.c_str());
+        fprintf(stderr, "\n%s: failed to write the optimizer state '%s.opt', position not updated\n", __func__, cs.path.c_str());
+        return;
     }
-    if (FILE * f = fopen((cs.path + ".state").c_str(), "w")) {
+    const std::string state_tmp = cs.path + ".state.tmp";
+    if (FILE * f = fopen(state_tmp.c_str(), "w")) {
         fprintf(f, "{\"epoch\": %d, \"datapoints_done\": %" PRId64 ", \"lr_step\": %" PRId64
                 ", \"best_val_loss\": %.9g, \"epochs_since_best\": %d}\n",
                 epoch, datapoints_done, cs.lr->step, std::isfinite(cs.best_val_loss) ? cs.best_val_loss : 1e30,
                 cs.epochs_since_best);
+        const bool ok = fflush(f) == 0;
         fclose(f);
+        if (!ok || std::rename(state_tmp.c_str(), (cs.path + ".state").c_str()) != 0) {
+            fprintf(stderr, "\n%s: failed to write '%s.state'\n", __func__, cs.path.c_str());
+        }
     }
 }
 
@@ -218,80 +226,99 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
             LOG_ERR("%s: line %" PRId64 ": invalid JSON: %s\n", __func__, n_lines, e.what());
             return false;
         }
-        if (j.contains("text")) {
-            const std::vector<llama_token> t = tokenize(j.at("text").get<std::string>());
-            tokens.insert(tokens.end(), t.begin(), t.end());
-            train.insert(train.end(), t.size(), 1);
-            const llama_token eos = llama_vocab_eos(vocab);
-            if (eos != LLAMA_TOKEN_NULL) {
-                tokens.push_back(eos);
-                train.push_back(1);
-            }
-            ++n_text;
-            continue;
-        }
-        if (!j.contains("messages")) {
-            LOG_ERR("%s: line %" PRId64 ": expected \"messages\" or \"text\"\n", __func__, n_lines);
-            return false;
-        }
-
-        std::vector<common_chat_msg> msgs;
-        for (const auto & m : j.at("messages")) {
-            common_chat_msg msg;
-            msg.role    = m.at("role").get<std::string>();
-            msg.content = m.at("content").get<std::string>();
-            msgs.push_back(std::move(msg));
-        }
-        auto render = [&](size_t n, bool add_generation_prompt) {
-            common_chat_templates_inputs inputs;
-            inputs.messages.assign(msgs.begin(), msgs.begin() + n);
-            inputs.add_generation_prompt = add_generation_prompt;
-            inputs.use_jinja             = true;
-            // render as the server does with the same --reasoning, so the prompts match at inference
-            inputs.enable_thinking       = params.enable_reasoning != 0;
-            inputs.chat_template_kwargs  = params.default_template_kwargs;
-            return common_chat_templates_apply(tmpls.get(), inputs).prompt;
-        };
-
-        // each assistant turn i is placed in the tokenization of the whole conversation: it starts where the prompt
-        // render(i, generation prompt) stops agreeing with it and ends at its first end-of-generation token, or else
-        // where render(i + 1) ends, if that is a prefix of the conversation
-        const std::vector<llama_token> conv = tokenize(render(msgs.size(), false));
-        std::vector<uint8_t> conv_train(conv.size(), 0);
-        bool ok      = true;
-        bool trained = false;
-        for (size_t i = 0; i < msgs.size() && ok; ++i) {
-            if (msgs[i].role != "assistant") {
+        // a line the template or the loader cannot handle is skipped, not fatal
+        try {
+            if (j.contains("text")) {
+                const std::vector<llama_token> t = tokenize(j.at("text").get<std::string>());
+                tokens.insert(tokens.end(), t.begin(), t.end());
+                train.insert(train.end(), t.size(), 1);
+                const llama_token eos = llama_vocab_eos(vocab);
+                if (eos != LLAMA_TOKEN_NULL) {
+                    tokens.push_back(eos);
+                    train.push_back(1);
+                }
+                ++n_text;
                 continue;
             }
-            const std::vector<llama_token> prompt = tokenize(render(i, true));
-            const std::vector<llama_token> full   = tokenize(render(i + 1, false));
-            size_t start = 0;
-            while (start < prompt.size() && start < conv.size() && prompt[start] == conv[start]) {
-                ++start;
+            if (!j.contains("messages")) {
+                LOG_ERR("%s: line %" PRId64 ": expected \"messages\" or \"text\"\n", __func__, n_lines);
+                return false;
             }
-            // what follows the end-of-generation token (e.g. a newline) is never generated, so it is not trained
-            size_t end = full.size() <= conv.size() && std::equal(full.begin(), full.end(), conv.begin()) ? full.size() : 0;
-            for (size_t k = start; k < conv.size() && (end == 0 || k < end); ++k) {
-                if (llama_vocab_is_eog(vocab, conv[k])) {
-                    end = k + 1;
+
+            std::vector<common_chat_msg> msgs;
+            for (const auto & m : j.at("messages")) {
+                common_chat_msg msg;
+                msg.role    = m.at("role").get<std::string>();
+                // content as a string, null (e.g. a turn with only tool calls) or a list of parts {"type": "text", "text": ...}
+                const auto & c = m.at("content");
+                if (c.is_string()) {
+                    msg.content = c.get<std::string>();
+                } else if (c.is_array()) {
+                    for (const auto & part : c) {
+                        if (part.value("type", std::string("text")) == "text") {
+                            msg.content += part.at("text").get<std::string>();
+                        }
+                    }
+                } else if (!c.is_null()) {
+                    throw std::runtime_error("\"content\" is neither a string, a list of parts nor null");
+                }
+                msgs.push_back(std::move(msg));
+            }
+            auto render = [&](size_t n, bool add_generation_prompt) {
+                common_chat_templates_inputs inputs;
+                inputs.messages.assign(msgs.begin(), msgs.begin() + n);
+                inputs.add_generation_prompt = add_generation_prompt;
+                inputs.use_jinja             = true;
+                // render as the server does with the same --reasoning, so the prompts match at inference
+                inputs.enable_thinking       = params.enable_reasoning != 0;
+                inputs.chat_template_kwargs  = params.default_template_kwargs;
+                return common_chat_templates_apply(tmpls.get(), inputs).prompt;
+            };
+
+            // each assistant turn i is placed in the tokenization of the whole conversation: it starts where the prompt
+            // render(i, generation prompt) stops agreeing with it and ends at its first end-of-generation token, or else
+            // where render(i + 1) ends, if that is a prefix of the conversation
+            const std::vector<llama_token> conv = tokenize(render(msgs.size(), false));
+            std::vector<uint8_t> conv_train(conv.size(), 0);
+            bool ok      = true;
+            bool trained = false;
+            for (size_t i = 0; i < msgs.size() && ok; ++i) {
+                if (msgs[i].role != "assistant") {
+                    continue;
+                }
+                const std::vector<llama_token> prompt = tokenize(render(i, true));
+                const std::vector<llama_token> full   = tokenize(render(i + 1, false));
+                size_t start = 0;
+                while (start < prompt.size() && start < conv.size() && prompt[start] == conv[start]) {
+                    ++start;
+                }
+                // what follows the end-of-generation token (e.g. a newline) is never generated, so it is not trained
+                size_t end = full.size() <= conv.size() && std::equal(full.begin(), full.end(), conv.begin()) ? full.size() : 0;
+                for (size_t k = start; k < conv.size() && (end == 0 || k < end); ++k) {
+                    if (llama_vocab_is_eog(vocab, conv[k])) {
+                        end = k + 1;
+                        break;
+                    }
+                }
+                if (end <= start) {
+                    ok = false;
                     break;
                 }
+                std::fill(conv_train.begin() + start, conv_train.begin() + end, 1);
+                trained = true;
             }
-            if (end <= start) {
-                ok = false;
-                break;
+            if (!ok || !trained) {
+                ++n_skipped;
+                continue;
             }
-            std::fill(conv_train.begin() + start, conv_train.begin() + end, 1);
-            trained = true;
-        }
-        if (!ok || !trained) {
+            tokens.insert(tokens.end(), conv.begin(), conv.end());
+            train.insert(train.end(), conv_train.begin(), conv_train.end());
+            ++n_chat;
+        } catch (const std::exception & e) {
+            LOG_WRN("%s: line %" PRId64 ": skipped: %s\n", __func__, n_lines,
+                    e.what()[0] ? e.what() : "the chat template cannot render this conversation");
             ++n_skipped;
-            continue;
         }
-        tokens.insert(tokens.end(), conv.begin(), conv.end());
-        train.insert(train.end(), conv_train.begin(), conv_train.end());
-        ++n_chat;
     }
 
     if (getenv("LLAMA_FINETUNE_SHOW_MASK")) {
@@ -312,7 +339,7 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
     for (uint8_t t : train) {
         n_train += t;
     }
-    LOG_INF("%s: %" PRId64 " chats, %" PRId64 " texts, %" PRId64 " skipped (assistant turns not found in the chat); "
+    LOG_INF("%s: %" PRId64 " chats, %" PRId64 " texts, %" PRId64 " skipped (no assistant turn found, or not renderable); "
             "%zu tokens, %" PRId64 " trained (%.1f %%)\n", __func__, n_chat, n_text, n_skipped,
             tokens.size(), n_train, tokens.empty() ? 0.0 : 100.0*n_train/tokens.size());
     if (n_skipped > 0 && n_chat == 0) {
@@ -508,15 +535,20 @@ int main(int argc, char ** argv) {
         if (!state_file) {
             LOG_WRN("%s: --resume: no '%s.state', starting from scratch\n", __func__, path.c_str());
         } else {
-            const nlohmann::json state = nlohmann::json::parse(state_file);
-            start_epoch     = state.at("epoch").get<int>();
-            start_datapoint = state.at("datapoints_done").get<int64_t>();
-            params.lr.step  = state.value("lr_step", (int64_t) 0);
-            g_checkpoint_state.best_val_loss     = state.value("best_val_loss", 1e30);
-            g_checkpoint_state.epochs_since_best = state.value("epochs_since_best", 0);
+            try {
+                const nlohmann::json state = nlohmann::json::parse(state_file);
+                start_epoch     = state.at("epoch").get<int>();
+                start_datapoint = state.at("datapoints_done").get<int64_t>();
+                params.lr.step  = state.value("lr_step", (int64_t) 0);
+                g_checkpoint_state.best_val_loss     = state.value("best_val_loss", 1e30);
+                g_checkpoint_state.epochs_since_best = state.value("epochs_since_best", 0);
+            } catch (const std::exception & e) {
+                LOG_ERR("%s: --resume: cannot read '%s.state': %s\n", __func__, path.c_str(), e.what());
+                return 1;
+            }
             const int32_t n_pairs = llama_adapter_lora_load_weights(lora_adapter, path.c_str());
             if (n_pairs < 0) {
-                LOG_ERR("%s: --resume: cannot load the adapter '%s' (different targets or rank?)\n", __func__, path.c_str());
+                LOG_ERR("%s: --resume: cannot load the adapter '%s' (different targets, rank or alpha?)\n", __func__, path.c_str());
                 return 1;
             }
             if (llama_opt_load_state(ctx, (path + ".opt").c_str()) != 0) {
