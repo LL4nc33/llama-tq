@@ -4642,7 +4642,7 @@ struct ggml_tensor * ggml_clamp(
         struct ggml_tensor  * a,
         float                 min,
         float                 max) {
-    // TODO: when implement backward, fix this:
+    // in place; the backward pass derives its mask from the output
     struct ggml_tensor * result = ggml_view_tensor(ctx, a);
 
     float params[] = { min, max };
@@ -7048,6 +7048,22 @@ static void ggml_compute_backward(
                 ggml_add_or_set(ctx, cgraph, isrc0, ggml_scale_impl(ctx, grad, s, 0.0, false));
             }
         } break;
+        case GGML_OP_CLAMP: {
+            // clamp works in place, so the mask is taken from the output: the gradient passes where
+            // min < y < max (y == min exactly when x <= min); an infinite bound clamps nothing
+            if (src0_needs_grads) {
+                const float min = ggml_get_op_params_f32(tensor, 0);
+                const float max = ggml_get_op_params_f32(tensor, 1);
+                struct ggml_tensor * tmp = grad;
+                if (isfinite(min)) {
+                    tmp = ggml_mul(ctx, tmp, ggml_step(ctx, ggml_scale_bias(ctx, tensor,  1.0f, -min)));
+                }
+                if (isfinite(max)) {
+                    tmp = ggml_mul(ctx, tmp, ggml_step(ctx, ggml_scale_bias(ctx, tensor, -1.0f,  max)));
+                }
+                ggml_add_or_set(ctx, cgraph, isrc0, tmp);
+            }
+        } break;
         case GGML_OP_SET: {
             const size_t nb1    = ((const int32_t *) tensor->op_params)[0];
             const size_t nb2    = ((const int32_t *) tensor->op_params)[1];
@@ -7737,8 +7753,10 @@ void ggml_build_backward_expand(
         // gracefully by *not* propagating gradients through such ops (they typically belong
         // to the recurrent state path of Mamba/SSM, whose backward is not implemented in ggml).
         // Without the env var we keep the original strict assertion.
+        // CLAMP is a view of its input, but its backward only reads the output
         if (node->view_src && node->op != GGML_OP_CPY && node->op != GGML_OP_VIEW &&
-            node->op != GGML_OP_RESHAPE && node->op != GGML_OP_PERMUTE && node->op != GGML_OP_TRANSPOSE) {
+            node->op != GGML_OP_RESHAPE && node->op != GGML_OP_PERMUTE && node->op != GGML_OP_TRANSPOSE &&
+            node->op != GGML_OP_CLAMP) {
             static int skip_inplace = -1;
             if (skip_inplace < 0) {
                 const char * env = getenv("GGML_BACKWARD_SKIP_INPLACE");
