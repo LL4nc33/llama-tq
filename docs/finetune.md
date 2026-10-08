@@ -70,7 +70,8 @@ adds or fixes:
 - **Frozen quantized matmuls** pass the gradient to their input: `out_prod` with a quantized weight
   (dequantized in row chunks on CUDA), and for MoE experts `MUL_MAT_ID_GRAD_B` (CUDA groups the tokens by
   expert and dequantizes each used expert once). The adapter of an expert gets `MUL_MAT_ID_GRAD_AS`. The
-  routing weights get their gradient through a batched `get_rows_back`.
+  routing weights get their gradient through a batched `get_rows_back`, including the normalization of the
+  selected weights (`CLAMP`, and `DIV`/`SUB` with a broadcast operand).
 - **K and V through the KV cache.** Training graphs read the cache with the current ubatch's rows taken
   from `k_cur`/`v_cur` (`ggml_set`), so K, V and the layers below receive the gradient. The rows of
   earlier ubatches of the same window are constants: within a window the gradient is truncated at the
@@ -103,6 +104,7 @@ training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 
 | Qwen3.5-0.8B Q8_0 (Gated DeltaNet) | attention + GDN projections, rank 16, 1 epoch | 10 min | | 0.042 / 99.1 % |
 | Ministral-3-3B Q4_K_M | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 10 min | 0 % → **100 %** | 0.078 |
 | gpt-oss-20b MXFP4 | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 26 min | 0 % → **100 %** | 0.062 |
+| K2-Horizon-MoVA-36B-A4B Q3_K_M (MoE, routed value experts) | attention q/k/o, rank 16, AdamW 1e-4, 1 epoch, `--reasoning off` | 39 min | 0 % → **100 %** | 0.130 / 96.0 % |
 
 Short runs (60 windows, attention LoRA) also converge on Gemma-4-26B-A4B, Qwen3.8-27B and
 Ternary-Bonsai-2-27B (PTQ1_0). Gemma 4 needs a lower learning rate (1e-4 diverged, 5e-5 trains).
@@ -145,6 +147,8 @@ not been validated in training.
 
 ## History
 
+- 2026-10-08 (later): `CLAMP` backward (the MoE weight normalization had no gradient), `SUB`/`DIV` backward with a
+  broadcast operand, no double free when a `--lora` file fails to load, RPC op count.
 - 2026-10-08: chat rendering follows `--reasoning`; crash-safe checkpoints; tolerant chat data; alpha
   check on resume; backward for `GEGLU`, `REGLU`, `GEGLU_QUICK`, `SWIGLU_OAI`, `ADD_ID`; CUDA
   `rms_norm_back` on strided inputs; out-of-memory message; early stopping.
