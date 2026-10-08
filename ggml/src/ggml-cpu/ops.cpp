@@ -10795,9 +10795,15 @@ void ggml_compute_forward_gated_delta_net(
 // Per head, with M = S^T (row j holds S[:, j], as in the forward pass) and a = exp(g):
 //   M^ = a*M_prev,  u_j = dot(M^[j], k),  d_j = beta*(v_j - u_j),  M[j] = M^[j] + d_j*k,  o_j = c*dot(M[j], q)
 // The backward pass walks the tokens in reverse with dM = dL/dM. The states are recomputed per segment of
-// GGML_GDN_BACK_SEG tokens from checkpoints, so the memory stays at (n_tokens/SEG + SEG) states per thread.
+// seg tokens (op param 0, ~sqrt(n_tokens)) from checkpoints, so the memory stays at (n_tokens/seg + seg) states per thread.
 
-#define GGML_GDN_BACK_SEG 32
+size_t ggml_gated_delta_net_back_work_per_thread(const ggml_tensor * dst) {
+    const int64_t S_v   = dst->src[2]->ne[0];
+    const int64_t seg   = ggml_get_op_params_i32(dst, 0);
+    const int64_t n_seg = (dst->src[2]->ne[2] + seg - 1) / seg;
+    // checkpoints, the states of one segment, the state gradient, 5 vectors, padding
+    return ((n_seg + seg + 1)*S_v*S_v + 8*S_v + CACHE_LINE_SIZE_F32) * sizeof(float);
+}
 
 void ggml_compute_forward_gated_delta_net_back(
         const ggml_compute_params * params,
@@ -10828,13 +10834,14 @@ void ggml_compute_forward_gated_delta_net_back(
     const int64_t n_g0  = src_g->ne[0];
     const float   scale = 1.0f / sqrtf((float) S_v);
 
-    const int64_t n_seg     = (n_tokens + GGML_GDN_BACK_SEG - 1) / GGML_GDN_BACK_SEG;
-    const int64_t per_thread = (n_seg + GGML_GDN_BACK_SEG + 1)*SS + 8*S_v + CACHE_LINE_SIZE_F32;
+    const int64_t seg        = ggml_get_op_params_i32(dst, 0);
+    const int64_t n_seg      = (n_tokens + seg - 1) / seg;
+    const int64_t per_thread = ggml_gated_delta_net_back_work_per_thread(dst) / sizeof(float);
 
     float * work   = (float *) params->wdata + params->ith*per_thread;
     float * ckpt   = work;                              // [n_seg][SS]: state before each segment
     float * states = ckpt + n_seg*SS;                   // [SEG][SS]: state after each token of the segment
-    float * dM     = states + GGML_GDN_BACK_SEG*SS;     // [SS]
+    float * dM     = states + seg*SS;     // [SS]
     float * a_vec  = dM + SS;                           // [S_v]
     float * u      = a_vec + S_v;                       // [S_v]
     float * d      = u + S_v;                           // [S_v]
@@ -10904,8 +10911,8 @@ void ggml_compute_forward_gated_delta_net_back(
         float * M = states; // scratch for the running state
         memcpy(M, state_in + iv3*state_seq_stride + iv1*SS, SS*sizeof(float));
         for (int64_t t = 0; t < n_tokens; ++t) {
-            if (t % GGML_GDN_BACK_SEG == 0) {
-                memcpy(ckpt + (t/GGML_GDN_BACK_SEG)*SS, M, SS*sizeof(float));
+            if (t % seg == 0) {
+                memcpy(ckpt + (t/seg)*SS, M, SS*sizeof(float));
             }
             step(M, t);
         }
@@ -10914,8 +10921,8 @@ void ggml_compute_forward_gated_delta_net_back(
         memcpy(dM, grad_state + (iv3*H + iv1)*SS, SS*sizeof(float));
 
         for (int64_t is = n_seg - 1; is >= 0; --is) {
-            const int64_t t0 = is*GGML_GDN_BACK_SEG;
-            const int64_t t1 = MIN(t0 + GGML_GDN_BACK_SEG, n_tokens);
+            const int64_t t0 = is*seg;
+            const int64_t t1 = MIN(t0 + seg, n_tokens);
 
             // recompute the states of the segment
             const float * prev = ckpt + is*SS;

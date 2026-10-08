@@ -6532,6 +6532,11 @@ struct ggml_tensor * ggml_gated_delta_net_back(
     const int64_t n   = 3*n_v + ggml_nelements(g) + ggml_nelements(beta);
     struct ggml_tensor * result = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n);
 
+    // the backward pass recomputes the states per segment from checkpoints: n_tokens/seg + seg states per head, which
+    // is smallest for seg ~ sqrt(n_tokens)
+    const int32_t seg = (int32_t) ceil(sqrt((double) v->ne[2]));
+    ggml_set_op_params_i32(result, 0, seg);
+
     result->op     = GGML_OP_GATED_DELTA_NET_BACK;
     result->src[0] = q;
     result->src[1] = k;

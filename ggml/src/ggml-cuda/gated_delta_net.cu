@@ -349,13 +349,12 @@ void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor *
 // token, both in global scratch. Only dq, dk, dg (and dbeta) sum over the columns: per token the warps of a block
 // add them up in shared memory and add the block's sum to the zero-initialised outputs atomically.
 
-#define GDN_BACK_SEG 32
 
 template <int S_v, bool KDA>
 __global__ void gated_delta_net_back_cuda(
         const float * q, const float * k, const float * v, const float * g, const float * beta,
         const float * state_in, const float * grad, float * dst, float * ckpt, float * seg_states,
-        int64_t H, int64_t n_tokens, int64_t n_seqs, int64_t n_seg,
+        int64_t H, int64_t n_tokens, int64_t n_seqs, int64_t seg, int64_t n_seg,
         int64_t sq1, int64_t sq2, int64_t sq3, int64_t sv1, int64_t sv2, int64_t sv3,
         int64_t sb1, int64_t sb2, int64_t sb3, const uint3 neqk1_magic, const uint3 rq3_magic, float scale) {
     constexpr int warp_size     = ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v;
@@ -385,7 +384,7 @@ __global__ void gated_delta_net_back_cuda(
 
     const int64_t head    = (int64_t) sequence * H + h;
     float * my_ckpt = ckpt       + head * n_seg       * SS + (int64_t) col * S_v;
-    float * my_seg  = seg_states + head * GDN_BACK_SEG * SS + (int64_t) col * S_v;
+    float * my_seg  = seg_states + head * seg * SS + (int64_t) col * S_v;
 
     float m[rows_per_lane];  // the running column / the column after token t
     float dm[rows_per_lane]; // gradient of the column
@@ -435,10 +434,10 @@ __global__ void gated_delta_net_back_cuda(
             m[r] = s0[r * warp_size + lane];
         }
         for (int64_t t = 0; t < n_tokens; t++) {
-            if (t % GDN_BACK_SEG == 0) {
+            if (t % seg == 0) {
 #pragma unroll
                 for (int r = 0; r < rows_per_lane; r++) {
-                    my_ckpt[(t / GDN_BACK_SEG) * SS + r * warp_size + lane] = m[r];
+                    my_ckpt[(t / seg) * SS + r * warp_size + lane] = m[r];
                 }
             }
             step(t);
@@ -451,8 +450,8 @@ __global__ void gated_delta_net_back_cuda(
     }
 
     for (int64_t is = n_seg - 1; is >= 0; is--) {
-        const int64_t t0 = is * GDN_BACK_SEG;
-        const int64_t t1 = min(t0 + GDN_BACK_SEG, n_tokens);
+        const int64_t t0 = is * seg;
+        const int64_t t1 = min(t0 + seg, n_tokens);
 
         if (active) {
 #pragma unroll
@@ -563,7 +562,7 @@ __global__ void gated_delta_net_back_cuda(
 
 template <bool KDA>
 static void launch_gated_delta_net_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst,
-        int64_t S_v, int64_t H, int64_t n_tokens, int64_t n_seqs, float * ckpt, float * seg, int64_t n_seg,
+        int64_t S_v, int64_t H, int64_t n_tokens, int64_t n_seqs, float * ckpt, float * seg_states, int64_t seg, int64_t n_seg,
         int64_t sq1, int64_t sq2, int64_t sq3, int64_t sv1, int64_t sv2, int64_t sv3,
         int64_t sb1, int64_t sb2, int64_t sb3, int64_t neqk1, int64_t rq3, float scale) {
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
@@ -583,8 +582,8 @@ static void launch_gated_delta_net_back(ggml_backend_cuda_context & ctx, ggml_te
     float *       out  = (float *) dst->data;
 
 #define GDN_BACK_LAUNCH(SV) \
-    gated_delta_net_back_cuda<SV, KDA><<<grid_dims, block_dims, 0, ctx.stream()>>>(q, k, v, g, b, s, grad, out, ckpt, seg, \
-        H, n_tokens, n_seqs, n_seg, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1_magic, rq3_magic, scale)
+    gated_delta_net_back_cuda<SV, KDA><<<grid_dims, block_dims, 0, ctx.stream()>>>(q, k, v, g, b, s, grad, out, ckpt, seg_states, \
+        H, n_tokens, n_seqs, seg, n_seg, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1_magic, rq3_magic, scale)
     switch (S_v) {
         case 16:  GDN_BACK_LAUNCH(16);  break;
         case 32:  GDN_BACK_LAUNCH(32);  break;
@@ -611,22 +610,23 @@ void ggml_cuda_op_gated_delta_net_back(ggml_backend_cuda_context & ctx, ggml_ten
     const int64_t H        = src_v->ne[1];
     const int64_t n_tokens = src_v->ne[2];
     const int64_t n_seqs   = src_v->ne[3];
-    const int64_t n_seg    = (n_tokens + GDN_BACK_SEG - 1) / GDN_BACK_SEG;
+    const int64_t seg      = ggml_get_op_params_i32(dst, 0); // segment length, chosen by ggml_gated_delta_net_back
+    const int64_t n_seg    = (n_tokens + seg - 1) / seg;
     const bool    kda      = src_g->ne[0] == S_v;
 
     CUDA_CHECK(cudaMemsetAsync(dst->data, 0, ggml_nbytes(dst), ctx.stream()));
 
     ggml_cuda_pool_alloc<float> ckpt(ctx.pool(), n_seqs * H * n_seg        * S_v * S_v);
-    ggml_cuda_pool_alloc<float> seg (ctx.pool(), n_seqs * H * GDN_BACK_SEG * S_v * S_v);
+    ggml_cuda_pool_alloc<float> seg_states(ctx.pool(), n_seqs * H * seg * S_v * S_v);
 
     const int64_t fs = sizeof(float);
     if (kda) {
-        launch_gated_delta_net_back<true>(ctx, dst, S_v, H, n_tokens, n_seqs, ckpt.get(), seg.get(), n_seg,
+        launch_gated_delta_net_back<true>(ctx, dst, S_v, H, n_tokens, n_seqs, ckpt.get(), seg_states.get(), seg, n_seg,
             src_q->nb[1]/fs, src_q->nb[2]/fs, src_q->nb[3]/fs, src_v->nb[1]/fs, src_v->nb[2]/fs, src_v->nb[3]/fs,
             src_beta->nb[1]/fs, src_beta->nb[2]/fs, src_beta->nb[3]/fs, src_q->ne[1], n_seqs / src_q->ne[3],
             1.0f / sqrtf((float) S_v));
     } else {
-        launch_gated_delta_net_back<false>(ctx, dst, S_v, H, n_tokens, n_seqs, ckpt.get(), seg.get(), n_seg,
+        launch_gated_delta_net_back<false>(ctx, dst, S_v, H, n_tokens, n_seqs, ckpt.get(), seg_states.get(), seg, n_seg,
             src_q->nb[1]/fs, src_q->nb[2]/fs, src_q->nb[3]/fs, src_v->nb[1]/fs, src_v->nb[2]/fs, src_v->nb[3]/fs,
             src_beta->nb[1]/fs, src_beta->nb[2]/fs, src_beta->nb[3]/fs, src_q->ne[1], n_seqs / src_q->ne[3],
             1.0f / sqrtf((float) S_v));
