@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-08
+
+- **Finetuning learns real tasks on dense, MoE and hybrid models** (see [docs/finetune.md](docs/finetune.md)). Extracting an appointment from a German message as JSON with a fixed schema, 100 held-out examples, exact match before -> after one LoRA run: Qwen3-4B 0 -> 100 % (also after merging with `llama-export-lora`), Gemma-4-12B 0 -> 94 %, Qwen3.6-35B-A3B IQ2_XXS with LoRA on the routed experts only 0 -> 89 %; Qwen3.5-0.8B (Gated DeltaNet hybrid) 99 % validation accuracy.
+- Chat data: `-f data.jsonl` with `{"messages": [...]}`, rendered with the model's chat template and `--reasoning` like the server, loss on the assistant turns only (`LLAMA_FINETUNE_SHOW_MASK=1` shows the mask). Train with the reasoning setting you serve with.
+- `--grad-clip`, `--lr-warmup`, `--early-stop N` (the best adapter by validation loss is kept as `<adapter>.best`), exact `--resume` after `--stop-after N` or a signal (adapter, AdamW moments and position; bit-identical to an uninterrupted run), `GGML_OPT_PRINT_GRAD_NORM=1|2`.
+- Gradient fixes: K and V now get a gradient through the KV cache (before, `attn_k`/`attn_v` adapters never moved and every layer below an attention missed that path); CUDA `out_prod` read LoRA activations with a wrong stride (A gradients were garbage); CPU `rms_norm_back` destroyed its input when run inplace; CUDA `rms_norm_back` mis-read strided inputs; the optimizer state was looked up by node index instead of per parameter.
+- New backward passes: gated delta net (new op `GATED_DELTA_NET_BACK`, CPU and CUDA), `SSM_CONV`, `CONCAT`, `TANH`, `GEGLU`, `REGLU`, `GEGLU_QUICK`, `SWIGLU_OAI`, `ADD_ID`; exact cross-entropy gradient for masked rows; accuracy over labeled positions only.
+- Long context: `-c 16384 -ub 128` trains Qwen3-4B in 23 GB on two GPUs (the attention probabilities of every layer dominate the memory); an out-of-memory training graph now reports itself instead of overrunning buffers. `test-opt` runs again.
+
 ## 2026-10-07
 
 - **LoRA finetuning directly on quantized GGUFs works end to end**, including the experts of MoE models and models larger than VRAM (see [docs/finetune.md](docs/finetune.md)). Fixed:
