@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-08 (later)
+
+- K2-Horizon-MoVA-36B-A4B (MoE with routed value experts) learns the appointment task as well: 0 -> 100 % exact match after one attention-LoRA run (39 min).
+- MoE routing: the normalization of the selected expert weights had no gradient (`ggml_clamp` works in place, so the backward pass skipped it). New `CLAMP` backward; `SUB`/`DIV` backward for a broadcast second operand.
+- Fixed: builds with `GGML_RPC=ON` (also the release builds) stopped at the RPC op-count assert; the server crashed on exit when a `--lora` file failed to load.
+
 ## 2026-10-08
 
 - **Finetuning learns real tasks on dense, MoE and hybrid models** (see [docs/finetune.md](docs/finetune.md)). Extracting an appointment from a German message as JSON with a fixed schema, 100 held-out examples, exact match before -> after one LoRA run: Qwen3-4B 0 -> 100 % (also after merging with `llama-export-lora`), Gemma-4-12B 0 -> 94 %, Qwen3.6-35B-A3B IQ2_XXS with LoRA on the routed experts only 0 -> 89 %, Ministral-3-3B and gpt-oss-20b 0 -> 100 %; Qwen3.5-0.8B (Gated DeltaNet hybrid) 99 % validation accuracy.
