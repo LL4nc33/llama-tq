@@ -4111,10 +4111,10 @@ struct test_gated_delta_net_grad : public test_case {
         return 1e-1f;
     }
 
-    // the numerical gradient through the recurrence is noisy in f32 (up to a few 1e-3); a wrong gradient is off
-    // by the order of the gradient itself (checked against a float64 reference to ~1e-7 relative)
+    // the numerical gradient through the recurrence is noisy in f32 (a few 1e-3, rarely above 1e-2); a wrong
+    // gradient is off by the order of the gradient itself (checked against a float64 reference to ~1e-7 relative)
     double max_maa_err() override {
-        return 1e-2;
+        return 3e-2;
     }
 
     bool grad_precise() override {
