@@ -17,7 +17,7 @@ A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork tuned for **long conte
   - **Qwen3.8-Flash-Next** (`qwen4exp`) and **Ternary-Bonsai-2-27B** (`PQ2_0`, `PTQ1_0`), see above.
   - Quantized KV on **gpt-oss** (head 64, attention sinks) and **Gemma 4** (head 512) runs through the fast decode kernels.
 - **Speculation stack** — MTP + n-gram hybrid, mmproj+spec coexistence, and DFlash / DFlash2 block-diffusion drafting. Details in [docs/speculative.md](docs/speculative.md).
-- **LoRA fine-tuning directly on quantized GGUFs** — no conversion back to full precision: attention or MoE experts of k-quant / IQ models, on one or two GPUs, even for models larger than VRAM (experts in RAM). Qwen3-4B Q4_K_M attention LoRA: perplexity 15.3 → 12.7 on held-out text; Qwen3-Coder-30B-A3B expert and attention LoRA and Kolibri-1 (31.5 GiB on 2× 12 GB) train as well. Details in [docs/finetune.md](docs/finetune.md).
+- **LoRA fine-tuning directly on quantized GGUFs** — no conversion back to full precision: attention, MoE experts and Gated DeltaNet layers of k-quant / IQ models, on one or two GPUs, even for models larger than VRAM (experts in RAM). Chat data with the loss on the assistant turns, exact resume, early stopping. On a held-out extraction task (exact match before → after one run): Qwen3-4B 0 → 100 %, Gemma-4-12B 0 → 94 %, Qwen3.6-35B-A3B IQ2_XXS (experts only) 0 → 89 %. Details in [docs/finetune.md](docs/finetune.md).
 
 ## What it does
 
