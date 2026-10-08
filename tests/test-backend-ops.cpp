@@ -3113,8 +3113,9 @@ struct test_bin_bcast : public test_case {
             ggml_set_name(b[i], (std::string("b") + std::to_string(i)).c_str());
         }
 
-        // The backward pass supports broadcasting only for GGML_ADD:
-        const bool grad_supported = op == ggml_add && ggml_are_same_shape(a, b[0]) && nf == 1 && !perm1;
+        // b is broadcast over a; the backward pass reduces its gradient with repeat_back
+        const bool grad_supported = (op == ggml_add || op == ggml_sub || op == ggml_mul || op == ggml_div) &&
+                                    nf == 1 && !perm1 && !src_overlap;
         if (grad_supported) {
             ggml_set_param(a);
             ggml_set_param(b[0]);
@@ -3157,7 +3158,8 @@ struct test_bin_bcast : public test_case {
     }
 
     double max_maa_err() override {
-        return op == ggml_add ? 1e-4 : 1e-3;
+        // the gradient of a broadcast divisor sums nr[0]*...*nr[3] terms of size ~1
+        return op == ggml_add ? 1e-4 : op == ggml_div ? 1e-3 * nr[0]*nr[1]*nr[2]*nr[3] : 1e-3;
     }
 };
 
