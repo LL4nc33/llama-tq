@@ -8752,10 +8752,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+    // d_inner a multiple of 128, as the CUDA kernel requires (and the models use)
     for (int64_t n_t : {1, 5, 40}) {
-        test_cases.emplace_back(new test_ssm_conv_grad(4, 8, n_t, 1));
+        test_cases.emplace_back(new test_ssm_conv_grad(4, 128, n_t, 1));
     }
-    test_cases.emplace_back(new test_ssm_conv_grad(4, 8, 5, 2));
+    test_cases.emplace_back(new test_ssm_conv_grad(4, 128, 5, 2));
     for (int64_t d_conv : {3, 4, 9}) {
         for (int64_t d_inner: {1024, 1536, 2048}) {
             test_cases.emplace_back(new test_ssm_conv(GGML_TYPE_F32, {d_conv, d_inner, 1, 1}, {d_conv, d_inner, 1, 1}));
