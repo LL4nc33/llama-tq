@@ -6680,6 +6680,23 @@ struct test_acc : public test_case {
         ggml_set_name(a, "a");
 
         ggml_tensor * b;
+        if (stride_dim == 4 || stride_dim == 5) {
+            // a view of a with dims 1 and 2 swapped (the gradient of a permuted view in the backward pass),
+            // b contiguous (4) or itself a permuted view (5)
+            if (stride_dim == 4) {
+                b = ggml_new_tensor_4d(ctx, type, ne_a[0], ne_a[2], ne_a[1], ne_a[3]);
+                ggml_set_param(b);
+            } else {
+                ggml_tensor * b_src = ggml_new_tensor(ctx, type, 4, ne_a.data());
+                ggml_set_param(b_src);
+                ggml_set_name(b_src, "b_src");
+                b = ggml_permute(ctx, b_src, 0, 2, 1, 3);
+            }
+            ggml_set_name(b, "b");
+            ggml_tensor * out = ggml_acc(ctx, a, b, a->nb[2], a->nb[1], a->nb[3], 0);
+            ggml_set_name(out, "out");
+            return out;
+        }
         if (stride_dim == 1 || stride_dim == 2 || stride_dim == 3) {
             // Create a larger tensor and take a view at a non-zero offset.
             // This tests that the backend correctly handles b's data offset
@@ -9483,6 +9500,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_acc(GGML_TYPE_F32, {256, 17, 2, 3}, {256, 16, 2, 3}, 1));
     test_cases.emplace_back(new test_acc(GGML_TYPE_F32, {256, 17, 2, 3}, {128, 16, 2, 3}, 2));
     test_cases.emplace_back(new test_acc(GGML_TYPE_F32, {256, 17, 2, 3}, {64, 16, 2, 3}, 3));
+    test_cases.emplace_back(new test_acc(GGML_TYPE_F32, {64, 5, 7, 3}, {64, 7, 5, 3}, 4)); // permuted view of a
+    test_cases.emplace_back(new test_acc(GGML_TYPE_F32, {64, 5, 7, 3}, {64, 7, 5, 3}, 5)); // ... and a permuted b
     test_cases.emplace_back(new test_pad());
     test_cases.emplace_back(new test_pad(GGML_TYPE_F32, {33, 17, 2, 1}, 4, 3, true)); // circular
     test_cases.emplace_back(new test_pad_ext());

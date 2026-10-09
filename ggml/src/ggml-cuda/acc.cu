@@ -1,37 +1,24 @@
 #include "acc.cuh"
 
-static __global__ void acc_f32(const float * x, const float * y, float * dst, const int64_t ne,
+// dst = src0, then dst viewed with strides s1, s2, s3 (elements) at offset += src1. src1 may be strided (nb10..nb13
+// in elements) and the view strides may be in any order (e.g. a permuted view in the backward pass), so the
+// kernel walks the elements of src1, as the CPU implementation does.
+static __global__ void acc_f32(const float * y, float * dst,
         const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t ne13,
-        const int64_t s11, const int64_t s12, const int64_t s13, const int64_t offset) {
-    const int64_t i = blockDim.x * blockIdx.x + threadIdx.x;
+        const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13,
+        const int64_t s1, const int64_t s2, const int64_t s3, const int64_t offset) {
+    const int64_t i = (int64_t) blockDim.x * blockIdx.x + threadIdx.x;
 
-    if (i >= ne) {
+    if (i >= ne10*ne11*ne12*ne13) {
         return;
     }
 
-    int64_t src1_idx = i - offset;
+    const int64_t i10 = i % ne10;
+    const int64_t i11 = (i / ne10) % ne11;
+    const int64_t i12 = (i / (ne10*ne11)) % ne12;
+    const int64_t i13 = i / (ne10*ne11*ne12);
 
-    int64_t tmp = src1_idx;
-    const int64_t i13 = tmp / s13;
-    tmp -= i13 * s13;
-    const int64_t i12 = tmp / s12;
-    tmp -= i12 * s12;
-    const int64_t i11 = tmp / s11;
-    tmp -= i11 * s11;
-    const int64_t i10 = tmp;
-
-    float val = x[i];
-    if (src1_idx >= 0 && i10 < ne10 && i11 < ne11 && i12 < ne12 && i13 < ne13) {
-        val += y[((i13*ne12 + i12) * ne11 + i11) * ne10 + i10];
-    }
-    dst[i] = val;
-}
-
-static void acc_f32_cuda(const float * x, const float * y, float * dst, const int64_t n_elements,
-        const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t ne13,
-        const int64_t s1, const int64_t s2, const int64_t s3, const int64_t offset, cudaStream_t stream) {
-    const int num_blocks = (n_elements + CUDA_ACC_BLOCK_SIZE - 1) / CUDA_ACC_BLOCK_SIZE;
-    acc_f32<<<num_blocks, CUDA_ACC_BLOCK_SIZE, 0, stream>>>(x, y, dst, n_elements, ne10, ne11, ne12, ne13, s1, s2, s3, offset);
+    dst[offset + i10 + i11*s1 + i12*s2 + i13*s3] += y[i10*nb10 + i11*nb11 + i12*nb12 + i13*nb13];
 }
 
 void ggml_cuda_op_acc(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -48,7 +35,7 @@ void ggml_cuda_op_acc(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
     GGML_ASSERT( dst->type == GGML_TYPE_F32);
 
-    GGML_ASSERT(ggml_is_contiguous(src1));
+    GGML_ASSERT(ggml_is_contiguous(src0));
     GGML_ASSERT(dst->nb[0] == ggml_element_size(dst));
     GGML_ASSERT(ggml_is_contiguously_allocated(dst));
 
@@ -57,5 +44,15 @@ void ggml_cuda_op_acc(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t s3     = dst->op_params[2] / sizeof(float);
     const int64_t offset = dst->op_params[3] / sizeof(float);
 
-    acc_f32_cuda(src0_d, src1_d, dst_d, ggml_nelements(dst), src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3], s1, s2, s3, offset, stream);
+    if (dst_d != src0_d) {
+        CUDA_CHECK(cudaMemcpyAsync(dst_d, src0_d, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, stream));
+    }
+
+    const size_t fs = sizeof(float);
+    GGML_ASSERT(src1->nb[0] % fs == 0 && src1->nb[1] % fs == 0 && src1->nb[2] % fs == 0 && src1->nb[3] % fs == 0);
+    const int64_t n1 = ggml_nelements(src1);
+    const int num_blocks = (n1 + CUDA_ACC_BLOCK_SIZE - 1) / CUDA_ACC_BLOCK_SIZE;
+    acc_f32<<<num_blocks, CUDA_ACC_BLOCK_SIZE, 0, stream>>>(src1_d, dst_d,
+        src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3],
+        src1->nb[0]/fs, src1->nb[1]/fs, src1->nb[2]/fs, src1->nb[3]/fs, s1, s2, s3, offset);
 }
