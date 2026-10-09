@@ -3,6 +3,59 @@
 
 #include <cstdint>
 
+// fp16 tensor-core path for a quantized src0 (the frozen weight in the input gradient of a matmul):
+// the gradient src1 is scaled by a power of two so that its largest value lands near 2^14 before the f16
+// conversion (as loss scaling in mixed precision training), the GEMM accumulates in f32 and alpha = 1/scale
+// undoes the scaling. scale, 1/scale and the beta values live in device memory, so nothing synchronizes.
+
+// src1 is read as rows of contiguous elements (cols along the stride-1 dimension), one block per row at a time
+static __global__ void out_prod_absmax_f32(const float * x, const int nrows, const int ncols,
+        const int64_t sr, const int64_t sc, unsigned int * absmax_bits) {
+    float m = 0.0f;
+    for (int r = blockIdx.x; r < nrows; r += gridDim.x) {
+        const float * row = x + r*sr;
+        for (int c = threadIdx.x; c < ncols; c += blockDim.x) {
+            m = fmaxf(m, fabsf(row[c*sc]));
+        }
+    }
+    m = warp_reduce_max(m);
+    __shared__ float smax[32];
+    if ((threadIdx.x % WARP_SIZE) == 0) {
+        smax[threadIdx.x / WARP_SIZE] = m;
+    }
+    __syncthreads();
+    if (threadIdx.x < WARP_SIZE) {
+        m = threadIdx.x < blockDim.x / WARP_SIZE ? smax[threadIdx.x] : 0.0f;
+        m = warp_reduce_max(m);
+        if (threadIdx.x == 0) {
+            atomicMax(absmax_bits, __float_as_uint(m)); // non-negative floats order like their bit patterns
+        }
+    }
+}
+
+static __global__ void out_prod_scales(const unsigned int * absmax_bits, float * scales) {
+    const float m = __uint_as_float(*absmax_bits);
+    const float s = m > 0.0f && isfinite(m) ? exp2f(floorf(log2f(16384.0f / m))) : 1.0f;
+    scales[0] = s;
+    scales[1] = 1.0f / s;
+    scales[2] = 0.0f;
+    scales[3] = 1.0f;
+}
+
+// src1 -> f16 * scale in the layout the GEMM reads: row r, column c at y[c + r*ncols] (rows = ne11 and
+// cols = ne10, or for a transposed src1 rows = ne10 and cols = ne11)
+static __global__ void out_prod_src1_to_f16(const float * x, half * y, const int nrows, const int ncols,
+        const int64_t sr, const int64_t sc, const float * scales) {
+    const float scale = scales[0];
+    for (int r = blockIdx.x; r < nrows; r += gridDim.x) {
+        const float * row = x + r*sr;
+        half * out = y + (int64_t) r*ncols;
+        for (int c = threadIdx.x; c < ncols; c += blockDim.x) {
+            out[c] = __float2half(row[c*sc] * scale);
+        }
+    }
+}
+
 void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
@@ -66,8 +119,52 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     if (src0->type != GGML_TYPE_F32) {
         // quantized src0 (the frozen weight in the input gradient of a matmul during LoRA training): dequantize
-        // its rows to f32 in chunks and accumulate dst += a[:, chunk] * b[:, chunk]^T, so that a large weight
-        // (e.g. the output projection) never needs a full f32 copy
+        // its rows in chunks and accumulate dst += a[:, chunk] * b[:, chunk]^T, so that a large weight
+        // (e.g. the output projection) never needs a full copy. GGML_CUDA_OUT_PROD_F32=1 keeps the f32 SGEMM.
+        static const bool force_f32 = getenv("GGML_CUDA_OUT_PROD_F32") != nullptr;
+        const to_fp16_cuda_t to_fp16 = force_f32 ? nullptr : ggml_get_to_fp16_cuda(src0->type);
+        if (to_fp16 != nullptr) {
+            const int64_t rows_per_chunk = std::max<int64_t>(1, std::min<int64_t>(ne01, (int64_t(128) << 20) / ne00)); // 256 MiB of f16
+            ggml_cuda_pool_alloc<half>         src0_f16(ctx.pool(), rows_per_chunk*ne00);
+            ggml_cuda_pool_alloc<half>         src1_f16(ctx.pool(), ne10*ne11);
+            ggml_cuda_pool_alloc<float>        scales(ctx.pool(), 4);
+            ggml_cuda_pool_alloc<unsigned int> absmax(ctx.pool(), 1);
+            const int64_t s10 = nb10 / sizeof(float);
+            const int64_t s11 = nb11 / sizeof(float);
+            const int64_t ldb16 = src1_T ? ne11 : ne10;
+            const cublasOperation_t op16 = src1_T ? CUBLAS_OP_N : CUBLAS_OP_T;
+            CUBLAS_CHECK(cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_DEVICE));
+            for (int64_t i3 = 0; i3 < ne3; ++i3) {
+                for (int64_t i2 = 0; i2 < ne2; ++i2) {
+                    const float * src1_slice = src1_d + i3*s13 + i2*s12;
+                    CUDA_CHECK(cudaMemsetAsync(absmax.get(), 0, sizeof(unsigned int), stream));
+                    // rows along the strided dimension, columns along the contiguous one
+                    const int     nrows = src1_T ? ne10 : ne11;
+                    const int     ncols = src1_T ? ne11 : ne10;
+                    const int64_t sr    = src1_T ? s10  : s11;
+                    const int64_t sc    = src1_T ? s11  : s10;
+                    const int nblocks = std::min(nrows, 4096);
+                    out_prod_absmax_f32<<<nblocks, 256, 0, stream>>>(src1_slice, nrows, ncols, sr, sc, absmax.get());
+                    out_prod_scales<<<1, 1, 0, stream>>>(absmax.get(), scales.get());
+                    out_prod_src1_to_f16<<<nblocks, 256, 0, stream>>>(src1_slice, src1_f16.get(), nrows, ncols, sr, sc, scales.get());
+                    const char * src0_slice = (const char *) src0->data + (i3/dps3)*nb03 + (i2/dps2)*nb02;
+                    for (int64_t r0 = 0; r0 < ne01; r0 += rows_per_chunk) {
+                        const int64_t nr = std::min(rows_per_chunk, ne01 - r0);
+                        to_fp16(src0_slice + r0*nb01, src0_f16.get(), nr*ne00, stream);
+                        CUBLAS_CHECK(
+                            cublasGemmEx(handle, CUBLAS_OP_N, op16,
+                                    ne0, ne1, nr,
+                                    scales.get() + 1, src0_f16.get(), CUDA_R_16F, ne00,
+                                                      src1_f16.get() + (src1_T ? r0 : r0*ldb16), CUDA_R_16F, ldb16,
+                                    scales.get() + (r0 == 0 ? 2 : 3), dst_d + i3*s3 + i2*s2, CUDA_R_32F, ldc,
+                                    CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+                    }
+                }
+            }
+            CUBLAS_CHECK(cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST));
+            return;
+        }
+
         const to_fp32_cuda_t to_fp32 = ggml_get_to_fp32_cuda(src0->type);
         GGML_ASSERT(to_fp32 != nullptr);
         const int64_t rows_per_chunk = std::max<int64_t>(1, std::min<int64_t>(ne01, (int64_t(64) << 20) / ne00)); // 256 MiB of f32
@@ -92,15 +189,16 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         return;
     }
 
-    // TODO batched matrix multiplication
+    // one strided batched GEMM per (i3, position in the GQA group): src0 head j serves dst heads j*dps2 + k
     for (int64_t i3 = 0; i3 < ne3; ++i3) {
-        for (int64_t i2 = 0; i2 < ne2; ++i2) {
+        for (int64_t k = 0; k < dps2; ++k) {
             CUBLAS_CHECK(
-                cublasSgemm(handle, CUBLAS_OP_N, src1_cublas_op,
+                cublasSgemmStridedBatched(handle, CUBLAS_OP_N, src1_cublas_op,
                         ne0, ne1, ne01,
-                        &alpha, src0_d + (i3/dps3)*s03 + (i2/dps2)*s02, lda,
-                                src1_d +  i3      *s13 +  i2      *s12, ldb,
-                        &beta,  dst_d  +  i3      *s3  +  i2      *s2,  ldc));
+                        &alpha, src0_d + (i3/dps3)*s03,          lda, s02,
+                                src1_d +  i3      *s13 + k*s12,  ldb, dps2*s12,
+                        &beta,  dst_d  +  i3      *s3  + k*s2,   ldc, dps2*s2,
+                        ne02));
         }
     }
 }

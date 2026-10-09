@@ -3600,7 +3600,15 @@ void llama_context::opt_epoch_iter(
 
             res->reset();
 
+            // LLAMA_TRAIN_TIMING=1: where the time of a training step goes (graph build, backward graph +
+            // allocation, labels, evaluation), averaged and printed every 10 ubatches
+            static const bool timing = getenv("LLAMA_TRAIN_TIMING") != nullptr;
+            static int64_t t_build = 0, t_alloc = 0, t_labels = 0, t_eval = 0, n_steps = 0;
+            int64_t t0 = timing ? ggml_time_us() : 0;
+
             auto * gf = model.build_graph(gparams);
+
+            int64_t t1 = timing ? ggml_time_us() : 0;
 
             struct ggml_context * ctx_compute_opt;
             {
@@ -3630,6 +3638,8 @@ void llama_context::opt_epoch_iter(
             ggml_opt_prepare_alloc(opt_ctx, ctx_compute_opt, gf, res->get_inp_tokens(), res->get_logits());
             ggml_opt_alloc(opt_ctx, train);
 
+            int64_t t2 = timing ? ggml_time_us() : 0;
+
             res->set_inputs(&ubatch);
             {
                 struct ggml_tensor * labels = ggml_opt_labels(opt_ctx);
@@ -3652,7 +3662,17 @@ void llama_context::opt_epoch_iter(
                     ggml_backend_tensor_set(labels, &weight, (pos_ubatch*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
                 }
             }
+            int64_t t3 = timing ? ggml_time_us() : 0;
             ggml_opt_eval(opt_ctx, result);
+            if (timing) {
+                const int64_t t4 = ggml_time_us();
+                t_build += t1 - t0; t_alloc += t2 - t1; t_labels += t3 - t2; t_eval += t4 - t3;
+                if (++n_steps % 10 == 0) {
+                    LLAMA_LOG_INFO("%s: per ubatch: build %.1f ms, backward graph + alloc %.1f ms, labels %.1f ms, eval %.1f ms, %d graph splits, %d copies\n",
+                        __func__, t_build/1e3/n_steps, t_alloc/1e3/n_steps, t_labels/1e3/n_steps, t_eval/1e3/n_steps,
+                        ggml_backend_sched_get_n_splits(sched.get()), ggml_backend_sched_get_n_copies(sched.get()));
+                }
+            }
             if (callback) {
                 callback(train, opt_ctx, dataset, result, idata_in_loop + (pos_ctx + pos_batch)/n_ubatch + 1, ndata_in_loop, t_loop_start);
             }
