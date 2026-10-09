@@ -1645,6 +1645,8 @@ extern "C" {
         enum ggml_opt_optimizer_type optimizer_type;
 
         float grad_clip; // if > 0, clip the global gradient norm to this value
+
+        bool grad_checkpoint; // recompute the activations of each layer in the backward pass instead of keeping them
     };
 
     LLAMA_API void llama_opt_init(struct llama_context * lctx, struct llama_model * model, struct llama_opt_params lopt_params);

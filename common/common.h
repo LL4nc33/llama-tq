@@ -729,6 +729,7 @@ struct common_params {
     // would otherwise discard everything since the last epoch boundary.
     int         checkpoint_every_n_batches = 0;
     float       grad_clip                  = 1.0f; // global gradient norm limit (0 = off)
+    bool        grad_checkpoint            = false; // recompute layer activations in the backward pass
     bool        train_resume               = false; // continue from the adapter + position saved at the output path
     int64_t     train_stop_after           = 0;     // stop and save after this many training windows (0 = no limit)
     int32_t     train_early_stop           = 0;     // stop after this many epochs without a better validation loss (0 = off)

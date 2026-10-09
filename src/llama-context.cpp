@@ -3494,6 +3494,7 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
     opt_params.get_opt_pars_ud = lopt_params.get_opt_pars_ud;
     opt_params.optimizer       = lopt_params.optimizer_type;
     opt_params.grad_clip       = lopt_params.grad_clip;
+    opt_params.checkpoint      = lopt_params.grad_checkpoint;
     opt_ctx = ggml_opt_init(opt_params);
 
     llama_opt_param_filter param_filter = lopt_params.param_filter;
@@ -3627,7 +3628,7 @@ void llama_context::opt_epoch_iter(
                 // overflow on dual-GPU (4x still hit the cap when build_backward_expand fired on the
                 // second batch); see LLAMA_OPT_GRAPH_SIZE_FACTOR.
                 const size_t size_meta = LLAMA_OPT_GRAPH_SIZE_FACTOR * size_gf * ggml_tensor_overhead()
-                                       + 2*ggml_graph_overhead_custom(LLAMA_OPT_GRAPH_SIZE_FACTOR * size_gf, /*grads = */ true);
+                                       + 3*ggml_graph_overhead_custom(LLAMA_OPT_GRAPH_SIZE_FACTOR * size_gf, /*grads = */ true); // gb_grad, gb_opt, rebuild for checkpointing
                 struct ggml_init_params params = {
                     /*.mem_size   =*/ size_meta,
                     /*.mem_buffer =*/ nullptr,

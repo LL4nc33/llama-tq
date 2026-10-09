@@ -130,6 +130,10 @@ extern "C" {
 
         // if > 0, the gradients are scaled down so that their global L2 norm is at most grad_clip
         float grad_clip;
+
+        // gradient checkpointing at the tensors named "l_out-<il>" (layer outputs): activations are recomputed in
+        // the backward pass instead of being kept (dynamic graphs only)
+        bool checkpoint;
     };
 
     // get parameters for an optimization context with defaults set where possible

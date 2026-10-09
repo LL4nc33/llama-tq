@@ -530,6 +530,7 @@ int main(int argc, char ** argv) {
         /*get_opt_pars_ud =*/&params.lr,
         /*optimizer_type  =*/params.optimizer,
         /*grad_clip       =*/params.grad_clip,
+        /*grad_checkpoint =*/params.grad_checkpoint,
     };
     llama_opt_init(ctx, model, lopt_params);
 

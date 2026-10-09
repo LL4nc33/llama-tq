@@ -84,6 +84,7 @@ struct ggml_opt_context {
 
     enum ggml_opt_optimizer_type optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
     float                        grad_clip = 0.0f;
+    bool                         checkpoint = false;
 
     std::string state_pending; // optimizer state file to apply once the moments are allocated
 
@@ -280,6 +281,7 @@ struct ggml_opt_params ggml_opt_default_params(
         /*get_opt_pars_ud =*/ nullptr,
         /*optimizer       =*/ GGML_OPT_OPTIMIZER_TYPE_ADAMW,
         /*grad_clip       =*/ 0.0f,
+        /*checkpoint      =*/ false,
     };
 }
 
@@ -580,6 +582,23 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     }
     ggml_build_backward_expand(opt_ctx->ctx_compute, opt_ctx->gb_grad, opt_ctx->grad_accs.data());
 
+    // gradient checkpointing at the layer outputs (tensors named "l_out-<il>", or GGML_OPT_CHECKPOINT=1): the
+    // backward pass recomputes each layer from its input instead of keeping its activations (one more forward pass)
+    static const bool checkpoint_env = getenv("GGML_OPT_CHECKPOINT") != nullptr && atoi(getenv("GGML_OPT_CHECKPOINT")) != 0;
+    if ((opt_ctx->checkpoint || checkpoint_env) && !opt_ctx->static_graphs) {
+        std::vector<struct ggml_tensor *> checkpoints;
+        for (int i = 0; i < opt_ctx->gf->n_nodes; ++i) {
+            struct ggml_tensor * node = opt_ctx->gf->nodes[i];
+            if (strncmp(node->name, "l_out-", 6) == 0) {
+                checkpoints.push_back(node);
+            }
+        }
+        if (!checkpoints.empty()) {
+            ggml_graph_recompute_checkpoints(opt_ctx->ctx_compute, opt_ctx->gb_grad, opt_ctx->gf->n_nodes,
+                checkpoints.data(), (int) checkpoints.size());
+        }
+    }
+
     if (opt_ctx->buf_static) {
         if (opt_ctx->build_type == GGML_OPT_BUILD_TYPE_GRAD) {
             return;
@@ -698,6 +717,7 @@ ggml_opt_context_t ggml_opt_init(struct ggml_opt_params params) {
     result->get_opt_pars_ud  = params.get_opt_pars_ud;
     result->optimizer        = params.optimizer;
     result->grad_clip        = params.grad_clip;
+    result->checkpoint       = params.checkpoint;
 
     GGML_ASSERT(result->opt_period >= 1);
 

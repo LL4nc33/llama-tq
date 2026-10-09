@@ -4110,6 +4110,12 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) { params.grad_clip = std::stof(value); }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--grad-checkpoint"},
+        "gradient checkpointing: keep only the layer outputs and recompute each layer in the backward pass "
+        "(about one more forward pass, much less memory for long ubatches)",
+        [](common_params & params) { params.grad_checkpoint = true; }
+    ).set_examples({LLAMA_EXAMPLE_FINETUNE}));
+    add_opt(common_arg(
         {"--lr-warmup"}, "N",
         string_format("raise the learning rate linearly over the first N optimizer steps (default: %u)", params.lr.warmup),
         [](common_params & params, int value) { params.lr.warmup = value; }

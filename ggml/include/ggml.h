@@ -2808,6 +2808,16 @@ extern "C" {
         struct ggml_cgraph  *  cgraph,
         struct ggml_tensor  ** grad_accs);
 
+    // gradient checkpointing for a graph built with ggml_build_backward_expand: the backward part (nodes from
+    // n_forward on) reads forward results only from the checkpoints (and parameters, inputs, outputs, the loss);
+    // the other forward results are recomputed right before their first use
+    GGML_API void ggml_graph_recompute_checkpoints(
+        struct ggml_context *  ctx,
+        struct ggml_cgraph  *  cgraph,
+        int                    n_forward,
+        struct ggml_tensor  ** checkpoints,
+        int                    n_checkpoints);
+
     // graph allocation in a context
     GGML_API struct ggml_cgraph * ggml_new_graph       (struct ggml_context * ctx); // size = GGML_DEFAULT_GRAPH_SIZE, grads = false
     GGML_API struct ggml_cgraph * ggml_new_graph_custom(struct ggml_context * ctx, size_t size, bool grads);

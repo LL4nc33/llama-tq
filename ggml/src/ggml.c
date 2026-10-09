@@ -7821,6 +7821,118 @@ void ggml_build_backward_expand(
     free(grads_needed);
 }
 
+// gradient checkpointing: the backward nodes of cgraph (nodes [n_forward, n_nodes)) read forward results only from
+// the checkpoints (and from leafs, parameters, inputs and outputs); every other forward result they need is
+// recomputed by a clone that depends only on checkpoints. The graph is rebuilt so that each clone is placed right
+// before its first user, which lets the allocator free the forward intermediates after the forward pass.
+static struct ggml_tensor * ggml_recompute_clone(struct ggml_context * ctx, struct ggml_tensor * t,
+        const struct ggml_hash_set * fwd, const struct ggml_hash_set * keep,
+        struct ggml_hash_set * done, struct ggml_tensor ** clones) {
+    if (t == NULL || !ggml_hash_contains(fwd, t) || ggml_hash_contains(keep, t)) {
+        return t;
+    }
+    const size_t ih = ggml_hash_find(done, t);
+    if (ih != GGML_HASHSET_FULL && ggml_bitset_get(done->used, ih)) {
+        return clones[ih];
+    }
+    struct ggml_tensor * view_src = t->view_src ? ggml_recompute_clone(ctx, t->view_src, fwd, keep, done, clones) : NULL;
+    struct ggml_tensor * c = ggml_new_tensor_impl(ctx, t->type, GGML_MAX_DIMS, t->ne, view_src, t->view_offs);
+    memcpy(c->nb, t->nb, sizeof(t->nb));
+    memcpy(c->op_params, t->op_params, sizeof(t->op_params));
+    c->op    = t->op;
+    c->flags = t->flags & ~(GGML_TENSOR_FLAG_PARAM | GGML_TENSOR_FLAG_LOSS | GGML_TENSOR_FLAG_OUTPUT);
+    ggml_format_name(c, "%.56s (rc)", t->name);
+    // registered before the sources: a node may be its own source (ggml_cast: src[1] is the result)
+    clones[ggml_hash_insert(done, t)] = c;
+    for (int j = 0; j < GGML_MAX_SRC; ++j) {
+        c->src[j] = ggml_recompute_clone(ctx, t->src[j], fwd, keep, done, clones);
+    }
+    return c;
+}
+
+void ggml_graph_recompute_checkpoints(struct ggml_context * ctx, struct ggml_cgraph * cgraph, int n_forward,
+        struct ggml_tensor ** checkpoints, int n_checkpoints) {
+    GGML_ASSERT(n_forward >= 0 && n_forward <= cgraph->n_nodes);
+    const size_t hs = cgraph->visited_hash_set.size;
+    struct ggml_hash_set fwd  = ggml_hash_set_new(hs);
+    struct ggml_hash_set keep = ggml_hash_set_new(hs);
+    struct ggml_hash_set done = ggml_hash_set_new(hs);
+    struct ggml_tensor ** clones = (struct ggml_tensor **) calloc(done.size, sizeof(struct ggml_tensor *));
+
+    for (int i = 0; i < n_forward; ++i) {
+        ggml_hash_insert(&fwd, cgraph->nodes[i]);
+    }
+    for (int i = 0; i < n_forward; ++i) {
+        struct ggml_tensor * node = cgraph->nodes[i];
+        bool k = (node->flags & (GGML_TENSOR_FLAG_PARAM | GGML_TENSOR_FLAG_INPUT | GGML_TENSOR_FLAG_OUTPUT | GGML_TENSOR_FLAG_LOSS)) != 0;
+        // a node that reads a cache (a pre-allocated leaf that holds no weights, e.g. the KV cache or the
+        // recurrent state of a Gated DeltaNet layer) keeps its result: the forward pass may overwrite that cache in
+        // place afterwards, so a recomputation would read the new state
+        for (int j = 0; j < GGML_MAX_SRC && !k && node->view_src == NULL; ++j) {
+            const struct ggml_tensor * src = node->src[j];
+            if (src == NULL) {
+                continue;
+            }
+            const struct ggml_tensor * base = src->view_src ? src->view_src : src;
+            k = !ggml_hash_contains(&fwd, (struct ggml_tensor *) base) && base->buffer != NULL &&
+                ggml_backend_buffer_get_usage(base->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
+        }
+        if (k) {
+            ggml_hash_insert(&keep, node);
+        }
+    }
+    for (int i = 0; i < n_checkpoints; ++i) {
+        ggml_hash_insert(&keep, checkpoints[i]);
+    }
+
+    // backward nodes read clones instead of forward intermediates
+    for (int i = n_forward; i < cgraph->n_nodes; ++i) {
+        struct ggml_tensor * node = cgraph->nodes[i];
+        for (int j = 0; j < GGML_MAX_SRC; ++j) {
+            node->src[j] = ggml_recompute_clone(ctx, node->src[j], &fwd, &keep, &done, clones);
+        }
+        if (node->view_src) {
+            node->view_src = ggml_recompute_clone(ctx, node->view_src, &fwd, &keep, &done, clones);
+        }
+    }
+
+    if (getenv("GGML_RECOMPUTE_DEBUG")) {
+        size_t n_clones = 0, n_keep = 0;
+        for (size_t i = 0; i < done.size; ++i) { n_clones += ggml_bitset_get(done.used, i); }
+        for (size_t i = 0; i < keep.size; ++i) { n_keep += ggml_bitset_get(keep.used, i); }
+        GGML_LOG_INFO("%s: %d forward nodes, %zu kept, %zu recomputed, %d checkpoints\n", __func__, n_forward, n_keep, n_clones, n_checkpoints);
+    }
+
+    // rebuild the node order: forward nodes, then each backward node preceded by the clones it needs
+    struct ggml_cgraph * g = ggml_new_graph_custom(ctx, cgraph->size, cgraph->grads != NULL);
+    for (int i = 0; i < n_forward; ++i) {
+        ggml_build_forward_expand(g, cgraph->nodes[i]);
+    }
+    for (int i = n_forward; i < cgraph->n_nodes; ++i) {
+        ggml_build_forward_expand(g, cgraph->nodes[i]);
+    }
+    if (cgraph->grads) {
+        for (size_t i = 0; i < cgraph->visited_hash_set.size; ++i) {
+            if (!ggml_bitset_get(cgraph->visited_hash_set.used, i)) {
+                continue;
+            }
+            struct ggml_tensor * key = cgraph->visited_hash_set.keys[i];
+            const size_t ig = ggml_hash_find(&g->visited_hash_set, key);
+            if (ig == GGML_HASHSET_FULL || !ggml_bitset_get(g->visited_hash_set.used, ig)) {
+                continue;
+            }
+            g->grads[ig]     = cgraph->grads[i];
+            g->grad_accs[ig] = cgraph->grad_accs[i];
+        }
+    }
+    ggml_graph_cpy(g, cgraph);
+
+    free(clones);
+    ggml_hash_set_free(&done);
+    ggml_hash_set_free(&keep);
+    ggml_hash_set_free(&fwd);
+}
+
 static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
     void * ptr = *p;
     ptr = (void *) GGML_PAD((uintptr_t) ptr, align);
