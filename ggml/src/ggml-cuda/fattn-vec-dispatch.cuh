@@ -80,6 +80,18 @@ bool try_dispatch_vec_xktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+// one TU per VTQ V type, called by the family helpers above
+bool try_dispatch_vec_vtq1_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq4_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq4_2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq4_3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_v8(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 // E14 split-decode path — see fattn-vec-dispatch-vtq2-split.cu.
 bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
