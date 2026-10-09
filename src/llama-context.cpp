@@ -3871,7 +3871,7 @@ llama_context * llama_init_from_model(
         // VTQ_2/_3 family quantizes along the sequence axis (sample-oriented Trellis blocks),
         // not along head_dim — so the head_dim divisibility check from upstream stock-quants
         // does not apply. Skip the check for VTQ types.
-        const bool is_vtq_v = (params.type_v == GGML_TYPE_VTQ_MIXED || GGML_TYPE_IS_VTQ(params.type_v));
+        const bool is_vtq_v = GGML_TYPE_IS_VTQ(params.type_v);
         if (!is_vtq_v) {
             const uint32_t blck_size = ggml_blck_size(params.type_v);
             for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {

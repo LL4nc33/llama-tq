@@ -1040,14 +1040,6 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_vtq4_3,
         .from_float_ref           = (ggml_from_float_t) quantize_row_vtq4_3_ref,
     },
-    [GGML_TYPE_VTQ_MIXED] = {
-        .type_name                = "vtq_mixed",
-        .blck_size                = QK_VTQ,
-        .type_size                = sizeof(block_vtq_mixed),
-        .is_quantized             = true,
-        .to_float                 = (ggml_to_float_t) dequantize_row_vtq_mixed,
-        .from_float_ref           = (ggml_from_float_t) quantize_row_vtq_mixed_ref,
-    },
     [GGML_TYPE_VTQ3_V8] = {
         .type_name                = "vtq3_v8",
         .blck_size                = QK_VTQ_TRELLIS,

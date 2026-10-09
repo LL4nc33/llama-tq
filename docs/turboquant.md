@@ -107,7 +107,7 @@ PPL impact on 35B-A3B at 3.78 bpw avg (`ktq2_1 + vtq3_3`): +0.47% vs f16/f16 —
 
 | Type        | enum | Status |
 |-------------|:---:|---|
-| `vtq_mixed` | 53 | **Discarded** — dominated by `vtq3_1`, no CUDA path. Defined for ABI stability. |
+| (`vtq_mixed`) | 53 | **Removed** — dominated by `vtq3_1`, never had a CUDA path. Code deleted, enum id kept reserved. |
 | (`xktq2_1`) | 57 | **Removed** — XQuant cross-layer subordinate K. Never produced pairs on the hybrid models in use; code deleted, enum id kept reserved. |
 
 ## Recommended Configurations
@@ -325,7 +325,7 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 
 | File                                       | Description |
 |--------------------------------------------|---|
-| `ggml/include/ggml.h`                      | Type enums lines 389–449. KTQ1_1=45, KTQ2_1=42, KTQ3_1=43, KTQ4_1=44. VTQ1_1=46, VTQ2_1=47, VTQ3_1=48, VTQ4_1=49. VTQ2_2=50, VTQ3_2=51, VTQ4_2=52. VTQ_MIXED=53 (dormant). VTQ2_3=54, VTQ3_3=55, VTQ4_3=56. 57 reserved (was XKTQ2_1). |
+| `ggml/include/ggml.h`                      | Type enums lines 389–449. KTQ1_1=45, KTQ2_1=42, KTQ3_1=43, KTQ4_1=44. VTQ1_1=46, VTQ2_1=47, VTQ3_1=48, VTQ4_1=49. VTQ2_2=50, VTQ3_2=51, VTQ4_2=52. 53 reserved (was VTQ_MIXED). VTQ2_3=54, VTQ3_3=55, VTQ4_3=56. 57 reserved (was XKTQ2_1). |
 | `ggml/src/ggml-common.h`                   | Block structs: `block_ktq*` (with `sb[4]`), `block_vtq*_1`, `block_vtq*_2` (Trellis), `block_vtq*_3` (Trellis + outliers). |
 | `ggml/src/ggml-cuda/turboquant.cuh`        | CUDA kernels: KTQ Philox, FWHT, quantize, dequant; VTQ v1 quantize/dequant. |
 | `ggml/src/ggml-cuda/fattn-common.cuh`      | FA: `vec_dot_KQ_ktq*`, `dequantize_V_ktq*`, `dequantize_V_vtq*` (v1/v2/v3), Sparse-V guard. |
@@ -354,7 +354,7 @@ Kept for reference; current plans are in [ROADMAP.md](../ROADMAP.md).
 
 - **Trellis-K (TCQ-style)** — incompatible with Hadamard-domain Q·K USP (sliding-window Trellis is non-linear in idx; H-domain skalar product requires linear dequant). Cached SMEM decode would work but loses the USP for ~0.5–1% PPL gain — not worth the trade. Tracked as v6-roadmap kill.
 - **Speculative decoding on A3B MoE** — expert-saturation pathology makes it ineffective.
-- **VTQ_MIXED** — dominated by `vtq3_1`, no CUDA path. Enum kept for ABI.
+- **VTQ_MIXED** — dominated by `vtq3_1`, no CUDA path. Removed; enum 53 stays reserved.
 - **Calibrated outlier selection** (pre-v3 design) — marginal gain after RHT.
 - **MMA-KTQ as default for all ctx** — regresses past ~512 tokens. Now short-ctx-prefill only.
 - **XQuant cross-layer K reuse** — Qwen3.X-A3B / Qwen3.6-27B alternate Mamba/attention layers, yielding 0 pairs. The dormant implementation (`xktq2_1`, `--xquant`) was removed; enum 57 stays reserved.

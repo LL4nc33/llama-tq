@@ -440,7 +440,7 @@ extern "C" {
         GGML_TYPE_VTQ2_2  = 50, // V-cache: Trellis v2, 2-bit group-Viterbi, 2.25 bpw (QK=128)
         GGML_TYPE_VTQ3_2  = 51, // V-cache: Trellis v2, 3-bit group-Viterbi, 3.25 bpw (QK=128)
         GGML_TYPE_VTQ4_2  = 52, // V-cache: Trellis v2, 4-bit group-Viterbi, 4.25 bpw (QK=128)
-        GGML_TYPE_VTQ_MIXED = 53, // V-cache: 2+3 bit mixed (8 hi @ 3-bit every 4th, 24 lo @ 2-bit), 2.75 bpw
+        // GGML_TYPE_VTQ_MIXED = 53, removed, id reserved
         GGML_TYPE_VTQ2_3  = 54, // V-cache: Trellis v2 + 4 fp16 outlier positions, 3.00 bpw
         GGML_TYPE_VTQ3_3  = 55, // V-cache: Trellis v2 + 4 fp16 outlier positions, 4.00 bpw
         GGML_TYPE_VTQ4_3  = 56, // V-cache: Trellis v2 + 4 fp16 outlier positions, 5.00 bpw
@@ -454,7 +454,7 @@ extern "C" {
     };
 
     // TurboQuant KV cache type families. Macros so that the same list works in C, in C++
-    // constant expressions and in CUDA device code. VTQ_MIXED is not included.
+    // constant expressions and in CUDA device code.
     #define GGML_TYPE_IS_KTQ(t) \
         ((t) == GGML_TYPE_KTQ1_1 || (t) == GGML_TYPE_KTQ2_1 || (t) == GGML_TYPE_KTQ3_1 || (t) == GGML_TYPE_KTQ4_1)
     #define GGML_TYPE_IS_VTQ_CODEBOOK(t) \
