@@ -727,7 +727,6 @@ private:
 
                 params_base.speculative.model_dft = model;  // SAME model
                 params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
-                params_base.speculative.cparams_dft.moe_cache_size = 0; // the MoE cache is only used by the target context
                 params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
                 params_base.speculative.cparams_dft.ctx_type  = LLAMA_CONTEXT_TYPE_MTP;
                 params_base.speculative.cparams_dft.ctx_other = ctx;
@@ -771,7 +770,6 @@ private:
 
                 params_base.speculative.model_dft = model_dft.get();
                 params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
-                params_base.speculative.cparams_dft.moe_cache_size = 0; // the MoE cache is only used by the target context
                 params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
 
                 // PR #23398: Gemma4-assistant (MTP draft) shares the target's KV cache.

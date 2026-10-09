@@ -16,7 +16,6 @@
 
 struct llama_model;
 class llama_batch_allocr;
-class llama_moe_cache;
 
 class llama_io_read_i;
 class llama_io_write_i;
@@ -238,7 +237,7 @@ private:
 public:
     uint32_t graph_max_nodes(uint32_t n_tokens) const;
 
-    // (re)create the scheduler for graphs of up to max_nodes nodes, with the MoE cache hooks if any
+    // (re)create the scheduler for graphs of up to max_nodes nodes
     void sched_create(size_t max_nodes, bool parallel);
 
     // can reuse the llm_graph_result instance of the context (for example to update a memory module)
@@ -284,8 +283,6 @@ private:
 
 
     llama_memory_ptr memory;
-
-    std::unique_ptr<llama_moe_cache> moe_cache;
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};

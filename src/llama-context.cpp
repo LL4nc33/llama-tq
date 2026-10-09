@@ -12,7 +12,6 @@
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
-#include "llama-moe-cache.h"
 #include "llama-ext.h"
 #include "llama.h"
 
@@ -302,7 +301,6 @@ llama_context::llama_context(
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
     cparams.op_offload = params.op_offload;
-    cparams.moe_cache_size = params.moe_cache_size;
     cparams.kv_unified = params.kv_unified;
     cparams.tq_profile_heads = params.tq_profile_heads;
     cparams.qat_target_quant = params.qat_target_quant;
@@ -502,31 +500,6 @@ llama_context::llama_context(
 
         if (cparams.pipeline_parallel) {
             LLAMA_LOG_INFO("%s: pipeline parallelism enabled\n", __func__);
-        }
-
-        if (cparams.moe_cache_size > 0) {
-            if (!cparams.op_offload) {
-                throw std::runtime_error("MoE cache requires op offload");
-            }
-            if (cparams.pipeline_parallel) {
-                // the cache remaps the expert ids of a single graph copy
-                cparams.pipeline_parallel = false;
-                LLAMA_LOG_INFO("%s: pipeline parallelism disabled for the MoE cache\n", __func__);
-            }
-            // with several GPUs the cache sits on the device whose layers keep the most experts in host memory;
-            // it serves the layers of that device
-            const ggml_backend_dev_t dev = llama_moe_cache::host_expert_device(model);
-            for (size_t i = 0; dev != nullptr && i < backend_ptrs.size(); ++i) {
-                if (ggml_backend_get_device(backend_ptrs[i]) == dev) {
-                    moe_cache = std::make_unique<llama_moe_cache>(model, backend_ptrs[i], backend_buft[i], cparams.moe_cache_size);
-                    break;
-                }
-            }
-            if (dev == nullptr) {
-                LLAMA_LOG_WARN("%s: no layer keeps its experts in host memory, MoE cache is disabled\n", __func__);
-            } else if (!moe_cache) {
-                throw std::runtime_error("MoE cache requires a GPU backend");
-            }
         }
 
         sched_reserve();
@@ -2643,10 +2616,6 @@ void llama_context::output_reorder() {
 
 void llama_context::sched_create(size_t max_nodes, bool parallel) {
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, parallel, cparams.op_offload));
-    if (moe_cache) {
-        ggml_backend_sched_set_moe_cache(sched.get(), moe_cache->backend(),
-            llama_moe_cache::sched_resolve, llama_moe_cache::sched_begin, llama_moe_cache::sched_prepare, moe_cache.get());
-    }
 }
 
 uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
@@ -3420,11 +3389,6 @@ std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> llama_context:
             ret[buft].context += size;
         }
     }
-    if (moe_cache) {
-        for (const auto & [buft, size] : moe_cache->memory_breakdown()) {
-            ret[buft].context += size;
-        }
-    }
     if (model.hparams.no_alloc) {
         for (size_t i = 0; i < backends.size(); ++i) {
             ggml_backend_t             backend = backends[i].get();
@@ -3794,7 +3758,6 @@ llama_context_params llama_context_default_params() {
         /*.sampler                     =*/ nullptr,
         /*.n_sampler                   =*/ 0,
         /*.ctx_other                   =*/ nullptr,
-        /*.moe_cache_size              =*/ 0,
     };
 
     return result;
