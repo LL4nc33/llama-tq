@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-09
+
+- **Flash attention backward** (`GGML_OP_FLASH_ATTN_BACK`, CPU and CUDA): the softmax is recomputed from q and k instead of storing the attention probabilities (masks, GQA, softcap, ALiBi, sinks). The CUDA backward runs on cuBLAS GEMMs per block of query rows, so `-fa on` is as fast as the non-flash path with less memory (Qwen3-4B, `-c 4096 -ub 512`: 9.8 GB instead of 18.7 GB). `llama-finetune` uses flash attention by default on CPU and CUDA. New `test-flash-attn-back` against float64 central differences.
+- **Training speed-ups:** CUDA `ACC` for strided and permuted second operands (these nodes ran on the CPU), `out_prod` through quantized weights on f16 tensor cores with power-of-two scaling, labels kept on the device of the output projection, `LLAMA_TRAIN_TIMING=1` prints the time per step by phase.
+- **Gradient checkpointing** (`--grad-checkpoint`): only the layer outputs are kept, each layer is recomputed in the backward pass. Logits are computed only for positions with a trained label.
+- **Packed chat windows:** whole chat examples per window without overlap (each token once per epoch instead of twice); `--train-stride N` sets the stride.
+- Qwen3-4B, 2 epochs, 100 held-out examples, 100 % exact match: RTX 2060 321 s (PyTorch QLoRA 260 s; 1585 s before these changes), RTX 5090 54 s (PyTorch QLoRA 102 s). See [docs/finetune.md](docs/finetune.md).
+- Fixed: training with `-ngl 0` in a CUDA build (no op offload, Gated DeltaNet q made contiguous); KV cache writes no longer need `GGML_BACKWARD_SKIP_INPLACE=1`; `--moe-pin-experts` had no effect since the per-model tensor loading and works again.
+- CUDA builds: the VTQ flash attention vec dispatch compiles in eleven parallel TUs (one per V type) instead of three long ones.
+- Cleanup: removed the unused VTQ correction overlay and trellis encode receiver, the standalone Vulkan TQ dequant prototype, XQuant cross-layer K reuse (`--xquant`), the MoE expert cache (`--moe-cache-mib`), the `vtq_mixed` type, the expert hotness prefetch and router profiler, and upstream-only GitHub automation.
+
 ## 2026-10-08 (later)
 
 - K2-Horizon-MoVA-36B-A4B (MoE with routed value experts) learns the appointment task as well: 0 -> 100 % exact match after one attention-LoRA run (39 min).

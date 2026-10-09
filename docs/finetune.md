@@ -9,7 +9,7 @@ with `llama-export-lora`.
 ## Quick start
 
 ```bash
-GGML_BACKWARD_SKIP_INPLACE=1 llama-finetune \
+llama-finetune \
   -m Qwen3-4B-Instruct-2507-Q4_K_M.gguf -f train.jsonl -o task.gguf \
   --lora-train-target '^blk\.[0-9]+\.attn_(q|k|v|output)\.weight$' --lora-train-rank 16 --lora-train-alpha 32 \
   -opt adamw -lr 2e-4 --lr-warmup 20 --epochs 2 -val-split 0.1 \
@@ -50,17 +50,20 @@ prompt), and an adapter trained on one form only partly transfers to the other.
 | `--reasoning on\|off\|auto` | Render chat data as the server does with this setting. |
 | `--resume` | Continue a stopped run from the adapter, `<adapter>.opt` (step count, AdamW moments) and `<adapter>.state` (position, learning-rate step, early-stop state). The result is bit-identical to an uninterrupted run. Refuses an adapter trained with another alpha. |
 | `--stop-after N` | Stop after N context windows and save everything for `--resume`. SIGINT/SIGTERM do the same after the current window (a second signal exits at once). |
+| `--grad-checkpoint` | Gradient checkpointing: only the layer outputs are kept, each layer is recomputed in the backward pass (about one more forward pass). Same gradients; Qwen3-4B, c=512: 8.2 → 4.4 GB. |
+| `--train-stride N` | Distance between the starts of two training windows. Chat data: whole examples are packed into non-overlapping windows (default stride = context). Plain text: half the context by default. |
 | `--checkpoint-every N` | Also save adapter and state every N training ubatches (at the end of a window). |
 | `--train-skip-regex REGEX` | Without a LoRA target: train the model tensors not matching the regex directly (see below). |
-| `GGML_BACKWARD_SKIP_INPLACE=1` | Required for hybrid/recurrent models: inplace ops (cache writes) end the gradient instead of asserting. Each kind of skipped op is reported once. |
+| `GGML_BACKWARD_SKIP_INPLACE=1` | Only for recurrent models whose state ops have no backward (Mamba, RWKV): other inplace ops end the gradient instead of asserting. Each kind of skipped op is reported once. KV cache writes never need it. |
 | `GGML_OPT_PRINT_GRAD_NORM=1\|2` | Log the global gradient norm of every optimizer step (2: also per parameter). |
 | `GGML_OPT_LINE_PROGRESS=1` | One progress line per step, for logs. |
 
 Checkpoint files are written to a temporary file and renamed, the position last; an interrupted save
 keeps the previous consistent checkpoint.
 
-Training forces flash attention off (it has no backward pass), memory mapping off and an F32 KV cache,
-and disables CPU weight repacking.
+Training turns memory mapping off, uses an F32 KV cache and disables CPU weight repacking. Flash attention
+is on by default on CPU and CUDA (it saves the attention probabilities of every layer at the same speed, see
+below) and off when another GPU backend is present; `-fa on`/`-fa off` overrides.
 
 ## What gets a gradient
 
@@ -86,8 +89,11 @@ adds or fixes:
   to their parameter (two GPUs), the state is kept per parameter (graphs may differ between ubatches),
   global-norm clipping, save/restore of the AdamW state.
 
-Not covered: `SSM_SCAN` (Mamba-1/2) and flash attention have no backward; rows added by `ADD_ID` (the
-expert biases themselves) and the kernel of `GELU_ERF` are not trainable.
+- **Flash attention** (`-fa on`): `GGML_OP_FLASH_ATTN_BACK` on CPU and CUDA recomputes the softmax from q
+  and k instead of storing the attention probabilities (masks, GQA, softcap, ALiBi, sinks).
+
+Not covered: `SSM_SCAN` (Mamba-1/2) has no backward; rows added by `ADD_ID` (the expert biases themselves)
+and the kernel of `GELU_ERF` are not trainable.
 
 ## Results
 
@@ -101,23 +107,68 @@ training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 
 | Gemma-4-12B Q4_K_M | attention q/k/v/o, rank 16, AdamW 5e-5, 1 epoch, `--reasoning off` | 28 min | 0 % → **94 %** | 0.080 / 97.8 % |
 | same, trained with thinking on, served with it off | | 29 min | 0 % → 73 % | 0.109 / 97.0 % |
 | Qwen3.6-35B-A3B IQ2_XXS (MoE, Gated DeltaNet) | routed experts only, rank 2, AdamW 2e-4, 1 epoch, `--reasoning off` | 82 min | 0 % → **89 %** | 0.217 / 95.8 % |
+| same, with the gradient of the expert weight normalization (CLAMP/DIV fix) | | 83 min | 0 % → 86 % | 0.196 / 96.0 % |
 | Qwen3.5-0.8B Q8_0 (Gated DeltaNet) | attention + GDN projections, rank 16, 1 epoch | 10 min | | 0.042 / 99.1 % |
 | Ministral-3-3B Q4_K_M | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 10 min | 0 % → **100 %** | 0.078 |
 | gpt-oss-20b MXFP4 | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 26 min | 0 % → **100 %** | 0.062 |
 | K2-Horizon-MoVA-36B-A4B Q3_K_M (MoE, routed value experts) | attention q/k/o, rank 16, AdamW 1e-4, 1 epoch, `--reasoning off` | 39 min | 0 % → **100 %** | 0.130 / 96.0 % |
+| Kolibri-1 Q3_K_S (78B MoE, 31.5 GiB, experts of 32 layers in RAM) | attention, rank 16, AdamW 1e-4, 1 epoch on 300 examples, `--reasoning off` | 4 h 13 min | 0 % → **99 %** | 0.165 / 95.4 % |
 
 Short runs (60 windows, attention LoRA) also converge on Gemma-4-26B-A4B, Qwen3.8-27B and
 Ternary-Bonsai-2-27B (PTQ1_0). Gemma 4 needs a lower learning rate (1e-4 diverged, 5e-5 trains).
 
-**Long context** (Qwen3-4B, two GPUs, peak memory): `-c 4096 -ub 512` 18.6 GB, `-c 8192 -ub 256`
-19.2 GB, `-c 16384 -ub 128` 23.0 GB. Without a flash-attention backward every layer keeps its attention
-probabilities for the backward pass; lower `-ub` for longer contexts. An out-of-memory training graph
-stops with a message.
+**Long context** (Qwen3-4B, peak memory): without flash attention `-c 4096 -ub 512` takes 18.7 GB,
+`-c 8192 -ub 256` 19.2 GB and `-c 16384 -ub 128` 23.0 GB, because every layer keeps its attention
+probabilities. With `-fa on`, `-c 4096 -ub 512` takes 9.8 GB on an RTX 2060 and 10.1 GB on an RTX 5090
+(−47 %). A whole window in one ubatch (`-ub` = `-c`, so that the gradient is not cut at ubatch boundaries) is limited by
+the stored activations of all layers; `--grad-checkpoint` keeps only the layer outputs. On a 12 GB RTX 2060:
+`-c 2048 -ub 2048` runs out of memory without it and takes 9.1 GB with it; `-c 3072 -ub 3072` fits with
+`--grad-checkpoint -fa on` (12.0 GB). On a 32 GB RTX 5090, `-c 4096 -ub 4096 --grad-checkpoint` takes 15.6 GB and
+`-c 8192 -ub 8192 --grad-checkpoint` 28.0 GB (13 s per window). Logits are computed only for positions with a trained label, which keeps
+the output projection (n_vocab per position) small for chat data. An out-of-memory training graph stops with a
+message.
+
+The CUDA flash attention backward runs on cuBLAS GEMMs (per block of query rows: S = K^T Q, dP = V^T dO,
+dV += dO P^T, dQ = K dS, dK += Q dS^T), so `-fa on` is no slower than the non-flash path. First training step on an
+RTX 2060 (Qwen3-4B, including setup): `-c 2048 -ub 2048 --grad-checkpoint` 16 s (non-flash 17 s), `-c 3072 -ub 3072
+--grad-checkpoint` 20 s, `-c 4096 -ub 512` 23 s (the first, row-wise kernel: 33 s, 58 s, 82 s;
+`GGML_CUDA_FA_BACK_NAIVE=1` still selects it). The flash attention forward rounds Q/K/V to F16: the first-step
+loss differs from the non-flash path by 0.7 % on the CPU backend (Qwen3-4B) and by 1–2 % on CUDA.
+
+**Compared with PyTorch QLoRA** (same model, data, LoRA setup — attention q/k/v/o, rank 16, AdamW 2e-4,
+warmup 20, 2 epochs — and the same exact-match metric on the 100 held-out examples):
+
+| System | | Exact match | Training time | Peak memory |
+|---|---|---|---|---|
+| 1× RTX 2060 12 GB | llama-finetune, Qwen3-4B Q4_K_M, packed windows (2026-10-09) | 100 % | 321 s | 7.2 GB |
+| | llama-finetune, overlapping windows, flash attention | 100 % | 509 s | 7.2 GB |
+| | llama-finetune, overlapping windows, without flash attention | 100 % | 513 s | 8.3 GB |
+| | llama-finetune, before the fixes of 2026-10-09 | 100 % | 1585 s | 8.2 GB |
+| | PyTorch + PEFT + bitsandbytes, nf4 | 100 % | 260 s | 10.5 GB |
+| 1× RTX 5090 32 GB | llama-finetune, Qwen3-4B Q4_K_M, packed windows (2026-10-09) | 100 % | 54 s | 7.8 GB |
+| | llama-finetune, before the fixes of 2026-10-09 | 100 % | 396 s | 20.3 GB |
+| | PyTorch + PEFT + bitsandbytes, nf4 | 100 % | 102 s | 11.0 GB |
+
+The adapters are equally good. Profiling the 2060 run showed where llama-finetune lost time: 108 `ACC` nodes of
+the backward pass ran on the CPU (strided operand not supported by the CUDA kernel), the input gradient through
+the quantized weights ran as f32 SGEMM without tensor cores, and the dense labels (311 MB per window) were copied
+from host memory on every step. With these fixed (CUDA `ACC` for strided and permuted operands, `out_prod` on
+f16 tensor cores with power-of-two scaling of the gradient, labels kept on the device) the same run takes 513 s
+instead of 1585 s (3.1×). The remaining factor 2 was the data layout: windows overlapped by half (every token
+trained twice per epoch), while PyTorch trains each example once. Chat examples are now packed whole into
+non-overlapping windows (16 % padding), which takes 321 s, 1.2× the PyTorch time, at the same accuracy. In a step
+the GPU is busy almost all the time; 48 % of the kernel time is the quantized forward matmul (MMQ) and the f16
+GEMM of the input gradient. On an RTX 5090 the same run takes 54 s (82 ms per step), half the PyTorch time (102 s); there the
+per-step overhead that the fixes removed had dominated (396 s before).
+`LLAMA_TRAIN_TIMING=1` prints the time per step by phase.
 
 **Models larger than VRAM.** Experts can stay in host memory (`-ot ...=CPU`); pass `--no-op-offload`,
 otherwise the scheduler copies every host expert the training graph uses to the GPU at once. The host
-experts then run forward and backward on the CPU (Kolibri-1 Q3_K_S, 31.5 GiB: ~26 s per 128-token step;
-measured before the fixes of 2026-10-07).
+experts then run forward and backward on the CPU (Kolibri-1 Q3_K_S, 31.5 GiB, experts of 32 of 50 layers in
+host memory: ~52 s per 256-token window). Use `--checkpoint-every` for such runs: a host reset after 2.6 hours
+of the first Kolibri run lost everything, the second run kept a resumable checkpoint every 20 windows. Serve
+the adapter with the same placement (`-ot` for the host experts, small `-ub`): `--lora` adds compute buffers
+that an automatic placement made without the adapter does not reserve.
 
 ## How it was checked
 
@@ -129,6 +180,10 @@ measured before the fixes of 2026-10-07).
   fix); an SGD step along the gradient lowers the loss by 0.85–0.92 of the first-order prediction on
   F32/Q8 models. On Q4/IQ2 models the quantized activations make the loss of a window jitter by
   ±0.02–0.1 under tiny weight changes, so such steps only confirm the direction there.
+- Flash attention backward: `test-flash-attn-back` against float64 central differences of a float64
+  forward (norm-relative error ~1e-7, GQA, sequences, softcap, ALiBi, sinks, no mask, DV != DK), CPU vs. CUDA
+  in `test-backend-ops` on Turing (RTX 2060) and Blackwell (RTX 5090); a training step with `-fa on` matches
+  the non-flash gradient norm within 0.5–1.4 % (the flash attention forward rounds K/V to F16).
 - Resume: stopping (`--stop-after`, SIGTERM, within and across epochs) and resuming gives a bit-identical
   adapter with SGD and with AdamW + warmup.
 
@@ -147,6 +202,15 @@ not been validated in training.
 
 ## History
 
+- 2026-10-09 (evening): chat examples packed whole into windows without overlap (each token once per epoch,
+  previously twice), flash attention on by default, KV cache writes need no `GGML_BACKWARD_SKIP_INPLACE`,
+  `-ngl 0` in a CUDA build; 2 epochs Qwen3-4B: RTX 2060 321 s (PyTorch QLoRA 260 s), RTX 5090 54 s (PyTorch 102 s).
+- 2026-10-09 (later): flash attention backward on cuBLAS GEMMs (2–3.5× faster for long windows); repository
+  cleanup (unused experiments removed, `--moe-pin-experts` works again).
+- 2026-10-09: gradient checkpointing (`--grad-checkpoint`), logits only for trained positions, training 3.1×
+  faster (CUDA `ACC` for strided/permuted operands, `out_prod` on f16 tensor cores, labels on the device).
+- 2026-10-09: flash attention backward (CPU, CUDA; `-fa on`), PyTorch QLoRA comparison, checked on an
+  RTX 5090 (Blackwell) as a second system; the VTQ flash attention dispatch compiles in eleven parallel TUs.
 - 2026-10-08 (later): `CLAMP` backward (the MoE weight normalization had no gradient), `SUB`/`DIV` backward with a
   broadcast operand, no double free when a `--lora` file fails to load, RPC op count.
 - 2026-10-08: chat rendering follows `--reasoning`; crash-safe checkpoints; tolerant chat data; alpha

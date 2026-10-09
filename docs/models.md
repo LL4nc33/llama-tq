@@ -124,7 +124,7 @@ GGML_OP_OFFLOAD_MIN_BATCH=256 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 13
 | `-fit`, default device order, min batch 1024 | 37.4 t/s | 0.9 s | 4.5 s | 7.0 s | 10.3 s (331 t/s) |
 | `-fit`, default device order, min batch 32 (default) | 37.4 t/s | 3.7 s | 5.5 s | 7.0 s | 10.3 s |
 
-The MoE expert cache (`--moe-cache-mib`) does not pay off here: with 5 GB of cache and a 91 % hit
+An MoE expert cache in VRAM (tried as `--moe-cache-mib`, since removed) did not pay off here: with 5 GB of cache and a 91 % hit
 rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU.
 
 Decode barely drops with context (38 t/s at 10k). KV accuracy: perplexity +0.5 % with
