@@ -3556,7 +3556,10 @@ void llama_context::opt_epoch_iter(
             batch.pos     [pos_batch]    = pos_ctx + pos_batch;
             batch.n_seq_id[pos_batch]    = 1;
             batch.seq_id  [pos_batch][0] = 0;
-            batch.logits  [pos_batch]    = true;
+            // logits only where a label is trained (e.g. not for the prompt of a chat example): the output
+            // projection and the loss over n_vocab dominate the memory of long ubatches. Every ubatch keeps at
+            // least its last position, whose label row may be zero.
+            batch.logits  [pos_batch]    = labels_sparse[pos_ctx + pos_batch] >= 0 || (pos_batch + 1) % n_ubatch == 0 || pos_batch + 1 == n_batch;
         }
 
         if (!balloc->init(batch, model.vocab, nullptr, model.hparams.n_embd_inp(), cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max, true)) {
@@ -3588,7 +3591,10 @@ void llama_context::opt_epoch_iter(
         do {
             const auto & ubatch = mctx->get_ubatch();
 
-            n_outputs = ubatch.n_tokens;
+            n_outputs = 0;
+            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+                n_outputs += ubatch.output[i] != 0;
+            }
 
             if (!mctx->apply()) {
                 LLAMA_LOG_ERROR("%s: failed to update the memory context\n", __func__);
@@ -3644,23 +3650,28 @@ void llama_context::opt_epoch_iter(
             res->set_inputs(&ubatch);
             {
                 struct ggml_tensor * labels = ggml_opt_labels(opt_ctx);
-                GGML_ASSERT(labels->ne[1] == n_ubatch);
+                GGML_ASSERT(labels->ne[1] == n_outputs);
                 ggml_set_zero(labels);
-                // a negative label excludes the position from the loss (e.g. prompt tokens of a chat example): its
-                // row stays zero, and the trained rows are weighted n_ubatch/n_trained so that the loss is the mean
-                // over the trained positions (the cross-entropy gradient is softmax*sum(labels) - labels)
+                // a negative label excludes the position from the loss (e.g. prompt tokens of a chat example): it has
+                // no output row, or a zero row if it is kept as the last position of the ubatch. The trained rows are
+                // weighted n_outputs/n_trained so that the loss is the mean over the trained positions (the
+                // cross-entropy gradient is softmax*sum(labels) - labels)
                 uint32_t n_trained = 0;
-                for (uint32_t pos_ubatch = 0; pos_ubatch < n_ubatch; ++pos_ubatch) {
-                    n_trained += labels_sparse[pos_ctx + pos_batch + pos_ubatch] >= 0;
+                for (uint32_t pos_ubatch = 0; pos_ubatch < ubatch.n_tokens; ++pos_ubatch) {
+                    n_trained += ubatch.output[pos_ubatch] && labels_sparse[pos_ctx + pos_batch + pos_ubatch] >= 0;
                 }
-                const float weight = n_trained > 0 ? float(n_ubatch) / float(n_trained) : 0.0f;
-                for (uint32_t pos_ubatch = 0; pos_ubatch < n_ubatch; ++pos_ubatch) {
-                    const uint32_t ilabel = pos_ctx + pos_batch + pos_ubatch;
-                    if (labels_sparse[ilabel] < 0) {
+                const float weight = n_trained > 0 ? float(n_outputs) / float(n_trained) : 0.0f;
+                int64_t iout = 0;
+                for (uint32_t pos_ubatch = 0; pos_ubatch < ubatch.n_tokens; ++pos_ubatch) {
+                    if (!ubatch.output[pos_ubatch]) {
                         continue;
                     }
-                    GGML_ASSERT(labels_sparse[ilabel] < labels->ne[0]);
-                    ggml_backend_tensor_set(labels, &weight, (pos_ubatch*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
+                    const uint32_t ilabel = pos_ctx + pos_batch + pos_ubatch;
+                    if (labels_sparse[ilabel] >= 0) {
+                        GGML_ASSERT(labels_sparse[ilabel] < labels->ne[0]);
+                        ggml_backend_tensor_set(labels, &weight, (iout*labels->ne[0] + labels_sparse[ilabel])*sizeof(float), sizeof(float));
+                    }
+                    ++iout;
                 }
             }
             int64_t t3 = timing ? ggml_time_us() : 0;
