@@ -663,17 +663,6 @@ struct common_params {
     bool tq_no_deferred_v = false;  // opt-out: disable deferred V staging even for VTQ_2/_3/_v8 types (saves f16 staging VRAM)
     uint32_t tq_profile_heads = 0;  // Trick 2 PR1: profile first N decode calls — dump per-head V variance/kurtosis as JSON
 
-    // Phase 6a: router confidence profiler.
-    // When router_stats_path is non-empty, llama-perplexity attaches an eval-callback
-    // that dumps post-softmax MoE router probabilities (ffn_moe_probs-N tensors).
-    std::string router_stats_path;
-    float       router_stats_tau        = 0.85f;
-    int         router_stats_max_tokens = 256;     // per-layer cap
-
-    // Phase 6f: expert-hotness profile path (JSON from tools/profile-router.py --mode hotness).
-    // When set, runtime issues __builtin_prefetch on hot expert weight blocks before each MoE layer.
-    std::string expert_hotness_path;
-
     // Phase C.1 — Stage-4 QAT (Quantization-Aware Training): if not COUNT,
     // wrap the LoRA delta in fake-quantize-dequantize so the adapter learns
     // to compensate for the base model's quantization error. Active only

@@ -125,7 +125,7 @@ remains the source of truth for whether to keep an override.
    scope for this script.
 
 4. **No KV-cache live path yet.** Option B in the original task (a `'M'` tag
-   in `common/router-profile.h` for K-tensor mean post-FWHT) is *not*
+   in the former router profiler for K-tensor mean post-FWHT) is *not*
    implemented. `--mode samples` requires offline extraction (e.g. via
    `extract_v_samples.py` adapted for K).
 

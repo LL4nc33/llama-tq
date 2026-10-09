@@ -69,10 +69,10 @@ The signal is in *which* experts get picked, not in *how confident* the router i
 
 ## Tooling
 
-- Profiler: `common/router-profile.{h,cpp}`, flag `--log-router-stats` on `llama-perplexity`
-- Analyzer: `tools/profile-router.py`
-- Output: per-token, per-layer top-k expert IDs and logits, JSON summary
+The router profiler (`--log-router-stats` on `llama-perplexity`), the analyzer
+script and the hotness prefetch runtime (`--expert-hotness`) have been removed
+from the tree; they remain available in git history.
 
 ## Status
 
-Lever A is the recommended next step — pure runtime change, no quant or PPL risk. Levers B and C require larger calibration runs and quality-eval matrices before commit.
+Lever A was implemented (Phase 6f, per-layer hot-expert prefetch) and later removed: it did not pay off in practice. Levers B and C require larger calibration runs and quality-eval matrices before commit.
