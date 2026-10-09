@@ -370,10 +370,18 @@ int main(int argc, char ** argv) {
                 __func__);
         params.use_mmap = false;
     }
-    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED) {
-        // flash attention has no backward pass: with it, attention (and everything below it) would get no gradient
-        LOG_INF("%s: force disabling flash attention because it has no backward pass\n", __func__);
-        params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO) {
+        // the flash attention backward exists for the CPU and CUDA backends: use it there (less memory, same speed),
+        // train without flash attention when another GPU backend is present
+        bool fa_back = true;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU && strncmp(ggml_backend_dev_name(dev), "CUDA", 4) != 0) {
+                fa_back = false;
+            }
+        }
+        params.flash_attn_type = fa_back ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+        LOG_INF("%s: flash attention %s (-fa on/off to choose)\n", __func__, fa_back ? "on" : "off");
     }
     if (!params.no_extra_bufts) {
         // the backward ops cannot read weights in a repacked CPU layout
