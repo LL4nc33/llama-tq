@@ -755,6 +755,8 @@ struct llama_model_base : public llama_model {
     void load_hadamard_metadata(llama_model_loader & ml);
     // rotation / sign tensors for the folded weights, once the weights have buffers
     void create_hadamard_tensors();
+    // --moe-pin-experts: pin host-resident expert weights for async copies to the GPU
+    void pin_host_experts();
 
     void load_vocab  (llama_model_loader & ml) override;
     bool load_tensors(llama_model_loader & ml) override;

@@ -1018,6 +1018,15 @@ llama_model::~llama_model() {
     for (auto * lora : loras) {
         delete lora;
     }
+
+    // undo --moe-pin-experts (process-wide; fine for a single-model server)
+    if (params.moe_pin_experts) {
+        ggml_backend_reg_t cuda_reg = ggml_backend_reg_by_name("CUDA");
+        auto unpin_fn = cuda_reg ? (void (*)(void)) ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_unpin_all") : nullptr;
+        if (unpin_fn) {
+            unpin_fn();
+        }
+    }
 }
 
 void llama_model_base::load_stats(llama_model_loader & ml) {
@@ -1602,6 +1611,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
 
     create_hadamard_tensors();
 
+    if (params.moe_pin_experts) {
+        pin_host_experts();
+    }
+
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
@@ -1609,6 +1622,33 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     return true;
+}
+
+// --moe-pin-experts: register MoE expert weights that stay in host memory as pinned
+// CUDA memory, so copies to the GPU (op offload of large batches) run as async DMA
+// instead of staging through pageable memory. Best-effort: failures only warn.
+void llama_model_base::pin_host_experts() {
+    ggml_backend_reg_t cuda_reg = ggml_backend_reg_by_name("CUDA");
+    auto pin_fn = cuda_reg ? (int (*)(void *, size_t)) ggml_backend_reg_get_proc_address(cuda_reg, "ggml_cuda_pin_host_range") : nullptr;
+    if (!pin_fn) {
+        LLAMA_LOG_WARN("%s: --moe-pin-experts needs the CUDA backend, skipping\n", __func__);
+        return;
+    }
+    size_t n_pinned = 0, n_failed = 0, bytes = 0;
+    for (const auto & [name, cur] : tensors_by_name) {
+        const bool is_exps = name.find("_exps.weight") != std::string::npos;
+        if (!is_exps || !cur->buffer || !cur->data || !ggml_backend_buffer_is_host(cur->buffer)) {
+            continue;
+        }
+        if (pin_fn(cur->data, ggml_nbytes(cur)) == 0) {
+            n_pinned++;
+            bytes += ggml_nbytes(cur);
+        } else {
+            n_failed++;
+        }
+    }
+    LLAMA_LOG_INFO("%s: --moe-pin-experts: pinned %zu expert tensors (%.2f MiB), %zu failed\n",
+        __func__, n_pinned, bytes / 1024.0 / 1024.0, n_failed);
 }
 
 void llama_model_base::load_hadamard_metadata(llama_model_loader & ml) {
