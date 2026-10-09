@@ -103,11 +103,7 @@ else()
         ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-ktq2_1.cu
         ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-ktq3_1.cu
         ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-ktq4_1.cu
-        ../ggml-cuda/template-instances/fattn-vec-instance-f16-vtq3_2.cu
-        # XQuant Phase 3d paired-vec instances (gated at runtime, but needed at link).
-        ../ggml-cuda/template-instances/fattn-vec-instance-paired-xktq2_1-ktq2_1.cu
-        ../ggml-cuda/template-instances/fattn-vec-instance-paired-xktq2_1-f16.cu
-        ../ggml-cuda/template-instances/fattn-vec-instance-paired-xktq2_1-q8_0.cu)
+        ../ggml-cuda/template-instances/fattn-vec-instance-f16-vtq3_2.cu)
 endif()
 
 ggml_add_backend_library(ggml-hip

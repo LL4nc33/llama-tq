@@ -123,7 +123,6 @@ public:
         const  layer_reuse_cb & reuse,
         const  layer_share_cb & share,
         const std::vector<ggml_type> & type_v_layers = {},
-                         bool   xquant_enabled = false,
         // a second cache with its own geometry (qwen4exp indexer keys); nullptr = model.hparams
           const llama_hparams * hparams_override = nullptr,
         // a model can hold more than one cache, so tensor names need a distinguishing prefix
@@ -225,14 +224,6 @@ public:
     ggml_tensor * get_k_train(ggml_context * ctx, int32_t il, ggml_tensor * k_cur, uint32_t n_kv, const slot_info & sinfo) const;
     ggml_tensor * get_v_train(ggml_context * ctx, int32_t il, ggml_tensor * v_cur, uint32_t n_kv, const slot_info & sinfo) const;
 
-    // XQuant Phase 3 hook — return the dominant layer's K view for an XQuant
-    // subordinate layer, or nullptr if standalone. The graph builder will
-    // consume this when wiring sibling-tensor-aware FA-vec dispatch.
-    // Phase 3 (this commit): accessor only, no callers yet.
-    // Phase 3b: build_attn_mha will call this when xquant_enabled && K is XKTQ2_1.
-    ggml_tensor * get_dominant_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
-    int32_t       xq_dominant_layer(int32_t il) const;
-
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
@@ -329,12 +320,6 @@ private:
 
     // TurboQuant deferred K quantization
     tq_deferred_state deferred_state = TQ_DEFERRED_OFF;
-
-    // XQuant cross-layer KV — runtime opt-in (Phase 4 tracking, Phase 3 dispatch
-    // not yet wired). When true, xq_dominant_of_layer[il] gives the layer that
-    // owns the codes for layer il's subordinate K-cache; -1 means standalone.
-    bool xquant_enabled = false;
-    std::vector<int32_t> xq_dominant_of_layer;
 
     // user-selected cache types (for type_k()/type_v() accessors when boundary protection is active)
     ggml_type user_type_k = GGML_TYPE_F16;
@@ -478,12 +463,6 @@ public:
     // training variants: the gradient reaches k_cur/v_cur (falls back to get_k/get_v where that is not possible)
     ggml_tensor * get_k_train(ggml_context * ctx, int32_t il, ggml_tensor * k_cur) const;
     ggml_tensor * get_v_train(ggml_context * ctx, int32_t il, ggml_tensor * v_cur) const;
-
-    // XQuant Phase 3 hooks (passthrough to underlying llama_kv_cache).
-    // Used by graph builder to construct paired K-views for subordinate layers.
-    // Returns nullptr / -1 when XQuant is disabled or il is standalone.
-    ggml_tensor * get_dominant_k(ggml_context * ctx, int32_t il) const;
-    int32_t       xq_dominant_layer(int32_t il) const;
 
     // store k_cur and v_cur in the cache based on the provided head location
     // note: the heads in k_cur and v_cur should be laid out contiguously in memory

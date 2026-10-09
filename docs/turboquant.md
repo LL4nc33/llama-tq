@@ -108,7 +108,7 @@ PPL impact on 35B-A3B at 3.78 bpw avg (`ktq2_1 + vtq3_3`): +0.47% vs f16/f16 —
 | Type        | enum | Status |
 |-------------|:---:|---|
 | `vtq_mixed` | 53 | **Discarded** — dominated by `vtq3_1`, no CUDA path. Defined for ABI stability. |
-| `xktq2_1`   | 57 | **Dormant** — XQuant subordinate, code-complete but yields 0 pairs on Qwen3.X-A3B (alternating Mamba/attention layers). For pure-transformer dense models. |
+| (`xktq2_1`) | 57 | **Removed** — XQuant cross-layer subordinate K. Never produced pairs on the hybrid models in use; code deleted, enum id kept reserved. |
 
 ## Recommended Configurations
 
@@ -325,7 +325,7 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 
 | File                                       | Description |
 |--------------------------------------------|---|
-| `ggml/include/ggml.h`                      | Type enums lines 389–449. KTQ1_1=45, KTQ2_1=42, KTQ3_1=43, KTQ4_1=44. VTQ1_1=46, VTQ2_1=47, VTQ3_1=48, VTQ4_1=49. VTQ2_2=50, VTQ3_2=51, VTQ4_2=52. VTQ_MIXED=53 (dormant). VTQ2_3=54, VTQ3_3=55, VTQ4_3=56. XKTQ2_1=57 (dormant). |
+| `ggml/include/ggml.h`                      | Type enums lines 389–449. KTQ1_1=45, KTQ2_1=42, KTQ3_1=43, KTQ4_1=44. VTQ1_1=46, VTQ2_1=47, VTQ3_1=48, VTQ4_1=49. VTQ2_2=50, VTQ3_2=51, VTQ4_2=52. VTQ_MIXED=53 (dormant). VTQ2_3=54, VTQ3_3=55, VTQ4_3=56. 57 reserved (was XKTQ2_1). |
 | `ggml/src/ggml-common.h`                   | Block structs: `block_ktq*` (with `sb[4]`), `block_vtq*_1`, `block_vtq*_2` (Trellis), `block_vtq*_3` (Trellis + outliers). |
 | `ggml/src/ggml-cuda/turboquant.cuh`        | CUDA kernels: KTQ Philox, FWHT, quantize, dequant; VTQ v1 quantize/dequant. |
 | `ggml/src/ggml-cuda/fattn-common.cuh`      | FA: `vec_dot_KQ_ktq*`, `dequantize_V_ktq*`, `dequantize_V_vtq*` (v1/v2/v3), Sparse-V guard. |
@@ -357,7 +357,7 @@ Kept for reference; current plans are in [ROADMAP.md](../ROADMAP.md).
 - **VTQ_MIXED** — dominated by `vtq3_1`, no CUDA path. Enum kept for ABI.
 - **Calibrated outlier selection** (pre-v3 design) — marginal gain after RHT.
 - **MMA-KTQ as default for all ctx** — regresses past ~512 tokens. Now short-ctx-prefill only.
-- **XQuant on hybrid SSM/attention models** — Qwen3.X-A3B / Qwen3.6-27B alternate Mamba/attention layers, yielding 0 pairs. Code-complete and dormant; intended for pure-transformer dense models (Llama-3, Mistral, Gemma-2 family).
+- **XQuant cross-layer K reuse** — Qwen3.X-A3B / Qwen3.6-27B alternate Mamba/attention layers, yielding 0 pairs. The dormant implementation (`xktq2_1`, `--xquant`) was removed; enum 57 stays reserved.
 - **Phase 6 adaptive top-k MoE routing** — `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT` in Qwen3 produces a near-uniform softmax distribution post-top-k; cumulative-mass thresholding is meaningless. The selection itself is highly skewed though — see [docs/research/moe-expert-locality.md](research/moe-expert-locality.md) for the L3-pinning / static-prune levers that survived.
 
 ### Not on roadmap
@@ -387,7 +387,7 @@ This implementation is inspired by but deviates from the cited papers. KTQ uses 
 | **PolarQuant: Quantizing KV Cache via Polar Coordinate Transformation** | Han, Kacham, Karbasi, Mirrokni, Zandieh | [2502.02617](https://arxiv.org/abs/2502.02617) (Feb 2025, ICLR 2026) | Primary inspiration for VTQ v1 D·H·D rotation. |
 | **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate** | Zandieh, Daliri, Hadian, Mirrokni | [2504.19874](https://arxiv.org/abs/2504.19874) (April 2025) | Random rotation + Lloyd-Max codebooks framework. |
 | **QJL: 1-Bit Quantized JL Transform for KV Cache Quantization** | Zandieh, Daliri, Han | [2406.03482](https://arxiv.org/abs/2406.03482) (June 2024) | Used in v1–v4, removed in v5. |
-| **XQuant: Cross-layer KV reuse** | (cf. 2510.11236) | [2510.11236](https://arxiv.org/abs/2510.11236) | Phase 5 dormant subordinate path. |
+| **XQuant: Cross-layer KV reuse** | (cf. 2510.11236) | [2510.11236](https://arxiv.org/abs/2510.11236) | Tried as Phase 5 (subordinate K path), later removed. |
 | **Parallel Random Numbers: As Easy as 1, 2, 3** | Salmon, Moraes, Dror, Shaw | SC 2011 | Philox 2×32 counter-based PRNG used for KTQ sign generation. |
 
 ## Version History
@@ -404,7 +404,7 @@ This implementation is inspired by but deviates from the cited papers. KTQ uses 
 - **2026-04-24**: MMA-KTQ tensor-core path live on CC ≥ 7.5 (Turing-tested). PP128 727 t/s vs 431 f16.
 - **2026-04-25**: Default switched to `ktq2_1 + vtq2_2` (2.78 bpw avg, +0.15% PPL, 83% smaller KV) after vtq2_2 vs vtq2_1 sweep showed v2 wins or ties on PPL/pp/tg.
 - **2026-04-26**: 80B-TQ1_0 deployed full-VRAM (54.93 t/s, +50% vs IQ2_XXS). Phase 4 perf stack: `MADV_HUGEPAGE`, `mul_mat_id` prefetch, `OMP_WAIT_POLICY=active`, adaptive layer-split (80B: 18/18/12), P2P opt-in, AVX2-FWHT-32. Cumulative +18.5% TG on 80B, +9.3% on 122B.
-- **2026-04-27**: XQuant Phase 1–5 code-complete (XKTQ2_1, dormant on hybrid SSM). `--moe-pin-experts` opt-in (+3.3% TG on 80B-IQ2). gpt-oss-20b head_dim=64 fix (commit `c818f6c84`). Anthropic `/v1/messages` with prompt caching, `TCP_NODELAY`, gzip.
+- **2026-04-27**: XQuant Phase 1–5 code-complete (XKTQ2_1, dormant on hybrid SSM; removed later). `--moe-pin-experts` opt-in (+3.3% TG on 80B-IQ2). gpt-oss-20b head_dim=64 fix (commit `c818f6c84`). Anthropic `/v1/messages` with prompt caching, `TCP_NODELAY`, gzip.
 - **2026-04-28**: model directory layout on the test box consolidated. Doc rewrite — this file.
 - **2026-05-02 — TurboQuant v8 unified type aliases**: short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults. New `vtq3_v8` (enum 58, 3.625 bpw) = trellis-3bit + 2 fp16 outliers — close to f16 on 35B-A3B (−0.03% PPL drift vs f16 baseline, 12% smaller than legacy `vtq3_3`). Legacy long names (`ktq2_1`, `vtq2_2`, …) remain accepted.
 - **2026-05-03 — EOS-cutoff regression fix**: long-context coding outputs (Snake-game generation) cut off mid-function with `ktq2_1 + vtq2_1` on the post-S199-plumbing build. A/B test (n=5, Snake prompt with 9k input): `ktq2_1+vtq2_1` 1/3 cutoffs, `ktq2+vtq2_2` 0/5 cutoffs. Fix is a pure KV-type switch (no `--logit-bias` workaround). Hypothesis: the S199 `extern __constant__ float d_ktq_sparse_k_threshold;` symbol changes nvcc codegen for the `vtq2_1` dispatch path; `vtq2_2` is unaffected. Bisect against `e054a3088` not yet performed.

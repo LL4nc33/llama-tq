@@ -48,7 +48,6 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
         model,
         type_k, type_v, v_trans, kv_size, n_pad, n_swa, swa_type,
         tq_protect_layers, tq_protect_sinks, tq_deferred_k, tq_deferred_v, tq_no_deferred_k, tq_no_deferred_v,
-        /* xquant_enabled    */ false,
         type_r, type_s, rs_size,
         n_seq_max, /* n_rs_seq */ 0, offload, unified,
         filter_attn, filter_recr),
@@ -82,7 +81,6 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
             /* tq_no_deferred_v  */ false,
             filter_idx, nullptr, nullptr,
             /* type_v_layers    */ {},
-            /* xquant_enabled   */ false,
             /* hparams_override */ &hparams_idx,
             /* name_tag         */ "idx_");
     }()) {}

@@ -675,7 +675,6 @@ struct common_params {
     // Phase 6f: expert-hotness profile path (JSON from tools/profile-router.py --mode hotness).
     // When set, runtime issues __builtin_prefetch on hot expert weight blocks before each MoE layer.
     std::string expert_hotness_path;
-    bool xquant_enabled = false;    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
 
     // Phase C.1 — Stage-4 QAT (Quantization-Aware Training): if not COUNT,
     // wrap the LoRA delta in fake-quantize-dequantize so the adapter learns

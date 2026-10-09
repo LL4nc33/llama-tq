@@ -64,9 +64,6 @@ struct llama_cparams {
     // Empty = uniform type_v (backward compatible). Otherwise size == n_layer.
     std::vector<ggml_type> tq_v_layers;
 
-    // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers
-    bool xquant_enabled;
-
     // Stage-4 QAT (Phase C.1): if not GGML_TYPE_COUNT, wrap the LoRA delta
     // (a@b applied to activations) in a fake-quantize-dequantize op that
     // emulates the base-model's quantization error during forward. Straight-

@@ -25,7 +25,6 @@ llama_memory_hybrid::llama_memory_hybrid(
                      bool   tq_deferred_v,
                      bool   tq_no_deferred_k,
                      bool   tq_no_deferred_v,
-                     bool   xquant_enabled,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,
@@ -64,8 +63,7 @@ llama_memory_hybrid::llama_memory_hybrid(
             : filter_attn,
         nullptr,
         nullptr,              // share (PR #23398)
-        type_v_layers,
-        xquant_enabled
+        type_v_layers
     )),
     mem_recr(new llama_memory_recurrent(
         model,

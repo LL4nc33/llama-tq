@@ -444,7 +444,7 @@ extern "C" {
         GGML_TYPE_VTQ2_3  = 54, // V-cache: Trellis v2 + 4 fp16 outlier positions, 3.00 bpw
         GGML_TYPE_VTQ3_3  = 55, // V-cache: Trellis v2 + 4 fp16 outlier positions, 4.00 bpw
         GGML_TYPE_VTQ4_3  = 56, // V-cache: Trellis v2 + 4 fp16 outlier positions, 5.00 bpw
-        GGML_TYPE_XKTQ2_1 = 57, // K-cache XQuant subordinate: own scale only, codes shared from sibling layer (~2.0 bpw metadata)
+        // GGML_TYPE_XKTQ2_1 = 57, removed (XQuant), id reserved
         GGML_TYPE_VTQ3_V8 = 58, // V-cache: Trellis 3-bit + 2 fp16 outliers (v8 redesign of vtq3_3, 3.625 bpw)
         // 59..141 unused: the ternary weight types below use the ids that existing
         // GGUF files carry, so type_traits has empty (blck_size == 0) entries in between
@@ -454,7 +454,7 @@ extern "C" {
     };
 
     // TurboQuant KV cache type families. Macros so that the same list works in C, in C++
-    // constant expressions and in CUDA device code. VTQ_MIXED and XKTQ2_1 are not included.
+    // constant expressions and in CUDA device code. VTQ_MIXED is not included.
     #define GGML_TYPE_IS_KTQ(t) \
         ((t) == GGML_TYPE_KTQ1_1 || (t) == GGML_TYPE_KTQ2_1 || (t) == GGML_TYPE_KTQ3_1 || (t) == GGML_TYPE_KTQ4_1)
     #define GGML_TYPE_IS_VTQ_CODEBOOK(t) \
@@ -2451,15 +2451,6 @@ extern "C" {
     GGML_API void ggml_flash_attn_ext_add_sinks(
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
-
-    // XQuant Phase 3b — attach a sibling K tensor (dominant layer's cache_k)
-    // for cross-layer KV reuse. K must be GGML_TYPE_XKTQ2_1; the sibling
-    // provides codes + sb while K provides only per-block scales. Backend
-    // dispatchers consume src[5] when K->type indicates an XQuant subordinate.
-    // Pass NULL to detach.
-    GGML_API void ggml_flash_attn_ext_set_sibling_k(
-            struct ggml_tensor * a,
-            struct ggml_tensor * sibling_k);
 
     // gradients of a ggml_flash_attn_ext node fa for the output gradient d (shape of fa):
     // one F32 tensor with dQ, dK, dV (shapes of q, k, v, contiguous) and dSinks (n_head) back to back,

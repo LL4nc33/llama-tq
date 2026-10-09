@@ -400,7 +400,6 @@ extern "C" {
         bool tq_no_deferred_k;     // opt-out: disable deferred K staging even for KTQ types (saves ~n_embd_k_gqa * kv_size * 2 bytes/layer VRAM)
         bool tq_no_deferred_v;     // opt-out: disable deferred V staging even for VTQ_2/_3/_v8 types (saves ~n_embd_v_gqa * kv_size * 2 bytes/layer VRAM)
         uint32_t tq_profile_heads; // Trick 2 PR1: if > 0, profile first N decode calls and dump per-head V variance/kurtosis
-        bool xquant_enabled;       // XQuant cross-layer KV reuse (Phase 5b): pair adjacent KTQ2_1 layers for ~50% K-cache savings
         enum ggml_type qat_target_quant; // Stage-4 QAT (Phase C.1): if != GGML_TYPE_COUNT, fake-quantize LoRA delta in forward (STE backward). Default COUNT = disabled.
 
         // Abort callback

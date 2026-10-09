@@ -952,18 +952,6 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_ktq4_1,
         .from_float_ref           = (ggml_from_float_t) quantize_row_ktq4_1_ref,
     },
-    [GGML_TYPE_XKTQ2_1] = {
-        // XQuant subordinate K-cache type. Codes shared from sibling KTQ2_1 layer.
-        // The registered to_float is a stub — real dequant uses the paired helper.
-        // Phase 1: foundation only (CPU round-trip). Phases 2-5: pairing logic,
-        // CUDA kernels, FA dispatch, calibration tool.
-        .type_name                = "xktq2_1",
-        .blck_size                = QK_KTQ,
-        .type_size                = sizeof(block_xktq2_1),
-        .is_quantized             = true,
-        .to_float                 = (ggml_to_float_t) dequantize_row_xktq2_1,
-        .from_float_ref           = (ggml_from_float_t) quantize_row_xktq2_1_ref,
-    },
     [GGML_TYPE_KTQ1_1] = {
         .type_name                = "ktq1_1",
         .blck_size                = QK_KTQ,
@@ -5665,30 +5653,6 @@ void ggml_flash_attn_ext_add_sinks(
     a->src[4] = sinks;
 }
 
-// XQuant Phase 3b — sibling K attachment for cross-layer KV reuse.
-// Stored in src[5]. Backend dispatchers must check a->src[1]->type for
-// GGML_TYPE_XKTQ2_1 (and friends) and use src[5]'s qs/sb when present.
-void ggml_flash_attn_ext_set_sibling_k(
-        struct ggml_tensor * a,
-        struct ggml_tensor * sibling_k) {
-    if (!sibling_k) {
-        a->src[5] = NULL;
-        return;
-    }
-
-    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
-    GGML_ASSERT(a->src[5] == NULL);
-    // Sibling K must have the same shape as the subordinate K — same
-    // n_embd_k_gqa × n_kv × n_stream layout. Only the type/storage differs.
-    GGML_ASSERT(a->src[1]->ne[0] == sibling_k->ne[0]);
-    GGML_ASSERT(a->src[1]->ne[1] == sibling_k->ne[1]);
-    // Sibling must be a "real" KTQ type carrying codes + sb, since the
-    // subordinate's XKTQ block has no codes.
-    GGML_ASSERT(sibling_k->type == GGML_TYPE_KTQ2_1);
-
-    a->src[5] = sibling_k;
-}
-
 // ggml_flash_attn_back
 
 struct ggml_tensor * ggml_flash_attn_back(
@@ -5706,7 +5670,6 @@ struct ggml_tensor * ggml_flash_attn_back(
 
     GGML_ASSERT(q->type == GGML_TYPE_F32);
     GGML_ASSERT(k->ne[2] == v->ne[2] && k->ne[3] == v->ne[3]);
-    GGML_ASSERT(fa->src[5] == NULL); // no XQuant sibling K in training
 
     // dQ, dK, dV, dSinks back to back, each part aligned
     const int64_t align = GGML_MEM_ALIGN/sizeof(float);

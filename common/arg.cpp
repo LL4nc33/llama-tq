@@ -396,7 +396,6 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_KTQ2_1,
     GGML_TYPE_KTQ3_1,
     GGML_TYPE_KTQ4_1,
-    GGML_TYPE_XKTQ2_1,  // XQuant Phase 1 stub — pairing logic not yet wired (Phase 2)
     GGML_TYPE_VTQ1_1,
     GGML_TYPE_VTQ2_1,
     GGML_TYPE_VTQ3_1,
@@ -2113,19 +2112,6 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.tq_protect_sinks = value >= 0 ? (uint32_t)value : 0;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROTECT_SINKS"));
-    add_opt(common_arg(
-        {"--xquant"},
-        string_format(
-            "TurboQuant XQuant Phase 5b: cross-layer KV reuse — pair adjacent KTQ2_1\n"
-            "layers, subordinate stores only scale (codes shared from sibling). Saves\n"
-            "~50%% K-cache for paired layers. Requires --cache-type-k ktq2_1.\n"
-            "(default: %s)",
-            params.xquant_enabled ? "enabled" : "disabled"
-        ),
-        [](common_params & params) {
-            params.xquant_enabled = true;
-        }
-    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_XQUANT"));
     add_opt(common_arg(
         {"--tq-profile-heads"}, "N",
         string_format(

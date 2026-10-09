@@ -33,35 +33,6 @@
 #include <cstdint>
 
 // ============================================================
-// XQuant Phase 3c — paired vec_dot typedef.
-//
-// Standard `vec_dot_KQ_t` (in fattn-common.cuh) has 4 args (K_c, Q_v, Q_q8,
-// Q_ds). The paired form adds a 5th — `K_dom` — which points to the sibling
-// dominant-layer K-block holding the shared 2-bit codes + RHT sign bits.
-// The subordinate XKTQ2_1 block referenced by `K_c` carries only its own
-// per-block scale `d`.
-//
-// Why a parallel typedef instead of extending `vec_dot_KQ_t` in place:
-// extending the existing typedef would force every non-paired vec_dot
-// (f16, q4_0, q8_0, ktq2_1, ...) to either ignore the new arg (silent
-// reg-pressure ABI churn) or re-declare with default-args (function
-// pointers don't take defaults). Parallel typedef = zero touch on existing
-// types, zero risk to working KTQ/VTQ paths. PAIRED dispatch is selected
-// at compile time from the K-type tag, never at runtime.
-//
-// Defined here (not in fattn-vec-dispatch.cuh) so that template-instance
-// TUs which include only fattn-vec.cuh — which transitively pulls in
-// fattn-common.cuh and fattn-tq.cuh — can see the typedef without needing
-// to add a dependency on the dispatch header.
-typedef float (*vec_dot_KQ_paired_t)(
-    const char * __restrict__ K_c,
-    const void * __restrict__ Q_v,
-    const int  * __restrict__ Q_q8,
-    const void * __restrict__ Q_ds,
-    const char * __restrict__ K_dom);
-// ============================================================
-
-// ============================================================
 // KTQ helpers, one template per role; the bit width follows from the block type.
 //
 // A KTQ block holds codebook indices in the Hadamard domain, the shared RHT
@@ -116,32 +87,6 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq(
     for (int bi = 0; bi < D / QK_KTQ; ++bi) {
         const int idx = tq_code_index<bits>(K_tq[bi].qs, lane);
         accum += ktq_codebook<bits>()[idx] * PQ_CUDA_CB_SCALE * Q_f32[bi] * (float) K_tq[bi].d;
-    }
-    return accum;
-}
-
-// XQuant subordinate (XKTQ2_1): own scale, 2-bit codes from the sibling dominant
-// block_ktq2_1 at the same block index. Dispatch is still gated off in the KV cache.
-template <int D, int nthreads>
-static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_xktq2_1_paired(
-    const char * __restrict__ K_c,
-    const void * __restrict__ Q_v,
-    const int  * __restrict__ Q_q8,
-    const void * __restrict__ Q_ds_v,
-    const char * __restrict__ K_dom_c) {
-    static_assert(nthreads == WARP_SIZE, "KTQ K needs one lane per block element");
-    GGML_UNUSED(Q_q8);
-    GGML_UNUSED(Q_ds_v);
-    const block_xktq2_1 * K_sub = (const block_xktq2_1 *) K_c;
-    const block_ktq2_1  * K_dom = (const block_ktq2_1  *) K_dom_c;
-    const float * Q_f32 = (const float *) Q_v;
-    const int lane = threadIdx.x;
-
-    float accum = 0.0f;
-    #pragma unroll
-    for (int bi = 0; bi < D / QK_KTQ; ++bi) {
-        const int idx = tq_code_index<2>(K_dom[bi].qs, lane);
-        accum += ktq_codebook<2>()[idx] * PQ_CUDA_CB_SCALE * Q_f32[bi] * (float) K_sub[bi].d;
     }
     return accum;
 }
@@ -500,15 +445,3 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
     }
 }
 
-// XQuant Phase 3c — paired vec-dot dispatcher. Currently only XKTQ2_1 is
-// defined as a paired subordinate type; future xquant levels (XKTQ3_1,
-// XKTQ4_1) would extend this branch list.
-template <ggml_type type_K, int D, int nthreads>
-constexpr __device__ vec_dot_KQ_paired_t get_vec_dot_KQ_paired() {
-    if constexpr (type_K == GGML_TYPE_XKTQ2_1) {
-        return vec_dot_fattn_vec_KQ_xktq2_1_paired<D, nthreads>;
-    } else {
-        static_assert(type_K == -1, "get_vec_dot_KQ_paired: only XKTQ types supported");
-        return nullptr;
-    }
-}

@@ -44,8 +44,6 @@ struct llama_memory_params {
     // TurboQuant deferred-V opt-out (saves f16 staging VRAM at decode-speed cost)
     bool tq_no_deferred_v;
 
-    // XQuant cross-layer KV reuse (Phase 5b)
-    bool xquant_enabled;
     llama_context_type ctx_type;
 
     // gemma4-assistant: shared KV cache from the target context (PR #23398)

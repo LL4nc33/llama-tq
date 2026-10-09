@@ -35,7 +35,6 @@ public:
                      bool   tq_deferred_v,
                      bool   tq_no_deferred_k,
                      bool   tq_no_deferred_v,
-                     bool   xquant_enabled,
                             /* recurrent */
                 ggml_type   type_r,
                 ggml_type   type_s,

@@ -109,13 +109,11 @@ llama_kv_cache::llama_kv_cache(
     const  layer_reuse_cb & reuse,
     const  layer_share_cb & share,
     const std::vector<ggml_type> & type_v_layers,
-                     bool   xquant_enabled,
       const llama_hparams * hparams_override,
              const char *   name_tag) :
     model(model), hparams(hparams_override ? *hparams_override : model.hparams), name_tag(name_tag), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa),
     tq_protect_layers(tq_protect_layers), tq_protect_sinks(tq_protect_sinks),
-    xquant_enabled(xquant_enabled),
     user_type_k(type_k), user_type_v(type_v), user_type_v_layers(type_v_layers), swa_type(swa_type) {
 
     GGML_ASSERT(kv_size % n_pad == 0);
@@ -155,45 +153,6 @@ llama_kv_cache::llama_kv_cache(
     const bool is_vtq2_type_v = GGML_TYPE_IS_VTQ_TRELLIS(type_v);
     const bool use_deferred_v = is_vtq2_type_v && !tq_no_deferred_v;
     (void) tq_deferred_v; // positive flag retained for backwards compat; opt-in is auto via VTQ_2 type
-
-    // XQuant pairing pass — populate xq_dominant_of_layer mapping.
-    // Convention: subordinate layers are odd indices (l = 2k+1) starting at l=5
-    // (after sink/boundary protection), with dominant = l-1. The pair-pass runs
-    // BEFORE allocation so subordinate layers can later use eff_type_k=XKTQ2_1.
-    //
-    // Phase 4 (this commit): only the mapping is populated; allocation still
-    // uses the user-selected K type (no storage savings yet). Phase 3
-    // (FA-dispatch sibling injection) wires the mapping into the graph and
-    // unlocks the actual storage shrink. Without Phase 3 the FA kernel would
-    // read out-of-bounds bytes from the 8-byte XKTQ2_1 block, so this is the
-    // safe ordering: ship tracking first, allocation flip later.
-    xq_dominant_of_layer.assign(hparams.n_layer, -1);
-    // Phase 3c (CUDA dispatcher) and Phase 3d (paired kernel + launcher) are
-    // landed (commits 0e91a2365 + f4d5c7efb). The pair-pass is now active.
-    [[maybe_unused]] constexpr bool xquant_dispatch_ready = true;
-    if (xquant_enabled && is_tq_type_k && type_k == GGML_TYPE_KTQ2_1) {
-        // XQuant paper recommends *boundary protection* of the first/last few
-        // layers (sink + tail) regardless of user's tq_protect_layers setting,
-        // because adjacent-layer-similarity drops near sink/tail boundaries.
-        // We honour the larger of (user's tq_protect_layers, 4) as the XQuant
-        // boundary, so a user setting tq_protect_layers=0 (= no boundary q8
-        // promotion) still gets safe XQuant pairing.
-        const uint32_t xq_boundary = std::max(tq_protect_layers, 4u);
-        // pair (il, il+1) starting after the front boundary; subordinate is il+1
-        // and must also stay outside the rear boundary (last xq_boundary layers).
-        for (uint32_t il = xq_boundary; il + 1 < hparams.n_layer; il += 2) {
-            if (il + 1 + xq_boundary > hparams.n_layer) break;
-            // honour layer filter — recurrent / non-attention layers don't pair
-            if (!hparams.has_kv(il) || !hparams.has_kv(il+1)) continue;
-            if (filter && (!filter(il) || !filter(il+1))) continue;
-            xq_dominant_of_layer[il+1] = (int32_t) il;
-        }
-        uint32_t n_pairs = 0;
-        for (auto v : xq_dominant_of_layer) if (v >= 0) n_pairs++;
-        LLAMA_LOG_INFO("%s: xquant pairing: %u subordinate layers, boundary=%u "
-            "(Phase 4 tracking, dispatch pending Phase 3)\n",
-            __func__, n_pairs, xq_boundary);
-    }
 
     // create a context for each buffer type
     // extra tensors per layer when deferred is active: staging + staging_stream views
@@ -381,15 +340,6 @@ llama_kv_cache::llama_kv_cache(
                         __func__, il, ggml_type_name(eff_type_k), ggml_type_name(eff_type_v));
                 }
             }
-        }
-
-        // Phase 4b: XQuant subordinate layers store only the per-block scale —
-        // codes are read from the dominant layer's KTQ2_1 block at FA time.
-        // Flip the storage type AFTER all boundary protection checks so a
-        // boundary layer (forced to q8_0 above) is never paired.
-        if (xquant_enabled && eff_type_k == GGML_TYPE_KTQ2_1
-            && il < xq_dominant_of_layer.size() && xq_dominant_of_layer[il] >= 0) {
-            eff_type_k = GGML_TYPE_XKTQ2_1;
         }
 
         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, eff_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
@@ -1745,27 +1695,6 @@ ggml_tensor * llama_kv_cache::get_v_train(ggml_context * ctx, int32_t il, ggml_t
     return ggml_view_4d(ctx, res,
             n_kv, n_head_kv, n_embd_head, 1,
             n_kv*n_embd_head*sizeof(float), n_kv*sizeof(float), n_kv*n_embd_v_gqa*sizeof(float), 0);
-}
-
-// XQuant Phase 3 — accessors for sibling K view.
-//
-// `xq_dominant_layer(il)` returns the dominant layer index for a subordinate
-// layer, or -1 if il is standalone. Cheap O(1) lookup into the pre-built map.
-//
-// `get_dominant_k(...)` returns a get_k-style view of the dominant layer's
-// K-cache, ready to be consumed by an FA-paired dispatch. Returns nullptr if
-// XQuant is disabled or il is not a subordinate. This is wired but unused
-// until the FA-graph builder switches to a paired call site (Phase 3b).
-int32_t llama_kv_cache::xq_dominant_layer(int32_t il) const {
-    if (!xquant_enabled) return -1;
-    if (il < 0 || (size_t) il >= xq_dominant_of_layer.size()) return -1;
-    return xq_dominant_of_layer[il];
-}
-
-ggml_tensor * llama_kv_cache::get_dominant_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const {
-    const int32_t il_dom = xq_dominant_layer(il);
-    if (il_dom < 0) return nullptr;
-    return get_k(ctx, il_dom, n_kv, sinfo);
 }
 
 ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
@@ -3382,14 +3311,6 @@ ggml_tensor * llama_kv_cache_context::get_k_train(ggml_context * ctx, int32_t il
 ggml_tensor * llama_kv_cache_context::get_v_train(ggml_context * ctx, int32_t il, ggml_tensor * v_cur) const {
     ggml_tensor * v = kv->get_v_train(ctx, il, v_cur, n_kv, sinfos[i_cur]);
     return v ? v : get_v(ctx, il);
-}
-
-ggml_tensor * llama_kv_cache_context::get_dominant_k(ggml_context * ctx, int32_t il) const {
-    return kv->get_dominant_k(ctx, il, n_kv, sinfos[i_cur]);
-}
-
-int32_t llama_kv_cache_context::xq_dominant_layer(int32_t il) const {
-    return kv->xq_dominant_layer(il);
 }
 
 ggml_tensor * llama_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
