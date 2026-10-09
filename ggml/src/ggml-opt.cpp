@@ -1076,6 +1076,34 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         ggml_backend_sched_invalidate_prev_backend_ids(opt_ctx->backend_sched);
     }
 
+    // the scheduler puts graph inputs on the CPU and copies them to the device of their consumer on every
+    // evaluation; the labels of a language model are dense (n_vocab x n_tokens, 311 MB for 151936 x 512), so they
+    // are placed on the backend of the output projection instead and filled there
+    if (opt_ctx->labels && !opt_ctx->static_graphs) {
+        ggml_backend_t backend = nullptr;
+        const ggml_tensor * t = opt_ctx->outputs;
+        for (int depth = 0; t && !backend && depth < 8; ++depth) {
+            for (int i = 0; i < GGML_MAX_SRC && !backend; ++i) {
+                const ggml_tensor * src = t->src[i];
+                if (!src || !src->buffer || ggml_backend_buffer_get_usage(src->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+                    continue;
+                }
+                const int n_backends = ggml_backend_sched_get_n_backends(opt_ctx->backend_sched);
+                for (int ib = 0; ib < n_backends; ++ib) {
+                    ggml_backend_t b = ggml_backend_sched_get_backend(opt_ctx->backend_sched, ib);
+                    if (ggml_backend_supports_buft(b, ggml_backend_buffer_get_type(src->buffer))) {
+                        backend = b;
+                        break;
+                    }
+                }
+            }
+            t = t->src[0];
+        }
+        if (backend) {
+            ggml_backend_sched_set_tensor_backend(opt_ctx->backend_sched, opt_ctx->labels, backend);
+        }
+    }
+
     if (!ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy)) {
         GGML_ABORT("ggml-opt: failed to allocate the training graph (out of memory?) - try a smaller context, "
                    "physical batch (-ub) or LoRA rank");
