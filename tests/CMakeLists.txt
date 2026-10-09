@@ -243,6 +243,8 @@ if (TARGET ggml-cpu)
     # CPU-only backward validation; needs ggml_graph_plan/compute from ggml-cpu.
     llama_build_and_test(test-mul-mat-id-backward.cpp)
     target_link_libraries(test-mul-mat-id-backward PRIVATE ggml-cpu)
+    llama_build_and_test(test-flash-attn-back.cpp)
+    target_link_libraries(test-flash-attn-back PRIVATE ggml-cpu)
 endif()
 
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")

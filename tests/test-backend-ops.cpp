@@ -7052,6 +7052,60 @@ struct test_flash_attn_ext : public test_case {
 };
 
 // GGML_OP_CROSS_ENTROPY_LOSS
+// GGML_OP_FLASH_ATTN_BACK directly, to compare backends (the gradients themselves are checked against float64
+// in test-flash-attn-back)
+struct test_flash_attn_back : public test_case {
+    const int64_t hsk, hsv, nh;
+    const std::array<int64_t, 2> nr23;
+    const int64_t kv, nb;
+    const bool mask, sinks;
+    const float max_bias, logit_softcap;
+    const ggml_type type_KV;
+
+    std::string vars() override {
+        return VARS_TO_STR11(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, type_KV);
+    }
+
+    test_flash_attn_back(int64_t hsk = 128, int64_t hsv = 128, int64_t nh = 2, std::array<int64_t, 2> nr23 = {1, 1},
+                         int64_t kv = 64, int64_t nb = 16, bool mask = true, bool sinks = false,
+                         float max_bias = 0.0f, float logit_softcap = 0.0f, ggml_type type_KV = GGML_TYPE_F32)
+        : hsk(hsk), hsv(hsv), nh(nh), nr23(nr23), kv(kv), nb(nb), mask(mask), sinks(sinks), max_bias(max_bias),
+          logit_softcap(logit_softcap), type_KV(type_KV) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, hsk, nb, nh*nr23[0], nr23[1]);
+        ggml_tensor * k = ggml_new_tensor_4d(ctx, type_KV,       hsk, kv, nh,         nr23[1]);
+        ggml_tensor * v = ggml_new_tensor_4d(ctx, type_KV,       hsv, kv, nh,         nr23[1]);
+        ggml_tensor * m = mask  ? ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv, nb, 1, nr23[1]) : nullptr;
+        ggml_tensor * s = sinks ? ggml_new_tensor_1d(ctx, GGML_TYPE_F32, q->ne[2]) : nullptr;
+        if (m) {
+            ggml_set_name(m, "m");
+        }
+        ggml_tensor * fa = ggml_flash_attn_ext(ctx, q, k, v, m, 1.0f/sqrtf(hsk), max_bias, logit_softcap);
+        ggml_flash_attn_ext_add_sinks(fa, s);
+        ggml_flash_attn_ext_set_prec(fa, GGML_PREC_F32);
+        ggml_tensor * d = ggml_new_tensor(ctx, GGML_TYPE_F32, GGML_MAX_DIMS, fa->ne);
+        ggml_tensor * out = ggml_flash_attn_back(ctx, fa, d);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "m") == 0) {
+                init_tensor_kq_mask(t);
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+
+    // the forward output enters D = dO.O, and the backends compute it with different rounding
+    double max_nmse_err() override {
+        return 1e-5;
+    }
+};
+
 struct test_cross_entropy_loss : public test_case {
     const ggml_type type;
     const std::array<int64_t, 4> ne;
@@ -9705,6 +9759,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
     test_cases.emplace_back(new test_gated_delta_net_grad(2, 4, 5, 2, 1, false));
+    // flash attention backward: head sizes of real models, GQA, sequences, softcap, ALiBi, sinks, F16 K/V
+    for (int64_t hs : {64, 128, 256}) {
+        test_cases.emplace_back(new test_flash_attn_back(hs, hs, 2, {4, 1}, 96, 32));
+    }
+    test_cases.emplace_back(new test_flash_attn_back(128, 128, 2, {2, 2}, 37, 7));
+    test_cases.emplace_back(new test_flash_attn_back(128, 128, 2, {1, 1}, 64, 16, true, false, 0.0f, 30.0f));
+    test_cases.emplace_back(new test_flash_attn_back(64,  64,  4, {1, 1}, 64, 16, true, false, 8.0f, 0.0f));
+    test_cases.emplace_back(new test_flash_attn_back(64,  64,  2, {2, 1}, 64, 16, true, true));
+    test_cases.emplace_back(new test_flash_attn_back(64,  64,  2, {1, 1}, 33, 9, false));
+    test_cases.emplace_back(new test_flash_attn_back(192, 128, 2, {1, 1}, 40, 8));
+    test_cases.emplace_back(new test_flash_attn_back(128, 128, 2, {4, 1}, 96, 32, true, false, 0.0f, 0.0f, GGML_TYPE_F16));
     for (int64_t head_size : {16, 128}) {
         for (int64_t n_tokens : {1, 33, 100}) {
             test_cases.emplace_back(new test_gated_delta_net_back(2, head_size, n_tokens, 1, 1, false));

@@ -58,6 +58,7 @@
 #include "ggml-cuda/wkv.cuh"
 #include "ggml-cuda/gla.cuh"
 #include "ggml-cuda/gated_delta_net.cuh"
+#include "ggml-cuda/fattn-back.cuh"
 #include "ggml-cuda/fwht.cuh"
 #include "ggml-cuda/allreduce-host.cuh"
 #include "ggml-cuda/dsv4-hc.cuh"
@@ -2950,6 +2951,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         case GGML_OP_GATED_DELTA_NET_BACK:
             ggml_cuda_op_gated_delta_net_back(ctx, dst);
             break;
+        case GGML_OP_FLASH_ATTN_BACK:
+            ggml_cuda_op_flash_attn_back(ctx, dst);
+            break;
         case GGML_OP_DSV4_HC_PRE:
             ggml_cuda_op_dsv4_hc_pre(ctx, dst);
             break;
@@ -5439,6 +5443,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_DSV4_HC_PRE:
         case GGML_OP_DSV4_HC_POST:
             return op->src[0]->type == GGML_TYPE_F32;
+        case GGML_OP_FLASH_ATTN_BACK:
+            return ggml_cuda_flash_attn_back_supported(op);
         case GGML_OP_GATED_DELTA_NET_BACK:
             return op->src[2]->ne[0] == 16 || op->src[2]->ne[0] == 32 || op->src[2]->ne[0] == 64 || op->src[2]->ne[0] == 128;
         case GGML_OP_GATED_DELTA_NET:

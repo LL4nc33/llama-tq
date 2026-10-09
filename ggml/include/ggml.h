@@ -2461,14 +2461,15 @@ extern "C" {
             struct ggml_tensor * a,
             struct ggml_tensor * sibling_k);
 
-    // TODO: needs to be adapted to ggml_flash_attn_ext
+    // gradients of a ggml_flash_attn_ext node fa for the output gradient d (shape of fa):
+    // one F32 tensor with dQ, dK, dV (shapes of q, k, v, contiguous) and dSinks (n_head) back to back,
+    // at the element offsets returned by ggml_flash_attn_back_offset (0 = dQ, 1 = dK, 2 = dV, 3 = dSinks)
     GGML_API struct ggml_tensor * ggml_flash_attn_back(
            struct ggml_context * ctx,
-           struct ggml_tensor  * q,
-           struct ggml_tensor  * k,
-           struct ggml_tensor  * v,
-           struct ggml_tensor  * d,
-           bool                  masked);
+           struct ggml_tensor  * fa,
+           struct ggml_tensor  * d);
+
+    GGML_API int64_t ggml_flash_attn_back_offset(const struct ggml_tensor * back, int part);
 
     GGML_API struct ggml_tensor * ggml_ssm_conv(
             struct ggml_context * ctx,
