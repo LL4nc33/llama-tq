@@ -14,12 +14,11 @@
 
 If you have discovered a security vulnerability in this project that falls inside the [covered topics](#covered-topics), please report it privately. **Do not disclose it as a public issue.** This gives us time to work with you to fix the issue before public exposure, reducing the chance that the exploit will be used before a patch is released.
 
-Please disclose it as a private [security advisory](https://github.com/ggml-org/llama.cpp/security/advisories/new).
+Please disclose it as a private [security advisory](https://github.com/LL4nc33/llama-tq/security/advisories/new).
+If the issue is in code that llama-tq shares unchanged with upstream llama.cpp, report it to
+[upstream](https://github.com/ggml-org/llama.cpp/security/advisories/new) as well.
 
-A team of volunteers on a reasonable-effort basis maintains this project. As such, please give us at least 90 days to work on a fix before public exposure.
-
-> [!IMPORTANT]
-> For collaborators: if you are interested in helping out with reviewing private security disclosures, please see: https://github.com/ggml-org/llama.cpp/discussions/18080
+llama-tq is maintained on a reasonable-effort basis. Please allow at least 90 days for a fix before public exposure.
 
 ## Requirements
 
