@@ -525,27 +525,6 @@ typedef struct {
 } block_vtq3_v8;
 static_assert(sizeof(block_vtq3_v8) == 58, "wrong vtq3_v8 block size");  // 3.625 bpw
 
-// --- VTQ Correction Overlay (Trick 4) ---
-// Per-trellis-block top-N error sidecar. Stored in a separate tensor,
-// parallel to block_vtq{2,3,4}_2 (whose struct layout is frozen by GGUF
-// static_asserts).
-//
-// Layout is 4 bytes/entry. We expose the struct so encoder/decoder hooks
-// can share a definition; the CPU helpers in ggml-trellis.c pack/unpack
-// via raw bytes to keep the C header dependency loose.
-//
-//   pos     : 0..QK_VTQ_TRELLIS-1, sample position within the block
-//   flags   : bit0 = valid; bits1-7 reserved (future: sign hint / N-index)
-//   value   : fp16 of the pre-quant sample at `pos` (ground truth)
-typedef struct {
-    uint8_t   pos;
-    uint8_t   flags;
-    ggml_half value;
-} vtq_overlay_entry;
-static_assert(sizeof(vtq_overlay_entry) == 4, "wrong vtq_overlay_entry size");
-
-#define VTQ_OVERLAY_FLAG_VALID 0x1u
-
 //
 // Super-block quantization structures
 //

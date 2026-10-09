@@ -62,29 +62,6 @@ GGML_API void ggml_trellis_decode_group(
     const uint8_t * qs,
     float         * y);    // QK_GROUP output samples
 
-// --- Correction Overlay (Trick 4) — CPU helpers ---
-// ggml-common.h `vtq_overlay_entry`. Operates on raw packed bytes (4 B/entry)
-// to avoid a C header dependency on ggml-common.h's struct definition.
-//
-// Extract top-N (N<=4) correction entries for a single decoded trellis block.
-// Writes `n_per_block * 4` bytes of packed entries to `out_entries`. Entries
-// contain (pos, flags, fp16_value). If `err_threshold > 0`, entries whose
-// relative error |src-decoded|/max(|src|,1e-6) falls below threshold are
-// marked invalid (flag bit0=0) so decode skips them — avoids spending a slot
-// on already-accurate blocks. Returns the number of VALID entries emitted.
-GGML_API int ggml_trellis_overlay_extract(
-    const float * src,        // QK_GROUP ground-truth fp32 samples
-    const float * decoded,    // QK_GROUP decoded fp32 samples
-    int           n_per_block,
-    float         err_threshold,  // 0 = accept all
-    uint8_t     * out_entries);   // n_per_block*4 bytes
-
-// Apply overlay corrections in place. Invalid entries are skipped.
-GGML_API void ggml_trellis_overlay_apply(
-    const uint8_t * entries,  // n_per_block*4 bytes
-    int             n_per_block,
-    float         * y);       // QK_GROUP decoded samples, patched in place
-
 // --- Outlier-Channel-Split (VTQ_3) — CPU helpers ---
 // Pick the n_out positions with the largest |x[i]| in a QK_GROUP-sample block.
 // Outputs:
