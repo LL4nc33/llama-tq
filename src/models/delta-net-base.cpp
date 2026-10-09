@@ -44,6 +44,11 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
 
     const float scale = 1.0f / sqrtf(S_k);
 
+    // q can be a strided view of the fused qkv projection; ggml_scale needs packed rows (strictly, also for
+    // dimensions of size 1, which ggml_is_contiguous ignores)
+    if (q->nb[2] != q->nb[1]*q->ne[1] || q->nb[3] != q->nb[2]*q->ne[2] || !ggml_is_contiguous(q)) {
+        q = ggml_cont(ctx0, q);
+    }
     q = ggml_scale(ctx0, q, scale);
 
     cb(q, "q_in", il);
@@ -318,6 +323,11 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
 
     const float scale = 1.0f / sqrtf(S_k);
 
+    // q can be a strided view of the fused qkv projection; ggml_scale needs packed rows (strictly, also for
+    // dimensions of size 1, which ggml_is_contiguous ignores)
+    if (q->nb[2] != q->nb[1]*q->ne[1] || q->nb[3] != q->nb[2]*q->ne[2] || !ggml_is_contiguous(q)) {
+        q = ggml_cont(ctx0, q);
+    }
     q = ggml_scale(ctx0, q, scale);
 
     q = ggml_permute(ctx0, q, 0, 2, 1, 3); // [S_k, n_tokens, H_k, n_seqs]
