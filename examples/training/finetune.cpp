@@ -370,6 +370,12 @@ int main(int argc, char ** argv) {
                 __func__);
         params.use_mmap = false;
     }
+    if (params.n_gpu_layers == 0 && !params.no_op_offload) {
+        // all layers on the CPU: keep the training graph there too (offloading large batches to a GPU would move
+        // the fused Gated Delta Net op away from its layer and select an unfused path that cannot be trained)
+        LOG_INF("%s: -ngl 0: disabling op offload\n", __func__);
+        params.no_op_offload = true;
+    }
     if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO) {
         // the flash attention backward exists for the CPU and CUDA backends: use it there (less memory, same speed),
         // train without flash attention when another GPU backend is present
