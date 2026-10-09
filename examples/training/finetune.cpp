@@ -190,8 +190,11 @@ static void finetune_epoch_callback_with_checkpoint(
 // trained tokens are what the model generates at inference, end-of-turn token included. Some templates render the last
 // assistant turn differently (Qwen3: with an empty <think> block); an earlier turn then ends at its first
 // end-of-generation token in the whole conversation. Examples where neither works are skipped.
+// window > 0: pack the examples into windows of that many tokens; an example that does not fit into the rest of the
+// current window starts the next one (the rest is padding without a label), so that no example is cut and every
+// example sees only itself. Examples longer than a window still span windows.
 static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, const common_params & params,
-        std::vector<llama_token> & tokens, std::vector<uint8_t> & train) {
+        int64_t window, std::vector<llama_token> & tokens, std::vector<uint8_t> & train) {
     const std::string & chat_template = params.chat_template;
     const llama_model * model = llama_get_model(ctx);
     const llama_vocab * vocab = llama_model_get_vocab(model);
@@ -212,6 +215,19 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
         return t;
     };
 
+    const llama_token pad = llama_vocab_eos(vocab) != LLAMA_TOKEN_NULL ? llama_vocab_eos(vocab) : llama_vocab_bos(vocab);
+    int64_t n_padding = 0;
+    auto append = [&](const std::vector<llama_token> & t, const std::vector<uint8_t> & m) {
+        const int64_t used = window > 0 ? (int64_t) tokens.size() % window : 0;
+        if (used > 0 && used + (int64_t) t.size() > window && (int64_t) t.size() <= window) {
+            tokens.insert(tokens.end(), window - used, pad);
+            train.insert(train.end(), window - used, 0);
+            n_padding += window - used;
+        }
+        tokens.insert(tokens.end(), t.begin(), t.end());
+        train.insert(train.end(), m.begin(), m.end());
+    };
+
     int64_t n_chat = 0, n_text = 0, n_skipped = 0, n_lines = 0;
     std::string line;
     while (std::getline(file, line)) {
@@ -229,14 +245,12 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
         // a line the template or the loader cannot handle is skipped, not fatal
         try {
             if (j.contains("text")) {
-                const std::vector<llama_token> t = tokenize(j.at("text").get<std::string>());
-                tokens.insert(tokens.end(), t.begin(), t.end());
-                train.insert(train.end(), t.size(), 1);
+                std::vector<llama_token> t = tokenize(j.at("text").get<std::string>());
                 const llama_token eos = llama_vocab_eos(vocab);
                 if (eos != LLAMA_TOKEN_NULL) {
-                    tokens.push_back(eos);
-                    train.push_back(1);
+                    t.push_back(eos);
                 }
+                append(t, std::vector<uint8_t>(t.size(), 1));
                 ++n_text;
                 continue;
             }
@@ -311,8 +325,7 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
                 ++n_skipped;
                 continue;
             }
-            tokens.insert(tokens.end(), conv.begin(), conv.end());
-            train.insert(train.end(), conv_train.begin(), conv_train.end());
+            append(conv, conv_train);
             ++n_chat;
         } catch (const std::exception & e) {
             LOG_WRN("%s: line %" PRId64 ": skipped: %s\n", __func__, n_lines,
@@ -339,9 +352,14 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
     for (uint8_t t : train) {
         n_train += t;
     }
+    if (window > 0) {
+        // the label of the last position of a window is the first token of the next one
+        tokens.push_back(pad);
+        train.push_back(0);
+    }
     LOG_INF("%s: %" PRId64 " chats, %" PRId64 " texts, %" PRId64 " skipped (no assistant turn found, or not renderable); "
-            "%zu tokens, %" PRId64 " trained (%.1f %%)\n", __func__, n_chat, n_text, n_skipped,
-            tokens.size(), n_train, tokens.empty() ? 0.0 : 100.0*n_train/tokens.size());
+            "%zu tokens (%" PRId64 " padding), %" PRId64 " trained (%.1f %%)\n", __func__, n_chat, n_text, n_skipped,
+            tokens.size(), n_padding, n_train, tokens.empty() ? 0.0 : 100.0*n_train/tokens.size());
     if (n_skipped > 0 && n_chat == 0) {
         LOG_ERR("%s: no chat example could be rendered with this chat template\n", __func__);
         return false;
@@ -426,7 +444,9 @@ int main(int argc, char ** argv) {
     std::vector<uint8_t>     train; // empty: every token is trained
     const std::string & data_path = params.prompt_file;
     if (data_path.size() >= 6 && data_path.compare(data_path.size() - 6, 6, ".jsonl") == 0) {
-        if (!finetune_load_jsonl(ctx, data_path, params, tokens, train)) {
+        const int64_t n_ctx = llama_n_ctx(ctx);
+        const int64_t window = params.train_stride == 0 || params.train_stride >= n_ctx ? n_ctx : 0;
+        if (!finetune_load_jsonl(ctx, data_path, params, window, tokens, train)) {
             return 1;
         }
     } else {
@@ -436,7 +456,9 @@ int main(int argc, char ** argv) {
         LOG_ERR("%s: %zu tokens of training data, need more than the context size %u\n", __func__, tokens.size(), llama_n_ctx(ctx));
         return 1;
     }
-    const int64_t stride = llama_n_ctx(ctx) / 2;
+    const int64_t stride = params.train_stride > 0 ? std::min<int64_t>(params.train_stride, llama_n_ctx(ctx))
+                         : train.empty() ? llama_n_ctx(ctx) / 2 : llama_n_ctx(ctx);
+    LOG_INF("%s: training windows of %u tokens every %" PRId64 " tokens\n", __func__, llama_n_ctx(ctx), stride);
     // the dataset starting skip datapoints later (to resume within an epoch)
     auto make_dataset = [&](int64_t skip) {
         const std::vector<llama_token> t(tokens.begin() + skip*stride, tokens.end());

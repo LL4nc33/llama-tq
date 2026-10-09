@@ -4138,6 +4138,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) { params.train_resume = true; }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--train-stride"}, "N",
+        "tokens between the starts of two training windows (default: the context size for chat JSONL, whose examples "
+        "are self-contained; half of it for plain text, so that every token also gets the preceding context). "
+        "A stride below the context size trains overlapping tokens more than once per epoch. Resume with the same value.",
+        [](common_params & params, int v) {
+            if (v < 1) {
+                throw std::invalid_argument("--train-stride must be >= 1");
+            }
+            params.train_stride = v;
+        }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
         {"--checkpoint-every"}, "N",
         string_format("Flush the LoRA adapter to disk every N training batches (0 = only at epoch end / signal; default: %d). "
                       "Useful for long runs that may crash or be killed mid-epoch — recovery loads the last checkpoint via --lora.",

@@ -732,6 +732,7 @@ struct common_params {
     bool        grad_checkpoint            = false; // recompute layer activations in the backward pass
     bool        train_resume               = false; // continue from the adapter + position saved at the output path
     int64_t     train_stop_after           = 0;     // stop and save after this many training windows (0 = no limit)
+    int64_t     train_stride               = 0;     // tokens between window starts (0 = context for chat data, half of it for plain text)
     int32_t     train_early_stop           = 0;     // stop after this many epochs without a better validation loss (0 = off)
                                   // (e.g. Mamba/SSM ops that lack a ggml backward implementation).
                                   // Default empty = train every F32 parameter (original behavior).
