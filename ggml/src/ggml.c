@@ -7761,6 +7761,12 @@ void ggml_build_backward_expand(
             continue;
         }
 
+        // a row write into a cache (KV cache store): attention reads the cache tensor itself, never this node, so
+        // nothing downstream needs its gradient (training reads the current rows from k_cur/v_cur instead)
+        if (node->op == GGML_OP_SET_ROWS && node->view_src) {
+            continue;
+        }
+
         // inplace operations are currently not supported in the autograd backward graph.
         // For hybrid Mamba/SSM/RWKV models, when env GGML_BACKWARD_SKIP_INPLACE=1 we degrade
         // gracefully by *not* propagating gradients through such ops (they typically belong
