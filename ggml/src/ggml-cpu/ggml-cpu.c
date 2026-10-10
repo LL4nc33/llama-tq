@@ -422,28 +422,43 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .nrows                    = 1,
     },
     [GGML_TYPE_KTQ1_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_ktq1_1_ref,
         .vec_dot                  = ggml_vec_dot_ktq1_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_KTQ2_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_ktq2_1_ref,
         .vec_dot                  = ggml_vec_dot_ktq2_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_KTQ3_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_ktq3_1_ref,
         .vec_dot                  = ggml_vec_dot_ktq3_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_KTQ4_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_ktq4_1_ref,
         .vec_dot                  = ggml_vec_dot_ktq4_1_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
+    [GGML_TYPE_VTQ1_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq1_1_ref,
+    },
+    [GGML_TYPE_VTQ2_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq2_1_ref,
+    },
+    [GGML_TYPE_VTQ3_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq3_1_ref,
+    },
+    [GGML_TYPE_VTQ4_1] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq4_1_ref,
+    },
     [GGML_TYPE_VTQ2_2] = {
-        // .from_float omitted: forces backend scheduler to use CUDA encoder
-        // (set-rows.cu) instead of CPU roundtrip. Same pattern as KTQ4_1.
+        // no .from_float: the trellis encoder runs only on CUDA (set-rows.cu), so the CPU does not offer SET_ROWS
         .vec_dot                  = ggml_vec_dot_vtq2_2_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
