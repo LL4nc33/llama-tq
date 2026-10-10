@@ -8332,6 +8332,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // TurboQuant KV cache types: the CUDA encoders (warp and single-thread path, scale search) against the CPU
+    // reference, at the head sizes the KV cache uses
+    for (ggml_type type : {GGML_TYPE_KTQ1_1, GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ4_1,
+                           GGML_TYPE_VTQ1_1, GGML_TYPE_VTQ2_1, GGML_TYPE_VTQ3_1, GGML_TYPE_VTQ4_1}) {
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 5, 4, 1 }, { 1, 1, }, 2, false));
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 256, 11, 1, 2 }, { 2, 3, }, 7, false));
+    }
+
     for (int mode : { GGML_ROPE_TYPE_NORMAL, GGML_ROPE_TYPE_NEOX, GGML_ROPE_TYPE_MROPE, GGML_ROPE_TYPE_VISION }) {
         for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
             for (int ne2 : {1, 8, 512}) {

@@ -89,10 +89,11 @@ static float dot_product(const float * a1, const float * a2, size_t test_size) {
 static float dot_product_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu, size_t test_size, const float * test_data1, const float * test_data2) {
     GGML_UNUSED(qfns);
 
-    std::vector<uint8_t> tmp_q1(2*test_size);
-    std::vector<uint8_t> tmp_q2(2*test_size);
-
     const auto * vdot = ggml_get_type_traits_cpu(qfns_cpu->vec_dot_type);
+
+    std::vector<uint8_t> tmp_q1(2*test_size);
+    // sized by the row size: the vec_dot type can be F32 (4 bytes per value, e.g. the TurboQuant K-cache types)
+    std::vector<uint8_t> tmp_q2(ggml_row_size(qfns_cpu->vec_dot_type, test_size));
 
     qfns_cpu->from_float(test_data1, tmp_q1.data(), test_size);
     vdot->from_float(test_data2, tmp_q2.data(), test_size);
@@ -268,7 +269,12 @@ int main(int argc, char * argv[]) {
                 type == GGML_TYPE_Q3_K    ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ3_S   ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 type == GGML_TYPE_IQ3_XXS ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS :
-                type == GGML_TYPE_NVFP4   ? MAX_QUANTIZATION_TOTAL_ERROR_FP4 : MAX_QUANTIZATION_TOTAL_ERROR;
+                type == GGML_TYPE_NVFP4   ? MAX_QUANTIZATION_TOTAL_ERROR_FP4 :
+                // TurboQuant KV cache types by bits per value; the KTQ rotation spreads the smooth test signal
+                type == GGML_TYPE_KTQ1_1  || type == GGML_TYPE_VTQ1_1 ? MAX_QUANTIZATION_TOTAL_ERROR_BINARY :
+                type == GGML_TYPE_KTQ2_1  || type == GGML_TYPE_VTQ2_1 ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
+                type == GGML_TYPE_KTQ3_1  || type == GGML_TYPE_VTQ3_1 ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS :
+                MAX_QUANTIZATION_TOTAL_ERROR;
             failed = !(total_error < max_quantization_error);
             num_failed += failed;
             if (failed || verbose) {
@@ -282,22 +288,24 @@ int main(int argc, char * argv[]) {
                 printf("%5s reference implementation error: %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], reference_error);
             }
 
-            const float vec_dot_error = dot_product_error(qfns, qfns_cpu, test_size, test_data.data(), test_data2.data());
-            const float max_allowed_error = type == GGML_TYPE_Q2_K || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ2_XXS ||
-                                            type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ3_S || type == GGML_TYPE_IQ2_S
-                                          ? MAX_DOT_PRODUCT_ERROR_LOWBIT
-                                          : type == GGML_TYPE_Q1_0
-                                          ? MAX_DOT_PRODUCT_ERROR_BINARY
-                                          : type == GGML_TYPE_TQ1_0 || type == GGML_TYPE_TQ2_0 ||
-                                            type == GGML_TYPE_PQ2_0 || type == GGML_TYPE_PTQ1_0
-                                          ? MAX_DOT_PRODUCT_ERROR_TERNARY
-                                          : type == GGML_TYPE_NVFP4
-                                          ? MAX_DOT_PRODUCT_ERROR_FP4
-                                          : MAX_DOT_PRODUCT_ERROR;
-            failed = !(vec_dot_error < max_allowed_error);
-            num_failed += failed;
-            if (failed || verbose) {
-                printf("%5s dot product error:              %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], vec_dot_error);
+            if (qfns_cpu->vec_dot) { // a cache-only type (e.g. VTQ) has no dot product
+                const float vec_dot_error = dot_product_error(qfns, qfns_cpu, test_size, test_data.data(), test_data2.data());
+                const float max_allowed_error = type == GGML_TYPE_Q2_K || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ2_XXS ||
+                                                type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ3_S || type == GGML_TYPE_IQ2_S
+                                              ? MAX_DOT_PRODUCT_ERROR_LOWBIT
+                                              : type == GGML_TYPE_Q1_0
+                                              ? MAX_DOT_PRODUCT_ERROR_BINARY
+                                              : type == GGML_TYPE_TQ1_0 || type == GGML_TYPE_TQ2_0 ||
+                                                type == GGML_TYPE_PQ2_0 || type == GGML_TYPE_PTQ1_0
+                                              ? MAX_DOT_PRODUCT_ERROR_TERNARY
+                                              : type == GGML_TYPE_NVFP4
+                                              ? MAX_DOT_PRODUCT_ERROR_FP4
+                                              : MAX_DOT_PRODUCT_ERROR;
+                failed = !(vec_dot_error < max_allowed_error);
+                num_failed += failed;
+                if (failed || verbose) {
+                    printf("%5s dot product error:              %s (%f)\n", ggml_type_name(type), RESULT_STR[failed], vec_dot_error);
+                }
             }
         }
     }
