@@ -87,6 +87,39 @@ static ggml_tensor * ggml_mul_mat_aux(
     return res;
 }
 
+// V rotation: rot is the Sylvester Hadamard H (n x n), or, with random signs (VTQ caches), n+1 rows: H and then the
+// signs of D, for D*H*D. D*H*D x = D * (H * (D * x)): sign flips around the fast transform (the first flip and the
+// transform fuse on CUDA). With tensor split the rotation stays one matmul with D*H*D assembled in the graph.
+static ggml_tensor * ggml_rot_v(
+        ggml_context * ctx,
+        ggml_tensor * cur,
+        ggml_tensor * rot,
+        bool keep_rows) {
+    const int64_t n = rot->ne[0];
+    if (rot->ne[1] == n) {
+        return ggml_mul_mat_aux(ctx, cur, rot, keep_rows, true);
+    }
+    GGML_ASSERT(rot->ne[1] == n + 1);
+
+    ggml_tensor * h     = ggml_view_2d(ctx, rot, n, n, rot->nb[1], 0);
+    ggml_tensor * signs = ggml_view_1d(ctx, rot, n, n*rot->nb[1]);
+
+    if (keep_rows) {
+        ggml_tensor * dhd = ggml_mul(ctx, ggml_mul(ctx, h, signs), ggml_reshape_2d(ctx, signs, 1, n));
+        return ggml_mul_mat_aux(ctx, cur, dhd, keep_rows);
+    }
+
+    if (!ggml_is_contiguous(cur)) {
+        cur = ggml_cont(ctx, cur);
+    }
+    ggml_tensor * x = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);
+    x = ggml_mul(ctx, x, signs);
+    x = ggml_mul_mat_aux(ctx, x, h, false, true);
+    x = ggml_mul(ctx, x, signs);
+
+    return ggml_reshape_4d(ctx, x, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
+}
+
 void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
     if (ubatch->token) {
         const int64_t n_tokens = ubatch->n_tokens;
@@ -2402,7 +2435,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (inp->self_v_rot) {
-        v_cur = ggml_mul_mat_aux(ctx0, v_cur, inp->self_v_rot, cparams.split_tensor);
+        v_cur = ggml_rot_v(ctx0, v_cur, inp->self_v_rot, cparams.split_tensor);
     }
 
     // these nodes are added to the graph together so that they are not reordered
@@ -2434,7 +2467,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (inp->self_v_rot) {
-        cur = ggml_mul_mat_aux(ctx0, cur, inp->self_v_rot, cparams.split_tensor);
+        cur = ggml_rot_v(ctx0, cur, inp->self_v_rot, cparams.split_tensor);
     }
 
     if (wo) {
@@ -2570,7 +2603,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
     if (v_rot) {
         if (v_cur) {
-            v_cur = ggml_mul_mat_aux(ctx0, v_cur, v_rot, cparams.split_tensor);
+            v_cur = ggml_rot_v(ctx0, v_cur, v_rot, cparams.split_tensor);
         }
     }
 
@@ -2614,7 +2647,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (v_rot) {
-        cur = ggml_mul_mat_aux(ctx0, cur, v_rot, cparams.split_tensor);
+        cur = ggml_rot_v(ctx0, cur, v_rot, cparams.split_tensor);
     }
 
     if (wo) {

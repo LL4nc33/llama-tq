@@ -339,6 +339,8 @@ private:
 
     // pre-computed hadamard martrices
     std::unordered_map<int64_t, std::vector<float>> attn_rot_hadamard;
+    // signs of the random diagonal D of the VTQ V rotation D*H*D (empty otherwise)
+    std::vector<float> attn_rot_v_signs;
 
     // env: LLAMA_KV_CACHE_DEBUG
     int debug = 0;

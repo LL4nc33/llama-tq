@@ -534,24 +534,14 @@ llama_kv_cache::llama_kv_cache(
             ggml_gen_hadamard(tmp);
         }
 
-        // For VTQ V-cache: apply D*H*D (randomized diagonal) to V rotation matrices.
-        // This makes rotated coordinates approximately i.i.d., improving 2-bit codebook accuracy.
-        // Seed = 0x56545121 ("VTQ!"), deterministic across runs.
+        // For VTQ V-cache: the V rotation is D*H*D (random diagonal signs D, seed 0x56545121 "VTQ!"), which makes the
+        // rotated coordinates approximately i.i.d. for the 2-bit codebooks. The signs are passed next to the plain H (see
+        // build_input_v_rot), so every rotation stays a Sylvester Hadamard transform and K keeps the bare H.
         if (is_vtq_v && attn_rot_v) {
             const int64_t nrot_v = 64;  // V uses 64x64 rotation (upstream default)
-            auto it = attn_rot_hadamard.find(nrot_v);
-            if (it != attn_rot_hadamard.end()) {
-                std::vector<float> signs(nrot_v);
-                gen_diagonal_signs(signs.data(), nrot_v, 0x56545121u);  // "VTQ!" seed
-                float * H = it->second.data();
-                // R[i][j] = D[i] * H[i][j] * D[j]  (D*H*D, self-transpose)
-                for (int64_t i = 0; i < nrot_v; i++) {
-                    for (int64_t j = 0; j < nrot_v; j++) {
-                        H[i * nrot_v + j] *= signs[i] * signs[j];
-                    }
-                }
-                LLAMA_LOG_INFO("%s: VTQ V-cache active — using D*H*D randomized rotation for better 2-bit quality\n", __func__);
-            }
+            attn_rot_v_signs.resize(nrot_v);
+            gen_diagonal_signs(attn_rot_v_signs.data(), nrot_v, 0x56545121u);
+            LLAMA_LOG_INFO("%s: VTQ V-cache active — using D*H*D randomized rotation for better 2-bit quality\n", __func__);
         }
     }
 
@@ -1853,7 +1843,9 @@ ggml_tensor * llama_kv_cache::build_input_v_rot(ggml_context * ctx) const {
         //} while (hparams.n_embd_head_v() % nrot == 0);
         //nrot /= 2;
 
-        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);
+        // with random signs (VTQ) one more row carries them: rows [0, nrot) = H, row nrot = the signs of D
+        const int64_t n_rows = attn_rot_v_signs.empty() ? nrot : nrot + 1;
+        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, n_rows);
         ggml_set_input(res);
         ggml_set_name(res, "attn_inp_v_rot");
     }
@@ -2194,7 +2186,12 @@ void llama_kv_cache::set_input_v_rot(ggml_tensor * dst) const {
     const auto n_rot = dst->ne[0];
     GGML_ASSERT(attn_rot_hadamard.count(dst->ne[0]));
 
-    memcpy(dst->data, attn_rot_hadamard.at(n_rot).data(), ggml_nbytes(dst));
+    const size_t h_bytes = n_rot*n_rot*sizeof(float);
+    memcpy(dst->data, attn_rot_hadamard.at(n_rot).data(), h_bytes);
+    if (dst->ne[1] == n_rot + 1) {
+        GGML_ASSERT((int64_t) attn_rot_v_signs.size() == n_rot);
+        memcpy((char *) dst->data + h_bytes, attn_rot_v_signs.data(), n_rot*sizeof(float));
+    }
 }
 
 size_t llama_kv_cache::total_size() const {
