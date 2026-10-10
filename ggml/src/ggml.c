@@ -7893,12 +7893,12 @@ void ggml_graph_recompute_checkpoints(struct ggml_context * ctx, struct ggml_cgr
         // recurrent state of a Gated DeltaNet layer) keeps its result: the forward pass may overwrite that cache in
         // place afterwards, so a recomputation would read the new state
         for (int j = 0; j < GGML_MAX_SRC && !k && node->view_src == NULL; ++j) {
-            const struct ggml_tensor * src = node->src[j];
+            struct ggml_tensor * src = node->src[j];
             if (src == NULL) {
                 continue;
             }
-            const struct ggml_tensor * base = src->view_src ? src->view_src : src;
-            k = !ggml_hash_contains(&fwd, (struct ggml_tensor *) base) && base->buffer != NULL &&
+            struct ggml_tensor * base = src->view_src ? src->view_src : src;
+            k = !ggml_hash_contains(&fwd, base) && base->buffer != NULL &&
                 ggml_backend_buffer_get_usage(base->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS;
         }
         if (k) {
