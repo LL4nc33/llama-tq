@@ -355,6 +355,8 @@ public:
     // note: assumes v_rot^2 == I
     ggml_tensor * self_k_rot = nullptr;
     ggml_tensor * self_v_rot = nullptr;
+    ggml_tensor * self_v_rot_h     = nullptr; // H part of self_v_rot
+    ggml_tensor * self_v_rot_signs = nullptr; // signs of D for D*H*D (VTQ), else nullptr
 
     // note: these have to be copies because in order to be able to reuse a graph, its inputs
     //       need to carry these parameters with them. otherwise, they can point to freed
@@ -437,6 +439,11 @@ public:
 
     ggml_tensor * self_k_rot_swa = nullptr;
     ggml_tensor * self_v_rot_swa = nullptr;
+
+    ggml_tensor * self_v_rot_h         = nullptr;
+    ggml_tensor * self_v_rot_signs     = nullptr;
+    ggml_tensor * self_v_rot_swa_h     = nullptr;
+    ggml_tensor * self_v_rot_swa_signs = nullptr;
 
     const llama_hparams hparams;
     const llama_cparams cparams;

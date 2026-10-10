@@ -87,22 +87,31 @@ static ggml_tensor * ggml_mul_mat_aux(
     return res;
 }
 
-// V rotation: rot is the Sylvester Hadamard H (n x n), or, with random signs (VTQ caches), n+1 rows: H and then the
-// signs of D, for D*H*D. D*H*D x = D * (H * (D * x)): sign flips around the fast transform (the first flip and the
-// transform fuse on CUDA). With tensor split the rotation stays one matmul with D*H*D assembled in the graph.
+// V rotation input: the Sylvester Hadamard H (n x n), or, with random signs (VTQ caches), n+1 rows: H and then the
+// signs of D, for D*H*D. Split once per graph into H and the signs (views of the input made per layer would each be
+// copied to the device on their own).
+static void ggml_split_v_rot(ggml_context * ctx, ggml_tensor * rot, ggml_tensor ** h, ggml_tensor ** signs) {
+    *h     = rot;
+    *signs = nullptr;
+    if (rot && rot->ne[1] == rot->ne[0] + 1) {
+        const int64_t n = rot->ne[0];
+        *h     = ggml_view_2d(ctx, rot, n, n, rot->nb[1], 0);
+        *signs = ggml_view_1d(ctx, rot, n, n*rot->nb[1]);
+    }
+}
+
+// D*H*D x = D * (H * (D * x)): sign flips around the fast transform (the first flip and the transform fuse on CUDA).
+// With tensor split the rotation stays one matmul with D*H*D assembled in the graph.
 static ggml_tensor * ggml_rot_v(
         ggml_context * ctx,
         ggml_tensor * cur,
-        ggml_tensor * rot,
+        ggml_tensor * h,
+        ggml_tensor * signs,
         bool keep_rows) {
-    const int64_t n = rot->ne[0];
-    if (rot->ne[1] == n) {
-        return ggml_mul_mat_aux(ctx, cur, rot, keep_rows, true);
+    const int64_t n = h->ne[0];
+    if (!signs) {
+        return ggml_mul_mat_aux(ctx, cur, h, keep_rows, true);
     }
-    GGML_ASSERT(rot->ne[1] == n + 1);
-
-    ggml_tensor * h     = ggml_view_2d(ctx, rot, n, n, rot->nb[1], 0);
-    ggml_tensor * signs = ggml_view_1d(ctx, rot, n, n*rot->nb[1]);
 
     if (keep_rows) {
         ggml_tensor * dhd = ggml_mul(ctx, ggml_mul(ctx, h, signs), ggml_reshape_2d(ctx, signs, 1, n));
@@ -2402,6 +2411,7 @@ static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
 
     inp->self_k_rot = mctx_cur->build_input_k_rot(ctx0);
     inp->self_v_rot = mctx_cur->build_input_v_rot(ctx0);
+    ggml_split_v_rot(ctx0, inp->self_v_rot, &inp->self_v_rot_h, &inp->self_v_rot_signs);
 
     return inp;
 }
@@ -2435,7 +2445,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (inp->self_v_rot) {
-        v_cur = ggml_rot_v(ctx0, v_cur, inp->self_v_rot, cparams.split_tensor);
+        v_cur = ggml_rot_v(ctx0, v_cur, inp->self_v_rot_h, inp->self_v_rot_signs, cparams.split_tensor);
     }
 
     // these nodes are added to the graph together so that they are not reordered
@@ -2467,7 +2477,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (inp->self_v_rot) {
-        cur = ggml_rot_v(ctx0, cur, inp->self_v_rot, cparams.split_tensor);
+        cur = ggml_rot_v(ctx0, cur, inp->self_v_rot_h, inp->self_v_rot_signs, cparams.split_tensor);
     }
 
     if (wo) {
@@ -2593,7 +2603,9 @@ ggml_tensor * llm_graph_context::build_attn(
     const bool is_swa = hparams.is_swa(il);
 
     auto * k_rot = is_swa ? inp->self_k_rot_swa : inp->self_k_rot;
-    auto * v_rot = is_swa ? inp->self_v_rot_swa : inp->self_v_rot;
+    auto * v_rot       = is_swa ? inp->self_v_rot_swa       : inp->self_v_rot;
+    auto * v_rot_h     = is_swa ? inp->self_v_rot_swa_h     : inp->self_v_rot_h;
+    auto * v_rot_signs = is_swa ? inp->self_v_rot_swa_signs : inp->self_v_rot_signs;
 
     if (k_rot) {
         q_cur = ggml_mul_mat_aux(ctx0, q_cur, k_rot, cparams.split_tensor, true);
@@ -2603,7 +2615,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
     if (v_rot) {
         if (v_cur) {
-            v_cur = ggml_rot_v(ctx0, v_cur, v_rot, cparams.split_tensor);
+            v_cur = ggml_rot_v(ctx0, v_cur, v_rot_h, v_rot_signs, cparams.split_tensor);
         }
     }
 
@@ -2647,7 +2659,7 @@ ggml_tensor * llm_graph_context::build_attn(
     cb(cur, "kqv_out", il);
 
     if (v_rot) {
-        cur = ggml_rot_v(ctx0, cur, v_rot, cparams.split_tensor);
+        cur = ggml_rot_v(ctx0, cur, v_rot_h, v_rot_signs, cparams.split_tensor);
     }
 
     if (wo) {
@@ -2752,6 +2764,8 @@ llm_graph_input_attn_kv_iswa * llm_graph_context::build_attn_inp_kv_iswa() const
 
     inp->self_k_rot_swa = mctx_cur->get_swa()->build_input_k_rot(ctx0);
     inp->self_v_rot_swa = mctx_cur->get_swa()->build_input_v_rot(ctx0);
+    ggml_split_v_rot(ctx0, inp->self_v_rot,     &inp->self_v_rot_h,     &inp->self_v_rot_signs);
+    ggml_split_v_rot(ctx0, inp->self_v_rot_swa, &inp->self_v_rot_swa_h, &inp->self_v_rot_swa_signs);
 
     return (llm_graph_input_attn_kv_iswa *) res->add_input(std::move(inp));
 }
