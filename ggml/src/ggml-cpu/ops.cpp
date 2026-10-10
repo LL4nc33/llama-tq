@@ -1235,7 +1235,6 @@ static void ggml_compute_forward_acc_f32(
     GGML_ASSERT(offset + (ne10 == 0 ? 0 : ne10-1)*nb0  + (ne11 == 0 ? 0 : ne11-1)*nb1  + (ne12 == 0 ? 0 : ne12-1)*nb2  + (ne13 == 0 ? 0 : ne13-1)*nb3  < ggml_nbytes(dst));
     GGML_ASSERT(offset + (ne10 == 0 ? 0 : ne10-1)*nb00 + (ne11 == 0 ? 0 : ne11-1)*nb01 + (ne12 == 0 ? 0 : ne12-1)*nb02 + (ne13 == 0 ? 0 : ne13-1)*nb03 < ggml_nbytes(src0));
 
-    GGML_ASSERT(nb10 == sizeof(float));
 
     // rows per thread
     const int dr = (nr + nth - 1)/nth;
@@ -1250,6 +1249,17 @@ static void ggml_compute_forward_acc_f32(
         const int i3 = ir/(ne12*ne11);
         const int i2 = (ir - i3*ne12*ne11)/ne11;
         const int i1 = (ir - i3*ne12*ne11 - i2*ne11);
+
+        if (nb10 != sizeof(float)) {
+            // src1 with a strided first dimension (e.g. the gradient of a transposed view)
+            float       * d = (float *) ((char *)  dst->data + i3*nb3  + i2*nb2  + i1*nb1  + offset);
+            const float * a = (float *) ((char *) src0->data + i3*nb03 + i2*nb02 + i1*nb01 + offset);
+            const char  * b = (const char *) src1->data + i3*nb13 + i2*nb12 + i1*nb11;
+            for (int i0 = 0; i0 < nc; ++i0) {
+                d[i0] = a[i0] + *(const float *) (b + i0*nb10);
+            }
+            continue;
+        }
 
 #ifdef GGML_USE_ACCELERATE
         vDSP_vadd(

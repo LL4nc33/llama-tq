@@ -7342,6 +7342,69 @@ static void ggml_compute_backward(
                 ggml_add_or_set(ctx, cgraph, isrc1, dw);
             }
         } break;
+        case GGML_OP_DSV4_HC_PRE: {
+            // result[i, t] = scale*sum_h x[i, h, t]*w(h, t), w = weights[h, t] or sigmoid(gate[i, h, t])
+            const float scale = ggml_get_op_params_f32(tensor, 0);
+            const bool  gated = ggml_get_op_params_i32(tensor, 1) != 0;
+            struct ggml_tensor * g3 = ggml_reshape_3d(ctx, grad, src0->ne[0], 1, src0->ne[2]); // [n_embd, 1, n_tokens]
+            if (gated) {
+                struct ggml_tensor * sg = ggml_sigmoid(ctx, src1);
+                if (scale != 1.0f) {
+                    g3 = ggml_scale(ctx, g3, scale);
+                }
+                if (src0_needs_grads) {
+                    ggml_add_or_set(ctx, cgraph, isrc0, ggml_mul(ctx, sg, g3));
+                }
+                if (src1_needs_grads) {
+                    // d sigmoid = s*(1 - s)
+                    struct ggml_tensor * ds = ggml_mul(ctx, sg, ggml_scale_bias(ctx, sg, -1.0f, 1.0f));
+                    ggml_add_or_set(ctx, cgraph, isrc1, ggml_mul(ctx, ggml_mul(ctx, src0, ds), g3));
+                }
+            } else {
+                struct ggml_tensor * w3 = ggml_reshape_3d(ctx, src1, 1, src1->ne[0], src1->ne[1]); // [1, hc, n_tokens]
+                if (src0_needs_grads) {
+                    struct ggml_tensor * gx = ggml_mul(ctx, ggml_repeat(ctx, g3, src0), w3);
+                    ggml_add_or_set(ctx, cgraph, isrc0, scale != 1.0f ? ggml_scale(ctx, gx, scale) : gx);
+                }
+                if (src1_needs_grads) {
+                    struct ggml_tensor * gw = ggml_sum_rows(ctx, ggml_mul(ctx, src0, g3)); // [1, hc, n_tokens]
+                    gw = ggml_reshape_2d(ctx, gw, src1->ne[0], src1->ne[1]);
+                    ggml_add_or_set(ctx, cgraph, isrc1, scale != 1.0f ? ggml_scale(ctx, gw, scale) : gw);
+                }
+            }
+        } break;
+        case GGML_OP_DSV4_HC_POST: {
+            // result[i, d, t] = x[i, t]*post[d, t] + sum_s residual[i, s, t]*comb[d, s, t] (comb == NULL: + residual[i, d, t])
+            struct ggml_tensor * comb = tensor->src[3];
+            const size_t icomb = comb ? ggml_hash_find(&cgraph->visited_hash_set, comb) : (size_t) -1;
+            const bool comb_needs_grads = comb && icomb != GGML_HASHSET_FULL &&
+                ggml_bitset_get(cgraph->visited_hash_set.used, icomb) && grads_needed[icomb];
+            const int64_t n_embd   = src0->ne[0];
+            const int64_t n_tokens = src0->ne[1];
+            if (src0_needs_grads) {
+                // sum_d grad[i, d, t]*post[d, t]
+                ggml_add_or_set(ctx, cgraph, isrc0, ggml_dsv4_hc_pre(ctx, grad, src2));
+            }
+            if (src2_needs_grads) {
+                struct ggml_tensor * x3 = ggml_reshape_3d(ctx, src0, n_embd, 1, n_tokens);
+                struct ggml_tensor * gp = ggml_sum_rows(ctx, ggml_mul(ctx, grad, x3)); // [1, hc, n_tokens]
+                ggml_add_or_set(ctx, cgraph, isrc2, ggml_reshape_2d(ctx, gp, src2->ne[0], src2->ne[1]));
+            }
+            if (src1_needs_grads) {
+                if (comb) {
+                    // grad_res[i, s, t] = sum_d grad[i, d, t]*comb[d, s, t]
+                    struct ggml_tensor * gt = ggml_cont(ctx, ggml_transpose(ctx, grad));        // [hc_d, n_embd, n_tokens]
+                    struct ggml_tensor * gr = ggml_mul_mat(ctx, comb, gt);                       // [hc_s, n_embd, n_tokens]
+                    ggml_add_or_set(ctx, cgraph, isrc1, ggml_cont(ctx, ggml_transpose(ctx, gr)));
+                } else {
+                    ggml_add_or_set(ctx, cgraph, isrc1, grad);
+                }
+            }
+            if (comb_needs_grads) {
+                // grad_comb[d, s, t] = sum_i grad[i, d, t]*residual[i, s, t]
+                ggml_add_or_set(ctx, cgraph, icomb, ggml_mul_mat(ctx, grad, src1));
+            }
+        } break;
         case GGML_OP_GATED_DELTA_NET: {
             GGML_ASSERT(ggml_get_op_params_i32(tensor, 1) == 0 && "backward pass with raw gates not implemented");
             struct ggml_tensor * g    = tensor->src[3];

@@ -3989,18 +3989,27 @@ struct test_dsv4_hc_pre : public test_case {
     test_dsv4_hc_pre(int64_t n_embd = 31, int64_t n_hc = 4, int64_t n_tokens = 17, bool gated = false)
         : n_embd(n_embd), n_hc(n_hc), n_tokens(n_tokens), gated(gated) {}
 
+    // gated: the central differences through the sigmoid scatter by up to ~2e-3 MAA here, while the backward pass
+    // matches a float64 analytic gradient to 2e-8 (absolute, gradients up to 0.08)
+    double max_maa_err() override {
+        return gated ? 5e-3 : 1e-4;
+    }
+
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+        ggml_set_param(x);
         ggml_set_name(x, "x");
 
         ggml_tensor * out;
         if (gated) {
             ggml_tensor * gate = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+            ggml_set_param(gate);
             ggml_set_name(gate, "gate");
 
             out = ggml_dsv4_hc_pre_gated(ctx, x, gate, 1.0f/n_hc);
         } else {
             ggml_tensor * weights = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_hc, n_tokens);
+            ggml_set_param(weights);
             ggml_set_name(weights, "weights");
 
             out = ggml_dsv4_hc_pre(ctx, x, weights);
@@ -4040,19 +4049,29 @@ struct test_dsv4_hc_post : public test_case {
     test_dsv4_hc_post(int64_t n_embd = 31, int64_t n_hc = 4, int64_t n_tokens = 17, bool identity = false)
         : n_embd(n_embd), n_hc(n_hc), n_tokens(n_tokens), identity(identity) {}
 
+    // the relative MAA of the central differences scatters up to ~2e-4 on small gradients; the backward pass matches
+    // float64 analytic gradients to 1e-6 (absolute)
+    double max_maa_err() override {
+        return 5e-4;
+    }
+
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_tokens);
+        ggml_set_param(x);
         ggml_set_name(x, "x");
 
         ggml_tensor * residual = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, n_hc, n_tokens);
+        ggml_set_param(residual);
         ggml_set_name(residual, "residual");
 
         ggml_tensor * post = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_hc, n_tokens);
+        ggml_set_param(post);
         ggml_set_name(post, "post");
 
         ggml_tensor * comb = nullptr;
         if (!identity) {
             comb = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_hc, n_hc, n_tokens);
+            ggml_set_param(comb);
             ggml_set_name(comb, "comb");
         }
 
