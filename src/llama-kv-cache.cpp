@@ -493,10 +493,12 @@ llama_kv_cache::llama_kv_cache(
             LLAMA_LOG_WARN("%s: attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)\n", __func__);
         }
 
+        // KTQ blocks carry their own randomized Hadamard transform: an additional rotation in the graph makes them
+        // worse (Qwen3-4B, K quantized in prefill: KLD vs f16 0.60 -> 1.97 for ktq2_1, 0.030 -> 0.057 for ktq4_1)
         attn_rot_k =
             !attn_rot_disable &&
             n_embd_head_k_all > 0 &&
-            ggml_is_quantized(type_k) &&
+            ggml_is_quantized(type_k) && !GGML_TYPE_IS_KTQ(type_k) &&
             hparams.n_embd_head_k() % 64 == 0;
 
         attn_rot_v =
