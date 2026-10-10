@@ -58,11 +58,14 @@ static bool can_reuse_kq_mask(
 
 // impl
 
+// sylvester: rot is exactly the orthonormal Sylvester Hadamard matrix (the K rotation; the V rotation of VTQ caches
+// carries random signs), so a backend may apply the fast Walsh-Hadamard transform instead of the matmul
 static ggml_tensor * ggml_mul_mat_aux(
         ggml_context * ctx,
         ggml_tensor * cur,
         ggml_tensor * rot,
-        bool keep_rows = false) {
+        bool keep_rows = false,
+        bool sylvester = false) {
     const auto n = rot->ne[0];
 
     ggml_tensor * res;
@@ -76,6 +79,9 @@ static ggml_tensor * ggml_mul_mat_aux(
         res = ggml_reshape_2d(ctx, cur, n, ggml_nelements(cur)/n);
     }
     res = ggml_mul_mat   (ctx, rot, res);
+    if (sylvester) {
+        ggml_mul_mat_set_hint(res, GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD);
+    }
     res = ggml_reshape_4d(ctx, res, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
 
     return res;
@@ -2391,8 +2397,8 @@ ggml_tensor * llm_graph_context::build_attn(
     GGML_ASSERT(v_mla == nullptr);
 
     if (inp->self_k_rot) {
-        q_cur = ggml_mul_mat_aux(ctx0, q_cur, inp->self_k_rot, cparams.split_tensor);
-        k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot, cparams.split_tensor);
+        q_cur = ggml_mul_mat_aux(ctx0, q_cur, inp->self_k_rot, cparams.split_tensor, true);
+        k_cur = ggml_mul_mat_aux(ctx0, k_cur, inp->self_k_rot, cparams.split_tensor, true);
     }
 
     if (inp->self_v_rot) {
@@ -2557,9 +2563,9 @@ ggml_tensor * llm_graph_context::build_attn(
     auto * v_rot = is_swa ? inp->self_v_rot_swa : inp->self_v_rot;
 
     if (k_rot) {
-        q_cur = ggml_mul_mat_aux(ctx0, q_cur, k_rot, cparams.split_tensor);
+        q_cur = ggml_mul_mat_aux(ctx0, q_cur, k_rot, cparams.split_tensor, true);
         if (k_cur) {
-            k_cur = ggml_mul_mat_aux(ctx0, k_cur, k_rot, cparams.split_tensor);
+            k_cur = ggml_mul_mat_aux(ctx0, k_cur, k_rot, cparams.split_tensor, true);
         }
     }
     if (v_rot) {
