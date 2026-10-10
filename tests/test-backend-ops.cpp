@@ -9674,7 +9674,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                         {GGML_TYPE_KTQ2_1, GGML_TYPE_F16}, {GGML_TYPE_F16, GGML_TYPE_VTQ2_1},
                         {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},
                         {GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0},
-                        {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0}}) {
+                        {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0},
+                        {GGML_TYPE_Q8_0, GGML_TYPE_VTQ4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ2_1}}) {
                     test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {nr2, 1}, 1024, nb, true, false, 0, 0,
                                 GGML_PREC_F32, kv_types.first, kv_types.second));
                 }
@@ -9686,7 +9687,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (bool sinks : {false, true}) {
         for (int64_t nb : {1, 2, 8}) {
             for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
-                    {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}}) {
+                    {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1},
+                    {GGML_TYPE_Q8_0, GGML_TYPE_VTQ4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ2_1}}) {
                 test_cases.emplace_back(new test_flash_attn_ext(64, 64, 8, {8, 1}, 512, nb, true, sinks, 0, 0,
                             GGML_PREC_F32, kv_types.first, kv_types.second));
             }
@@ -9700,7 +9702,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                     {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1},
                     {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}, {GGML_TYPE_F16, GGML_TYPE_VTQ4_1},
                     {GGML_TYPE_F16, GGML_TYPE_VTQ2_1}, {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0},
-                    {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0}}) {
+                    {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0},
+                    {GGML_TYPE_Q8_0, GGML_TYPE_VTQ4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ2_1}}) {
                 test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {nr2, 1}, 1024, nb, true, false, 0, 0,
                             GGML_PREC_F32, kv_types.first, kv_types.second));
             }
