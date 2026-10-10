@@ -33,12 +33,14 @@ Inference on one GPU, Qwen3-4B Q4_K_M, 128 tokens:
 
 | GPU | f16 KV | `ktq2_1` / `vtq2_1` KV |
 |---|---|---|
-| RTX 5090 | 331 t/s | 272 t/s |
-| RTX 4090 | 252 t/s | 217 t/s |
-| RTX 3090 | 203 t/s | 176 t/s |
-| RTX 3060 | 103 t/s | 96 t/s |
-| RTX 4060 Ti | 95 t/s | 90 t/s |
-| RTX 2060 | 90 t/s | 84 t/s |
+| RTX 5090 | 338 t/s | 293 t/s |
+| RTX 4090 | 252 t/s | 217 t/s ¹ |
+| RTX 3090 | 203 t/s | 176 t/s ¹ |
+| RTX 3060 | 103 t/s | 96 t/s ¹ |
+| RTX 4060 Ti | 95 t/s | 90 t/s ¹ |
+| RTX 2060 | 90 t/s | 87 t/s |
+
+¹ before the K/V rotations ran as the fast Walsh-Hadamard transform (2026-10-09).
 
 LoRA fine-tuning, Qwen3-4B Q4_K_M, 2 epochs, same data and settings, 100 % exact match in all runs:
 
@@ -47,7 +49,7 @@ LoRA fine-tuning, Qwen3-4B Q4_K_M, 2 epochs, same data and settings, 100 % exact
 | RTX 5090 | 54 s | 102 s |
 | RTX 2060 | 321 s | 260 s |
 
-More setups: [docs/models.md](docs/models.md), [docs/benchmarks](docs/benchmarks).
+More numbers: [docs/benchmarks](docs/benchmarks/README.md), setups per model: [docs/models.md](docs/models.md).
 
 ## Quick start
 

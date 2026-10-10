@@ -192,7 +192,7 @@ Historical measurements from 2026-04, before the KTQ fix of 2026-10-04. All meas
 | llama-tq f16/f16   | 187 | 17.00 |
 | Δ                  | +5% | +9% |
 
-Historical snapshot of TG, PPL and HellaSwag for several models: [`docs/bench/LIVE_NUMBERS.md`](bench/LIVE_NUMBERS.md).
+Historical snapshot of TG, PPL and HellaSwag for several models: [`docs/benchmarks/history/LIVE_NUMBERS.md`](benchmarks/history/LIVE_NUMBERS.md).
 
 ## How It Works
 
@@ -349,7 +349,7 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 | `ggml/src/ggml-cuda/convert.cu`            | CUDA dequant dispatch (contiguous + NC) for KTQ + all VTQ families. |
 | `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ; shared `PQ_CODEBOOK_*` constants. |
 | `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_3`. |
-| `docs/bench/LIVE_NUMBERS.md`               | Historical TG/PPL/HellaSwag snapshot. |
+| `docs/benchmarks/history/LIVE_NUMBERS.md` | Historical TG/PPL/HellaSwag snapshot. |
 
 ## Research log (2026-04/05)
 
