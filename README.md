@@ -19,26 +19,32 @@ GPUs**. Developed on 2× RTX 2060 12 GB (no P2P); tested on RTX 3060, 3090, 4060
 
 ## Numbers
 
-2× RTX 2060 12 GB:
+Inference on 2× RTX 2060 12 GB:
 
-| | |
-|---|---|
-| Qwen3.8-27B Q4_K_M, tensor split | 24 t/s decode (layer split: 16.5) |
-| Qwen3.8-27B, `ktq2_1`/`vtq2_1` KV | 256k context, 15.8 t/s at 118k |
-| Ternary-Bonsai-2-27B, f16 KV, vision | 200k context, ~40 t/s |
-| Kolibri-1 78B MoE, experts partly in RAM | 128k context, ~35 t/s |
-| gpt-oss-20b, `ktq4_1`/`vtq4_1` KV | 77 t/s, 40 t/s at 64k |
+| Model | KV cache | Max context | Decode, short | Decode, long |
+|---|---|---|---|---|
+| Qwen3.8-27B Q4_K_M (tensor split) | f16 | 72k | 24 t/s | |
+| Qwen3.8-27B Q4_K_M (tensor split) | `ktq2_1` / `vtq2_1` | 256k | 24 t/s | 15.8 t/s at 118k |
+| Ternary-Bonsai-2-27B PTQ1_0 (tensor split) | f16 | 200k | 40 t/s | 21.6 t/s at 171k |
+| Kolibri-1 78B MoE Q3_K_S | `ktq4_1` / `vtq4_1` | 128k | 35 t/s | |
+| gpt-oss-20b MXFP4 | `ktq4_1` / `vtq4_1` | 128k | 77 t/s | 40 t/s at 64k |
 
-One GPU, Qwen3-4B Q4_K_M:
+Inference on one GPU, Qwen3-4B Q4_K_M, 128 tokens:
 
-| GPU | decode f16 / `ktq2_1`+`vtq2_1` KV | LoRA, 2 epochs (PyTorch QLoRA) |
+| GPU | f16 KV | `ktq2_1` / `vtq2_1` KV |
 |---|---|---|
-| RTX 5090 | 331 / 272 t/s | 54 s (102 s) |
-| RTX 4090 | 252 / 217 t/s | |
-| RTX 3090 | 203 / 176 t/s | |
-| RTX 4060 Ti | 95 / 90 t/s | |
-| RTX 3060 | 103 / 96 t/s | |
-| RTX 2060 | | 321 s (260 s) |
+| RTX 5090 | 331 t/s | 272 t/s |
+| RTX 4090 | 252 t/s | 217 t/s |
+| RTX 3090 | 203 t/s | 176 t/s |
+| RTX 3060 | 103 t/s | 96 t/s |
+| RTX 4060 Ti | 95 t/s | 90 t/s |
+
+LoRA fine-tuning, Qwen3-4B Q4_K_M, 2 epochs, same data and settings, 100 % exact match in all runs:
+
+| GPU | llama-tq | PyTorch QLoRA |
+|---|---|---|
+| RTX 5090 | 54 s | 102 s |
+| RTX 2060 | 321 s | 260 s |
 
 More setups: [docs/models.md](docs/models.md), [docs/benchmarks](docs/benchmarks).
 
