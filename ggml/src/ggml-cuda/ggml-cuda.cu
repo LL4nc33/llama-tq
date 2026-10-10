@@ -3146,6 +3146,11 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
             }
         }
 
+        // the input gradient of MUL_MAT_ID groups the tokens by expert on the host (stream synchronization)
+        if (node->op == GGML_OP_MUL_MAT_ID_GRAD_B) {
+            use_cuda_graph = false;
+        }
+
         if (!use_cuda_graph) {
             break;
         }
