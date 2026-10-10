@@ -215,22 +215,35 @@ static __device__ __forceinline__ float tq_warp_serial_sum_sq(const float v) {
 #pragma unroll
     for (int j = 0; j < WARP_SIZE; ++j) {
         const float vj = __shfl_sync(0xFFFFFFFF, v, j, WARP_SIZE);
-        acc += vj * vj;
+        acc = tq_mad_rn(acc, vj, vj);
     }
     return acc;
 }
 
+// pq_nearest_scaled with precomputed midpoints (the same float values, so the same result)
+template <int n_cb>
+static __device__ __forceinline__ int tq_nearest_mid(const float val, const float * __restrict__ mid, const float t) {
+    int idx = 0;
+#pragma unroll
+    for (int step = n_cb / 2; step > 0; step /= 2) {
+        if (val > t * mid[idx + step - 1] * PQ_CUDA_CB_SCALE) {
+            idx += step;
+        }
+    }
+    return idx;
+}
+
 template <typename block_type>
-static __device__ __forceinline__ void tq_quantize_block_warp(const float x, block_type * __restrict__ y, const int lane) {
+static __device__ __forceinline__ void tq_quantize_block_warp(const float x, block_type * __restrict__ y, const int lane,
+                                                              const float * __restrict__ cb, const float * __restrict__ mid) {
     constexpr int  bits = tq_warp_traits<block_type>::bits;
     constexpr bool rht  = tq_warp_traits<block_type>::rht;
     constexpr int  n_cb = 1 << bits;
-    const float * cb = tq_warp_codebook<block_type>();
 
-    const float norm = sqrtf(tq_warp_serial_sum_sq(x));
+    const float norm = __fsqrt_rn(tq_warp_serial_sum_sq(x));
     if (norm < 1e-30f) {
         if (lane == 0) {
-            y->d = __float2half(norm);
+            y->d = __float2half(0.0f);
         }
         if (lane < int(sizeof(y->qs))) {
             y->qs[lane] = 0;
@@ -243,20 +256,45 @@ static __device__ __forceinline__ void tq_quantize_block_warp(const float x, blo
         return;
     }
 
-    float v = x * (1.0f / norm);
+    float v = __fmul_rn(x, __fdiv_rn(1.0f, norm));
     uint32_t sign_bit = 0;
     if constexpr (rht) {
         sign_bit = ktq_cuda_philox_6r((uint32_t) lane, ktq_cuda_derive_seed(0)) & 1;
         v = ktq_cuda_fwht_warp(v * (sign_bit ? 1.0f : -1.0f));
     }
-    const int best = pq_nearest<n_cb>(v, cb);
-
-    // norm correction from the reconstruction
-    float r = cb[best] * PQ_CUDA_CB_SCALE;
-    if constexpr (rht) {
-        r = ktq_cuda_fwht_warp(r) * (sign_bit ? 1.0f : -1.0f);
+    // scale search with an unbiased scale, as tq_quantize_block: lane k evaluates trial scale
+    // 1 + (k - QK_KTQ_SCALE_STEPS)*QK_KTQ_SCALE_STEP on the whole block, then a warp argmax picks the
+    // smallest angle (ties: the smaller scale, as the CPU loop)
+    static_assert(2*QK_KTQ_SCALE_STEPS == WARP_SIZE, "one trial scale per lane");
+    float vals[WARP_SIZE];
+#pragma unroll
+    for (int j = 0; j < WARP_SIZE; ++j) {
+        vals[j] = __shfl_sync(0xFFFFFFFF, v, j, WARP_SIZE);
     }
-    const float recon_norm = sqrtf(tq_warp_serial_sum_sq(r));
+    float best_rc = 0.0f, best_cc = 0.0f;
+    {
+        const float t = tq_trial_scale(lane - QK_KTQ_SCALE_STEPS);
+#pragma unroll
+        for (int j = 0; j < WARP_SIZE; ++j) {
+            const float cj = cb[tq_nearest_mid<n_cb>(vals[j], mid, t)] * PQ_CUDA_CB_SCALE;
+            best_rc = tq_mad_rn(best_rc, vals[j], cj);
+            best_cc = tq_mad_rn(best_cc, cj, cj);
+        }
+    }
+    int best_lane = lane;
+#pragma unroll
+    for (int offset = WARP_SIZE/2; offset > 0; offset >>= 1) {
+        const float rc = __shfl_xor_sync(0xFFFFFFFF, best_rc,   offset, WARP_SIZE);
+        const float cc = __shfl_xor_sync(0xFFFFFFFF, best_cc,   offset, WARP_SIZE);
+        const int   ol = __shfl_xor_sync(0xFFFFFFFF, best_lane, offset, WARP_SIZE);
+        const float other = rc * rc * best_cc;   // rc^2/cc (smaller angle) compared without division
+        const float mine  = best_rc * best_rc * cc;
+        if (other > mine || (other == mine && ol < best_lane)) {
+            best_rc = rc; best_cc = cc; best_lane = ol;
+        }
+    }
+    const int   best  = tq_nearest_mid<n_cb>(v, mid, tq_trial_scale(best_lane - QK_KTQ_SCALE_STEPS));
+    const float scale = __fdiv_rn(norm, best_rc);
 
     // pack the indices (and the sign bits) from ballots
     uint32_t m[bits];
@@ -285,7 +323,7 @@ static __device__ __forceinline__ void tq_quantize_block_warp(const float x, blo
         }
     }
     if (lane == 0) {
-        y->d = __float2half(recon_norm > 1e-30f ? norm / recon_norm : norm);
+        y->d = __float2half(scale);
     }
 }
 
@@ -299,6 +337,18 @@ static __global__ void k_set_rows_pq_warp(const float * __restrict__ src0,
                                           const int64_t s1, const int64_t s2, const int64_t s3,
                                           const uint3 ne00, const uint3 ne01, const uint3 ne02,
                                           const uint3 ne11_fd, const uint3 ne12_fd) {
+    // the codebook and the midpoints of its neighbours in shared memory: the lanes look up different entries,
+    // which constant memory would serialize
+    constexpr int n_cb = 1 << tq_warp_traits<block_type>::bits;
+    __shared__ float s_cb[n_cb];
+    __shared__ float s_mid[n_cb];
+    if (threadIdx.x < n_cb) {
+        const float * cb = tq_warp_codebook<block_type>();
+        s_cb[threadIdx.x]  = cb[threadIdx.x];
+        s_mid[threadIdx.x] = threadIdx.x + 1 < n_cb ? (cb[threadIdx.x] + cb[threadIdx.x + 1]) * 0.5f : 0.0f;
+    }
+    __syncthreads();
+
     const int64_t i    = (int64_t(blockDim.x) * blockIdx.x + threadIdx.x) / WARP_SIZE;
     const int     lane = threadIdx.x % WARP_SIZE;
     if (i >= ne_total) {
@@ -324,7 +374,7 @@ static __global__ void k_set_rows_pq_warp(const float * __restrict__ src0,
     const float * src_block = src0 + i01*s01 + i02*s02 + i03*s03 + i00;
     block_type  * dst_block = dst + (dst_row*s1 + i02*s2 + i03*s3) / sizeof(block_type) + i00 / 32;
 
-    tq_quantize_block_warp(src_block[lane], dst_block, lane);
+    tq_quantize_block_warp(src_block[lane], dst_block, lane, s_cb, s_mid);
 }
 
 // Template dispatch function for TurboQuant set_rows

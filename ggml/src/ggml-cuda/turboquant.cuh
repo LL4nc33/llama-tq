@@ -219,19 +219,30 @@ static __device__ __forceinline__ float ktq_cuda_shared_sign(int j) {
     return (ktq_cuda_philox_6r((uint32_t) j, ktq_cuda_derive_seed(0)) & 1) ? 1.0f : -1.0f;
 }
 
-// Nearest centroid (as the CPU reference quantizer does). For the K cache this is clearly better than
-// stochastic rounding: the softmax amplifies per-element variance, while a small bias is harmless.
-template <int N_CB>
-static __device__ __forceinline__ int pq_nearest(float val, const float * codebook) {
-    int best = 0;
-    float best_d = 1e30f;
-    for (int c = 0; c < N_CB; c++) {
-        const float d = fabsf(val - codebook[c] * PQ_CUDA_CB_SCALE);
-        if (d < best_d) { best = c; best_d = d; }
-    }
-    return best;
+// The TurboQuant encoders compute in IEEE round-to-nearest like the CPU reference (tq_quantize_block), so both
+// pick the same codes: the CUDA backend is built with -use_fast_math (approximate sqrt/div, a*b+c contracted into
+// fma), and a last-bit difference could flip the scale search on a near tie.
+static __device__ __forceinline__ float tq_mad_rn(const float acc, const float a, const float b) {
+    return __fadd_rn(acc, __fmul_rn(a, b));
+}
+static __device__ __forceinline__ float tq_trial_scale(const int k) {
+    return __fadd_rn(1.0f, __fmul_rn(QK_KTQ_SCALE_STEP, (float) k));
 }
 
+// Nearest centroid of the codebook scaled by t (the TurboQuant scale search, see tq_quantize_block): binary
+// search over the midpoints of the sorted codebook, log2(N_CB) comparisons. Must match tq_nearest_scaled.
+// Nearest, not stochastic rounding: the softmax amplifies per-element variance, while the scale stays unbiased.
+template <int N_CB>
+static __device__ __forceinline__ int pq_nearest_scaled(float val, const float * codebook, const float t) {
+    int idx = 0;
+#pragma unroll
+    for (int step = N_CB / 2; step > 0; step /= 2) {
+        if (val > t * ((codebook[idx + step - 1] + codebook[idx + step]) * 0.5f) * PQ_CUDA_CB_SCALE) {
+            idx += step;
+        }
+    }
+    return idx;
+}
 
 // ============================================================
 // Warp-parallel 32-point normalized FWHT.
@@ -377,19 +388,20 @@ static void dequantize_row_ktq_cuda(const void * vx, dst_t * y, const int64_t k,
 }
 
 // ============================================================
-// Quantize one KTQ block (set-rows / cpy, one thread per block), bit-identical to the
-// CPU reference: normalize -> RHT (Philox signs + FWHT) -> nearest centroid (1 bit:
-// the sign) -> norm correction -> store the RHT sign bits.
+// Quantize one KTQ block (set-rows / cpy, one thread per block), as the CPU reference
+// tq_quantize_block: normalize -> RHT (Philox signs + FWHT) -> scale search over the
+// codebook (1 bit: the sign) -> unbiased scale -> store the RHT sign bits.
 // ============================================================
 template <typename block_t>
 static __device__ void ktq_cuda_quantize_block(const float * __restrict__ x, block_t * __restrict__ y, int64_t block_index) {
     constexpr int bits = ktq_bits<block_t>::value;
+    constexpr int n_k  = bits == 1 ? 0 : QK_KTQ_SCALE_STEPS;
     const float * cb = ktq_codebook<bits>();
 
     float sum_sq = 0.0f;
-    for (int j = 0; j < 32; j++) sum_sq += x[j] * x[j];
-    const float norm = sqrtf(sum_sq);
-    y->d = __float2half(norm);
+    for (int j = 0; j < 32; j++) sum_sq = tq_mad_rn(sum_sq, x[j], x[j]);
+    const float norm = __fsqrt_rn(sum_sq);
+    y->d = __float2half(0.0f);
 
     memset(y->qs, 0, sizeof(y->qs));
     memset(y->sb, 0, sizeof(y->sb));
@@ -397,7 +409,7 @@ static __device__ void ktq_cuda_quantize_block(const float * __restrict__ x, blo
         return;
     }
 
-    const float inv_norm = 1.0f / norm;
+    const float inv_norm = __fdiv_rn(1.0f, norm);
     const uint16_t seed = ktq_cuda_derive_seed(block_index);
     float rotated[32];
     for (int j = 0; j < 32; j++) {
@@ -406,25 +418,26 @@ static __device__ void ktq_cuda_quantize_block(const float * __restrict__ x, blo
     }
     ktq_cuda_fwht_32_serial(rotated);
 
+    float best_rc = 0.0f, best_cc = 1.0f, best_t = 1.0f;
+    for (int k = -n_k; k < (n_k ? n_k : 1); k++) {
+        const float t = tq_trial_scale(k);
+        float rc = 0.0f, cc = 0.0f;
+        for (int j = 0; j < 32; j++) {
+            const int idx = bits == 1 ? (rotated[j] >= 0.0f ? 1 : 0) : pq_nearest_scaled<1 << bits>(rotated[j], cb, t);
+            const float cj = cb[idx] * PQ_CUDA_CB_SCALE;
+            rc = tq_mad_rn(rc, rotated[j], cj);
+            cc = tq_mad_rn(cc, cj, cj);
+        }
+        if (rc * rc * best_cc > best_rc * best_rc * cc) { // larger rc^2/cc = smaller angle
+            best_rc = rc; best_cc = cc; best_t = t;
+        }
+    }
     for (int j = 0; j < 32; j++) {
-        const int idx = bits == 1 ? (rotated[j] >= 0.0f ? 1 : 0) : pq_nearest<1 << bits>(rotated[j], cb);
+        const int idx = bits == 1 ? (rotated[j] >= 0.0f ? 1 : 0) : pq_nearest_scaled<1 << bits>(rotated[j], cb, best_t);
         tq_code_set<bits>(y->qs, j, idx);
-    }
-
-    // norm correction: scale so that the reconstruction has the input's norm
-    float recon[32];
-    for (int j = 0; j < 32; j++) {
-        recon[j] = cb[tq_code_index<bits>(y->qs, j)] * PQ_CUDA_CB_SCALE;
-    }
-    ktq_cuda_fwht_32_serial(recon);
-    float recon_sq = 0.0f;
-    for (int j = 0; j < 32; j++) recon_sq += recon[j] * recon[j]; // the sign flip does not change the norm
-    const float recon_norm = sqrtf(recon_sq);
-    y->d = __float2half((recon_norm > 1e-30f) ? norm / recon_norm : norm);
-
-    for (int j = 0; j < 32; j++) {
         y->sb[j / 8] |= (uint8_t)((ktq_cuda_philox_6r(j, seed) & 1) << (j % 8));
     }
+    y->d = __float2half(__fdiv_rn(norm, best_rc));
 }
 
 // ============================================================
@@ -566,8 +579,7 @@ static __device__ __forceinline__ void vtq_encode_4bit(uint8_t * qs, int j, int 
 
 // Decoder functors for the READ path. Use pre-scaled codebooks where available
 // (saves one FMUL per element vs unscaled lookup × PQ_CUDA_CB_SCALE).
-// These MUST NOT be used in vtq_cuda_quantize_block — the norm-correction loop
-// there must stay in the unscaled space matching the encode-side codebook.
+// These MUST NOT be used in vtq_cuda_quantize_block — the encoder works with the unscaled codebook.
 struct VtqDecode1Bit {
     static __device__ __forceinline__ float decode(const uint8_t * qs, int j) {
         return VTQ_CUDA_CB_1BIT_SCALED[(qs[j / 8] >> (j % 8)) & 0x1];
@@ -585,56 +597,59 @@ struct VtqDecode4Bit {
     static __device__ __forceinline__ float decode(const uint8_t * qs, int j) { return vtq_decode_4bit(qs, j); }
 };
 
-// --- Generic VTQ quantize block (set-rows path) ---
-// DecodeFn: float(const uint8_t*, int) — reads index j from qs
-// EncodeFn: void(uint8_t*, int, int) — writes index idx at position j
-// codebook: pointer to N_CB float centroids
-template <typename block_t, int N_CB, typename DecodeFn, typename EncodeFn>
+// --- Generic VTQ quantize block (set-rows path), as the CPU reference tq_quantize_block with sb == NULL ---
+// The data is already rotated by the graph: normalize -> scale search over the codebook (1 bit: the sign)
+// -> unbiased scale. EncodeFn: void(uint8_t*, int, int) — writes index idx at position j.
+template <typename block_t, int N_CB, typename EncodeFn>
 static __device__ void vtq_cuda_quantize_block(
-        const float * __restrict__ x, block_t * __restrict__ y,
-        const float * codebook, DecodeFn decode, EncodeFn encode) {
+        const float * __restrict__ x, block_t * __restrict__ y, const float * codebook, EncodeFn encode) {
+    constexpr int n_k = N_CB == 2 ? 0 : QK_KTQ_SCALE_STEPS;
+
     float sum_sq = 0.0f;
-    for (int j = 0; j < 32; j++) sum_sq += x[j] * x[j];
-    const float norm = sqrtf(sum_sq);
-    y->d = __float2half(norm);
-
-    if (norm < 1e-30f) { memset(y->qs, 0, sizeof(y->qs)); return; }
-
-    const float inv_norm = 1.0f / norm;
+    for (int j = 0; j < 32; j++) sum_sq = tq_mad_rn(sum_sq, x[j], x[j]);
+    const float norm = __fsqrt_rn(sum_sq);
+    y->d = __float2half(0.0f);
     memset(y->qs, 0, sizeof(y->qs));
-    for (int j = 0; j < 32; j++) {
-        float val = x[j] * inv_norm;
-        int best = 0;
-        float best_d = fabsf(val - codebook[0] * PQ_CUDA_CB_SCALE);
-        for (int c = 1; c < N_CB; c++) {
-            float d = fabsf(val - codebook[c] * PQ_CUDA_CB_SCALE);
-            if (d < best_d) { best_d = d; best = c; }
-        }
-        encode(y->qs, j, best);
+    if (norm < 1e-30f) {
+        return;
     }
 
-    // Norm correction
-    float recon_sq = 0.0f;
-    for (int j = 0; j < 32; j++) {
-        float r = decode(y->qs, j);
-        recon_sq += r * r;
+    const float inv_norm = __fdiv_rn(1.0f, norm);
+    float v[32];
+    for (int j = 0; j < 32; j++) v[j] = x[j] * inv_norm;
+
+    float best_rc = 0.0f, best_cc = 1.0f, best_t = 1.0f;
+    for (int k = -n_k; k < (n_k ? n_k : 1); k++) {
+        const float t = tq_trial_scale(k);
+        float rc = 0.0f, cc = 0.0f;
+        for (int j = 0; j < 32; j++) {
+            const int idx = N_CB == 2 ? (v[j] >= 0.0f ? 1 : 0) : pq_nearest_scaled<N_CB>(v[j], codebook, t);
+            const float cj = codebook[idx] * PQ_CUDA_CB_SCALE;
+            rc = tq_mad_rn(rc, v[j], cj);
+            cc = tq_mad_rn(cc, cj, cj);
+        }
+        if (rc * rc * best_cc > best_rc * best_rc * cc) { // larger rc^2/cc = smaller angle
+            best_rc = rc; best_cc = cc; best_t = t;
+        }
     }
-    const float recon_norm = sqrtf(recon_sq);
-    y->d = __float2half((recon_norm > 1e-30f) ? norm / recon_norm : norm);
+    for (int j = 0; j < 32; j++) {
+        encode(y->qs, j, N_CB == 2 ? (v[j] >= 0.0f ? 1 : 0) : pq_nearest_scaled<N_CB>(v[j], codebook, best_t));
+    }
+    y->d = __float2half(__fdiv_rn(norm, best_rc));
 }
 
 // Concrete quantize-block wrappers (signature matches set_rows_cuda_tq template)
 static __device__ void vtq_cuda_quantize_vtq1_1_block(const float * __restrict__ x, block_vtq1_1 * __restrict__ y, int64_t) {
-    vtq_cuda_quantize_block<block_vtq1_1, 2>(x, y, VTQ_CUDA_CB_1BIT, vtq_decode_1bit, vtq_encode_1bit);
+    vtq_cuda_quantize_block<block_vtq1_1, 2>(x, y, VTQ_CUDA_CB_1BIT, vtq_encode_1bit);
 }
 static __device__ void vtq_cuda_quantize_vtq2_1_block(const float * __restrict__ x, block_vtq2_1 * __restrict__ y, int64_t) {
-    vtq_cuda_quantize_block<block_vtq2_1, 4>(x, y, VTQ_CUDA_CB_2BIT, vtq_decode_2bit, vtq_encode_2bit);
+    vtq_cuda_quantize_block<block_vtq2_1, 4>(x, y, VTQ_CUDA_CB_2BIT, vtq_encode_2bit);
 }
 static __device__ void vtq_cuda_quantize_vtq3_1_block(const float * __restrict__ x, block_vtq3_1 * __restrict__ y, int64_t) {
-    vtq_cuda_quantize_block<block_vtq3_1, 8>(x, y, PQ_CUDA_CB_3BIT, vtq_decode_3bit, vtq_encode_3bit);
+    vtq_cuda_quantize_block<block_vtq3_1, 8>(x, y, PQ_CUDA_CB_3BIT, vtq_encode_3bit);
 }
 static __device__ void vtq_cuda_quantize_vtq4_1_block(const float * __restrict__ x, block_vtq4_1 * __restrict__ y, int64_t) {
-    vtq_cuda_quantize_block<block_vtq4_1, 16>(x, y, PQ_CUDA_CB_4BIT, vtq_decode_4bit, vtq_encode_4bit);
+    vtq_cuda_quantize_block<block_vtq4_1, 16>(x, y, PQ_CUDA_CB_4BIT, vtq_encode_4bit);
 }
 
 // --- Generic VTQ bulk dequantize kernel (warp-parallel, for convert.cu) ---

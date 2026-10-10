@@ -319,9 +319,9 @@ static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 
 // Reference: Zandieh, Daliri, Hadian, Mirrokni; arXiv:2504.19874.
 //
 // Layout per 32-element block:
-//   d   ggml_half — the post-correction L2 norm of the block. After codebook
-//       quantization, recompute ||reconstructed|| and store norm / ||recon||
-//       here so that E[||dequantized|| ] = ||original||  (v5 norm correction).
+//   d   ggml_half — the block scale. The quantizer assigns the elements to the codebook at
+//       2*QK_KTQ_SCALE_STEPS trial scales, keeps the assignment with the smallest angle to
+//       the block and stores the unbiased scale ||x|| / <x/||x||, c> (see tq_quantize_block).
 //   qs  codebook indices of each element (b bits × 32 elements, packed).
 //   sb  1 bit per element — the RHT diagonal sign used at quantize time.
 //       Precomputed so that dequant (read-heavy) never invokes Philox;
@@ -330,6 +330,8 @@ static_assert(sizeof(block_tq2_0) == sizeof(ggml_half) + QK_K / 4, "wrong tq2_0 
 // bpw = (16 + 32·b + 32·1) / 32 = b + 1.5 for KTQ_b_1.
 
 #define QK_KTQ 32  // KTQ block size (one CUDA warp per block)
+#define QK_KTQ_SCALE_STEPS 16    // trial codebook scales 1 + k*QK_KTQ_SCALE_STEP, -16 <= k < 16: one per lane of a warp
+#define QK_KTQ_SCALE_STEP  0.04f
 
 // KTQ1_1 — 1-bit codebook, 2.5 bpw. Sign-only K quantization.
 typedef struct {
