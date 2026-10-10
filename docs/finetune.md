@@ -51,6 +51,7 @@ prompt), and an adapter trained on one form only partly transfers to the other.
 | `--resume` | Continue a stopped run from the adapter, `<adapter>.opt` (step count, AdamW moments) and `<adapter>.state` (position, learning-rate step, early-stop state). The result is bit-identical to an uninterrupted run. Refuses an adapter trained with another alpha. |
 | `--stop-after N` | Stop after N context windows and save everything for `--resume`. SIGINT/SIGTERM do the same after the current window (a second signal exits at once). |
 | `--grad-checkpoint` | Gradient checkpointing: only the layer outputs are kept, each layer is recomputed in the backward pass (about one more forward pass). Same gradients; Qwen3-4B, c=512: 8.2 → 4.4 GB. |
+| `--train-stride N` | Tokens between window starts. Default: the context size for chat JSONL (whole examples are packed into windows, an example that does not fit starts the next window), half of it for plain text. Resume with the same value. |
 | `--checkpoint-every N` | Also save adapter and state every N training ubatches (at the end of a window). |
 | `--train-skip-regex REGEX` | Without a LoRA target: train the model tensors not matching the regex directly (see below). |
 | `GGML_BACKWARD_SKIP_INPLACE=1` | Only for recurrent models whose state ops have no backward (Mamba, RWKV): other inplace ops end the gradient instead of asserting. Each kind of skipped op is reported once. KV cache writes never need it. |
@@ -107,15 +108,29 @@ the exact training input, evaluation script and the PyTorch reference are in
 | same, merged with `llama-export-lora` | | | **100 %** | perplexity equal to `--lora` |
 | Gemma-4-12B Q4_K_M | attention q/k/v/o, rank 16, AdamW 5e-5, 1 epoch, `--reasoning off` | 28 min | 0 % → **94 %** | 0.080 / 97.8 % |
 | same, trained with thinking on, served with it off | | 29 min | 0 % → 73 % | 0.109 / 97.0 % |
+| same, packed windows, prompt as rendered by the server, 1 epoch / 3 epochs | | 15 min / 47 min | 0 % → 98 % / 99 % ("3.5.2027" read month first) | 0.0004 / 0.00001 |
+| same, AdamW 1e-4, 2 epochs / attention + MLP 5e-5, 2 epochs (1× RTX 5090) | | 20 min / 19 min | 99 % / 99 % ("12.10 Uhr" → 10:12 / "3.5.2027") | |
+| same, AdamW 1e-4, 3 epochs / attention + MLP, AdamW 1e-4, 2 epochs (1× RTX 5090) | | 30 min / 19 min | 0 % → **100 %** / **100 %** | 0.0007 / 0.00002 |
 | Qwen3.6-35B-A3B IQ2_XXS (MoE, Gated DeltaNet) | routed experts only, rank 2, AdamW 2e-4, 1 epoch, `--reasoning off` | 82 min | 0 % → **89 %** | 0.217 / 95.8 % |
 | same, with the gradient of the expert weight normalization (CLAMP/DIV fix) | | 83 min | 0 % → 86 % | 0.196 / 96.0 % |
 | same, whole examples per window (packed, `-c 512`), 1 epoch | | 43 min | 0 % → 95 % | 0.004 / 99.9 % |
-| same, 2 epochs | | 86 min | 0 % → **99 %** (the miss: "7 Uhr" read as 19:00) | 0.0006 / 99.98 % |
+| same, 2 epochs | | 86 min | 0 % → 99 % (the miss: "7 Uhr" read as 19:00) | 0.0006 / 99.98 % |
+| same, 3 epochs (1× RTX 5090) | | 30 min | 0 % → **100 %** | 0.0003 |
+| experts + attention q/k/v/o, rank 2, 2 epochs (1× RTX 5090) | | 20 min | 0 % → **100 %** | 0.00006 |
 | Qwen3.5-0.8B Q8_0 (Gated DeltaNet) | attention + GDN projections, rank 16, 1 epoch | 10 min | | 0.042 / 99.1 % |
+| Qwen3.5-0.8B Q8_0 (Gated DeltaNet), attention + GDN projections, rank 16, AdamW 1e-4, 2 epochs, packed (1× RTX 5090) | | 51 s | 0 % → **100 %** | 0.00006 |
+| Ternary-Bonsai-2-27B PTQ1_0 (ternary, Gated DeltaNet), same setup, `--grad-checkpoint` (1× RTX 5090) | | 10 min | 0 % → **100 %** | 0.00002 |
+| Qwen3.8-27B UD-Q4_K_M (dense, Gated DeltaNet), same setup, `--grad-checkpoint` (1× RTX 5090) | | 6 min | 0 % → **100 %** | 0.00001 |
+| Gemma-4-26B-A4B UD-IQ2_XXS (MoE), attention q/k/v/o, rank 16, AdamW 5e-5, 2 epochs, packed (1× RTX 5090) | | 6 min | 0 % → 99 % ("12.10 Uhr" → 12:00) | 0.0001 |
+| same, AdamW 1e-4 (1× RTX 5090) | | 10 min | 0 % → **100 %** | 0.00006 |
 | Ministral-3-3B Q4_K_M | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 10 min | 0 % → **100 %** | 0.078 |
+| same, packed windows, 1 epoch / 2 epochs (1× RTX 5090) | | 18 s / 31 s | 0 % → 99 % / **100 %** | 0.0002 / 0.00005 |
 | gpt-oss-20b MXFP4 | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 26 min | 0 % → **100 %** | 0.062 |
+| same, packed windows (1× RTX 5090) | | 138 s | 0 % → **100 %** | 0.00003 |
 | K2-Horizon-MoVA-36B-A4B Q3_K_M (MoE, routed value experts) | attention q/k/o, rank 16, AdamW 1e-4, 1 epoch, `--reasoning off` | 39 min | 0 % → **100 %** | 0.130 / 96.0 % |
+| same, packed windows, `--grad-checkpoint` | | 19 min | 0 % → **100 %** | 0.0002 / 100 % |
 | Kolibri-1 Q3_K_S (78B MoE, 31.5 GiB, experts of 32 layers in RAM) | attention, rank 16, AdamW 1e-4, 1 epoch on 300 examples, `--reasoning off` | 4 h 13 min | 0 % → **99 %** | 0.165 / 95.4 % |
+| same, packed windows, all 700 examples, model fully in VRAM (1× RTX PRO 6000 96 GB), 1 epoch / 2 epochs | | 4 min / 8 min | 0 % → 99 % / **100 %** | 0.0001 / 0.00001 |
 
 Short runs (60 windows, attention LoRA) also converge on Gemma-4-26B-A4B, Qwen3.8-27B and
 Ternary-Bonsai-2-27B (PTQ1_0). Gemma 4 needs a lower learning rate (1e-4 diverged, 5e-5 trains).

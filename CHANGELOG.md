@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-10
+
+- **All 12 evaluated models reach 100 % exact match** on the held-out appointment task after one LoRA run: Qwen3-4B,
+  Qwen3.5-0.8B and Qwen3.8-27B (Gated DeltaNet), Ternary-Bonsai-2-27B (ternary), Qwen3.6-35B-A3B and K2-Horizon-36B
+  (MoE), Kolibri-1 78B (MoE, 8 min on one 96 GB GPU), Gemma-4-12B and Gemma-4-26B-A4B, gpt-oss-20b (MXFP4),
+  Ministral-3B. Settings per model in [docs/finetune.md](docs/finetune.md).
+- Fixed: the last answer is now trained after the prompt exactly as the server renders it (Gemma 4 with reasoning off adds
+  an empty thought channel only in the generation prompt; the answers were trained without it and the model partly kept
+  its own output format); MoE training on a single GPU aborted under CUDA graph capture (`MUL_MAT_ID_GRAD_B`).
+- [examples/training/termine](examples/training/termine/README.md): the evaluation task as a reproducible package
+  (generator with checksums, prompts and conventions, training input as rendered, evaluation script, PyTorch reference).
+
 ## 2026-10-09
 
 - **Flash attention backward** (`GGML_OP_FLASH_ATTN_BACK`, CPU and CUDA): the softmax is recomputed from q and k instead of storing the attention probabilities (masks, GQA, softcap, ALiBi, sinks). The CUDA backward runs on cuBLAS GEMMs per block of query rows, so `-fa on` is as fast as the non-flash path with less memory (Qwen3-4B, `-c 4096 -ub 512`: 9.8 GB instead of 18.7 GB). `llama-finetune` uses flash attention by default on CPU and CUDA. New `test-flash-attn-back` against float64 central differences.
