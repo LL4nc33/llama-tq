@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-11
+
+- **TurboQuant encoders search the block scale:** each KTQ/VTQ block is assigned to the codebook at 32 trial scales and the
+  assignment with the smallest angle wins; it is stored with an unbiased scale (a least-squares scale shrinks every V
+  block, and the attention average does not remove that shrink). KL divergence vs f16 KV with the cache quantized in
+  prefill: `ktq4_1`/`vtq4_1` 0.045 -> 0.025 on Qwen3-4B (`q4_0` 0.034) and 0.55 -> 0.36 on gpt-oss (`q4_0` 0.36);
+  `ktq2_1`/`vtq2_1` 1.38 -> 0.40 on Qwen3-4B. Format unchanged; decode with the cache quantized per token -1.7 %
+  (`ktq4_1`/`vtq4_1`, RTX 2060). CUDA and CPU encoders pick bit-identical codes.
+- KV accuracy table re-measured on wikitext-2 (Qwen3-4B) and on the models' own prose (gpt-oss, Gemma 4; raw wikitext is
+  far out of distribution for these chat models, [scripts/kld-gen-text.py](scripts/kld-gen-text.py)), with the noise
+  floor of each model (flash attention on vs off). The earlier table used the appointment dataset as text, on which
+  gpt-oss and Gemma 4 flip their answer under any numerical change; the statement that they react strongly to any KV
+  quantization was an artifact of that text: `q8_0` is at their noise floor.
+- Fixed: SET_ROWS into a KTQ/VTQ tensor on the CPU called a null pointer (no CPU encoder registered); test-backend-ops had
+  no SET_ROWS cases for these types; test-quantize-fns overflowed its buffer for types with an F32 dot product type.
+
 ## 2026-10-10
 
 - **All 13 evaluated models reach 100 % exact match** on the held-out appointment task after one LoRA run: Qwen3-4B,

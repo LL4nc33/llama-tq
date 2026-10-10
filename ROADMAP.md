@@ -7,7 +7,7 @@ doc — this file is the index. Feedback and PRs welcome.
 
 | Area | Summary | Details |
 |------|---------|---------|
-| **TurboQuant KV cache** | KTQ × VTQ; `ktq4_1`/`vtq4_1` reaches `q4_0`-level accuracy at 5 bpw (KL divergence measured per model, 2026-10-10); VTQ V is the stronger half. Dedicated GQA and tensor-core decode kernels (also for q8_0 / q5_0). CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
+| **TurboQuant KV cache** | KTQ × VTQ; `ktq4_1`/`vtq4_1` is at or above `q4_0` accuracy at 5 bpw since the encoder searches the block scale (KL divergence measured per model, 2026-10-11). Dedicated GQA and tensor-core decode kernels (also for q8_0 / q5_0). CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
 | **Speculation** | MTP (gemma-4 draft) + n-gram hybrid. 2.28× on Qwen3.6-35B-A3B-IQ2_XXS. | [speculative.md](docs/speculative.md) |
 | **Fine-tune on quantised** | LoRA directly on quantized GGUFs: attention, MoE experts and Gated DeltaNet layers, flash-attention backward, gradient checkpointing, models larger than VRAM. 13 of 13 evaluated models reach 100 % on a held-out task; faster than PyTorch QLoRA on an RTX 5090. | [finetune.md](docs/finetune.md) |
 | **Vulkan backend** | Upstream `ggml-vulkan` + Turing tunings. PP parity reached. | [vulkan.md](docs/vulkan.md) |
@@ -29,8 +29,9 @@ doc — this file is the index. Feedback and PRs welcome.
 
 ## 🎯 Planned
 
-- TurboQuant on every RTX generation: speed within 5 % of f16 on Turing to Blackwell, better KTQ K accuracy, a decode
-  kernel for `q8_0` K with VTQ V. → [turboquant.md](docs/turboquant.md)
+- TurboQuant on every RTX generation: speed within 5 % of f16 on Turing to Blackwell, better 2- and 3-bit K accuracy, a
+  cheaper encoder scale search (1–2 % decode today), a decode kernel for `q8_0` K with VTQ V.
+  → [turboquant.md](docs/turboquant.md)
 - Fine-tuning: faster CPU path and layer prefetch for experts in RAM, SSM (Mamba) training, fewer small kernels on Turing.
   → [finetune.md](docs/finetune.md)
 
@@ -39,8 +40,8 @@ doc — this file is the index. Feedback and PRs welcome.
 - **Gemma 4 perplexity:** the instruction-tuned models score implausibly high on raw wikitext
   with any engine (upstream gives the same values); use other measures for their KV quality.
   → [models.md](docs/models.md)
-- **KTQ K accuracy:** with K quantized in prefill, `ktq4_1` is only at the `q4_0` level and the 2-bit K types lose a lot;
-  gpt-oss and Gemma 4 react strongly to any KV quantization. Use `f16`/`q8_0` when accuracy matters.
+- **Low-bit K:** `ktq4_1` is at or above `q4_0`, but the 2- and 3-bit K types still lose a lot, and gpt-oss loses with
+  every 4-bit K type (`q4_0` as well). Use `f16`/`q8_0` when accuracy matters.
   → [turboquant.md](docs/turboquant.md#accuracy)
 - **q8_0 K with VTQ V** is accurate but has no dedicated decode kernel yet (slow at long context).
 

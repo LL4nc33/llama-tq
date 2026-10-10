@@ -8,7 +8,7 @@ GPUs**. Developed on 2× RTX 2060 12 GB (no P2P); tested on RTX 3060, 3090, 4060
 
 ## Highlights
 
-- **TurboQuant KV cache** — `ktq*`/`vtq*` types with fast decode kernels, `q4_0`-level accuracy at 5 bpw, 256k context
+- **TurboQuant KV cache** — `ktq*`/`vtq*` types with fast decode kernels, accuracy at or above `q4_0` at 5 bpw, 256k context
   on 12 GB cards; measured accuracy per model → [docs/turboquant.md](docs/turboquant.md#accuracy)
 - **Fine-tuning on quantized GGUFs** — LoRA without dequantized weights, MoE experts, models larger than VRAM,
   100 % on a held-out task for 13 models, faster than PyTorch QLoRA on an RTX 5090 → [docs/finetune.md](docs/finetune.md)

@@ -23,8 +23,9 @@ RTX 2060, empty / 16k context: f16 90 / 52, `q8_0` 84 / 52, `q4_0` 87 / 47, `ktq
 ## KV cache accuracy
 
 KL divergence against an f16 KV cache with the cache quantized during prefill: table in
-[turboquant.md#accuracy](../turboquant.md#accuracy). Summary: `q8_0` is near f16 on dense models, `ktq4_1`/`vtq4_1` is at
-the `q4_0` level, the 2-bit types lose a lot; gpt-oss and Gemma 4 react strongly to any KV quantization.
+[turboquant.md#accuracy](../turboquant.md#accuracy). Summary: `q8_0` is at the noise floor of every model, `ktq4_1`/`vtq4_1`
+is at or above the `q4_0` level (Qwen3-4B 0.025 vs 0.034), the 2- and 3-bit types lose clearly; gpt-oss is sensitive to
+every 4-bit K type. Measured on wikitext-2 (Qwen3-4B) and on the models' own prose (gpt-oss, Gemma 4).
 
 ## Models on 2× RTX 2060 12 GB
 

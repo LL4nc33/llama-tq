@@ -1,14 +1,16 @@
 # TurboQuant — KTQ/VTQ KV Cache Quantization for CUDA
 
-**Status (2026-10-10):** quality re-measured with the KV cache actually quantized (see [Accuracy](#accuracy)). In prefill
-K is staged in f16 by default (deferred K quantization) and only quantized at the prefill→decode boundary, so a perplexity
-run without `--no-tq-deferred-k` measures f16 K; not all earlier numbers were taken with that flag. With K really
-quantized, KTQ is at about the level of `q4_0` K on dense models, and the 2-bit types lose a lot. The attention-rotation feature (Hadamard rotation of Q/K in the graph) is no longer applied
-to KTQ caches, which made them clearly worse; the remaining K/V rotations run as the fast Walsh-Hadamard transform.
+**Status (2026-10-11):** the KTQ/VTQ encoders now search the block scale (32 trial scales, unbiased scale), which
+roughly halves the KL divergence of `ktq4_1` and cuts that of the 2-bit types to a third; `ktq4_1`/`vtq4_1` (5 bpw) is now
+at or above `q4_0` accuracy on all measured models (see [Accuracy](#accuracy)). Quality is measured with the KV cache
+really quantized: in prefill K is staged in f16 by default (deferred K quantization) and only quantized at the
+prefill→decode boundary, so a perplexity run without `--no-tq-deferred-k` measures f16 K. The attention-rotation feature
+(Hadamard rotation of Q/K in the graph) is not applied to KTQ caches, which made them worse; the remaining K/V rotations run
+as the fast Walsh-Hadamard transform.
 
 **Recommendation (accuracy first, then speed, then memory):** use `f16` when the context fits, otherwise `-ctk q8_0 -ctv
-q8_0` (near f16 on most models, same speed). `-ctk ktq4_1 -ctv vtq4_1` (5 bpw) is at the `q4_0` level of accuracy and keeps
-the fast decode kernels; use it when you need the memory. The 2-bit types are for experiments only.
+q8_0` (at the numerical noise floor of the model, same speed). `-ctk ktq4_1 -ctv vtq4_1` (5 bpw) is as accurate as or more
+accurate than `q4_0` and keeps the fast decode kernels; use it when you need the memory. The 2-bit types still lose a lot.
 
 ## Overview
 
@@ -34,10 +36,10 @@ cmake --build build -j$(nproc) --target llama-server
 Pick a tier by passing two cache-type flags. `-fa on` is required.
 
 ```bash
-# Accurate: near f16 on most models (see Accuracy), same decode speed as f16 at long context
+# Accurate: at the noise floor of the model (see Accuracy), same decode speed as f16 at long context
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk q8_0 -ctv q8_0
 
-# More context: 5 bpw, q4_0-level accuracy, fast decode kernels
+# More context: 5 bpw, at or above q4_0 accuracy, fast decode kernels
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk ktq4_1 -ctv vtq4_1
 
 # Models that are sensitive to quantized K: protect the first and last layers
@@ -67,7 +69,7 @@ RHT (shared sign pattern + FWHT) + Lloyd-Max codebook. Block stores normalizatio
 | `ktq1_1` | 45 | 1 | 2.5 | 10 B | extreme K compression |
 | `ktq2_1` | 42 | 2 | 3.5 | 14 B | maximum context |
 | `ktq3_1` | 43 | 3 | 4.5 | 18 B | balanced |
-| `ktq4_1` | 44 | 4 | 5.5 | 22 B | about `q4_0` K accuracy (see Accuracy) |
+| `ktq4_1` | 44 | 4 | 5.5 | 22 B | better than `q4_0` K on Qwen3-4B (see Accuracy) |
 
 ### V-cache v1 — VTQ codebook (`vtq*_1`)
 
@@ -78,7 +80,7 @@ Pre-rotated via `self_v_rot` at graph level; FA dequant is `codebook[idx] * scal
 | `vtq1_1` | 46 | 1 | 1.5 | 6 B  | extreme VRAM, sharp quality drop |
 | `vtq2_1` | 47 | 2 | 2.5 | 10 B | maximum context |
 | `vtq3_1` | 48 | 3 | **4.0** | 16 B | 14 B index-payload + padding |
-| `vtq4_1` | 49 | 4 | 4.5 | 18 B | near f16 on Qwen3-4B (V only: KLD 0.003) |
+| `vtq4_1` | 49 | 4 | 4.5 | 18 B | near `q8_0` on Qwen3-4B and gpt-oss (V only) |
 
 Note: `vtq3_1` is **4.0 bpw**, not 3.5 — block layout is `[d:2B] [qs:14B 3-bit packed across 16 bytes]`.
 
@@ -117,33 +119,44 @@ PPL impact on 35B-A3B at 3.78 bpw avg (`ktq2_1 + vtq3_3`): +0.47% vs f16/f16 —
 
 KL divergence of the token distributions against an f16 KV cache (`llama-perplexity --kl-divergence`, 40 chunks of 512
 tokens, `-fa on`) with the cache really quantized during prefill (`--no-tq-deferred-k --no-tq-deferred-v`). Lower is
-better; below ~0.01 is practically lossless. Same top token = share of positions where the most likely token is unchanged.
-Measured 2026-10-10.
+better; in brackets the share of positions where the most likely token is unchanged. Measured 2026-10-11 with the encoder
+that searches the block scale.
+
+Text: Qwen3-4B on wikitext-2 (test). gpt-oss and Gemma 4 are chat models that are far out of distribution on raw wikitext
+(perplexity 207 and 505), so they are measured on their own prose: answers they wrote with an f16 cache on 40 topics
+([scripts/kld-gen-text.py](../scripts/kld-gen-text.py); perplexity 5.7 and 40). The first row is the same f16 cache with
+flash attention off: the numerical noise floor of the model, below which no KV type can be told apart.
 
 | K / V | bpw (K+V)/2 | Qwen3-4B Q4_K_M | gpt-oss-20b MXFP4 | Gemma-4-12B Q4_K_M |
 |---|---:|---:|---:|---:|
-| `q8_0` / `q8_0` | 8.5 | 0.0015 (99.0 %) | 0.13 (87 %) | 0.14 (94 %) |
-| `q8_0` / `vtq4_1` | 6.5 | 0.0029 (98.5 %) | 0.20 (83 %) | 0.24 (92 %) |
-| `q4_0` / `q4_0` | 4.5 | 0.021 (96 %) | 0.61 (65 %) | 0.27 (92 %) |
-| `ktq4_1` / `vtq4_1` | 5.0 | 0.031 (96 %) | 0.74 (60 %) | 0.27 (91 %) |
-| `ktq3_1` / `vtq3_1` | 4.25 | 0.10 (93 %) | 1.37 (40 %) | 0.79 (84 %) |
-| `ktq2_1` / `vtq2_1` | 3.0 | 0.72 (79 %) | 3.05 (17 %) | 2.27 (63 %) |
-| `f16` / `vtq4_1` | | 0.0028 | 0.21 | 0.23 |
-| `f16` / `vtq2_1` | | 0.026 | 0.50 | 2.12 |
-| `ktq4_1` / `f16` | | 0.030 | 0.75 | 0.23 |
-| `ktq2_1` / `f16` | | 0.60 | 2.86 | 0.64 |
+| `f16` / `f16`, flash attention off | 16 | 0.0030 (97.8 %) | 0.013 (96.0 %) | 0.32 (82.9 %) |
+| `q8_0` / `q8_0` | 8.5 | 0.0032 (97.5 %) | 0.021 (95.0 %) | 0.35 (82.5 %) |
+| `q8_0` / `vtq4_1` | 6.5 | 0.0055 (96.8 %) | 0.039 (92.4 %) | 0.53 (76.5 %) |
+| `q4_0` / `q4_0` | 4.5 | 0.034 (92.5 %) | 0.36 (73.4 %) | 0.59 (75.3 %) |
+| `ktq4_1` / `vtq4_1` | 5.0 | **0.025** (93.6 %) | 0.36 (74.7 %) | 0.58 (75.3 %) |
+| `ktq3_1` / `vtq3_1` | 4.25 | 0.084 (88.1 %) | 1.30 (50.7 %) | 0.99 (66.3 %) |
+| `ktq2_1` / `vtq2_1` | 3.0 | 0.40 (73.9 %) | 3.65 (18.8 %) | 2.13 (49.2 %) |
+| `f16` / `vtq4_1` | | 0.0053 | 0.043 | 0.54 |
+| `f16` / `vtq2_1` | | 0.044 | 0.23 | 1.66 |
+| `ktq4_1` / `f16` | | 0.023 | 0.35 | 0.48 |
+| `ktq2_1` / `f16` | | 0.31 | 3.40 | 1.33 |
 
-- VTQ V is the strong part: `vtq4_1` is near lossless on Qwen3-4B, `vtq2_1` there is as good as `q4_0` at half the bits.
-- KTQ K is the weak part: `ktq4_1` is at the level of `q4_0` K, `ktq2_1` loses a lot.
-- gpt-oss and Gemma 4 react strongly to any KV quantization (already `q8_0` K alone gives 0.14-0.16); keep them at `f16`
-  or `q8_0` when accuracy matters. Gemma 4 with `vtq2_1` breaks down.
+- `ktq4_1`/`vtq4_1` is more accurate than `q4_0` on Qwen3-4B and equal on gpt-oss and Gemma 4, at 5 instead of 4.5 bpw.
+  Before the encoder change (2026-10-10) it was 0.045 (Qwen3-4B) and 0.55 (gpt-oss).
+- `q8_0` is at the noise floor of every model; `vtq4_1` V costs little on Qwen3-4B and gpt-oss.
+- gpt-oss is sensitive in K: every 4-bit K type (`q4_0`, `ktq4_1`) costs about 0.35, V only 0.04. Gemma 4 is sensitive in V
+  (`vtq2_1` 1.66); it reacts to any numerical change (flash attention on vs off already 0.32) and its same-top-token share
+  stays the better guide there.
+- 2-bit K and 3-bit K lose clearly on all three models.
+- Reproduce: base `llama-perplexity -m M -f TEXT -c 512 --chunks 40 -fa on --kl-divergence-base base.kld`, then the same
+  with `-ctk K -ctv V --no-tq-deferred-k --no-tq-deferred-v --kl-divergence-base base.kld --kl-divergence`.
 - Hybrid models with few attention layers lose much less (Qwen3.8-27B, 16 of 64 layers with attention: `ktq4_1`/`vtq4_1`
-  PPL 6.039 vs 6.036 with f16, cache quantized in prefill), see [docs/models.md](models.md).
+  PPL 6.039 vs 6.036 with f16, cache quantized in prefill, earlier encoder), see [docs/models.md](models.md).
 - `q8_0` K with `vtq*_1` V is accurate but has no dedicated decode kernel yet: at 16k context it decodes at 18 t/s
   (`vtq4_1`) instead of 52 t/s (RTX 2060, Qwen3-4B); use it for short contexts only.
 
 Decode speed on an RTX 2060 (Qwen3-4B Q4_K_M, 128 tokens, empty / 16k context): f16 90 / 52, `q8_0` 84 / 52, `q4_0`
-87 / 47, `ktq4_1`/`vtq4_1` 87 / 48 t/s.
+87 / 47, `ktq4_1`/`vtq4_1` 87 / 48 t/s (2026-10-10; the encoder scale search costs 1–2 % decode with `ktq4_1`/`vtq4_1`).
 
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the
 history below only.
@@ -430,3 +443,9 @@ This implementation is inspired by but deviates from the cited papers. KTQ uses 
 - **2026-06-09 — Dequant kernel perf-cluster lands** (PR #12). Multi-warp-per-CTA NC dequant for VTQ + KTQ2_1 convert (4× occupancy on Turing), pre-scaled VTQ codebook in read-path decoders (eliminates one mul per element), VTQ2_1 4-outputs-per-thread NC dequant kernel. Smoke parity verified: 0.8B-Q8 TG 225.40 t/s vs 224.37 baseline (within noise). Plus Vulkan KTQ2_1 dequant validation harness (PR #11) for the dormant Vulkan port.
 - **2026-06-09 — Eagle3 draft-head infrastructure lands** (PR #10). Hidden-state extraction at three configurable layer taps (low/mid/high) via `llama_get_embeddings_eagle3_{low,mid,high}_ith` C-API, GGUF KV plumbing (`eagle3_layer_low/mid/high`), head graph fusion (`build_eagle3_fusion` in qwen35 dense + MoE), `LLM_TENSOR_NEXTN_EAGLE3_FC` tensor type, loader, and Python converter for HF eagle3 checkpoints. Single-stream MTP path unchanged when no eagle3 head is present. Driver-side wire-up of the embd buffer fill (C.4 part 2) deferred until a trained head exists.
 - **2026-10-04 — KTQ fix and fast decode**: CUDA KTQ sign bits and rounding match the CPU reference (Qwen3.8-27B `ktq2_1` PPL 16.8 → 6.09). Shared KTQ sign pattern, GQA decode kernel, tensor-core decode kernel, warp-cooperative SET_ROWS, `--tq-protect-layers`, split-dequant prefill at head size 512. Recommendation changed to `ktq4_1`/`vtq4_1`.
+- **2026-10-11 — Encoder scale search**: KTQ/VTQ encoders assign the block to the codebook at 32 trial scales, keep the
+  assignment with the smallest angle and store an unbiased scale (a least-squares scale shrinks V, which the attention
+  average does not remove). KLD vs f16 KV: `ktq4_1`/`vtq4_1` 0.045 → 0.025 (Qwen3-4B, below `q4_0` 0.034), 0.55 → 0.36
+  (gpt-oss, = `q4_0`); `ktq2_1`/`vtq2_1` 1.38 → 0.40 (Qwen3-4B). Format unchanged. CUDA and CPU encoders are bit-identical
+  (IEEE intrinsics in the encoders), SET_ROWS for the TurboQuant types is tested against the CPU. Decode with the cache
+  quantized per token −1.7 % (`ktq4_1`/`vtq4_1`, RTX 2060).
