@@ -291,8 +291,16 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
 
             // each assistant turn i is placed in the tokenization of the whole conversation: it starts where the prompt
             // render(i, generation prompt) stops agreeing with it and ends at its first end-of-generation token, or else
-            // where render(i + 1) ends, if that is a prefix of the conversation
-            const std::vector<llama_token> conv = tokenize(render(msgs.size(), false));
+            // where render(i + 1) ends, if that is a prefix of the conversation. The last assistant turn is trained after the
+            // prompt exactly as the server renders it: some templates put a block in front of the answer only in the
+            // generation prompt (Gemma 4 with reasoning off: an empty thought channel) and not in the rendered history.
+            std::vector<llama_token> conv = tokenize(render(msgs.size(), false));
+            size_t last_assistant = msgs.size();
+            for (size_t i = 0; i < msgs.size(); ++i) {
+                if (msgs[i].role == "assistant") {
+                    last_assistant = i;
+                }
+            }
             std::vector<uint8_t> conv_train(conv.size(), 0);
             bool ok      = true;
             bool trained = false;
@@ -320,6 +328,15 @@ static bool finetune_load_jsonl(llama_context * ctx, const std::string & path, c
                 }
                 std::fill(conv_train.begin() + start, conv_train.begin() + end, 1);
                 trained = true;
+                if (i == last_assistant && start < prompt.size()) {
+                    std::vector<llama_token> seq(prompt);
+                    std::vector<uint8_t>     seq_train(conv_train.begin(), conv_train.begin() + start);
+                    seq_train.resize(prompt.size(), 0);
+                    seq.insert(seq.end(), conv.begin() + start, conv.begin() + end);
+                    seq_train.resize(seq.size(), 1);
+                    conv       = std::move(seq);
+                    conv_train = std::move(seq_train);
+                }
             }
             if (!ok || !trained) {
                 ++n_skipped;
