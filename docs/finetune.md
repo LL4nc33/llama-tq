@@ -51,7 +51,6 @@ prompt), and an adapter trained on one form only partly transfers to the other.
 | `--resume` | Continue a stopped run from the adapter, `<adapter>.opt` (step count, AdamW moments) and `<adapter>.state` (position, learning-rate step, early-stop state). The result is bit-identical to an uninterrupted run. Refuses an adapter trained with another alpha. |
 | `--stop-after N` | Stop after N context windows and save everything for `--resume`. SIGINT/SIGTERM do the same after the current window (a second signal exits at once). |
 | `--grad-checkpoint` | Gradient checkpointing: only the layer outputs are kept, each layer is recomputed in the backward pass (about one more forward pass). Same gradients; Qwen3-4B, c=512: 8.2 → 4.4 GB. |
-| `--train-stride N` | Distance between the starts of two training windows. Chat data: whole examples are packed into non-overlapping windows (default stride = context). Plain text: half the context by default. |
 | `--checkpoint-every N` | Also save adapter and state every N training ubatches (at the end of a window). |
 | `--train-skip-regex REGEX` | Without a LoRA target: train the model tensors not matching the regex directly (see below). |
 | `GGML_BACKWARD_SKIP_INPLACE=1` | Only for recurrent models whose state ops have no backward (Mamba, RWKV): other inplace ops end the gradient instead of asserting. Each kind of skipped op is reported once. KV cache writes never need it. |
@@ -98,7 +97,9 @@ and the kernel of `GELU_ERF` are not trainable.
 ## Results
 
 Extracting an appointment from a German message as JSON with a fixed schema: 700 chat examples for
-training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 GB).
+training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 GB). Data generator, prompts, conventions,
+the exact training input, evaluation script and the PyTorch reference are in
+[examples/training/termine](../examples/training/termine/README.md).
 
 | Model | Setup | Time | Exact match before → after | Validation loss / accuracy |
 |---|---|---|---|---|
@@ -108,6 +109,8 @@ training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 
 | same, trained with thinking on, served with it off | | 29 min | 0 % → 73 % | 0.109 / 97.0 % |
 | Qwen3.6-35B-A3B IQ2_XXS (MoE, Gated DeltaNet) | routed experts only, rank 2, AdamW 2e-4, 1 epoch, `--reasoning off` | 82 min | 0 % → **89 %** | 0.217 / 95.8 % |
 | same, with the gradient of the expert weight normalization (CLAMP/DIV fix) | | 83 min | 0 % → 86 % | 0.196 / 96.0 % |
+| same, whole examples per window (packed, `-c 512`), 1 epoch | | 43 min | 0 % → 95 % | 0.004 / 99.9 % |
+| same, 2 epochs | | 86 min | 0 % → **99 %** (the miss: "7 Uhr" read as 19:00) | 0.0006 / 99.98 % |
 | Qwen3.5-0.8B Q8_0 (Gated DeltaNet) | attention + GDN projections, rank 16, 1 epoch | 10 min | | 0.042 / 99.1 % |
 | Ministral-3-3B Q4_K_M | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 10 min | 0 % → **100 %** | 0.078 |
 | gpt-oss-20b MXFP4 | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 26 min | 0 % → **100 %** | 0.062 |
