@@ -3715,6 +3715,27 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     // sign flip of a Hadamard rotation: MUL(x, signs) -> RESHAPE -> MUL_MAT with the Sylvester hint, where
     // only the reshape reads the product and only the matmul reads the reshape
+    // the same with a second sign flip of the result: MUL -> RESHAPE -> MUL_MAT -> RESHAPE -> MUL (D*H*D x)
+    if (node->op == GGML_OP_MUL && i + 4 < cgraph->n_nodes) {
+        ggml_tensor * rs  = cgraph->nodes[i + 1];
+        ggml_tensor * mm  = cgraph->nodes[i + 2];
+        ggml_tensor * rs2 = cgraph->nodes[i + 3];
+        ggml_tensor * mul = cgraph->nodes[i + 4];
+        if (rs->op == GGML_OP_RESHAPE && rs->src[0] == node &&
+                mm->op == GGML_OP_MUL_MAT && mm->src[1] == rs &&
+                ggml_get_op_params_i32(mm, 1) == GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD &&
+                rs2->op == GGML_OP_RESHAPE && rs2->src[0] == mm &&
+                mul->op == GGML_OP_MUL && mul->src[0] == rs2 &&
+                ggml_node_get_use_count(cgraph, i) == 1 && ggml_node_get_use_count(cgraph, i + 1) == 1 &&
+                ggml_node_get_use_count(cgraph, i + 2) == 1 && ggml_node_get_use_count(cgraph, i + 3) == 1 &&
+                !(node->flags & GGML_TENSOR_FLAG_OUTPUT) && !(rs->flags & GGML_TENSOR_FLAG_OUTPUT) &&
+                !(mm->flags & GGML_TENSOR_FLAG_OUTPUT) && !(rs2->flags & GGML_TENSOR_FLAG_OUTPUT) &&
+                ggml_are_same_shape(node, node->src[0]) && ggml_are_same_shape(mul, rs2) &&
+                ggml_cuda_op_fwht_signs2(*cuda_ctx, node->src[0], node->src[1], rs, mul->src[1], mul)) {
+            return 4;
+        }
+    }
+
     if (node->op == GGML_OP_MUL && i + 2 < cgraph->n_nodes) {
         ggml_tensor * rs = cgraph->nodes[i + 1];
         ggml_tensor * mm = cgraph->nodes[i + 2];

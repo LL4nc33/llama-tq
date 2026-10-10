@@ -7,3 +7,8 @@ bool ggml_cuda_op_fwht(ggml_backend_cuda_context & ctx, const ggml_tensor * src,
 // the shape of src1. Returns whether it could be used.
 bool ggml_cuda_op_fwht_signs(ggml_backend_cuda_context & ctx, const ggml_tensor * x, const ggml_tensor * signs,
         const ggml_tensor * src1, ggml_tensor * dst);
+
+// signs * x, the transform over rows of src1->ne[0], then the result times post_signs (D*H*D in one pass); dst has
+// the shape of x. Returns whether it could be used.
+bool ggml_cuda_op_fwht_signs2(ggml_backend_cuda_context & ctx, const ggml_tensor * x, const ggml_tensor * signs,
+        const ggml_tensor * src1, const ggml_tensor * post_signs, ggml_tensor * dst);
