@@ -25,7 +25,7 @@ llama-tq is maintained on a reasonable-effort basis. Please allow at least 90 da
 Before submitting your report, ensure you meet the following requirements:
 
 - You have read this policy and fully understand it.
-- AI is only permitted in an assistive capacity as stated in [AGENTS.md](AGENTS.md). We do not accept reports that are written exclusively by AI.
+- You have verified the issue yourself; reports generated entirely by AI tools without verification are not accepted.
 - Your report must include a working Proof-of-Concept in the form of a script and/or attached files.
 
 Maintainers reserve the right to close the report if these requirements are not fulfilled.
