@@ -4558,13 +4558,14 @@ struct test_hadamard_signs : public test_case {
     const int64_t n;     // block size of the rotation
     const int64_t width; // columns of x, a multiple of n
     const int64_t rows;
+    const bool    post;  // sign flip of the result as well (D*H*D, the V rotation of VTQ caches), also fused
 
     std::string vars() override {
-        return VARS_TO_STR3(n, width, rows);
+        return VARS_TO_STR4(n, width, rows, post);
     }
 
-    test_hadamard_signs(int64_t n = 1024, int64_t width = 5120, int64_t rows = 1)
-        : n(n), width(width), rows(rows) {}
+    test_hadamard_signs(int64_t n = 1024, int64_t width = 5120, int64_t rows = 1, bool post = false)
+        : n(n), width(width), rows(rows), post(post) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * x     = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, width, rows);
@@ -4578,6 +4579,10 @@ struct test_hadamard_signs : public test_case {
         cur = ggml_reshape_2d(ctx, cur, n, width*rows/n);
         cur = ggml_mul_mat(ctx, h, cur);
         ggml_mul_mat_set_hint(cur, GGML_HINT_SRC0_IS_SYLVESTER_HADAMARD);
+        if (post) {
+            cur = ggml_reshape_2d(ctx, cur, width, rows);
+            cur = ggml_mul(ctx, cur, signs);
+        }
         ggml_set_name(cur, "out");
         return cur;
     }
@@ -8915,6 +8920,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (int64_t rows : {1, 3, 64}) {
         test_cases.emplace_back(new test_hadamard_signs(1024, 5120, rows));
         test_cases.emplace_back(new test_hadamard_signs(128,  384,  rows));
+        test_cases.emplace_back(new test_hadamard_signs(64,   64,   rows, true));
+        test_cases.emplace_back(new test_hadamard_signs(64,   128,  rows, true));
     }
     // the plain Sylvester matrix takes the fast transform on CUDA
     for (int64_t n : {64, 128, 256, 512, 1024}) {
