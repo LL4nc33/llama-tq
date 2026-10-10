@@ -2,10 +2,16 @@
 
 ## 2026-10-10
 
-- **All 12 evaluated models reach 100 % exact match** on the held-out appointment task after one LoRA run: Qwen3-4B,
-  Qwen3.5-0.8B and Qwen3.8-27B (Gated DeltaNet), Ternary-Bonsai-2-27B (ternary), Qwen3.6-35B-A3B and K2-Horizon-36B
-  (MoE), Kolibri-1 78B (MoE, 8 min on one 96 GB GPU), Gemma-4-12B and Gemma-4-26B-A4B, gpt-oss-20b (MXFP4),
-  Ministral-3B. Settings per model in [docs/finetune.md](docs/finetune.md).
+- **All 13 evaluated models reach 100 % exact match** on the held-out appointment task after one LoRA run: Qwen3-4B,
+  Qwen3.5-0.8B and Qwen3.8-27B (Gated DeltaNet), Qwen3.8-Flash-Next (hyper-connections, sparse attention, 72.5 GB),
+  Ternary-Bonsai-2-27B (ternary), Qwen3.6-35B-A3B and K2-Horizon-36B (MoE), Kolibri-1 78B (MoE, 8 min on one 96 GB GPU),
+  Gemma-4-12B and Gemma-4-26B-A4B, gpt-oss-20b (MXFP4), Ministral-3B. Settings per model in [docs/finetune.md](docs/finetune.md).
+- Backward for the hyper-connection ops (`DSV4_HC_PRE`, `DSV4_HC_POST`), checked against float64 gradients; the CPU `ACC`
+  takes a strided first dimension of src1.
+- **Faster decode with quantized KV caches:** the Hadamard rotations of K and V (q8_0, q4_0, KTQ/VTQ) run as the fast
+  Walsh-Hadamard transform instead of small matmuls, the VTQ V rotation D*H*D as one fused kernel. Qwen3-4B, RTX 2060:
+  `ktq2_1`/`vtq2_1` 84.2 -> 86.8 t/s (f16 90.5); on an RTX 5090 the rotation cost 11-13 % of the decode speed before.
+  Fixed: models with head size 64 rotated K with the signed V rotation as well.
 - Fixed: the last answer is now trained after the prompt exactly as the server renders it (Gemma 4 with reasoning off adds
   an empty thought channel only in the generation prompt; the answers were trained without it and the model partly kept
   its own output format); MoE training on a single GPU aborted under CUDA graph capture (`MUL_MAT_ID_GRAD_B`).

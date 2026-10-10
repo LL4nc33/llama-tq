@@ -11,7 +11,7 @@ GPUs**. Developed on 2× RTX 2060 12 GB (no P2P); tested on RTX 3060, 3090, 4060
 - **TurboQuant KV cache** — `ktq*`/`vtq*` types, f16 perplexity at ~⅓ of the memory, 256k context on 12 GB cards
   → [docs/turboquant.md](docs/turboquant.md)
 - **Fine-tuning on quantized GGUFs** — LoRA without dequantized weights, MoE experts, models larger than VRAM,
-  100 % on a held-out task for 12 models, faster than PyTorch QLoRA on an RTX 5090 → [docs/finetune.md](docs/finetune.md)
+  100 % on a held-out task for 13 models, faster than PyTorch QLoRA on an RTX 5090 → [docs/finetune.md](docs/finetune.md)
 - **Tensor split without P2P/NCCL** — `-sm tensor` on plain PCIe, +45 % decode on 2× RTX 2060
 - **Ternary weights** — `PQ2_0`, `PTQ1_0` with Hadamard-rotated activations
 - **Extra models** — Kolibri-1, K2-Horizon, Qwen3.8-Flash-Next, Ternary-Bonsai-2 → [docs/models.md](docs/models.md)

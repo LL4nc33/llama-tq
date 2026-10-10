@@ -121,6 +121,7 @@ the exact training input, evaluation script and the PyTorch reference are in
 | Qwen3.5-0.8B Q8_0 (Gated DeltaNet), attention + GDN projections, rank 16, AdamW 1e-4, 2 epochs, packed (1× RTX 5090) | | 51 s | 0 % → **100 %** | 0.00006 |
 | Ternary-Bonsai-2-27B PTQ1_0 (ternary, Gated DeltaNet), same setup, `--grad-checkpoint` (1× RTX 5090) | | 10 min | 0 % → **100 %** | 0.00002 |
 | Qwen3.8-27B UD-Q4_K_M (dense, Gated DeltaNet), same setup, `--grad-checkpoint` (1× RTX 5090) | | 6 min | 0 % → **100 %** | 0.00001 |
+| Qwen3.8-Flash-Next UD-IQ1_S (qwen4exp: MoE, Gated DeltaNet, hyper-connections, sparse attention indexer, 72.5 GB), same setup, `--grad-checkpoint` (1× RTX PRO 6000 96 GB) | | 15 min | 0 % → **100 %** | 0.00000 |
 | Gemma-4-26B-A4B UD-IQ2_XXS (MoE), attention q/k/v/o, rank 16, AdamW 5e-5, 2 epochs, packed (1× RTX 5090) | | 6 min | 0 % → 99 % ("12.10 Uhr" → 12:00) | 0.0001 |
 | same, AdamW 1e-4 (1× RTX 5090) | | 10 min | 0 % → **100 %** | 0.00006 |
 | Ministral-3-3B Q4_K_M | attention q/k/v/o, rank 16, AdamW 1e-4, 1 epoch | 10 min | 0 % → **100 %** | 0.078 |
