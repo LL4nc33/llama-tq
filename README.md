@@ -8,8 +8,8 @@ GPUs**. Developed on 2× RTX 2060 12 GB (no P2P); tested on RTX 3060, 3090, 4060
 
 ## Highlights
 
-- **TurboQuant KV cache** — `ktq*`/`vtq*` types, f16 perplexity at ~⅓ of the memory, 256k context on 12 GB cards
-  → [docs/turboquant.md](docs/turboquant.md)
+- **TurboQuant KV cache** — `ktq*`/`vtq*` types with fast decode kernels, `q4_0`-level accuracy at 5 bpw, 256k context
+  on 12 GB cards; measured accuracy per model → [docs/turboquant.md](docs/turboquant.md#accuracy)
 - **Fine-tuning on quantized GGUFs** — LoRA without dequantized weights, MoE experts, models larger than VRAM,
   100 % on a held-out task for 13 models, faster than PyTorch QLoRA on an RTX 5090 → [docs/finetune.md](docs/finetune.md)
 - **Tensor split without P2P/NCCL** — `-sm tensor` on plain PCIe, +45 % decode on 2× RTX 2060
@@ -59,8 +59,8 @@ docker run -p 8080:8080 -v /path/to/models:/models ghcr.io/ll4nc33/llama-tq:serv
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
 cmake --build build -j --target llama-server
 
-# two GPUs without P2P
-llama-server -m model.gguf -ngl 99 -fa on -sm tensor -c 65536 -ctk ktq4_1 -ctv vtq4_1
+# two GPUs without P2P, q8_0 KV (accurate); -ctk ktq4_1 -ctv vtq4_1 for more context
+llama-server -m model.gguf -ngl 99 -fa on -sm tensor -c 65536 -ctk q8_0 -ctv q8_0
 ```
 
 TurboQuant KV types are CUDA-only; Vulkan and CPU builds use the upstream types.

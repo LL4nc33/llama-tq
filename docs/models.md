@@ -1,5 +1,8 @@
 # Models and tested setups
 
+KV cache accuracy across models (KL divergence vs f16, cache quantized in prefill): [docs/turboquant.md](turboquant.md#accuracy).
+The numbers below are per model; for dense models prefer `q8_0` when accuracy matters.
+
 Architectures and weight types that this fork adds or runs differently from upstream
 llama.cpp, with the settings we use on 2× RTX 2060 12 GB (Turing, no P2P).
 

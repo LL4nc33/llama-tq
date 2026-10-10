@@ -12,6 +12,11 @@
   Walsh-Hadamard transform instead of small matmuls, the VTQ V rotation D*H*D as one fused kernel. Qwen3-4B, RTX 2060:
   `ktq2_1`/`vtq2_1` 84.2 -> 86.8 t/s (f16 90.5); on an RTX 5090 the rotation cost 11-13 % of the decode speed before.
   Fixed: models with head size 64 rotated K with the signed V rotation as well.
+- **KV cache accuracy re-measured** with the cache quantized during prefill (`--no-tq-deferred-k/-v`; without it K stays
+  f16 in prefill and perplexity runs measure f16 K). The graph Hadamard rotation is no longer applied to KTQ K, which made
+  it clearly worse (Qwen3-4B KLD vs f16: `ktq2_1` 1.97 -> 0.60, `ktq4_1` 0.057 -> 0.030). `ktq4_1`/`vtq4_1` is at the
+  `q4_0` level; the recommendation is now `f16`, then `q8_0`, and TurboQuant when the memory is needed
+  ([docs/turboquant.md](docs/turboquant.md#accuracy)).
 - Fixed: the last answer is now trained after the prompt exactly as the server renders it (Gemma 4 with reasoning off adds
   an empty thought channel only in the generation prompt; the answers were trained without it and the model partly kept
   its own output format); MoE training on a single GPU aborted under CUDA graph capture (`MUL_MAT_ID_GRAD_B`).
