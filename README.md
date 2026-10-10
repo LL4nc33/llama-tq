@@ -38,6 +38,7 @@ Inference on one GPU, Qwen3-4B Q4_K_M, 128 tokens:
 | RTX 3090 | 203 t/s | 176 t/s |
 | RTX 3060 | 103 t/s | 96 t/s |
 | RTX 4060 Ti | 95 t/s | 90 t/s |
+| RTX 2060 | 90 t/s | 84 t/s |
 
 LoRA fine-tuning, Qwen3-4B Q4_K_M, 2 epochs, same data and settings, 100 % exact match in all runs:
 
