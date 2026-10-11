@@ -32,6 +32,9 @@ decode and loses on long-prompt prefill.
 
 ## Earlier design notes
 
+> Superseded: the notes below are the original plan. Its recommendations (layer split, NCCL, the old `tq*` type names)
+> no longer apply; the current state is in [tensor-split.md](../tensor-split.md).
+
 The sections below describe the original TP+TQ design (NCCL / P2P based) and are kept
 for reference.
 

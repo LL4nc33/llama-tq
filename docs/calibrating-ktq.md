@@ -28,7 +28,7 @@ perplexity or KL divergence before using it.
 The fastest path: assume a symmetric-Beta empirical distribution and pick `alpha`.
 
 ```bash
-# Theoretical default (reproduces the shipped codebook to ~6 decimals)
+# Theoretical default (alpha 15.5, the distribution the shipped codebooks were fitted to)
 python3 scripts/calibrate_ktq_codebook.py \
     --mode synthetic --alpha 15.5 --bits 2 3 4 \
     --output ggml/include/ggml-common-codebook-override.h
@@ -119,6 +119,6 @@ calibrated codebook is worth keeping.
 ## See Also
 
 - `docs/turboquant.md` -- full TurboQuant pipeline + theoretical derivation
-- `scripts/tq_calibrate_outliers.py` -- VTQ_OUT outlier-channel calibration
+- `scripts/tq_calibrate_outliers.py` -- outlier-channel calibration (research script)
 - `ggml/src/ggml-quants.c` -- CPU quantize/dequantize paths
 - `ggml/src/ggml-cuda/turboquant.cuh` -- CUDA codebook constants

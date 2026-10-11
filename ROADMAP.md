@@ -26,8 +26,8 @@ the history in the [changelog](CHANGELOG.md).
 - TurboQuant on every RTX generation: decode speed close to f16 on Turing to Blackwell, better 2- and 3-bit K accuracy, a
   cheaper encoder scale search. → [turboquant.md](docs/turboquant.md)
 - CUDA release for arm64 (GH200, DGX Spark).
-- Vulkan KTQ/VTQ port: planned, after the CUDA work; worth it for AMD, Intel Arc and Pascal (where Vulkan is
-  expected to decode faster than CUDA). → [vulkan.md](docs/vulkan.md)
+- Vulkan KTQ/VTQ port: planned, after the CUDA work; meant for AMD, Intel Arc and Pascal
+  (untested whether Vulkan decodes faster there). → [vulkan.md](docs/vulkan.md)
 - Fine-tuning: faster CPU path and layer prefetch for experts in RAM, SSM (Mamba) training, fewer small kernels on Turing.
   → [finetune.md](docs/finetune.md)
 

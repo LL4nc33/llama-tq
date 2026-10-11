@@ -49,7 +49,7 @@ context, and to fine-tune them, on consumer NVIDIA GPUs with 12 to 32 GB. It is 
 P2P; speed was also measured on RTX 30, 40 and 50 cards, fine-tuning on RTX 50 cards. Upstream fixes are cherry-picked rather than
 merged continuously, so the fork can lag behind the newest upstream. The fork adds:
 
-- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value with dedicated decode
+- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value ([types](docs/turboquant.md#available-types)) with dedicated decode
   kernels, for long context on small GPUs ([which type to pick](docs/turboquant.md#recommendation))
 - **Fine-tuning on quantized models:** LoRA on k-quant, IQ, MXFP4 and ternary GGUFs without dequantized weights, MoE
   experts, models larger than VRAM, flash attention backward on CPU and CUDA
