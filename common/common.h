@@ -57,6 +57,7 @@ using llama_tokens = std::vector<llama_token>;
 // build info
 extern int LLAMA_BUILD_NUMBER;
 extern const char * LLAMA_COMMIT;
+extern const char * LLAMA_TQ_VERSION; // release version, empty for builds from source
 extern const char * LLAMA_COMPILER;
 extern const char * LLAMA_BUILD_TARGET;
 

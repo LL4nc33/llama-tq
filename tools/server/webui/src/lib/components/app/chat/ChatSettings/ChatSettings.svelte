@@ -7,11 +7,13 @@
 		Monitor,
 		ChevronLeft,
 		ChevronRight,
-		Database
+		Database,
+		Info
 	} from '@lucide/svelte';
 	import {
 		ChatSettingsFooter,
 		ChatSettingsImportExportTab,
+		ChatSettingsAboutTab,
 		ChatSettingsFields,
 		McpLogo,
 		McpServersSettings
@@ -327,6 +329,11 @@
 					type: SettingsFieldType.TEXTAREA
 				}
 			]
+		},
+		{
+			title: SETTINGS_SECTION_TITLES.ABOUT,
+			icon: Info,
+			fields: []
 		}
 		// TODO: Experimental features section will be implemented after initial release
 		// This includes Python interpreter (Pyodide integration) and other experimental features
@@ -540,6 +547,8 @@
 
 				{#if currentSection.title === SETTINGS_SECTION_TITLES.IMPORT_EXPORT}
 					<ChatSettingsImportExportTab />
+				{:else if currentSection.title === SETTINGS_SECTION_TITLES.ABOUT}
+					<ChatSettingsAboutTab />
 				{:else if currentSection.title === SETTINGS_SECTION_TITLES.MCP}
 					<div class="space-y-6">
 						<ChatSettingsFields

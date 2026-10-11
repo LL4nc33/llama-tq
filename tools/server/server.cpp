@@ -108,7 +108,7 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
-    LOG_INF("build_info: %s\n", build_info.c_str());
+    LOG_INF("build_info: %s%s%s\n", build_info.c_str(), LLAMA_TQ_VERSION[0] ? ", llama-tq " : "", LLAMA_TQ_VERSION);
     LOG_INF("%s\n", common_params_get_system_info(params).c_str());
 
     server_http_context ctx_http;

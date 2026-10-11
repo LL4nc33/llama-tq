@@ -937,6 +937,7 @@ void server_models_routes::init_routes() {
                 }},
                 {"webui_settings", webui_settings},
                 {"build_info",     build_info},
+                {"version",        LLAMA_TQ_VERSION},
             });
             return res;
         }

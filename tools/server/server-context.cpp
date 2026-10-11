@@ -3997,6 +3997,7 @@ void server_routes::init_routes() {
             { "bos_token",                   meta->bos_token_str },
             { "eos_token",                   meta->eos_token_str },
             { "build_info",                  meta->build_info },
+            { "version",                     LLAMA_TQ_VERSION },
             { "is_sleeping",                 queue_tasks.is_sleeping() },
         };
         if (params.use_jinja) {

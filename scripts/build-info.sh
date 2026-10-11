@@ -26,5 +26,6 @@ fi
 
 echo "int LLAMA_BUILD_NUMBER = ${build_number};"
 echo "char const *LLAMA_COMMIT = \"${build_commit}\";"
+echo "char const *LLAMA_TQ_VERSION = \"\";"
 echo "char const *LLAMA_COMPILER = \"${build_compiler}\";"
 echo "char const *LLAMA_BUILD_TARGET = \"${build_target}\";"

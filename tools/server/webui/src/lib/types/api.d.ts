@@ -195,6 +195,8 @@ export interface ApiLlamaCppServerProps {
 	bos_token: string;
 	eos_token: string;
 	build_info: string;
+	/** llama-tq release version (e.g. v2026.10.11), empty for builds from source */
+	version?: string;
 	webui_settings?: Record<string, string | number | boolean>;
 }
 

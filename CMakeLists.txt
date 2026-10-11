@@ -129,6 +129,9 @@ if (NOT DEFINED LLAMA_BUILD_COMMIT)
 endif()
 set(LLAMA_INSTALL_VERSION 0.0.${LLAMA_BUILD_NUMBER})
 
+# set by the release workflow (e.g. v2026.10.11); empty for builds from source
+set(LLAMA_TQ_VERSION "" CACHE STRING "llama-tq release version shown by --version and the server")
+
 # override ggml options
 set(GGML_ALL_WARNINGS   ${LLAMA_ALL_WARNINGS})
 set(GGML_FATAL_WARNINGS ${LLAMA_FATAL_WARNINGS})

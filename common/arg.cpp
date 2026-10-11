@@ -1072,6 +1072,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--version"},
         "show version and build info",
         [](common_params &) {
+            if (LLAMA_TQ_VERSION[0] != '\0') {
+                fprintf(stderr, "llama-tq %s\n", LLAMA_TQ_VERSION);
+            }
             fprintf(stderr, "version: %d (%s)\n", LLAMA_BUILD_NUMBER, LLAMA_COMMIT);
             fprintf(stderr, "built with %s for %s\n", LLAMA_COMPILER, LLAMA_BUILD_TARGET);
             exit(0);
