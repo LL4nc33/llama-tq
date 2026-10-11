@@ -327,7 +327,7 @@ jobs:
             - [Ubuntu arm64 (Vulkan)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-arm64.tar.gz)
 
             Docker (CPU, amd64): `ghcr.io/ll4nc33/llama-tq:server` (also `full` / `light`).
-            The CUDA build covers sm_75 (Turing) natively plus PTX for newer GPUs; for other architectures build from source.
+            Pick the CUDA archive for your GPU generation; the Turing archive also runs on newer GPUs through PTX (slower first start). Other architectures: build from source.
 
       - name: Upload release
         id: upload_release
