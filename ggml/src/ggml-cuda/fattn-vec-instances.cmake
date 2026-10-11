@@ -5,7 +5,8 @@
 # fattn-vec.cuh, so each instance compiles in its own TU, in parallel. Every instance the dispatch references must
 # be compiled (otherwise: undefined symbol at link time), and the default build compiles nothing more.
 #
-# GGML_CUDA_FA_ALL_QUANTS compiles every generated instance. The default list below follows the #else branches of
+# The GQA decode instances (template-instances/fattn-gqa-instance-*.cu) are always compiled.
+# GGML_CUDA_FA_ALL_QUANTS compiles every generated vec instance. The default list below follows the #else branches of
 # the dispatch TUs; it is written by scripts/check-cuda-instances.py --write, which also checks it.
 
 # ggml_cuda_fattn_vec_instances(<out_var> <template-instances dir>)
@@ -18,6 +19,9 @@ function(ggml_cuda_fattn_vec_instances OUT_VAR DIR)
             list(APPEND SRCS "${DIR}/${NAME}")
         endforeach()
     endif()
+    # the TurboQuant GQA decode kernel (fattn-vec-gqa.cu), one TU per head size and block width
+    file(GLOB GQA_SRCS "${DIR}/fattn-gqa*.cu")
+    list(APPEND SRCS ${GQA_SRCS})
     set(${OUT_VAR} ${SRCS} PARENT_SCOPE)
 endfunction()
 

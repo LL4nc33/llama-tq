@@ -450,3 +450,67 @@ static void ggml_cuda_flash_attn_ext_vec_gqa_case(ggml_backend_cuda_context & ct
     constexpr int nwarps = 128 / WARP_SIZE;
     launch_fattn<D, 1, ncols>(ctx, dst, fattn_kernel, nwarps, 0, 128, false, false, false, WARP_SIZE, use_sparse);
 }
+
+// The supported (K type, V type) combos for one head size D and one block width ncols. Each (D, ncols) is compiled
+// in its own TU (template-instances/fattn-gqa-instance-d<D>-ncols<ncols>.cu) so that they build in parallel; the
+// dispatcher in fattn-vec-gqa.cu only references them. Returns false if the types are not covered.
+#define FATTN_VEC_GQA_CASE(D_, type_K_, type_V_)                                                     \
+    if constexpr (D == (D_)) {                                                                       \
+        if (K->type == (type_K_) && V->type == (type_V_)) {                                          \
+            ggml_cuda_flash_attn_ext_vec_gqa_case<D_, ncols, type_K_, type_V_>(ctx, dst, use_sparse); \
+            return true;                                                                             \
+        }                                                                                            \
+    }
+
+#define FATTN_VEC_GQA_CASES_V(D_, type_K_)                       \
+    FATTN_VEC_GQA_CASE(D_, type_K_, GGML_TYPE_VTQ2_1)            \
+    FATTN_VEC_GQA_CASE(D_, type_K_, GGML_TYPE_VTQ3_1)            \
+    FATTN_VEC_GQA_CASE(D_, type_K_, GGML_TYPE_VTQ4_1)
+
+template <int D, int ncols>
+bool ggml_cuda_flash_attn_ext_vec_gqa_d(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const bool use_sparse) {
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ2_1)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ3_1)
+    FATTN_VEC_GQA_CASES_V(256, GGML_TYPE_KTQ4_1)
+
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1) // the accurate K with the compact V
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1)
+    FATTN_VEC_GQA_CASE   (256, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1)
+
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ3_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASE   (128, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)
+    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ2_1)
+    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ3_1)
+    FATTN_VEC_GQA_CASES_V(128, GGML_TYPE_KTQ4_1)
+
+    return false;
+}
+
+// __attribute__((used)): same reason as GGML_FATTN_VEC_USED in fattn-vec.cuh (RDC must not prune the instances)
+#if defined(_MSC_VER) && !defined(__GNUC__) && !defined(__clang__)
+#  define GGML_FATTN_VEC_GQA_USED
+#else
+#  define GGML_FATTN_VEC_GQA_USED __attribute__((used))
+#endif
+
+#define DECL_FATTN_VEC_GQA_CASE(D, ncols)                                    \
+    template GGML_FATTN_VEC_GQA_USED bool ggml_cuda_flash_attn_ext_vec_gqa_d \
+    <D, ncols>(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const bool use_sparse)
+
+extern DECL_FATTN_VEC_GQA_CASE(256, 4);
+extern DECL_FATTN_VEC_GQA_CASE(128, 4);
+extern DECL_FATTN_VEC_GQA_CASE(256, 8);
+extern DECL_FATTN_VEC_GQA_CASE(128, 8);
