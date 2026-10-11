@@ -57,6 +57,7 @@ Related options:
 | Option | Effect |
 |---|---|
 | `--tq-protect-layers N` | keep the first and last N layers in q8_0 (TurboQuant types only) |
+| `--tq-protect-sinks N` | keep the V cache of layer 0 in f16 when N > 0 (off by default) |
 | `--no-tq-deferred-k`, `--no-tq-deferred-v` | skip the f16 staging buffer used during prefill; saves VRAM for full context |
 | `GGML_CUDA_TQ_WMMA=0` | disable the tensor-core decode kernel (falls back to the GQA kernel) |
 | `GGML_CUDA_TQ_VEC_NO_GQA=1` | disable the GQA decode kernel (falls back to the generic vector kernel) |
@@ -98,7 +99,9 @@ Group-level Viterbi trellis. 16-state shift register; 16-bit `start_state` per b
 | `vtq3_2` | 51 | 3 | 3.0 | 3.25 | 52 B |
 | `vtq4_2` | 52 | 4 | 4.0 | 4.25 | 68 B |
 
-K-collision is a feature: `vtq2_2 / vtq3_2 / vtq4_2` produce bit-identical PPL on the same model — per-element MSE drops 16× across K=2/3/4 but FA softmax averages it out (attention-absorbed). Pick `vtq2_2`.
+Not covered by the fast decode kernels. The April 2026 finding that `vtq2_2` / `vtq3_2` / `vtq4_2` give bit-identical
+perplexity was an artifact of the deferred V staging (V stayed f16 during prefill); these types have not been re-measured
+with the cache quantized in prefill. Prefer `vtq*_1`.
 
 ### V-cache v3 — Trellis + Outlier-Channel-Split (`vtq*_3`)
 
@@ -110,7 +113,9 @@ Same Viterbi backbone as v2, plus 4 fp16 outliers per block (largest absolute V 
 | `vtq3_3` | 55 | 3 | 4.0 | 64 B |
 | `vtq4_3` | 56 | 4 | 5.0 | 80 B |
 
-PPL impact on 35B-A3B at 3.78 bpw avg (`ktq2_1 + vtq3_3`): +0.47% vs f16/f16 — well below stderr.
+`vtq3_v8` (enum 58, 3.625 bpw) is a trellis 3-bit variant with two fp16 outliers per block. Like the v2 types these are
+not covered by the fast decode kernels, and their April 2026 perplexity numbers were taken with V staged in f16 during
+prefill; not re-measured.
 
 ### Reserved / dormant
 
@@ -170,47 +175,24 @@ The v2/v3 trellis V types (`vtq*_2`, `vtq*_3`) still work but are not covered by
 
 ## Memory Savings
 
-KV-cache footprint at 32k ctx, 35B-A3B (Qwen3.5/3.6-A3B, 32 experts / 4 active, GQA; historical table from 2026-04, the bpw ratios still hold):
+Bits per value of the KV cache (block scales included) and its size relative to an f16 cache. The KV cache of a model
+grows with context length × layers with attention × KV heads × head size; hybrid models (Gated DeltaNet, sliding
+window) need it only for some layers.
 
-| KV config            | bpw  | KV @ 32k |
-|----------------------|:---:|:---:|
-| `f16 / f16`          | 32.0 | 640 MiB |
-| `q8_0 / q8_0`        | 17.0 | 340 MiB |
-| `q4_0 / q4_0`        | 9.0  | 180 MiB |
-| `ktq2_1 / vtq2_2` ⭐  | 2.78 | **115 MiB** |
-
-A 35B-A3B at `ktq2_1 + vtq2_2` fits **~330k single-ctx** (or ~470k with `-ub 128`, or 2× 200k parallel slots) on 24 GB total VRAM.
+| K / V | K bpw | V bpw | (K+V)/2 | size vs f16 |
+|---|---:|---:|---:|---:|
+| `f16` / `f16` | 16 | 16 | 16 | 100 % |
+| `q8_0` / `q8_0` | 8.5 | 8.5 | 8.5 | 53 % |
+| `q8_0` / `vtq4_1` | 8.5 | 4.5 | 6.5 | 41 % |
+| `q4_0` / `q4_0` | 4.5 | 4.5 | 4.5 | 28 % |
+| `ktq4_1` / `vtq4_1` | 5.5 | 4.5 | 5 | 31 % |
+| `ktq3_1` / `vtq3_1` | 4.5 | 4 | 4.25 | 27 % |
+| `ktq2_1` / `vtq2_1` | 3.5 | 2.5 | 3 | 19 % |
 
 ## Benchmarks
 
-Historical measurements from 2026-04, before the KTQ fix of 2026-10-04. All measured on the test box: Ryzen 7 3700X host (Zen 2, 8C/16T), KVM guest 12 vCPUs, 40 GB DDR4-3200, 2× RTX 2060 12 GB on asymmetric PCIe (GPU0 x16 / GPU1 x4). llama-tq commit `1a1d49ef5`; upstream baseline `0c6ee1cad` (ggerganov/llama.cpp master, 2026-04-27).
-
-### 35B-A3B full-GPU (ctx=2048, `-fa 1 -ts 12,12`)
-
-| Variant                          | pp512 | tg128 | tg1024 | PPL (8ch) | KV-bpw | KV @ 32k |
-|----------------------------------|---:|---:|---:|---:|---:|---:|
-| upstream f16/f16                 | 934  | 57.76 | 57.30 | 7.0810 | 32.0 | 640 MiB |
-| llama-tq f16/f16                 | 1009 | 76.58 | 75.09 | 7.0863 | 32.0 | 640 MiB |
-| llama-tq `ktq2_1 + vtq2_2` ⭐    | 1010 | 75.40 | 75.18 | 7.1814 | 2.78 | 115 MiB |
-| Δ tq vs upstream (quant)         | +8% | +31% | +31% | +1.34% | −91% | −82% |
-
-### 80B-A3B (Qwen3-Next, hybrid + CPU expert offload, ctx=2048)
-
-| Variant            | pp512 | tg128 |
-|--------------------|---:|---:|
-| upstream f16/f16   | 378 | 31.21 |
-| llama-tq f16/f16   | 404 | 31.50 |
-| Δ                  | +7% | +1% |
-
-### 122B-A10B (Qwen3.5-A10B, GQA(2) + CPU expert offload, ctx=2048)
-
-| Variant            | pp512 | tg128 |
-|--------------------|---:|---:|
-| upstream f16/f16   | 178 | 15.65 |
-| llama-tq f16/f16   | 187 | 17.00 |
-| Δ                  | +5% | +9% |
-
-Historical snapshot of TG, PPL and HellaSwag for several models: [`docs/benchmarks/history/LIVE_NUMBERS.md`](benchmarks/history/LIVE_NUMBERS.md).
+Decode speed per GPU and KV type, models on 2× RTX 2060: [benchmarks](benchmarks/README.md). The April 2026 tables from
+this page are in [history](benchmarks/history/2026-04-turboquant.md).
 
 ## How It Works
 
@@ -248,7 +230,7 @@ Shifts the 32-element FWHT from per-K-block (gather + butterfly in the hot loop)
 
 ### KTQ MMA path (CC ≥ 7.5)
 
-Split-dequant for prompt batches: bulk K (and TurboQuant V) → f16 conversion, then the standard MMA-F16 tensor-core kernel runs unchanged. Covers head sizes up to 512 (Gemma 4 global layers since 2026-10-04). Decode uses the kernels in the next section. Measured KTQ2_1 35B IQ2_XS: PP128 727 t/s (vs 431 f16), PP512 875 (parity), PP2048 868 (parity). Source: `ggml/src/ggml-cuda/fattn-mma-ktq.{cu,cuh}`.
+Split-dequant for prompt batches: bulk K (and TurboQuant V) → f16 conversion, then the standard MMA-F16 tensor-core kernel runs unchanged. Covers head sizes up to 512 (Gemma 4 global layers since 2026-10-04). Decode uses the kernels in the next section. Source: `ggml/src/ggml-cuda/fattn-mma-ktq.{cu,cuh}`.
 
 ### Decode kernels (2026-10-04)
 
@@ -256,8 +238,8 @@ Decode (one query token per sequence) has two dedicated CUDA kernels for quantiz
 
 | Kernel | Source | How it works | Covers |
 |---|---|---|---|
-| Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group). | `ktq{2,3,4}_1` × `vtq{2,3,4}_1` and q5_0 at D=128/256/512; KTQ or VTQ mixed with f16 at D=256/512; q8_0 at D=512 |
-| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4 or 8 query heads), one warp per K/V row, the column dot products reduced together; 3/4-bit codebooks in shared memory. Supports the sparse index lists of Qwen3.8-Flash-Next. | KTQ, VTQ v1, q8_0, q5_0, f16 mixes at D=128/256 |
+| Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group). `ktq{2,3,4}_1` × `vtq{2,3,4}_1`, `q5_0`, `q4_0` at D=128/256/512 and D=64 with sinks (gpt-oss); KTQ or VTQ mixed with f16 at D=256/512; `q8_0` and `q8_0` K with `vtq{2,4}_1` V at D=64/512 |
+| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4 or 8 query heads), one warp per K/V row, the column dot products reduced together; 3/4-bit codebooks in shared memory. Supports the sparse index lists of Qwen3.8-Flash-Next. | KTQ, VTQ v1, `q8_0` (also with `vtq{2,4}_1` V), `q5_0`, f16 mixes at D=128/256 |
 
 Attention time at 16k context (one RTX 2060, from `test-backend-ops perf`):
 
@@ -266,7 +248,7 @@ Attention time at 16k context (one RTX 2060, from `test-backend-ops perf`):
 | D=128, GQA 4 (K2-Horizon) | 229 µs | 216 µs | 212 µs | 226 µs |
 | D=512, GQA 16 (Gemma-4-12B global layers, 32k) | 315 µs | 410 µs | 372 µs (before: 6636 µs) | – |
 
-End to end on 2× RTX 2060: Qwen3.8-27B with `ktq4_1`/`vtq4_1` decodes 17.2 t/s at 118k context; Ternary-Bonsai-2-27B with two 200k slots 31 t/s at 27k.
+Measured speeds: [benchmarks](benchmarks/README.md); per model setup: [models.md](models.md).
 
 The KV cache write (`SET_ROWS`) quantizes one 32-value block per warp (`GGML_CUDA_TQ_SET_ROWS_SERIAL=1` restores the one-thread-per-block kernel for comparison).
 
@@ -295,19 +277,26 @@ The Viterbi path optimizes globally over the block, adapting implicitly to the r
 
 ### VTQ v3 — Trellis + outlier-channel-split
 
-Same v2 backbone plus 4 fp16 outliers per block (largest absolute V values). Round-trip MSE drops a further 4× vs v2 at +1 bpw average. PPL impact on 35B-A3B at 3.78 bpw avg (`ktq2_1 + vtq3_3`): +0.47% vs f16/f16.
+Same v2 backbone plus 4 fp16 outliers per block (largest absolute V values). Round-trip MSE drops a further 4× vs v2 at +1 bpw average (perplexity not re-measured with the cache quantized in
+prefill, see above).
 
 ### Deferred K/V quantization
 
-KTQ K-cache suffers a repetition-loop pathology when quantized per-token during prefill (attention re-reads just-quantized rows; RHT round-trip noise accumulates; the model loops). f16 staging during prefill plus bulk-convert at the prefill→decode boundary avoids it. **Auto-enabled for any KTQ K-type and any VTQ v2/v3 V-type.**
+During prefill the K (and VTQ v2/v3 V) cache is staged in f16 and converted in bulk at the prefill→decode boundary; this
+is automatic for any KTQ K type and any VTQ v2/v3 V type. It was introduced in April 2026 against repetition loops with
+K quantized per token in prefill (observed before the KTQ sign fix of 2026-10-04). `--no-tq-deferred-k` /
+`--no-tq-deferred-v` turn it off, which saves the staging memory at full context and is how the accuracy numbers above
+are measured. The conversion runs once at the first decode step (about 0.1 s after a 16k prompt on an RTX 2060).
 
 ### Boundary-layer protection
 
-`--tq-protect-layers N` stores the first and last N layers in q8_0 and the rest in the chosen TurboQuant types. The outer layers carry the most outlier-heavy K; on K2-Horizon, N=4 cuts the PPL cost of `ktq4_1`/`vtq4_1` from +3.3 % to +0.8 %.
+`--tq-protect-layers N` stores the first and last N layers in q8_0 and the rest in the chosen TurboQuant types. The outer layers carry the most outlier-heavy K; on K2-Horizon, N=4 cut the PPL cost of `ktq4_1`/`vtq4_1` from +3.3 % to +0.8 % (2026-10-04, earlier encoder); on gpt-oss
+it helps only in proportion to the protected layers (see Accuracy).
 
 ### Attention-sink protection
 
-The first 4 tokens stay f16 regardless of KV cache type. Standard practice for streaming attention; preserves the "always-attended" sink positions that quantization noise would otherwise corrupt.
+`--tq-protect-sinks N` (off by default) keeps the V cache of layer 0 in f16 when N > 0, so the sink tokens that draw
+outsized attention on long contexts keep their full precision (StreamingLLM idea).
 
 ### Sparse V dequant
 
@@ -332,9 +321,9 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 | Warp-cooperative FWHT       | 32 lanes × 5 `__shfl_xor_sync` rounds (XOR masks 1/2/4/8/16); zero shared memory. |
 | AVX2-FWHT-32                | Host-side path used by deferred-K bulk conversion. |
 | MMA split-dequant           | sm_75+ tensor-core path for prompt batches with KTQ K and/or VTQ V, head sizes up to 512. |
-| Tensor-core decode          | WMMA decode kernel for TurboQuant and q5_0 KV with grouped-query attention (`GGML_CUDA_TQ_WMMA=0` disables it). |
-| GQA decode                  | One block per GQA group, one warp per K/V row; KTQ, VTQ v1, q8_0, q5_0; sparse index lists. |
-| Warp SET_ROWS               | One warp quantizes one 32-value block when writing the KV cache. |
+| Tensor-core decode          | WMMA decode kernel with grouped-query attention for TurboQuant, `q8_0`, `q5_0`, `q4_0` and `q8_0` K with VTQ V; head sizes 64 (with sinks), 128, 256, 512 (`GGML_CUDA_TQ_WMMA=0` disables it). |
+| GQA decode                  | One block per GQA group, one warp per K/V row; KTQ, VTQ v1, `q8_0` (also with VTQ V), `q5_0`; sparse index lists. |
+| Warp SET_ROWS               | One warp quantizes one 32-value block when writing the KV cache; each lane evaluates one trial scale. |
 | Branchless sign × norm      | `(1 − 2·bit) · norm` replaces ternary; eliminates warp divergence. |
 | Shared sign pattern         | All KTQ blocks use the same signs, so Q is rotated once per query. |
 | VTQ v1 V-dequant            | `codebook[idx] * scale`, `__forceinline__`, ~8 registers, no LMEM spills. |
@@ -343,22 +332,7 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 | FA dispatch                 | KTQ1_1..KTQ4_1 (K), VTQ1_1..VTQ4_1 (v1), VTQ2_2..VTQ4_2 (v2), VTQ2_3..VTQ4_3 (v3). |
 | SET_ROWS kernels            | `k_set_rows_ktq*` + `k_set_rows_vtq*`. |
 | `head_dim` support          | KTQ: 64/128/256/512. VTQ v2: D=64/128/256/512 (verified live on Gemma4 D=256/512 SWA + full-attn, Qwen3.6-35B D=128, gpt-oss-20b D=64). |
-| Compute capability          | Tested on CC 7.5 (Turing, RTX 2060). Builds for CC 6.0+ (anything with `__shfl_xor_sync`). MMA-KTQ requires CC 7.5+. Untested on Ampere/Ada/Hopper — sm_75-specific tuning is not necessarily optimal there. |
-
-### Phase 4 perf stack (2026-04-26)
-
-Cumulative +18.5% TG on 80B-A3B (30.80 → ~36.5 t/s at ctx ≤ 8192), +9.3% on 122B (16.69 → 18.24 t/s):
-
-- `MADV_HUGEPAGE` on weight mmap regions
-- `__builtin_prefetch` in `mul_mat_id` expert dispatch
-- `OMP_WAIT_POLICY=active` (+5.9% on 80B partial-offload, +2.6% on 122B; 0% on full-GPU)
-- Adaptive layer-split (80B: 18/18/12 default for ctx ≤ 8192, falls back to safe split for ctx ≥ 200000)
-- P2P opt-in (was hurting on asymmetric x16/x4 PCIe)
-- AVX2-FWHT-32 for host-side bulk K conversion
-
-### Networking / API
-
-Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`, gzip — used by Anthropic-API clients and external agents.
+| Compute capability          | Developed on CC 7.5 (Turing, RTX 2060); tested on Ampere (RTX 3060, 3090), Ada (RTX 4060 Ti, 4090) and Blackwell (RTX 5090, RTX PRO 6000). Builds for CC 6.0+; the tensor-core paths need CC 7.5+. |
 
 ## Source Files
 
@@ -374,47 +348,32 @@ Anthropic-compatible `/v1/messages` endpoint with prompt caching, `TCP_NODELAY`,
 | `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_3`. |
 | `docs/benchmarks/history/LIVE_NUMBERS.md` | Historical TG/PPL/HellaSwag snapshot. |
 
-## Research log (2026-04/05)
+## Tried and discarded
 
-Kept for reference; current plans are in [ROADMAP.md](../ROADMAP.md).
+Measured and not pursued (the history is in the [changelog](../CHANGELOG.md)):
 
-> The v6 plan drops Trellis-K (mathematically incompatible with our Hadamard-domain Q·K USP) and prioritises performance levers.
+- **Trellis-K (TCQ-style):** a trellis K is not linear in its indices, so the K·Q dot product in the Hadamard domain no
+  longer works; about 0.5–1 % PPL for losing the fast decode path.
+- **VTQ_MIXED:** dominated by `vtq3_1`, no CUDA path; enum 53 stays reserved.
+- **Calibrated outlier selection** before the v3 trellis: marginal gain after the rotation.
+- **XQuant cross-layer K reuse:** the hybrid Qwen3.x models alternate Gated DeltaNet and attention layers, which leaves no
+  layer pairs; removed, enum 57 stays reserved.
+- **Adaptive top-k MoE routing:** Qwen3's softmax over the selected experts is near uniform, so a cumulative-mass cut does
+  not apply ([moe-expert-locality.md](research/moe-expert-locality.md)).
+- **Sparse K skip** (skip K blocks with a small norm): no speed gain at equal perplexity.
+- **Least-squares block scale** in the encoder (2026-10-11): lower reconstruction error, but it shrinks V and the attention
+  average keeps the shrink; the unbiased scale is used instead.
 
-### Active research (v6 scope)
-
-- **`mmvq` IQ2_XS tuning on sm_75** — currently 28% of kernel time on 35B configs. Target: `__dp4a` INT8 tiled mmvq, expected +15–25% TG. Largest single lever in the repo.
-- **S199 Sparse-K-Skip Phase 1** — branch `feature/s199-sparse-k-skip`, MVP code-complete. Fixed-threshold skip in the FA-vec hot path. Expected +3–8% on long contexts.
-- **FA-kernel register-pressure audit** — Turing CC 7.5 needs ≤32 reg/thread for full occupancy; current is ~48–64. Spill ktq scales to SMEM, FWHT-twiddle to constant, sign-flips as bitmask. Expected +5–10% TG.
-- **Sub-2bpw K via attention-sink-fp16** — `ktq0_1` @ 2.0 bpw with first-N tokens kept in fp16 (KVQuant trick). Low risk, ~1 week.
-- **Correction Overlay Buffer** — designed, not implemented. Top-N lossless error patch on top of KTQ.
-- **Phase 7 — imatrix-aware KTQ calibration** — proposed. Use importance matrix to bias the K-quant Lloyd-Max codebook.
-
-### Discarded after measurement
-
-- **Trellis-K (TCQ-style)** — incompatible with Hadamard-domain Q·K USP (sliding-window Trellis is non-linear in idx; H-domain skalar product requires linear dequant). Cached SMEM decode would work but loses the USP for ~0.5–1% PPL gain — not worth the trade. Tracked as v6-roadmap kill.
-- **Speculative decoding on A3B MoE** — expert-saturation pathology makes it ineffective.
-- **VTQ_MIXED** — dominated by `vtq3_1`, no CUDA path. Removed; enum 53 stays reserved.
-- **Calibrated outlier selection** (pre-v3 design) — marginal gain after RHT.
-- **MMA-KTQ as default for all ctx** — regresses past ~512 tokens. Now short-ctx-prefill only.
-- **XQuant cross-layer K reuse** — Qwen3.X-A3B / Qwen3.6-27B alternate Mamba/attention layers, yielding 0 pairs. The dormant implementation (`xktq2_1`, `--xquant`) was removed; enum 57 stays reserved.
-- **Phase 6 adaptive top-k MoE routing** — `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT` in Qwen3 produces a near-uniform softmax distribution post-top-k; cumulative-mass thresholding is meaningless. The selection itself is highly skewed though — see [docs/research/moe-expert-locality.md](research/moe-expert-locality.md) for the L3-pinning / static-prune levers that survived.
-
-### Not on roadmap
-
-- FA3 (requires sm_80+).
-- Paged attention (scope mismatch).
-- Multi-node inference.
-- MLA / DeepSeek-style latent KV (model-side architecture change, not a quant lever).
+Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style latent KV.
 
 ## When *not* to use TurboQuant
 
 - VRAM is not a constraint — upstream f16 KV is simpler and equally fast.
 - Multi-node serving — not a goal of this fork (tensor split across local GPUs works, see [tensor-split.md](tensor-split.md)).
-- Ampere+ (CC ≥ 8.0) — untested; sm_75-specific tuning is not necessarily a good default.
 
 ## Known Issues
 
-- **Ministral-3B and Qwen3-4B**: the earlier gibberish reports were measured with the inverted sign bits fixed on 2026-10-04. With `ktq4_1`/`vtq4_1` both now answer correctly (PPL +1.2 % and +3.2 %); 2-bit K is not re-tested on them yet, so prefer `ktq4_1` or q8_0.
+- **2- and 3-bit K** still lose a lot of accuracy on every measured model (see [Accuracy](#accuracy)); gpt-oss needs 8-bit K.
 - **VTQ v1 on Qwen3-Next-80B with `-b 1 -ub 1`**: can crash via fused Gated Delta Net interaction. Tracked separately. Batched mode and other models unaffected.
 
 ## References

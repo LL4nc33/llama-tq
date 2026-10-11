@@ -163,6 +163,7 @@ decode kernel. Decode at 32k context (llama-bench, `ktq4_1`/`vtq4_1`, f16 KV in 
 
 - **Gemma 4:** wikitext perplexity of the instruction-tuned models is in the hundreds to tens of
   thousands with any engine (upstream llama.cpp gives the same values, and they swing by a third
-  between its own FA and non-FA paths), so it is no measure of KV quality for these models.
+  between its own FA and non-FA paths), so it is no measure of KV quality for these models. Their KV accuracy is
+  measured on their own prose instead ([accuracy](turboquant.md#accuracy)).
   Decode with a quantized cache at head size 512 is fixed since 2026-10-04: Gemma-4-12B with
   `ktq4_1`/`vtq4_1` decodes 28.8 t/s at 32k context (f16 KV 31.0, before the fix 16.4).
