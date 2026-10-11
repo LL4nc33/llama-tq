@@ -35,17 +35,18 @@ llama-server -m model.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0
 llama-server -m model.gguf -ngl 99 -fa on -ctk ktq4_1 -ctv vtq4_1
 
 # LoRA fine-tuning directly on the quantized GGUF
-llama-finetune -m model.gguf -f train.jsonl -o task.gguf --lora-train-rank 16 -ngl 99 -c 512
+llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
+  --lora-train-target '^blk\.[0-9]+\.attn_(q|k|v|output)\.weight$' --lora-train-rank 16
 ```
 
 ## Description
 
 `llama-tq` is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that aims to run large models with long
 context, and to fine-tune them, on consumer NVIDIA GPUs with 12 to 32 GB. It is developed on 2× RTX 2060 12 GB without
-P2P; speed and fine-tuning were also measured on RTX 30, 40 and 50 cards. Upstream fixes are cherry-picked rather than
+P2P; speed was also measured on RTX 30, 40 and 50 cards, fine-tuning on RTX 50 cards. Upstream fixes are cherry-picked rather than
 merged continuously, so the fork can lag behind the newest upstream. The fork adds:
 
-- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 3 to 5.5 bits per value with fast decode
+- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value with fast decode
   kernels, for long context on small GPUs ([which type to pick](docs/turboquant.md#recommendation))
 - **Fine-tuning on quantized models:** LoRA on k-quant, IQ, MXFP4 and ternary GGUFs without dequantized weights, MoE
   experts, models larger than VRAM, flash attention backward on CPU and CUDA

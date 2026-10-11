@@ -188,7 +188,7 @@ statistics ngram_map_k: #calls(b,g,a) = 6 1690 26, #gen drafts = 26, #acc drafts
 
 ### Model-class config matrix
 
-Tested on 2x RTX 2060 12 GB + KTQ/VTQ KV cache. Boost vs `--spec-type none` baseline.
+Measured in 2026-06 on 2x RTX 2060 12 GB with a KTQ/VTQ KV cache (builds of that time). Speed-up vs `--spec-type none`.
 
 | Model | Quant | Baseline | Best spec config | Creative | Repeat |
 |---|---|---|---|---|---|
@@ -197,8 +197,9 @@ Tested on 2x RTX 2060 12 GB + KTQ/VTQ KV cache. Boost vs `--spec-type none` base
 | Qwen3.6-35B-MTP-A3B | IQ2_XXS | 71.5 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.00-1.05x | 1.31x |
 | Ministral-3-3B | Q4_K_M | ~110 t/s | `--spec-type ngram-cache --draft-max 8 --draft-min 4` | 1.0x | 1.5-2x |
 
-All configs are **lossless** — output is byte-identical to baseline (verified via
-diff on first 140 chars of greedy outputs across multiple prompts).
+Output check: with greedy sampling the first 140 characters of the outputs matched the baseline on several prompts.
+Speculative decoding verifies every draft token against the target model, so the output should not change; a full-length
+comparison was not done.
 
 ### DRAFT_MTP guidance
 
@@ -208,14 +209,8 @@ because the single-layer MTP head caps per-step confidence so position 1-3 of a
 dm=4 draft fail the p_min filter (observed: avg 1.30 tokens/draft, firing 32%
 of TG-iterations with the `LLAMA_MTP_DECAY` patch — still net-negative).
 
-When to enable DRAFT_MTP:
-- Q4 or higher quantization (the MTP head retains useful sharpness)
-- Bandwidth-bound hardware (Jetson Orin, M-series unified memory)
-- Larger active-param models (>10B active) where 1 extra token amortises the draft setup
-
-When NOT to enable DRAFT_MTP:
-- IQ2/IQ3 quantization (use ngram-cache instead)
-- Single GPU < 12 GB (compute-buffer fits but offers worse boost than ngram-cache)
+On IQ2/IQ3 models use `ngram-cache` instead. Where DRAFT_MTP pays off (higher-bit quants, larger active parameter
+counts) was not measured; compare it against `ngram-cache` on your setup.
 
 ### Tuning knobs (env-gated)
 

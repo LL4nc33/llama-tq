@@ -15,7 +15,7 @@ docker run -v /path/to/models:/models -p 8080:8080 ghcr.io/ll4nc33/llama-tq:serv
   -m /models/model.gguf --host 0.0.0.0 --port 8080
 ```
 
-The TurboQuant KV types need CUDA, so for a GPU use a CUDA image built locally (below) or a
+The TurboQuant KV types need CUDA, so for a GPU use a CUDA image built locally (below) or, from the next release on, the
 [release archive](https://github.com/LL4nc33/llama-tq/releases) for your GPU generation. The images of upstream
 llama.cpp (`ghcr.io/ggml-org/llama.cpp`) do not contain the changes of this fork.
 

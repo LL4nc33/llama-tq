@@ -164,17 +164,17 @@ flash attention off: the numerical noise floor of the model, below which no KV t
 - 2-bit K and 3-bit K lose clearly on all three models.
 - Reproduce: base `llama-perplexity -m M -f TEXT -c 512 --chunks 40 -fa on --kl-divergence-base base.kld`, then the same
   with `-ctk K -ctv V --no-tq-deferred-k --no-tq-deferred-v --kl-divergence-base base.kld --kl-divergence`.
-- Hybrid models with few attention layers lose much less (Qwen3.8-27B, 16 of 64 layers with attention: `ktq4_1`/`vtq4_1`
-  PPL 6.039 vs 6.036 with f16, cache quantized in prefill, earlier encoder), see [docs/models.md](models.md).
-- `q8_0` K with `vtq4_1` or `vtq2_1` V uses the GQA and tensor-core decode kernels (since 2026-10-11): Qwen3-4B at 16k context
-  50.7 t/s with `vtq4_1` (`q8_0`/`q8_0` 52), gpt-oss at 8k 70.4 t/s (RTX 2060).
+- Hybrid models with few attention layers (e.g. Qwen3.8-27B, 16 of 64 layers with attention) lose much less; per-model
+  numbers in [models.md](models.md).
+- `q8_0` K with `vtq4_1` or `vtq2_1` V uses the GQA and tensor-core decode kernels (since 2026-10-11) and decodes about as
+  fast as `q8_0` ([benchmarks](benchmarks/README.md)).
 
 Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the
 history below only.
 
-The v2/v3 trellis V types (`vtq*_2`, `vtq*_3`) still work but are not covered by the fast decode kernels below; prefer the v1 codebook types for speed.
+The v2/v3 trellis V types (`vtq*_2`, `vtq*_3`) still work but are not covered by the fast decode kernels (see How It Works); prefer the v1 codebook types for speed.
 
 ## Memory Savings
 
@@ -244,7 +244,7 @@ Decode (one query token per sequence) has two dedicated CUDA kernels for quantiz
 | Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group). `ktq{2,3,4}_1` × `vtq{2,3,4}_1`, `q5_0`, `q4_0` at D=128/256/512 and D=64 with sinks (gpt-oss); KTQ or VTQ mixed with f16 at D=256/512; `q8_0` and `q8_0` K with `vtq{2,4}_1` V at D=64/512 |
 | GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4 or 8 query heads), one warp per K/V row, the column dot products reduced together; 3/4-bit codebooks in shared memory. Supports the sparse index lists of Qwen3.8-Flash-Next. | KTQ, VTQ v1, `q8_0` (also with `vtq{2,4}_1` V), `q5_0`, f16 mixes at D=128/256 |
 
-Attention time at 16k context (one RTX 2060, from `test-backend-ops perf`):
+Kernel microbenchmark, attention time at 16k context (one RTX 2060, `test-backend-ops perf`, 2026-10-04):
 
 | Shape | f16 | q8_0 | `ktq4_1`/`vtq4_1` | q5_0 |
 |---|---:|---:|---:|---:|
@@ -289,12 +289,12 @@ During prefill the K (and VTQ v2/v3 V) cache is staged in f16 and converted in b
 is automatic for any KTQ K type and any VTQ v2/v3 V type. It was introduced in April 2026 against repetition loops with
 K quantized per token in prefill (observed before the KTQ sign fix of 2026-10-04). `--no-tq-deferred-k` /
 `--no-tq-deferred-v` turn it off, which saves the staging memory at full context and is how the accuracy numbers above
-are measured. The conversion runs once at the first decode step (about 0.1 s after a 16k prompt on an RTX 2060).
+are measured. The conversion runs once at the first decode step ([its cost](benchmarks/README.md)).
 
 ### Boundary-layer protection
 
-`--tq-protect-layers N` stores the first and last N layers in q8_0 and the rest in the chosen TurboQuant types. The outer layers carry the most outlier-heavy K; on K2-Horizon, N=4 cut the PPL cost of `ktq4_1`/`vtq4_1` from +3.3 % to +0.8 % (2026-10-04, earlier encoder); on gpt-oss
-it helps only in proportion to the protected layers (see Accuracy).
+`--tq-protect-layers N` stores the first and last N layers in q8_0 and the rest in the chosen TurboQuant types. The outer layers carry the most outlier-heavy K on some models (K2-Horizon, see [models.md](models.md)); on gpt-oss it
+helps only in proportion to the protected layers (see Accuracy).
 
 ### Attention-sink protection
 
@@ -303,7 +303,7 @@ outsized attention on long contexts keep their full precision (StreamingLLM idea
 
 ### Sparse V dequant
 
-In the FA V-accumulation loop, dequant is skipped for positions where attention weight < 1e-6. At 32k+ context, >90% of positions are skipped. +22% decode throughput. Works with both KTQ-V (legacy) and VTQ V-types.
+In the FA V-accumulation loop, dequant is skipped for positions where attention weight < 1e-6. In April 2026 measurements more than 90 % of the positions were skipped at 32k+ context, for +22 % decode. Works with both KTQ-V (legacy) and VTQ V-types.
 
 ### Shared codebooks (`PQ_CODEBOOK_*`)
 
@@ -320,22 +320,22 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 
 | Feature                     | Description |
 |-----------------------------|---|
-| Hadamard-domain KQ          | FWHT on Q once per tile; dot against codebook values. 39% fewer warp shuffles per `vec_dot` call vs naive inverse-FWHT-on-K. |
+| Hadamard-domain KQ          | FWHT on Q once per tile; dot against codebook values. Fewer warp shuffles per `vec_dot` call than an inverse FWHT on K. |
 | Warp-cooperative FWHT       | 32 lanes × 5 `__shfl_xor_sync` rounds (XOR masks 1/2/4/8/16); zero shared memory. |
 | AVX2-FWHT-32                | Host-side path used by deferred-K bulk conversion. |
 | MMA split-dequant           | sm_75+ tensor-core path for prompt batches with KTQ K and/or VTQ V, head sizes up to 512. |
-| Tensor-core decode          | WMMA decode kernel with grouped-query attention for TurboQuant, `q8_0`, `q5_0`, `q4_0` and `q8_0` K with VTQ V; head sizes 64 (with sinks), 128, 256, 512 (`GGML_CUDA_TQ_WMMA=0` disables it). |
+| Tensor-core decode          | WMMA decode kernel with grouped-query attention for TurboQuant, `q5_0` and `q4_0` at head sizes 64 (with sinks), 128, 256, 512; `q8_0` and `q8_0` K with `vtq{2,4}_1` V only at 64 and 512 (at 128/256 the GQA kernel takes them); `GGML_CUDA_TQ_WMMA=0` disables it. |
 | GQA decode                  | One block per GQA group, one warp per K/V row; KTQ, VTQ v1, `q8_0` (also with VTQ V), `q5_0`; sparse index lists. |
 | Warp SET_ROWS               | One warp quantizes one 32-value block when writing the KV cache; each lane evaluates one trial scale. |
 | Branchless sign × norm      | `(1 − 2·bit) · norm` replaces ternary; eliminates warp divergence. |
 | Shared sign pattern         | All KTQ blocks use the same signs, so Q is rotated once per query. |
 | VTQ v1 V-dequant            | `codebook[idx] * scale`, `__forceinline__`, ~8 registers, no LMEM spills. |
 | VTQ pre-rotation            | `self_v_rot` matmul before cache write + inverse `Rᵀ` matmul after FA. |
-| Sparse V dequant            | Skip dequant for `attn_weight < 1e-6`; +22% decode at 32k+ ctx. |
+| Sparse V dequant            | Skip dequant for `attn_weight < 1e-6` (+22 % decode at 32k+ context, April 2026). |
 | FA dispatch                 | KTQ1_1..KTQ4_1 (K), VTQ1_1..VTQ4_1 (v1), VTQ2_2..VTQ4_2 (v2), VTQ2_3..VTQ4_3 (v3). |
 | SET_ROWS kernels            | `k_set_rows_ktq*` + `k_set_rows_vtq*`. |
 | `head_dim` support          | KTQ: 64/128/256/512. VTQ v2: D=64/128/256/512 (verified live on Gemma4 D=256/512 SWA + full-attn, Qwen3.6-35B D=128, gpt-oss-20b D=64). |
-| Compute capability          | Developed on CC 7.5 (Turing, RTX 2060); tested on Ampere (RTX 3060, 3090), Ada (RTX 4060 Ti, 4090) and Blackwell (RTX 5090, RTX PRO 6000). Builds for CC 6.0+; the tensor-core paths need CC 7.5+. |
+| Compute capability          | Developed on CC 7.5 (Turing, RTX 2060); tested on Ampere (RTX 3060, 3090), Ada (RTX 4060 Ti, 4090) and Blackwell (RTX 5090) for decode speed. Builds for CC 6.0+; the tensor-core paths need CC 7.5+. |
 
 ## Source Files
 

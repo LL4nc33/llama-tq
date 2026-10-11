@@ -1,8 +1,8 @@
 # Vulkan Backend
 
 `llama-tq` ships with the upstream `ggml-vulkan` backend enabled, plus a
-small set of Turing-specific tunings that close most of the historical
-Vulkan-vs-CUDA TG gap on `sm_75` hardware.
+small Turing-specific tuning that narrows the Vulkan-vs-CUDA decode gap on `sm_75` hardware (by about a third on
+IQ2_XXS, see *Measured* below).
 
 ## Status
 
@@ -18,14 +18,12 @@ Vulkan-vs-CUDA TG gap on `sm_75` hardware.
 
 ## When Vulkan helps
 
-| GPU class                       | Typical CUDA vs Vulkan |
-|---------------------------------|------------------------|
-| RTX 4090 / 5090 (Ada/Blackwell) | CUDA usually leads by a few percent |
-| RTX 3090 (Ampere)               | CUDA leads by ~10% on TG |
-| **RTX 2060/2070 (Turing)**      | CUDA leads by ~22% on IQ2_XXS TG (after tuning); PP at parity |
-| RX 7900 XTX (RDNA3)             | Vulkan dominates (no CUDA path at all) |
-| Intel Arc                       | Vulkan only |
-| Apple Silicon (MoltenVK)        | Vulkan only — Metal backend usually preferred |
+| GPU class                  | CUDA vs Vulkan |
+|----------------------------|----------------|
+| **RTX 2060 (Turing)**      | measured: CUDA leads by 8-23 % on decode, prompt processing about equal (table below) |
+| Other NVIDIA generations   | not measured with this fork |
+| AMD, Intel Arc             | no CUDA path; Vulkan (or ROCm/SYCL) is the only GPU option |
+| Apple Silicon              | the Metal backend is usually the better choice |
 
 The Turing CUDA edge is structural — CUDA's IQ-quant mat-vec path has
 multi-year tuning that the Vulkan path doesn't have a direct equivalent
@@ -47,7 +45,7 @@ LunarG SDK 1.4.313 + shaderc 2025.2, vulkan1.3 SPIR-V target, single GPU
 | Ministral-3-3B-Q4_K_M            | tg128   | 114 t/s  | 105 t/s  | -8%     |
 
 Pre-tuning baseline on Qwen3.6-35B-A3B-IQ2_XXS tg128 was 51.5 t/s —
-the Turing `rm_kq=4` default closes ~37% of the original CUDA gap.
+the Turing `rm_kq=4` default closes about 37 % of the original CUDA gap (51.5 -> 62 t/s against 80 t/s).
 
 ## Build prerequisites
 

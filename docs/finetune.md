@@ -227,4 +227,4 @@ not been validated in training.
 
 ## History
 
-In the [changelog](../CHANGELOG.md) (MoE LoRA from 2026-05, the full fine-tuning work from 2026-10-06).
+In the [changelog](../CHANGELOG.md) (MoE LoRA from 2026-05, the full fine-tuning work from 2026-10-07).

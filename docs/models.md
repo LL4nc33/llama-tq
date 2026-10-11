@@ -4,12 +4,14 @@ Architectures and weight types that this fork adds or runs differently from upst
 use on 2× RTX 2060 12 GB (Turing, no P2P) and what that command reaches. Comparisons across GPUs and KV types are on the
 [benchmarks page](benchmarks/README.md); which KV type to pick: [turboquant.md](turboquant.md#recommendation).
 
-All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md).
+All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md). The speed and
+perplexity numbers on this page were measured before the KTQ/VTQ encoder change of
+2026-10-11 (decode with a KTQ/VTQ cache changes by 1-2 %, their accuracy improves).
 
 ## Ternary-Bonsai-2-27B (`PQ2_0`, `PTQ1_0`)
 
 Ternary weights in groups of 128 with Hadamard-rotated activations. `PTQ1_0` packs them at
-about 1.6 bits and is both smaller and faster than the 2-bit `PQ2_0` container at the same
+1.75 bits and is both smaller and faster than the 2-bit `PQ2_0` container at the same
 quality. Source: [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
 
 Two slots with 200k context each, vision, KV equal to f16 in perplexity:
@@ -80,7 +82,7 @@ Decode: 47 t/s short, 22 t/s at 40k. Prefill 650 t/s short, 416 t/s at 38k.
 
 ## Qwen3-Coder-Next (`UD-TQ1_0`)
 
-The Qwen3-Next coding model with ternary 1.6-bit weights fits completely into 24 GB. Tool
+The Qwen3-Next coding model with ternary weights (`TQ1_0`, about 1.7 bits) fits completely into 24 GB. Tool
 calls stay valid JSON in our tests. Source:
 [unsloth/Qwen3-Coder-Next-GGUF](https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF).
 
@@ -90,7 +92,7 @@ llama-server -m Qwen3-Coder-Next-UD-TQ1_0.gguf \
   -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
 ```
 
-Decode: 61 t/s short, 37 t/s at 72k. KV PPL +0.1 % over f16.
+Decode: 61 t/s short, 37 t/s at 72k.
 
 ## Aleph Alpha Kolibri-1 (`kolibri1`)
 
@@ -128,7 +130,7 @@ An MoE expert cache in VRAM (tried as `--moe-cache-mib`, since removed) did not 
 rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU.
 
 Decode barely drops with context (38 t/s at 10k). KV accuracy: perplexity +0.5 % with
-`ktq4_1`/`vtq4_1` against f16. Reasoning effort is set per request through `chat_template_kwargs`
+`ktq4_1`/`vtq4_1` against f16 (cache quantized in prefill, before the encoder change of 2026-10-11). Reasoning effort is set per request through `chat_template_kwargs`
 (`reasoning_effort`: none, low, medium, high); tool calls use the Hermes format.
 
 ## gpt-oss-20b
@@ -140,15 +142,14 @@ Head size 64 with attention sinks; quantized KV goes through the tensor-core dec
 llama-server -m gpt-oss-20b-MXFP4.gguf -ngl 99 -fa on -c 131072 -ctk q8_0 -ctv vtq4_1 --jinja
 ```
 
-Decode on one RTX 2060: 77 t/s short, 70 t/s at 8k (`llama-bench`). The most context (5 bpw) with `ktq4_1`/`vtq4_1`:
+As fast as `q8_0`/`q8_0` ([benchmarks](benchmarks/README.md)). The most context (5 bpw) with `ktq4_1`/`vtq4_1`:
 
 ```bash
 llama-server -m gpt-oss-20b-MXFP4.gguf -ngl 99 -fa on -c 131072 \
   -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
 ```
 
-Decode 77 t/s short, 57 t/s at 22k, 40 t/s at 64k (2× RTX 2060, before the encoder change of 2026-10-11, which costs
-1–2 %). Prompt processing 1100-2300 t/s.
+Decode 77 t/s short, 57 t/s at 22k, 40 t/s at 64k (2× RTX 2060). Prompt processing 1100-2300 t/s.
 
 ## Gemma 4
 
@@ -163,5 +164,3 @@ decode kernel. Decode at 32k context (llama-bench, `ktq4_1`/`vtq4_1`, f16 KV in 
   thousands with any engine (upstream llama.cpp gives the same values, and they swing by a third
   between its own FA and non-FA paths), so it is no measure of KV quality for these models. Their KV accuracy is
   measured on their own prose instead ([accuracy](turboquant.md#accuracy)).
-  Decode with a quantized cache at head size 512 is fixed since 2026-10-04: Gemma-4-12B with
-  `ktq4_1`/`vtq4_1` decodes 28.8 t/s at 32k context (f16 KV 31.0, before the fix 16.4).

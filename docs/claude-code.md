@@ -116,17 +116,14 @@ Read the script: [`scripts/onllama-launch-claude.sh`](../scripts/onllama-launch-
 
 Claude Code sends a large, stable system prompt (tool specs, agentic
 instructions — typically 15–25 k tokens) plus the full conversation history
-on every turn. Without prompt caching, each turn re-prefills all of it:
+on every turn. The first turn has to process all of it: at 900 tokens/s prompt processing a 20k-token prompt takes
+about 22 s before the first token. Later turns reuse the KV cache of the common prefix (llama.cpp prompt caching, on by
+default), so only the new part is processed.
 
-- First turn: `hallo` → ~1 min perceived latency (20 k-token prefill on a
-  35 B model at PP512 ≈ 900 tok/s ⇒ ~22 s prefill, then decode).
-- Multi-turn chats degrade further as history grows.
+### `--cache-reuse N`
 
-### `--cache-reuse N` — the single biggest win
-
-llama.cpp can reuse KV-cache across turns via KV-shifting when the new prompt
-shares a prefix with a previous one of at least `N` tokens. Add it to your
-server invocation:
+When the prompt changes in the middle (for example after Claude Code compacts the history), `--cache-reuse N` also
+reuses matching chunks of at least `N` tokens after the change by shifting their KV entries:
 
 ```bash
 ./build/bin/llama-server -m model.gguf \
@@ -135,13 +132,8 @@ server invocation:
     --cache-reuse 256
 ```
 
-**Effect:** on the second turn of a Claude Code session, only the delta
-(new user message + assistant response so far) is prefilled. A 20 k-token
-system prompt is reused from the KV cache for free. Typical second-turn
-latency drops from ~60 s to ~5–10 s on a 35 B model.
-
-Requires prompt caching to be enabled (default in recent llama-tq builds).
-`256` is a reasonable floor — smaller chunks aren't worth the shift cost.
+`256` is a reasonable floor; smaller chunks are not worth the shift. We have not measured how much it saves in a Claude
+Code session.
 
 ### `--parallel N` and Claude Code
 
@@ -169,13 +161,12 @@ at least the first 8k of it, keeping tool specs and safety instructions alive.
 
 ### Prompt-caching (Anthropic `cache_control`)
 
-The `/v1/messages` endpoint returns the full Anthropic-spec `usage` object,
-including `cache_read_input_tokens`, `cache_creation_input_tokens`, and the
-`cache_creation.ephemeral_5m/1h_input_tokens` breakdown. Today only the
-read-path is populated (from llama.cpp's existing `--cache-reuse` KV-shift
-mechanism); the creation-path counters are present but zeroed pending the
-full `cache_control` implementation. Anthropic-strict clients won't error on
-missing fields.
+With `--slot-save-path DIR` set, `/v1/messages` honours `cache_control` breakpoints: after a non-streaming request the
+slot state is saved to disk under a key for the prefix up to the last breakpoint (TTL from the breakpoint, 5 min by
+default, `--anthropic-cache-ttl-default`, disk quota `--anthropic-cache-max-gb`), and a later request with the same
+prefix restores it before prefill. `usage` reports `cache_creation_input_tokens` and `cache_read_input_tokens`
+accordingly. Limits: only slot 0, and streaming requests are not saved yet (they still read a saved entry and the normal
+prefix reuse). `--anthropic-cache off` disables it.
 
 ---
 
@@ -189,9 +180,9 @@ or place the binary at `~/.claude/local/claude`.
 isn't bound where you think, or the SSH tunnel died. Test with
 `curl $SERVER_URL/health`.
 
-**Claude Code hangs on first request** — the model isn't loaded yet
-(llama-tq lazy-loads weights on the first `/v1/messages` call with some
-builds). Send one request to warm it, then retry.
+**Claude Code seems to hang on the first request** — the first turn processes the whole system prompt and tool list
+(see above); watch the server log for the prompt progress. If the server was just started, wait until `/health`
+returns `{"status":"ok"}`.
 
 **Tool-use / function-calling edge cases** — llama-tq's `/v1/messages`
 maps to the same OpenAI-compatible chat pipeline as `/v1/chat/completions`.

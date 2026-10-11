@@ -17,15 +17,9 @@ effect on perplexity has not been measured.
 
 ## When to Calibrate
 
-Calibration is **per model family**, not per individual model. A codebook fit
-on Qwen3.6-A3B will work on every Qwen3.6-A3B variant (different sizes, finetunes,
-quantizations) since the post-RHT statistics are dominated by architecture, not
-weights.
-
-Recommended cadence:
-- Once per *new* base architecture (e.g. Qwen3.6, Llama4, Mistral4).
-- After major attention-mechanism changes (e.g. switching from MHA to MLA).
-- **Not** required per finetune or per quantization level.
+Not measured yet. The assumption behind the script is that the post-RHT statistics depend mostly on the architecture, so
+one codebook per model family would do (not one per finetune or quantization level). Check any calibrated codebook by
+perplexity or KL divergence before using it.
 
 ## Quick Start
 
@@ -98,12 +92,10 @@ The script prints a comparison table:
 
 * `MSE_old`  -- shipped codebook MSE on the calibration samples
 * `MSE_new`  -- calibrated codebook MSE on the same samples
-* `reduction` -- expect 0% on perfectly-Beta(15.5,15.5) data; 5-25% on real K-tensor samples
+* `reduction` -- 0% on data that follows Beta(15.5, 15.5) exactly
 
-A reduction below ~5% means the empirical distribution is already very close
-to Beta(15.5, 15.5); the override will be indistinguishable from baseline and
-should not be deployed. PPL evaluation (`llama-perplexity wikitext-2-raw`)
-remains the source of truth for whether to keep an override.
+A small reduction means the samples are already close to Beta(15.5, 15.5). Perplexity or KL divergence decides whether a
+calibrated codebook is worth keeping.
 
 ## Limitations
 
@@ -118,14 +110,11 @@ remains the source of truth for whether to keep an override.
    For better tail fidelity, switch to direct Lloyd-Max on the samples
    (already done by `--mode samples`) and skip the analytical fit.
 
-3. **Single global codebook.** Per-layer-class codebooks (early/mid/late) would
-   shave another 1-2% MSE but require either runtime indirection
-   (`codebook[layer_class][idx]`) or compile-time specialization. Out of
-   scope for this script.
+3. **Single global codebook.** Per-layer-class codebooks (early/mid/late) are not tried; they would need either runtime
+   indirection (`codebook[layer_class][idx]`) or compile-time specialization.
 
-4. **No KV-cache live path yet.** Option B in the original task (a `'M'` tag
-   in the former router profiler for K-tensor mean post-FWHT) is *not*
-   implemented. `--mode samples` requires offline extraction of the samples.
+4. **No sample extraction.** `--mode samples` needs post-RHT samples extracted offline; the repository has no tool for
+   that.
 
 ## See Also
 

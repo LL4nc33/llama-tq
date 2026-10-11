@@ -20,7 +20,7 @@ Qwen3-4B-Instruct-2507 Q4_K_M, `llama-bench -fa 1 -n 128`, empty context:
 ¹ measured 2026-10-09, before the K/V rotations ran as the fast Walsh-Hadamard transform (RTX 5090 then: 272 t/s).
 The encoder scale search of 2026-10-11 costs 1–2 % of the TurboQuant numbers in this table.
 
-RTX 2060, decode at empty / 16k context (`llama-bench -n 64`, 2026-10-11):
+Same model on the RTX 2060, decode at empty / 16k context (`llama-bench -n 64`, 2026-10-11):
 
 | KV cache | empty | 16k |
 |---|---:|---:|
