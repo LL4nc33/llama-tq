@@ -25,7 +25,8 @@
   pieces of upstream #21892 and #22654). The full chat test suite passes again.
 - Release archives: the binaries find their libraries from any directory, the CUDA archives no longer need NCCL,
   `llama-finetune` is in every archive, and each archive is checked before upload (scripts/check-release-archive.sh).
-  Releases and Docker images are built only on demand. `--version`, the server log and `/props` report the release
+  Releases and Docker images are built only on demand. The Blackwell archive builds with CUDA 12.9: the CUDA 12.8 linker
+  fails the sm_120 device link ("Internal FNLZR error"); the 12.9 build was checked on an RTX 5060 Ti. `--version`, the server log and `/props` report the release
   version; the web interface is named llama-tq and has an About page with version, source links and license.
 - The Claude Code launcher is now `scripts/llama-tq-launch-claude.sh` (environment variables `LLAMA_TQ_SERVER_URL`,
   `LLAMA_TQ_MODEL`; before: `onllama-launch-claude.sh`, `ONLLAMA_*`).
@@ -57,7 +58,7 @@
 - Fixed: the last answer is now trained after the prompt exactly as the server renders it (Gemma 4 with reasoning off adds
   an empty thought channel only in the generation prompt; the answers were trained without it and the model partly kept
   its own output format); MoE training on a single GPU aborted under CUDA graph capture (`MUL_MAT_ID_GRAD_B`).
-- CUDA releases: the release workflow builds one archive per GPU generation with native code (Turing + PTX, Ampere sm_80/86, Ada, Blackwell + PTX)
+- CUDA releases: the release workflow builds one archive per GPU generation with native code (Turing + PTX, Ampere sm_80/86, Ada, Blackwell)
   instead of a single Turing build that newer GPUs had to JIT-compile; first published with the next release.
 - [examples/training/termine](examples/training/termine/README.md): the evaluation task as a reproducible package
   (generator with checksums, prompts and conventions, training input as rendered, evaluation script, PyTorch reference).
