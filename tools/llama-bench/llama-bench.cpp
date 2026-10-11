@@ -1298,11 +1298,12 @@ struct cmd_params_instance {
         cparams.op_offload      = !no_op_offload;
         cparams.swa_full        = false;
 
-        if (const char * e = getenv("LLAMA_ARG_TQ_DEFERRED_V")) {
-            cparams.tq_deferred_v = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+        // deferred staging is on by default for KTQ K and trellis V; these turn it off (as --no-tq-deferred-k/-v)
+        if (const char * e = getenv("LLAMA_ARG_NO_TQ_DEFERRED_K")) {
+            cparams.tq_no_deferred_k = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
         }
-        if (const char * e = getenv("LLAMA_ARG_TQ_DEFERRED_K")) {
-            cparams.tq_deferred_k = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
+        if (const char * e = getenv("LLAMA_ARG_NO_TQ_DEFERRED_V")) {
+            cparams.tq_no_deferred_v = (e[0] == '1' || e[0] == 't' || e[0] == 'T');
         }
         if (const char * e = getenv("LLAMA_ARG_TQ_PROTECT_SINKS")) {
             cparams.tq_protect_sinks = (uint32_t) std::max(0, atoi(e));

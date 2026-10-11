@@ -299,8 +299,8 @@ Same v2 backbone plus 4 fp16 outliers per block (largest absolute V values). Not
 During prefill the K (and VTQ v2/v3 V) cache is staged in f16 and converted in bulk at the prefill→decode boundary; this
 is automatic for any KTQ K type and any VTQ v2/v3 V type. It was introduced in April 2026 against repetition loops with
 K quantized per token in prefill (observed before the KTQ sign fix of 2026-10-04). `--no-tq-deferred-k` /
-`--no-tq-deferred-v` turn it off, which saves the staging memory at full context and is how the accuracy numbers above
-are measured. The conversion runs once at the first decode step ([its cost](benchmarks/README.md)).
+`--no-tq-deferred-v` turn it off (in `llama-bench`: `LLAMA_ARG_NO_TQ_DEFERRED_K=1`, `LLAMA_ARG_NO_TQ_DEFERRED_V=1`), which
+saves the staging memory at full context and is how the accuracy numbers above are measured. The conversion runs once at the first decode step ([its cost](benchmarks/README.md)).
 
 ### Boundary-layer protection
 
