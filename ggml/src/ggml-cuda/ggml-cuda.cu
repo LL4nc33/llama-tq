@@ -5477,7 +5477,8 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
 #ifdef GGML_USE_MUSA
             return false;
 #else
-            return true;
+            // the kernel is instantiated for these head sizes only (launch_gated_delta_net)
+            return op->src[2]->ne[0] == 16 || op->src[2]->ne[0] == 32 || op->src[2]->ne[0] == 64 || op->src[2]->ne[0] == 128;
 #endif // GGML_USE_MUSA
         case GGML_OP_FLASH_ATTN_EXT:
             return ggml_cuda_flash_attn_ext_supported(dev_ctx->device, op);
