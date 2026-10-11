@@ -54,9 +54,13 @@ merged continuously, so the fork can lag behind the newest upstream. The fork ad
 - **Fine-tuning on quantized models:** LoRA on k-quant, IQ, MXFP4 and ternary GGUFs without dequantized weights, MoE
   experts, models larger than VRAM, flash attention backward on CPU and CUDA
 - **Tensor split without P2P:** `-sm tensor` across GPUs that have no peer access or NCCL
-- **Ternary weights:** `PQ2_0` and `PTQ1_0` with Hadamard-rotated activations
-- **More architectures:** Kolibri-1, K2-Horizon, Qwen3.8 and Qwen3.8-Flash-Next, Ternary-Bonsai-2
-- **Speculative decoding:** MTP with n-gram drafts, DFlash/DFlash2 block diffusion, with vision
+- **Ternary weights:** `PQ2_0` and `PTQ1_0` with Hadamard-rotated activations (upstream's own ternary types `Q2_0` /
+  `TQ1_0` use other formats; the GGUF files are not interchangeable)
+- **Kolibri-1** (Aleph Alpha, 78B MoE), which upstream does not support
+
+K2-Horizon, Qwen3.8 / Qwen3.8-Flash-Next and the DFlash, DFlash2, Eagle3 and MTP drafters, which this fork added
+earlier, are now also in upstream llama.cpp; [models.md](docs/models.md) and [speculative.md](docs/speculative.md) keep
+the setups we use.
 
 Measurements: speed per GPU in [docs/benchmarks](docs/benchmarks/README.md), KV accuracy in
 [docs/turboquant.md](docs/turboquant.md#accuracy), fine-tuning in [docs/finetune.md](docs/finetune.md#results).

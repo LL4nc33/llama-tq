@@ -1,7 +1,8 @@
 # Models and tested setups
 
-Architectures and weight types that this fork adds or runs differently from upstream llama.cpp, with the command we
-use on 2× RTX 2060 12 GB (Turing, no P2P) and what that command reaches. Comparisons across GPUs and KV types are on the
+Models we run on this fork, with the command we use on 2× RTX 2060 12 GB (Turing, no P2P) and what that command
+reaches. Kolibri-1 and the `PQ2_0` / `PTQ1_0` ternary files load only here; K2-Horizon and Qwen3.8 / Qwen3.8-Flash-Next
+are now also supported by upstream llama.cpp. Comparisons across GPUs and KV types are on the
 [benchmarks page](benchmarks/README.md); which KV type to pick: [turboquant.md](turboquant.md#recommendation).
 
 All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md). The speed and

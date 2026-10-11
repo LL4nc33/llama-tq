@@ -10,9 +10,9 @@ the history in the [changelog](CHANGELOG.md).
 | **TurboQuant KV cache** | `ktq*` (K) and `vtq*` (V) cache types; GQA and tensor-core decode kernels for them and for `q8_0` / `q5_0` / `q4_0`. CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
 | **Fine-tuning on quantized models** | LoRA directly on quantized GGUFs: attention, MoE experts, Gated DeltaNet and hyper-connection layers, flash attention backward, gradient checkpointing, models larger than VRAM. | [finetune.md](docs/finetune.md) |
 | **Tensor split without P2P** | `-sm tensor` across GPUs without peer access or NCCL, partial sums reduced through pinned host memory. | [tensor-split.md](docs/tensor-split.md) |
-| **Speculative decoding** | MTP with n-gram drafts, DFlash / DFlash2 block diffusion, with vision. | [speculative.md](docs/speculative.md) |
+| **Speculative decoding** | MTP with n-gram drafts, DFlash / DFlash2 block diffusion, with vision (the drafters are now also in upstream). | [speculative.md](docs/speculative.md) |
 | **Ternary weights** | `PQ2_0` / `PTQ1_0` group-128 ternary types with Hadamard-rotated activations, CUDA mat-vec / MMQ kernels. | [models.md](docs/models.md) |
-| **More architectures** | Kolibri-1, K2-Horizon-MoVA-36B-A4B, Qwen3.8 and Qwen3.8-Flash-Next (sparse flash attention for the indexer), Ternary-Bonsai-2; faster Gated DeltaNet layers. | [models.md](docs/models.md) |
+| **More architectures** | Kolibri-1 (not in upstream); K2-Horizon-MoVA-36B-A4B, Qwen3.8 and Qwen3.8-Flash-Next, Ternary-Bonsai-2 (the first three are now also in upstream). | [models.md](docs/models.md) |
 | **Vulkan backend** | Upstream `ggml-vulkan` with Turing tunings; TurboQuant types are CUDA-only. | [vulkan.md](docs/vulkan.md) |
 
 ## In flight
