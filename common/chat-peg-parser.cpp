@@ -338,7 +338,16 @@ void common_chat_peg_mapper::map(const common_peg_ast_node & node) {
     }
 
     if ((is_arg_value || is_arg_string_value) && current_tool) {
-        std::string value_content = std::string(trim_trailing_space(trim_leading_space(node.text, 1), 1));
+        // Strip at most one line break on each side: templates put the value on its own line
+        // ("<parameter=x>\n...\n</parameter>"). Other whitespace, e.g. indentation, is content.
+        std::string_view value_view = node.text;
+        if (!value_view.empty() && value_view.front() == '\n') {
+            value_view.remove_prefix(1);
+        }
+        if (!value_view.empty() && value_view.back() == '\n') {
+            value_view.remove_suffix(1);
+        }
+        std::string value_content = std::string(value_view);
 
         std::string value_to_add;
         if (value_content.empty() && is_arg_string_value) {
@@ -814,6 +823,32 @@ common_peg_parser common_chat_peg_builder::prefix(const std::string & s, const s
         return literal(s);
     }
     return literal(s.substr(0, s.rfind(delimiter)));
+}
+
+common_peg_parser common_chat_peg_builder::optspace(const std::string & tag) {
+    auto parser = eps();
+    size_t end_of_prefix_space = tag.size();
+    size_t start_of_suffix_space = tag.size();
+    for (size_t i = 0; i < tag.size(); i++) {
+        if (!std::isspace(tag[i])) {
+            end_of_prefix_space = i;
+            break;
+        }
+    }
+    for (size_t i = tag.size(); i > 0; i--) {
+        if (!std::isspace(tag[i - 1])) {
+            start_of_suffix_space = i;
+            break;
+        }
+    }
+    for (size_t i = 0; i < end_of_prefix_space; i++) {
+        parser += optional(literal(std::string(1, tag[i])));
+    }
+    parser += literal(tag.substr(end_of_prefix_space, start_of_suffix_space - end_of_prefix_space));
+    for (size_t i = start_of_suffix_space; i < tag.size(); i++) {
+        parser += optional(literal(std::string(1, tag[i])));
+    }
+    return parser;
 }
 
 common_peg_parser common_chat_peg_builder::standard_json_tools(

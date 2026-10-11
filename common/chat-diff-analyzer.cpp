@@ -108,6 +108,31 @@ static std::vector<std::function<void(const common_chat_template & tmpl, autopar
               analysis.tools.function.close        = "```";
               LOG_DBG(ANSI_ORANGE "[Patch: DeepSeek-R1-Distill-Qwen]\n" ANSI_RESET);
           }
+      },
+      // Nemotron Nano v2
+      [](const common_chat_template & tmpl, autoparser & analysis) -> void {
+          if (tmpl.src.find("<SPECIAL_10>") != std::string::npos && tmpl.src.find("<SPECIAL_11>") != std::string::npos &&
+              tmpl.src.find("<SPECIAL_12>") != std::string::npos && tmpl.src.find("<TOOL_RESPONSE>") != std::string::npos) {
+
+              analysis.tools.format.mode           = tool_format::JSON_NATIVE;
+              analysis.tools.format.section_start  = "";
+              analysis.tools.format.section_end    = "";
+              analysis.tools.format.per_call_start = "<TOOLCALL>";
+              analysis.tools.format.per_call_end   = "</TOOLCALL>";
+              analysis.tools.format.tools_array_wrapped = true;
+              analysis.content.mode                = content_mode::PLAIN;
+              analysis.content.start               = "";
+              analysis.content.end                 = "";
+              analysis.reasoning.mode              = reasoning_mode::TAG_BASED;
+              analysis.reasoning.start             = "<think>\n";
+              analysis.reasoning.end               = "</think>";
+              analysis.preserved_tokens.clear();
+              analysis.preserved_tokens.push_back("<SPECIAL_11>");
+              analysis.preserved_tokens.push_back("</think>");
+              analysis.preserved_tokens.push_back("<TOOLCALL>");
+              analysis.preserved_tokens.push_back("</TOOLCALL>");
+              LOG_DBG(ANSI_ORANGE "[Patch: Nemotron Nano v2]\n" ANSI_RESET);
+          }
       }
     });
 
