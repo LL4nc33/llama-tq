@@ -754,6 +754,32 @@ namespace ggml_cuda_mma {
 #endif // defined(AMD_MFMA_AVAILABLE)
     }
 
+    // XOR swizzle of an offset in a shared memory tile with row stride `stride` (in elements of T) for row i:
+    // the 16-byte chunk index within a row is XORed with bits of the row index so that ldmatrix reads of
+    // consecutive rows hit different banks without padding the rows.
+    template <int stride, typename T>
+    static __device__ __forceinline__ uint32_t swizzle(const uint32_t offset, const uint32_t i) {
+        static_assert(sizeof(T) <= 4, "unsupported type size");
+        constexpr int stride_bytes = stride*sizeof(T);
+        static_assert(stride_bytes % 16 == 0, "bad stride");
+        constexpr uint32_t shift = sizeof(T) == 1 ? 4 : (sizeof(T) == 2 ? 3 : 2);
+        if (stride_bytes % 32 != 0) {
+            return offset; // Equivalent to padding with 16 bytes.
+        }
+        if (stride_bytes % 64 != 0) {
+            return offset ^ (((i / 4) % 2) << shift);
+        }
+        if (stride_bytes % 128 != 0) {
+            return offset ^ (((i / 2) % 4) << shift);
+        }
+        return offset ^ ((i % 8) << shift);
+    }
+
+    template <int stride, typename T>
+    static __device__ __forceinline__ T * swizzle(T * ptr, const uint32_t offset, const uint32_t i) {
+        return ptr + swizzle<stride, T>(offset, i);
+    }
+
     template <typename T>
     static __device__ __forceinline__ void load_ldmatrix(
             tile<8, 8, T> & t, const T * __restrict__ xs0, const int stride) {
@@ -848,6 +874,42 @@ namespace ggml_cuda_mma {
         GGML_UNUSED_VARS(t, xs0, stride);
         NO_DEVICE_CODE;
 #endif // TURING_MMA_AVAILABLE
+    }
+
+    // ldmatrix loads from a tile written with swizzle<stride>(); offset is the unswizzled element offset of the
+    // tile's first row and column. Only used where Turing mma is available.
+    template <int stride, typename T, data_layout dl>
+    static __device__ __forceinline__ void load_ldmatrix_swizzled(
+            tile<16, 8, T, dl> & t, const T * __restrict__ xs0, const int offset) {
+#if defined(TURING_MMA_AVAILABLE)
+        const int i = threadIdx.x % t.I;
+        const int j = (threadIdx.x / t.I) * (t.J / 2);
+        const int offset_ij = swizzle<stride, T>(offset + i*stride + j, i);
+        int * xi = (int *) t.x;
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0, %1, %2, %3}, [%4];"
+            : "=r"(xi[0]), "=r"(xi[1]), "=r"(xi[2]), "=r"(xi[3])
+            : "l"(xs0 + offset_ij));
+#else
+        GGML_UNUSED_VARS(t, xs0, offset);
+        NO_DEVICE_CODE;
+#endif // defined(TURING_MMA_AVAILABLE)
+    }
+
+    template <int stride, typename T>
+    static __device__ __forceinline__ void load_ldmatrix_trans_swizzled(
+            tile<16, 8, T> & t, const T * __restrict__ xs0, const int offset) {
+#if defined(TURING_MMA_AVAILABLE)
+        const int i = threadIdx.x % t.I;
+        const int j = (threadIdx.x / t.I) * (t.J / 2);
+        const int offset_ij = swizzle<stride, T>(offset + i*stride + j, i);
+        int * xi = (int *) t.x;
+        asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.b16 {%0, %1, %2, %3}, [%4];"
+            : "=r"(xi[0]), "=r"(xi[2]), "=r"(xi[1]), "=r"(xi[3])
+            : "l"(xs0 + offset_ij));
+#else
+        GGML_UNUSED_VARS(t, xs0, offset);
+        NO_DEVICE_CODE;
+#endif // defined(TURING_MMA_AVAILABLE)
     }
 
     static __device__ __forceinline__ void mma(
