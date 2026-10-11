@@ -43,38 +43,12 @@ if (MUSAToolkit_FOUND)
         add_compile_definitions(GGML_MUSA_MUDNN_COPY)
     endif()
 
+    # fattn-vec instances, see ../ggml-cuda/fattn-vec-instances.cmake
+    include(${CMAKE_CURRENT_SOURCE_DIR}/../ggml-cuda/fattn-vec-instances.cmake)
+    ggml_cuda_fattn_vec_instances(SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../ggml-cuda/template-instances)
+    list(APPEND GGML_SOURCES_MUSA ${SRCS})
     if (GGML_CUDA_FA_ALL_QUANTS)
-        file(GLOB   SRCS "../ggml-cuda/template-instances/fattn-vec*.cu")
-        list(APPEND GGML_SOURCES_MUSA ${SRCS})
         add_compile_definitions(GGML_CUDA_FA_ALL_QUANTS)
-    else()
-        # Mirror the CUDA CMakeLists.txt list — see comment in ggml-cuda/CMakeLists.txt.
-        list(APPEND GGML_SOURCES_MUSA
-            ../ggml-cuda/template-instances/fattn-vec-instance-f16-f16.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-q4_0.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-bf16-bf16.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq1_1-ktq1_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq2_1-ktq2_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq3_1-ktq3_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq4_1-ktq4_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq1_1-f16.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq2_1-f16.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq3_1-f16.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-ktq4_1-f16.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-f16-ktq1_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-f16-ktq2_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-f16-ktq3_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-f16-ktq4_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-ktq1_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-ktq2_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-ktq3_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-ktq4_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-ktq1_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-ktq2_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-ktq3_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-ktq4_1.cu
-            ../ggml-cuda/template-instances/fattn-vec-instance-f16-vtq3_2.cu)
     endif()
 
     set_source_files_properties(${GGML_SOURCES_MUSA} PROPERTIES LANGUAGE CXX)

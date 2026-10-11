@@ -1,10 +1,14 @@
 // Shared dispatch helpers for ggml_cuda_flash_attn_ext_vec.
 //
-// fattn.cu was split into multiple TUs so nvcc's cicc can compile the
-// (very large) template instantiation graph in parallel. The actual
-// matching logic is identical to the original monolithic switch — we
-// just partition the FATTN_VEC_CASE expansions across .cu files along
-// K/V type-family boundaries.
+// fattn.cu was split into multiple TUs along K/V type-family boundaries.
+// The actual matching logic is identical to the original monolithic
+// switch. The dispatch TUs do not instantiate any kernel: every
+// ggml_cuda_flash_attn_ext_vec_case<D, type_K, type_V> they reference is
+// declared extern in fattn-vec.cuh and compiled in its own generated
+// template-instances/fattn-vec-instance-*.cu, so the instances build in
+// parallel. A combo added here needs its instance file compiled:
+// regenerate with template-instances/generate_cu_files.py, then run
+// scripts/check-cuda-instances.py --write.
 //
 // Each try_dispatch_vec_* helper walks the same FATTN_VEC_CASE list,
 // but returns `true` as soon as a case matches (instead of `return;`)

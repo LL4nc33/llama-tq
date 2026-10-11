@@ -111,37 +111,13 @@ if (CUDAToolkit_FOUND)
     file(GLOB   SRCS "template-instances/mmf*.cu")
     list(APPEND GGML_SOURCES_CUDA ${SRCS})
 
+    # fattn-vec instances: the default build compiles the ones the dispatch references without
+    # GGML_CUDA_FA_ALL_QUANTS, see fattn-vec-instances.cmake
+    include(${CMAKE_CURRENT_SOURCE_DIR}/fattn-vec-instances.cmake)
+    ggml_cuda_fattn_vec_instances(SRCS ${CMAKE_CURRENT_SOURCE_DIR}/template-instances)
+    list(APPEND GGML_SOURCES_CUDA ${SRCS})
     if (GGML_CUDA_FA_ALL_QUANTS)
-        file(GLOB   SRCS "template-instances/fattn-vec*.cu")
-        list(APPEND GGML_SOURCES_CUDA ${SRCS})
         add_compile_definitions(GGML_CUDA_FA_ALL_QUANTS)
-    else()
-        list(APPEND GGML_SOURCES_CUDA
-            template-instances/fattn-vec-instance-f16-f16.cu
-            template-instances/fattn-vec-instance-q4_0-q4_0.cu
-            template-instances/fattn-vec-instance-q8_0-q8_0.cu
-            template-instances/fattn-vec-instance-bf16-bf16.cu
-            template-instances/fattn-vec-instance-ktq1_1-ktq1_1.cu
-            template-instances/fattn-vec-instance-ktq2_1-ktq2_1.cu
-            template-instances/fattn-vec-instance-ktq3_1-ktq3_1.cu
-            template-instances/fattn-vec-instance-ktq4_1-ktq4_1.cu
-            template-instances/fattn-vec-instance-ktq1_1-f16.cu
-            template-instances/fattn-vec-instance-ktq2_1-f16.cu
-            template-instances/fattn-vec-instance-ktq3_1-f16.cu
-            template-instances/fattn-vec-instance-ktq4_1-f16.cu
-            template-instances/fattn-vec-instance-f16-ktq1_1.cu
-            template-instances/fattn-vec-instance-f16-ktq2_1.cu
-            template-instances/fattn-vec-instance-f16-ktq3_1.cu
-            template-instances/fattn-vec-instance-f16-ktq4_1.cu
-            template-instances/fattn-vec-instance-q4_0-ktq1_1.cu
-            template-instances/fattn-vec-instance-q4_0-ktq2_1.cu
-            template-instances/fattn-vec-instance-q4_0-ktq3_1.cu
-            template-instances/fattn-vec-instance-q4_0-ktq4_1.cu
-            template-instances/fattn-vec-instance-q8_0-ktq1_1.cu
-            template-instances/fattn-vec-instance-q8_0-ktq2_1.cu
-            template-instances/fattn-vec-instance-q8_0-ktq3_1.cu
-            template-instances/fattn-vec-instance-q8_0-ktq4_1.cu
-            template-instances/fattn-vec-instance-f16-vtq3_2.cu)
     endif()
 
     ggml_add_backend_library(ggml-cuda
@@ -155,22 +131,6 @@ if (CUDAToolkit_FOUND)
     # (warning 20044-D) and each TU gets an uninitialized copy.
     set_target_properties(ggml-cuda PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     set_target_properties(ggml-cuda PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-
-    # Monster TUs (fattn-vec header expansion) peak at 6-10 GB RAM during
-    # cicc template instantiation. The old monolithic fattn.cu was split
-    # into 3 fattn-vec-dispatch-*.cu TUs (f16 / ktq / vtq) + the thin
-    # top-level fattn.cu dispatcher, so cicc can instantiate them in
-    # parallel (~4x wall-clock speedup). To avoid blowing past 32 GB RAM
-    # on -jN builds, at most 2 of the heavy TUs run concurrently; other
-    # small TUs compile unbothered.
-    set_property(GLOBAL APPEND PROPERTY JOB_POOLS heavy_compile=2)
-    set_source_files_properties(
-        fattn-vec-dispatch-f16.cu
-        fattn-vec-dispatch-ktq.cu
-        fattn-vec-dispatch-vtq1.cu
-        fattn-vec-dispatch-vtq2.cu
-        fattn-vec-dispatch-vtq3.cu
-        PROPERTIES JOB_POOL_COMPILE heavy_compile)
 
     add_compile_definitions(GGML_CUDA_PEER_MAX_BATCH_SIZE=${GGML_CUDA_PEER_MAX_BATCH_SIZE})
 

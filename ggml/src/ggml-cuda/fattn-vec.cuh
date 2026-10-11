@@ -639,7 +639,13 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
     template GGML_FATTN_VEC_USED void ggml_cuda_flash_attn_ext_vec_case     \
     <D, type_K, type_V>(ggml_backend_cuda_context & ctx, ggml_tensor * dst) \
 
-#define EXTERN_DECL_FATTN_VEC_CASES(D, type_K)             \
+// The instances live in template-instances/fattn-vec-instance-*.cu (generate_cu_files.py), one file per (K, V) pair
+// and a separate -d512 file for pairs with a TurboQuant side. Declaring them extern here keeps the dispatch TUs from
+// instantiating them again, so each pair compiles in its own TU, in parallel. Which files are compiled is decided in
+// fattn-vec-instances.cmake; scripts/check-cuda-instances.py checks that it matches what the dispatch references.
+
+// V types without TurboQuant
+#define EXTERN_DECL_FATTN_VEC_CASES_V_KV(D, type_K)        \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_F16);  \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_Q4_0); \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_Q4_1); \
@@ -647,10 +653,28 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_Q5_1); \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_Q8_0); \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_BF16); \
-    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ1_1); \
-    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ2_1); \
-    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ3_1); \
-    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ4_1); \
+
+// TurboQuant V types (KTQ can be K or V, VTQ is V only)
+#define EXTERN_DECL_FATTN_VEC_CASES_V_TQ(D, type_K)           \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ1_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ2_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ3_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_KTQ4_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ1_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_2);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_2);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_2);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_3);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_3);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_3);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_V8); \
+
+#define EXTERN_DECL_FATTN_VEC_CASES(D, type_K)  \
+    EXTERN_DECL_FATTN_VEC_CASES_V_KV(D, type_K) \
+    EXTERN_DECL_FATTN_VEC_CASES_V_TQ(D, type_K)
 
 EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_F16)
 EXTERN_DECL_FATTN_VEC_CASES( 64, GGML_TYPE_Q4_0)
@@ -687,3 +711,16 @@ EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_KTQ1_1)
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_KTQ2_1)
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_KTQ3_1)
 EXTERN_DECL_FATTN_VEC_CASES(256, GGML_TYPE_KTQ4_1)
+
+// head size 512 only exists for pairs with a TurboQuant side (Gemma 4 global attention)
+EXTERN_DECL_FATTN_VEC_CASES_V_TQ(512, GGML_TYPE_F16)
+EXTERN_DECL_FATTN_VEC_CASES_V_TQ(512, GGML_TYPE_Q4_0)
+EXTERN_DECL_FATTN_VEC_CASES_V_TQ(512, GGML_TYPE_Q4_1)
+EXTERN_DECL_FATTN_VEC_CASES_V_TQ(512, GGML_TYPE_Q5_0)
+EXTERN_DECL_FATTN_VEC_CASES_V_TQ(512, GGML_TYPE_Q5_1)
+EXTERN_DECL_FATTN_VEC_CASES_V_TQ(512, GGML_TYPE_Q8_0)
+EXTERN_DECL_FATTN_VEC_CASES_V_TQ(512, GGML_TYPE_BF16)
+EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ1_1)
+EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ2_1)
+EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ3_1)
+EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ4_1)
