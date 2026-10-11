@@ -1,7 +1,8 @@
 # Benchmarks
 
-Current measurements (2026-10-10). Older logs and snapshots are in [history/](history/); their numbers are not
-comparable with these (KV accuracy was measured differently, see below).
+All comparison tables in one place (2026-10-10/11); the README and the other pages link here instead of repeating the
+numbers. The result of each documented setup command is next to the command in [models.md](../models.md). Older logs
+are in [history/](history/); their numbers are not comparable with these.
 
 ## Decode speed, one GPU
 
@@ -17,8 +18,24 @@ Qwen3-4B-Instruct-2507 Q4_K_M, `llama-bench -fa 1 -n 128`, empty context:
 | RTX 2060 | 90 t/s | 84 t/s | 87 t/s |
 
 ¹ measured 2026-10-09, before the K/V rotations ran as the fast Walsh-Hadamard transform (RTX 5090 then: 272 t/s).
+The encoder scale search of 2026-10-11 costs 1–2 % of the TurboQuant numbers in this table.
 
-RTX 2060, empty / 16k context: f16 90 / 52, `q8_0` 84 / 52, `q4_0` 87 / 47, `ktq4_1`/`vtq4_1` 87 / 48 t/s.
+RTX 2060, decode at empty / 16k context (`llama-bench -n 64`, 2026-10-11):
+
+| KV cache | empty | 16k |
+|---|---:|---:|
+| `q8_0` / `q8_0` | 83 t/s | 52 t/s |
+| `q8_0` / `vtq4_1` | 82 t/s | 51 t/s |
+| `q8_0` / `vtq2_1` | 82 t/s | 53 t/s |
+| `ktq4_1` / `vtq4_1` | 86 t/s | 43 t/s ² |
+| f16 / f16 (2026-10-10) | 90 t/s | 52 t/s |
+| `q4_0` / `q4_0` (2026-10-10) | 87 t/s | 47 t/s |
+
+² includes the one-time conversion of the f16 prefill buffer to KTQ at the first decode step (about 0.1 s after a 16k
+prompt); over 256 generated tokens 47 t/s.
+
+gpt-oss-20b MXFP4 on one RTX 2060, decode at empty / 8k context: `q8_0`/`q8_0` 78 / 70, `q8_0`/`vtq4_1` 77 / 70,
+`ktq4_1`/`vtq4_1` 77 / 53 t/s (2026-10-11; `q8_0`/`vtq4_1` is the accurate compact setting for this model).
 
 ## KV cache accuracy
 
@@ -29,6 +46,8 @@ every 4-bit K type. Measured on wikitext-2 (Qwen3-4B) and on the models' own pro
 
 ## Models on 2× RTX 2060 12 GB
 
+Commands for these setups: [models.md](../models.md).
+
 | Model | KV cache | Max context | Decode, short | Decode, long |
 |---|---|---|---|---|
 | Qwen3.8-27B Q4_K_M (tensor split) | f16 | 72k | 24 t/s | |
@@ -36,8 +55,6 @@ every 4-bit K type. Measured on wikitext-2 (Qwen3-4B) and on the models' own pro
 | Ternary-Bonsai-2-27B PTQ1_0 (tensor split) | f16 | 200k | 40 t/s | 21.6 t/s at 171k |
 | Kolibri-1 78B MoE Q3_K_S | `ktq4_1` / `vtq4_1` | 128k | 35 t/s | |
 | gpt-oss-20b MXFP4 | `ktq4_1` / `vtq4_1` | 128k | 77 t/s | 40 t/s at 64k |
-
-More setups per model: [models.md](../models.md).
 
 ## Fine-tuning
 

@@ -161,8 +161,7 @@ flash attention off: the numerical noise floor of the model, below which no KV t
 - `q8_0` K with `vtq*_1` V uses the GQA and tensor-core decode kernels (since 2026-10-11): Qwen3-4B at 16k context
   50.7 t/s with `vtq4_1` (`q8_0`/`q8_0` 52), gpt-oss at 8k 70.4 t/s (RTX 2060).
 
-Decode speed on an RTX 2060 (Qwen3-4B Q4_K_M, 128 tokens, empty / 16k context): f16 90 / 52, `q8_0` 84 / 52, `q4_0`
-87 / 47, `ktq4_1`/`vtq4_1` 87 / 48 t/s (2026-10-10; the encoder scale search costs 1–2 % decode with `ktq4_1`/`vtq4_1`).
+Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the
 history below only.
@@ -218,7 +217,7 @@ Historical snapshot of TG, PPL and HellaSwag for several models: [`docs/benchmar
 ### KTQ — K-cache quantization
 
 ```
-float[32] -> normalize -> per-block sign flip -> FWHT -> Lloyd-Max codebook -> norm correction -> pack
+float[32] -> normalize -> per-block sign flip -> FWHT -> scale search over the Lloyd-Max codebook -> unbiased scale -> pack
                               |                                                    |
                         [store in sb[4]]                              [store corrected d]
 ```
@@ -226,8 +225,13 @@ float[32] -> normalize -> per-block sign flip -> FWHT -> Lloyd-Max codebook -> n
 1. **Normalize:** `x_hat = x / ||x||`.
 2. **Sign flip:** Deterministic ±1 signs from Philox 2×32, 6-round counter-based PRNG (Salmon et al. 2011). Since 2026-10-04 all blocks share the pattern of block 0: the rotation stays a random orthogonal map per block, and attention rotates Q once per query instead of once per K block.
 3. **FWHT:** 32-point Fast Walsh-Hadamard Transform, scaled by `1/√32` (orthonormal, self-inverse).
-4. **Lloyd-Max quantization:** Nearest-centroid scalar quantization. Codebooks are Lloyd-Max optimal for `Beta((d-1)/2, (d-1)/2) = Beta(15.5, 15.5)` at d=32 (the marginal of a unit vector coordinate after random rotation).
-5. **Norm correction:** Store `||x|| / ||reconstruction||` instead of raw `||x||`. Cancels the systematic Lloyd-Max underestimation bias. ~1.2% PPL improvement at zero dequant-time cost.
+4. **Scale search over the codebook:** the codebooks are Lloyd-Max optimal for `Beta((d-1)/2, (d-1)/2) = Beta(15.5, 15.5)`
+   at d=32 (the marginal of a unit vector coordinate after random rotation). The block is assigned to the nearest
+   centroids at 32 trial scales of the codebook (0.36x .. 1.60x); the assignment with the smallest angle to the block wins
+   (since 2026-10-11; before, one assignment at the nominal scale).
+5. **Unbiased scale:** store `||x|| / <x_hat, c>`, which keeps the component of the reconstruction along the input exact.
+   A least-squares scale would shrink every block, and the attention average over many tokens keeps that shrink. Before
+   2026-10-11 the scale kept the length of the block (`||x|| / ||c||`, "norm correction").
 6. **Sign bits:** Store the 32 precomputed signs in `sb[4]` (32 bits). Dequant reads bits, never re-runs Philox.
 
 ### KTQ dequant — Hadamard-domain dot product
@@ -269,7 +273,7 @@ The KV cache write (`SET_ROWS`) quantizes one 32-value block per warp (`GGML_CUD
 ### VTQ v1 — codebook lookup
 
 ```
-float[d_head] -> R · v (graph-level via self_v_rot) -> per-block: normalize -> codebook -> norm correction -> pack
+float[d_head] -> R · v (graph-level via self_v_rot) -> per-block: normalize -> scale search over the codebook -> unbiased scale -> pack
                                                                                            [no signs, no FWHT]
 ```
 
@@ -405,7 +409,7 @@ Kept for reference; current plans are in [ROADMAP.md](../ROADMAP.md).
 ## When *not* to use TurboQuant
 
 - VRAM is not a constraint — upstream f16 KV is simpler and equally fast.
-- Multi-node serving — not a goal of this fork (tensor split across local GPUs works, see [tp-tq-design.md](tp-tq-design.md)).
+- Multi-node serving — not a goal of this fork (tensor split across local GPUs works, see [tensor-split.md](tensor-split.md)).
 - Ampere+ (CC ≥ 8.0) — untested; sm_75-specific tuning is not necessarily a good default.
 
 ## Known Issues

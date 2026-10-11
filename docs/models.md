@@ -1,13 +1,11 @@
 # Models and tested setups
 
-KV cache accuracy across models (KL divergence vs f16, cache quantized in prefill): [docs/turboquant.md](turboquant.md#accuracy).
-The numbers below are per model; for dense models prefer `q8_0` when accuracy matters.
+Architectures and weight types that this fork adds or runs differently from upstream llama.cpp, with the command we
+use on 2× RTX 2060 12 GB (Turing, no P2P) and what that command reaches. Comparisons across GPUs and KV types are on the
+[benchmarks page](benchmarks/README.md), KV accuracy in [turboquant.md](turboquant.md#accuracy) (`q8_0` when accuracy
+matters, `q8_0` K with `vtq4_1` V when it should also be compact).
 
-Architectures and weight types that this fork adds or runs differently from upstream
-llama.cpp, with the settings we use on 2× RTX 2060 12 GB (Turing, no P2P).
-
-All commands assume a CUDA build and `-fa on`. TurboQuant KV types are described in
-[turboquant.md](turboquant.md), tensor split in [tp-tq-design.md](tp-tq-design.md).
+All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md).
 
 ## Ternary-Bonsai-2-27B (`PQ2_0`, `PTQ1_0`)
 
@@ -136,14 +134,23 @@ Decode barely drops with context (38 t/s at 10k). KV accuracy: perplexity +0.5 %
 
 ## gpt-oss-20b
 
-Head size 64 with attention sinks. Quantized KV goes through the tensor-core decode kernel:
+Head size 64 with attention sinks; quantized KV goes through the tensor-core decode kernel. gpt-oss needs 8-bit K:
+every 4-bit K type (`q4_0`, `ktq4_1`) costs it about 0.35 KL divergence, `q8_0` K with `vtq4_1` V 0.04
+([accuracy](turboquant.md#accuracy)). Accurate and compact (6.5 bpw):
+
+```bash
+llama-server -m gpt-oss-20b-MXFP4.gguf -ngl 99 -fa on -c 131072 -ctk q8_0 -ctv vtq4_1 --jinja
+```
+
+Decode on one RTX 2060: 77 t/s short, 70 t/s at 8k (`llama-bench`). The most context (5 bpw) with `ktq4_1`/`vtq4_1`:
 
 ```bash
 llama-server -m gpt-oss-20b-MXFP4.gguf -ngl 99 -fa on -c 131072 \
   -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
 ```
 
-Decode 77 t/s short, 57 t/s at 22k, 40 t/s at 64k. Prompt processing 1100-2300 t/s.
+Decode 77 t/s short, 57 t/s at 22k, 40 t/s at 64k (2× RTX 2060, before the encoder change of 2026-10-11, which costs
+1–2 %). Prompt processing 1100-2300 t/s.
 
 ## Gemma 4
 

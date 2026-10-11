@@ -1,81 +1,95 @@
 # llama-tq
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Upstream](https://img.shields.io/badge/upstream-llama.cpp-blue)](https://github.com/ggml-org/llama.cpp)
+<div align="center">
 
-A [llama.cpp](https://github.com/ggml-org/llama.cpp) fork for **long context, multi-GPU and fine-tuning on consumer
-GPUs**. Developed on 2× RTX 2060 12 GB (no P2P); tested on RTX 3060, 3090, 4060 Ti, 4090 and 5090.
+<b>llama.cpp for consumer NVIDIA GPUs: compact KV caches, fine-tuning on quantized models, multi-GPU without P2P</b>
 
-## Highlights
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/LL4nc33/llama-tq?color=brightgreen)](https://github.com/LL4nc33/llama-tq/releases)
+[![Upstream](https://img.shields.io/badge/upstream-llama.cpp-orange)](https://github.com/ggml-org/llama.cpp)
 
-- **TurboQuant KV cache** — `ktq*`/`vtq*` types with fast decode kernels, accuracy at or above `q4_0` at 5 bpw, 256k context
-  on 12 GB cards; measured accuracy per model → [docs/turboquant.md](docs/turboquant.md#accuracy)
-- **Fine-tuning on quantized GGUFs** — LoRA without dequantized weights, MoE experts, models larger than VRAM,
-  100 % on a held-out task for 13 models, faster than PyTorch QLoRA on an RTX 5090 → [docs/finetune.md](docs/finetune.md)
-- **Tensor split without P2P/NCCL** — `-sm tensor` on plain PCIe, +45 % decode on 2× RTX 2060
-- **Ternary weights** — `PQ2_0`, `PTQ1_0` with Hadamard-rotated activations
-- **Extra models** — Kolibri-1, K2-Horizon, Qwen3.8-Flash-Next, Ternary-Bonsai-2 → [docs/models.md](docs/models.md)
-- **Speculation** — MTP + n-gram, DFlash/DFlash2 block diffusion, with vision → [docs/speculative.md](docs/speculative.md)
+[benchmarks](docs/benchmarks/README.md) / [TurboQuant KV cache](docs/turboquant.md) / [fine-tuning](docs/finetune.md) /
+[models](docs/models.md) / [changelog](CHANGELOG.md) / [roadmap](ROADMAP.md)
 
-## Numbers
-
-Inference on 2× RTX 2060 12 GB:
-
-| Model | KV cache | Max context | Decode, short | Decode, long |
-|---|---|---|---|---|
-| Qwen3.8-27B Q4_K_M (tensor split) | f16 | 72k | 24 t/s | |
-| Qwen3.8-27B Q4_K_M (tensor split) | `ktq2_1` / `vtq2_1` | 256k | 24 t/s | 15.8 t/s at 118k |
-| Ternary-Bonsai-2-27B PTQ1_0 (tensor split) | f16 | 200k | 40 t/s | 21.6 t/s at 171k |
-| Kolibri-1 78B MoE Q3_K_S | `ktq4_1` / `vtq4_1` | 128k | 35 t/s | |
-| gpt-oss-20b MXFP4 | `ktq4_1` / `vtq4_1` | 128k | 77 t/s | 40 t/s at 64k |
-
-Inference on one GPU, Qwen3-4B Q4_K_M, 128 tokens:
-
-| GPU | f16 KV | `ktq2_1` / `vtq2_1` KV |
-|---|---|---|
-| RTX 5090 | 338 t/s | 293 t/s |
-| RTX 4090 | 252 t/s | 217 t/s ¹ |
-| RTX 3090 | 203 t/s | 176 t/s ¹ |
-| RTX 3060 | 103 t/s | 96 t/s ¹ |
-| RTX 4060 Ti | 95 t/s | 90 t/s ¹ |
-| RTX 2060 | 90 t/s | 87 t/s |
-
-¹ before the K/V rotations ran as the fast Walsh-Hadamard transform (2026-10-09).
-
-LoRA fine-tuning, Qwen3-4B Q4_K_M, 2 epochs, same data and settings, 100 % exact match in all runs:
-
-| GPU | llama-tq | PyTorch QLoRA |
-|---|---|---|
-| RTX 5090 | 54 s | 102 s |
-| RTX 2060 | 321 s | 260 s |
-
-More numbers: [docs/benchmarks](docs/benchmarks/README.md), setups per model: [docs/models.md](docs/models.md).
+</div>
 
 ## Quick start
 
-```bash
-# prebuilt: releases (Linux x64/arm64, CPU, Vulkan, CUDA 12.8) or Docker
-docker run -p 8080:8080 -v /path/to/models:/models ghcr.io/ll4nc33/llama-tq:server -m /models/model.gguf
+A few options to get `llama-tq`:
 
-# from source, CUDA (75 = Turing, 86 = Ampere, 89 = Ada, 120 = Blackwell)
-cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
-cmake --build build -j --target llama-server
+- Download a build for your GPU generation from the [releases page](https://github.com/LL4nc33/llama-tq/releases)
+  (Linux: CUDA per generation, CPU and Vulkan for x64 and arm64)
+- Run the CPU server image with Docker: `ghcr.io/ll4nc33/llama-tq:server` (see [Docker](docs/docker.md))
+- Build from source with CUDA, see the [build guide](docs/build.md):
+  `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
+  (75 Turing, 86 Ampere, 89 Ada, 120 Blackwell)
 
-# two GPUs without P2P, q8_0 KV (accurate); -ctv vtq4_1 for a smaller V, -ctk ktq4_1 -ctv vtq4_1 for the most context
-llama-server -m model.gguf -ngl 99 -fa on -sm tensor -c 65536 -ctk q8_0 -ctv q8_0
+Once installed:
+
+```sh
+# OpenAI-compatible server with an accurate 8-bit KV cache
+llama-server -m model.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0
+
+# more context on the same GPU: compact TurboQuant KV cache
+llama-server -m model.gguf -ngl 99 -fa on -ctk ktq4_1 -ctv vtq4_1
+
+# LoRA fine-tuning directly on the quantized GGUF
+llama-finetune -m model.gguf -f train.jsonl -o task.gguf --lora-train-rank 16 -ngl 99 -c 512
 ```
 
-TurboQuant KV types are CUDA-only; Vulkan and CPU builds use the upstream types.
+## Description
 
-## Docs
+`llama-tq` is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that aims to run large models with long
+context, and to fine-tune them, on consumer NVIDIA GPUs with 12 to 32 GB. It is developed on 2× RTX 2060 12 GB without
+P2P and tested on RTX 30, 40 and 50 cards. Everything upstream offers stays available; the fork adds:
 
-[CHANGELOG.md](CHANGELOG.md) · [ROADMAP.md](ROADMAP.md) · [turboquant](docs/turboquant.md) ·
-[finetune](docs/finetune.md) · [models](docs/models.md) · [speculative](docs/speculative.md) ·
-[upstream build docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md)
+- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types with fast decode kernels; `ktq4_1`/`vtq4_1` stores the
+  cache at 5 bits per value with accuracy at or above `q4_0`, `q8_0` K with `vtq4_1` V is close to `q8_0`
+- **Fine-tuning on quantized models:** LoRA on k-quant, IQ, MXFP4 and ternary GGUFs without dequantized weights, MoE
+  experts, models larger than VRAM, flash attention backward on CPU and CUDA
+- **Tensor split without P2P:** `-sm tensor` across GPUs that have no peer access or NCCL
+- **Ternary weights:** `PQ2_0` and `PTQ1_0` with Hadamard-rotated activations
+- **More architectures:** Kolibri-1, K2-Horizon, Qwen3.8 and Qwen3.8-Flash-Next, Ternary-Bonsai-2
+- **Speculative decoding:** MTP with n-gram drafts, DFlash/DFlash2 block diffusion, with vision
 
-Upstream fixes are cherry-picked; new kernels are checked against the CPU backend (`test-backend-ops`) and by
-perplexity.
+Measured speed and accuracy for every GPU and model: [docs/benchmarks](docs/benchmarks/README.md).
+
+## Supported GPUs
+
+| GPU generation | Release archive | Tested on |
+| --- | --- | --- |
+| Turing (RTX 20, T4) | `cuda-12.8-sm75` (also runs newer GPUs through PTX) | RTX 2060 |
+| Ampere (RTX 30, A100) | `cuda-12.8-sm86` | RTX 3060, RTX 3090 |
+| Ada (RTX 40, L4) | `cuda-12.8-sm89` | RTX 4060 Ti, RTX 4090 |
+| Blackwell (RTX 50, RTX PRO 6000) | `cuda-12.8-sm120` | RTX 5090, RTX PRO 6000 |
+| CPU, Vulkan, other backends | upstream backends | |
+
+The TurboQuant KV types need CUDA; the other backends use the upstream KV types.
+
+## Documentation
+
+#### This fork
+
+- [TurboQuant KV cache](docs/turboquant.md): types, accuracy, recommendation
+- [Fine-tuning](docs/finetune.md) and the [evaluation task](examples/training/termine/README.md)
+- [Models and setups](docs/models.md): commands per model
+- [Tensor split without P2P](docs/tensor-split.md)
+- [Speculative decoding](docs/speculative.md)
+- [Benchmarks](docs/benchmarks/README.md)
+- [Claude Code against a llama-tq server](docs/claude-code.md)
+- [Vulkan notes](docs/vulkan.md), [calibrating the KTQ codebooks](docs/calibrating-ktq.md)
+
+#### Upstream
+
+- [server](tools/server/README.md), [cli](tools/cli/README.md), [multimodal](docs/multimodal.md),
+  [function calling](docs/function-calling.md)
+- [build](docs/build.md), [Docker](docs/docker.md), [models](https://github.com/ggml-org/llama.cpp/blob/master/docs/models.md)
+
+## Contributing
+
+Issues and pull requests are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md). Upstream fixes are cherry-picked; new
+kernels are checked against the CPU backend (`test-backend-ops`) and by perplexity or KL divergence.
 
 ## License
 
-MIT — inherited from upstream llama.cpp.
+MIT, inherited from upstream llama.cpp.

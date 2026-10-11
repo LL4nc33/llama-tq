@@ -1,55 +1,47 @@
 # Roadmap
 
-What works, what's in flight, and what's planned. Each area has its own detailed
-doc — this file is the index. Feedback and PRs welcome.
+What works, what is in flight and what is planned. Measured numbers are on the [benchmarks page](docs/benchmarks/README.md),
+the history in the [changelog](CHANGELOG.md).
 
-## ✅ What works today
+## What works today
 
 | Area | Summary | Details |
 |------|---------|---------|
-| **TurboQuant KV cache** | KTQ × VTQ; `ktq4_1`/`vtq4_1` is at or above `q4_0` accuracy at 5 bpw since the encoder searches the block scale (KL divergence measured per model, 2026-10-11). Dedicated GQA and tensor-core decode kernels (also for q8_0 / q5_0). CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
-| **Speculation** | MTP (gemma-4 draft) + n-gram hybrid. 2.28× on Qwen3.6-35B-A3B-IQ2_XXS. | [speculative.md](docs/speculative.md) |
-| **Fine-tune on quantised** | LoRA directly on quantized GGUFs: attention, MoE experts and Gated DeltaNet layers, flash-attention backward, gradient checkpointing, models larger than VRAM. 13 of 13 evaluated models reach 100 % on a held-out task; faster than PyTorch QLoRA on an RTX 5090. | [finetune.md](docs/finetune.md) |
-| **Vulkan backend** | Upstream `ggml-vulkan` + Turing tunings. PP parity reached. | [vulkan.md](docs/vulkan.md) |
-| **Tensor split without P2P** | `-sm tensor` across GPUs without peer access or NCCL: partial sums are reduced through mapped pinned host memory. Optional bf16 transfer via `GGML_CUDA_HOST_ALLREDUCE_BF16=1`. | [tp-tq-design.md](docs/tp-tq-design.md) |
-| **Ternary weights** | `PQ2_0` / `PTQ1_0` group-128 ternary types with Hadamard-rotated activations (Ternary-Bonsai-2-27B). CUDA mat-vec / MMQ kernels. | [models.md](docs/models.md) |
-| **Qwen3.8 family** | Qwen3.8 and Qwen3.8-Flash-Next (`qwen4exp`) incl. sparse flash attention for the compressed-attention indexer. | [models.md](docs/models.md) |
-| **Gated DeltaNet speed-ups** | State gather and gate activations inside the kernel for the hybrid Qwen3.5 / 3.8 models. | [README.md](README.md) |
-| **K2-Horizon-MoVA-36B-A4B** | MoE with routed value experts in attention; layer and tensor split, boundary-layer KV protection. | [models.md](docs/models.md) |
-| **DFlash / DFlash2** | Block-diffusion speculative decoding on top of the MTP / n-gram stack. | [speculative.md](docs/speculative.md) |
+| **TurboQuant KV cache** | `ktq*` (K) and `vtq*` (V) cache types; `ktq4_1`/`vtq4_1` at or above `q4_0` accuracy at 5 bpw, `q8_0` K with `vtq4_1` V close to `q8_0`. GQA and tensor-core decode kernels for the TurboQuant types and for `q8_0` / `q5_0` / `q4_0`. CUDA sm_75+. | [turboquant.md](docs/turboquant.md) |
+| **Fine-tuning on quantized models** | LoRA directly on quantized GGUFs: attention, MoE experts, Gated DeltaNet and hyper-connection layers, flash attention backward, gradient checkpointing, models larger than VRAM. | [finetune.md](docs/finetune.md) |
+| **Tensor split without P2P** | `-sm tensor` across GPUs without peer access or NCCL, partial sums reduced through pinned host memory. | [tensor-split.md](docs/tensor-split.md) |
+| **Speculative decoding** | MTP with n-gram drafts, DFlash / DFlash2 block diffusion, with vision. | [speculative.md](docs/speculative.md) |
+| **Ternary weights** | `PQ2_0` / `PTQ1_0` group-128 ternary types with Hadamard-rotated activations, CUDA mat-vec / MMQ kernels. | [models.md](docs/models.md) |
+| **More architectures** | Kolibri-1, K2-Horizon-MoVA-36B-A4B, Qwen3.8 and Qwen3.8-Flash-Next (sparse flash attention for the indexer), Ternary-Bonsai-2; faster Gated DeltaNet layers. | [models.md](docs/models.md) |
+| **Vulkan backend** | Upstream `ggml-vulkan` with Turing tunings; TurboQuant types are CUDA-only. | [vulkan.md](docs/vulkan.md) |
 
-## 🚧 In flight
+## In flight
 
-- **Eagle3 draft head** — extraction + GGUF plumbing landed; dormant until a trained
-  head loads.
-- **Vulkan KTQ/VTQ port** — researched, not started: worth it for AMD, Intel Arc and Pascal (where Vulkan
-  decodes faster than CUDA), not for Turing. The KV types are CUDA-only today. → [vulkan.md](docs/vulkan.md)
-- **Stage-4 QAT wire-up** — `ggml_quantize_dequantize_fake` op landed; CLI flag +
-  LoRA-graph integration queued. → [finetune.md](docs/finetune.md)
+- **Eagle3 draft head:** extraction and GGUF plumbing landed; dormant until a trained head loads.
+- **Vulkan KTQ/VTQ port:** researched, not started; worth it for AMD, Intel Arc and Pascal (where Vulkan decodes faster
+  than CUDA), not for Turing. → [vulkan.md](docs/vulkan.md)
+- **QAT:** `ggml_quantize_dequantize_fake` landed; CLI flag and LoRA graph integration queued. → [finetune.md](docs/finetune.md)
 
-## 🎯 Planned
+## Planned
 
 - TurboQuant on every RTX generation: speed within 5 % of f16 on Turing to Blackwell, better 2- and 3-bit K accuracy, a
-  cheaper encoder scale search (1–2 % decode today).
-  → [turboquant.md](docs/turboquant.md)
+  cheaper encoder scale search. → [turboquant.md](docs/turboquant.md)
+- CUDA release for arm64 (GH200, DGX Spark).
 - Fine-tuning: faster CPU path and layer prefetch for experts in RAM, SSM (Mamba) training, fewer small kernels on Turing.
   → [finetune.md](docs/finetune.md)
 
 ## Known issues
 
-- **Gemma 4 perplexity:** the instruction-tuned models score implausibly high on raw wikitext
-  with any engine (upstream gives the same values); use other measures for their KV quality.
-  → [models.md](docs/models.md)
-- **Low-bit K:** `ktq4_1` is at or above `q4_0`, but the 2- and 3-bit K types still lose a lot, and gpt-oss loses with
-  every 4-bit K type (`q4_0` as well). Use `f16`/`q8_0`, or `q8_0` K with `vtq4_1` V, when accuracy matters.
-  → [turboquant.md](docs/turboquant.md#accuracy)
+- **Gemma 4 perplexity:** the instruction-tuned models score implausibly high on raw wikitext with any engine (upstream
+  gives the same values); their KV accuracy is measured on their own prose. → [models.md](docs/models.md)
+- **Low-bit K:** the 2- and 3-bit K types still lose a lot, and gpt-oss loses with every 4-bit K type (`q4_0` as well).
+  Use `f16`/`q8_0`, or `q8_0` K with `vtq4_1` V, when accuracy matters. → [turboquant.md](docs/turboquant.md#accuracy)
 
 ## Maintenance policy
 
-- **Upstream sync.** Upstream `llama.cpp` fixes are cherry-picked when they apply
-  cleanly; larger features are integrated case-by-case. Full record:
-  [upstream-integration.md](docs/upstream-integration.md).
-- **Stability target.** TurboQuant kernels: CUDA sm_75+, daily-driven on Turing
-  RTX 2060. Vulkan and HIP are experimental; macOS / Metal are upstream-stock.
-- **Regressions are blockers.** Every merge to the default branch must pass the
-  local PPL + speed gates on 0.8B-Q8 and 35B-A3B-IQ2_XXS before landing.
+- **Upstream sync:** upstream `llama.cpp` fixes are cherry-picked when they apply cleanly; larger features are
+  integrated case by case and noted in the [changelog](CHANGELOG.md).
+- **Stability target:** TurboQuant kernels on CUDA sm_75+, used daily on an RTX 2060. Vulkan and HIP are experimental;
+  macOS / Metal are upstream stock.
+- **Regressions are blockers:** new kernels are checked against the CPU backend (`test-backend-ops`) and by perplexity or
+  KL divergence, speed changes by `llama-bench` against the previous build.
