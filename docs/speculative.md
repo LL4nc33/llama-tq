@@ -209,7 +209,7 @@ DRAFT_MTP is supported and respects `--draft-p-min` (default 0.75). On consumer
 single-GPU + IQ2-class MoE models it consistently underperforms ngram-cache
 because the single-layer MTP head caps per-step confidence so position 1-3 of a
 dm=4 draft fail the p_min filter (observed: avg 1.30 tokens/draft, firing 32%
-of TG-iterations with the `LLAMA_MTP_DECAY` patch — still net-negative).
+of TG-iterations with the `LLAMA_MTP_DECAY` patch — still net-negative; measured 2026-06).
 
 On IQ2/IQ3 models use `ngram-cache` instead. Where DRAFT_MTP pays off (higher-bit quants, larger active parameter
 counts) was not measured; compare it against `ngram-cache` on your setup.
