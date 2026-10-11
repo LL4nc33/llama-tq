@@ -1,20 +1,19 @@
 #!/bin/bash
-# onllama-launch-claude: launch Anthropic's Claude Code CLI pointed at a
+# llama-tq-launch-claude: launch Anthropic's Claude Code CLI pointed at a
 # local llama-tq server instead of api.anthropic.com.
 #
 # Usage:
-#   onllama-launch-claude                          # local server, default model
-#   onllama-launch-claude --server URL             # custom server URL
-#   onllama-launch-claude --model NAME             # override model name
-#   onllama-launch-claude -- [claude-code args...] # pass-through after --
+#   llama-tq-launch-claude                          # local server, default model
+#   llama-tq-launch-claude --server URL             # custom server URL
+#   llama-tq-launch-claude --model NAME             # override model name
+#   llama-tq-launch-claude -- [claude-code args...] # pass-through after --
 #
 # Requires: Anthropic's `claude` CLI installed (https://docs.claude.com/en/docs/claude-code)
 # and a llama-tq server running with /v1/messages support on the target URL.
 #
 # Works against:
-#   - any llama-tq build with the Anthropic-compat routes (default since 2026-04)
-#   - on-llama-tq
-#   - any other llama.cpp fork exposing POST /v1/messages
+#   - llama-tq and upstream llama.cpp servers (POST /v1/messages)
+#   - any other server exposing an Anthropic-compatible POST /v1/messages
 #
 # Inspired by ollama's `ollama launch claude` (MIT, github.com/ollama/ollama).
 # "Claude" is a trademark of Anthropic, PBC. This launcher runs Anthropic's
@@ -22,8 +21,8 @@
 
 set -euo pipefail
 
-SERVER_URL="${ONLLAMA_SERVER_URL:-http://localhost:8080}"
-MODEL="${ONLLAMA_MODEL:-qwen3.6-35b-a3b}"
+SERVER_URL="${LLAMA_TQ_SERVER_URL:-http://localhost:8080}"
+MODEL="${LLAMA_TQ_MODEL:-local}"
 PASSTHROUGH=()
 
 while [[ $# -gt 0 ]]; do
@@ -68,4 +67,4 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
 export CLAUDE_CODE_SUBAGENT_MODEL="$MODEL"
 
 echo "launching claude -> $SERVER_URL (model alias: $MODEL)" >&2
-exec "$CLAUDE_BIN" --model "$MODEL" "${PASSTHROUGH[@]}"
+exec "$CLAUDE_BIN" --model "$MODEL" ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}

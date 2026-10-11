@@ -1,10 +1,10 @@
 # Claude Code against a llama-tq server
 
-llama-tq ships `/v1/messages` (Anthropic-compatible) in `tools/server/server.cpp`,
-so Anthropic's official Claude Code CLI can talk to a local llama-tq server
-instead of `api.anthropic.com`.
+The server has an Anthropic-compatible `/v1/messages` endpoint (from upstream llama.cpp; this fork adds the
+`cache_control` handling described below), so Anthropic's Claude Code CLI can talk to a local llama-tq server instead of
+`api.anthropic.com`.
 
-The `scripts/onllama-launch-claude.sh` wrapper sets the required environment
+The `scripts/llama-tq-launch-claude.sh` wrapper sets the required environment
 variables and execs the real `claude` binary — it does not re-implement
 anything, it just points Claude Code at your server.
 
@@ -41,21 +41,22 @@ Start the server, then launch Claude Code against it:
     -fa on -ngl 99 --jinja
 
 # terminal 2 — Claude Code
-./scripts/onllama-launch-claude.sh
+./scripts/llama-tq-launch-claude.sh
 ```
 
-Defaults: `--server http://localhost:8080`, `--model qwen3.6-35b-a3b`.
+Defaults: `--server http://localhost:8080`, `--model local` (also settable as `LLAMA_TQ_SERVER_URL` and
+`LLAMA_TQ_MODEL`). The server serves its loaded model whatever alias is sent.
 
 Override either:
 
 ```bash
-./scripts/onllama-launch-claude.sh --server http://127.0.0.1:8081 --model my-model
+./scripts/llama-tq-launch-claude.sh --server http://127.0.0.1:8081 --model my-model
 ```
 
 Pass extra args to Claude Code after `--`:
 
 ```bash
-./scripts/onllama-launch-claude.sh -- --print "sag hallo"
+./scripts/llama-tq-launch-claude.sh -- --print "say hello"
 ```
 
 ---
@@ -73,7 +74,7 @@ No credentials in the Claude config, server stays bound to `127.0.0.1`.
 ssh -N -L 8080:localhost:8080 user@gpu-host
 
 # terminal 2 — Claude Code
-./scripts/onllama-launch-claude.sh --server http://localhost:8080
+./scripts/llama-tq-launch-claude.sh --server http://localhost:8080
 ```
 
 ### Option B — direct LAN
@@ -82,7 +83,7 @@ Bind the server with `--host 0.0.0.0` (or a specific LAN IP) and point
 Claude Code at it:
 
 ```bash
-./scripts/onllama-launch-claude.sh --server http://<server-ip>:8080
+./scripts/llama-tq-launch-claude.sh --server http://<server-ip>:8080
 ```
 
 No auth is enforced by the wrapper; put the server on a trusted network
@@ -92,7 +93,7 @@ or front it with a reverse proxy that does TLS + auth if it leaves the LAN.
 
 ## How it works
 
-The wrapper is a thin bash script (~60 LOC). Roughly:
+The wrapper is a short bash script. Roughly:
 
 ```bash
 export ANTHROPIC_BASE_URL="$SERVER_URL"
@@ -108,7 +109,7 @@ model tiers (opus/sonnet/haiku) to separate env vars and your llama-tq
 server only serves one model at a time. The wrapper does a `curl /health`
 probe first and warns if the server is unreachable.
 
-Read the script: [`scripts/onllama-launch-claude.sh`](../scripts/onllama-launch-claude.sh).
+Read the script: [`scripts/llama-tq-launch-claude.sh`](../scripts/llama-tq-launch-claude.sh).
 
 ---
 
@@ -146,27 +147,26 @@ matching prefix automatically, no extra config needed.
 
 ### Model choice
 
-Claude Code was designed for frontier-tier models. A 35 B runs it, but tool
-chains feel sluggish. If latency matters more than depth, host a smaller
-model (7 B / 14 B) on the same server and pass `--model your-alias`. The
-wrapper sets the same alias for all three Anthropic tier env vars, so
-Claude Code will pick it regardless of which internal tier it requests.
+Pass the model alias with `--model your-alias`. The wrapper sets the same alias for all three Anthropic tier env vars, so
+Claude Code uses it regardless of which internal tier it requests. Claude Code needs reliable tool calls; test the model
+on your own tasks.
 
-### `--keep N` for long sessions
+### When the context is full
 
-Set `--keep 8192` (or higher) to pin the first N tokens of the prompt across
-context shifts. Claude Code's system prompt is typically 15-25k tokens and
-gets silently discarded when the ctx-window fills. `--keep 8192` protects
-at least the first 8k of it, keeping tool specs and safety instructions alive.
+Context shift is off by default, so a request that does not fit the context fails instead of silently dropping the
+start of the prompt. Give the server enough context (`-c`) for the system prompt
+plus the conversation. If you enable `--context-shift`, also set `--keep N` so the system prompt at the start is kept.
 
 ### Prompt-caching (Anthropic `cache_control`)
 
-With `--slot-save-path DIR` set, `/v1/messages` honours `cache_control` breakpoints: after a non-streaming request the
+With `--slot-save-path DIR` set, `/v1/messages` honours `cache_control` breakpoints for non-streaming requests: the
 slot state is saved to disk under a key for the prefix up to the last breakpoint (TTL from the breakpoint, 5 min by
-default, `--anthropic-cache-ttl-default`, disk quota `--anthropic-cache-max-gb`), and a later request with the same
-prefix restores it before prefill. `usage` reports `cache_creation_input_tokens` and `cache_read_input_tokens`
-accordingly. Limits: only slot 0, and streaming requests are not saved yet (they still read a saved entry and the normal
-prefix reuse). `--anthropic-cache off` disables it.
+default, `--anthropic-cache-ttl-default`), a later request with the same prefix restores it before prefill, and `usage`
+reports `cache_creation_input_tokens` and `cache_read_input_tokens`. `--anthropic-cache off` disables it.
+
+Limits: Claude Code streams its requests, and streaming requests are not saved yet, so for Claude Code this path
+currently does nothing beyond the normal in-memory prefix reuse. Only slot 0 is used. `--anthropic-cache-max-gb` is
+stored but not enforced yet.
 
 ---
 
