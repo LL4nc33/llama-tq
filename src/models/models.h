@@ -1944,6 +1944,10 @@ struct llama_model_qwen4exp : public llama_model_base {
                     int *         sections,
                     int           il);
 
+        // the dense KQ mask as F32, which the QSA ops need: the mask itself when it already is F32,
+        // otherwise one cast per graph that every QSA layer shares
+        ggml_tensor * build_kq_mask_f32(ggml_tensor * kq_mask);
+
         ggml_tensor * build_attn_qsa(
             llm_graph_input_attn_kv * inp,
                     ggml_tensor * q_cur,
@@ -1974,6 +1978,8 @@ struct llama_model_qwen4exp : public llama_model_base {
 
         std::unordered_map<uint32_t, llm_graph_input_qsa *> qsa_inps;
         std::unordered_map<const ggml_tensor *, ggml_tensor *> rs_rows;
+
+        ggml_tensor * kq_mask_f32 = nullptr; // cache of build_kq_mask_f32
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;

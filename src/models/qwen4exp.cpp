@@ -543,7 +543,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
             static_cast<const llama_memory_hybrid_context *>(this->mctx));
     const bool qsa = mctx_hyb->get_idx() != nullptr && hparams.dsv4_compress_ratios[il] > 0;
 
-    ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il) : nullptr;
+    ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->self_kq_mask, sections, il) : nullptr;
 
     ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur);
     cb(Qcur_full, "Qcur_full", il);
@@ -914,7 +914,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     }
 
     if (blk_bias) {
-        ggml_tensor * mask = kq_mask->type == GGML_TYPE_F32 ? kq_mask : ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+        ggml_tensor * mask = build_kq_mask_f32(kq_mask);
         expanded = ggml_add(ctx0, expanded, ggml_reshape_3d(ctx0, mask, n_kv, n_tps, n_stream));
     } else {
         expanded = ggml_add(ctx0, expanded, inp->bias);
@@ -929,6 +929,18 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     cb(top_k, "indexer_top_k", il);
 
     return top_k;
+}
+
+ggml_tensor * llama_model_qwen4exp::graph::build_kq_mask_f32(ggml_tensor * kq_mask) {
+    if (kq_mask->type == GGML_TYPE_F32) {
+        return kq_mask;
+    }
+
+    if (kq_mask_f32 == nullptr || kq_mask_f32->src[0] != kq_mask) {
+        kq_mask_f32 = ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+    }
+
+    return kq_mask_f32;
 }
 
 ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
@@ -965,9 +977,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
     }
 
-    // build the sparse mask on the raw F32 mask; get_kq_mask() is already cast to F16 under
-    // flash attention, which ggml_fill/ggml_set_rows do not accept
-    ggml_tensor * kq_mask = inp->self_kq_mask;
+    // build the sparse mask in F32, which ggml_fill/ggml_set_rows need; the input mask can be F16
+    // under flash attention
+    ggml_tensor * kq_mask = build_kq_mask_f32(inp->self_kq_mask);
 
     // prepare new kq mask - starts filled with -INFINITY
     ggml_tensor * kq_mask_all = ggml_fill(ctx0, kq_mask, -INFINITY);
