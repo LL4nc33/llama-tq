@@ -130,3 +130,60 @@
 ### Known issues
 
 - TurboQuant KV (`ktq2_1` / `vtq2_1`) produced garbage output on Qwen3-4B-Instruct: this was the inverted KTQ sign convention, fixed on 2026-10-04. Small models with strong outlier channels (Qwen3-4B) stay sensitive to 2-3 bit KV; use `ktq4_1` or q8_0 there.
+
+## 2026-09
+
+- Qwen3.8-Flash-Next (`qwen4exp`) port: fused hyper-connection ops, per-layer n-gram embeddings, the compressed-attention
+  indexer with sparse flash attention at head size 256, conversion of real checkpoints, model saver and
+  `test-llama-archs` coverage (released 2026-10-03).
+- Ternary weight types `PQ2_0` / `PTQ1_0` (groups of 128, Hadamard-rotated activations) for Ternary-Bonsai-2-27B.
+
+## 2026-08
+
+- **DFlash / DFlash2 block-diffusion speculative decoding:** draft model and speculator, features from several target
+  layers, token embeddings shared with the target, MRoPE, trimming of the draft KV tail. Code generation on 2× RTX 2060
+  roughly doubled (26-28 t/s instead of 15.5 t/s, acceptance up to 100 %).
+- Qwen3.8-27B (dense Gated DeltaNet hybrid) runs; Gated DeltaNet tests with several draft tokens per step (MTP).
+- Upstream picks for vision, reasoning output, correctness and the server.
+
+## 2026-07
+
+- Unified Gemma 4 vision + audio projector (`gemma4uv` / `gemma4ua`).
+- Upstream picks for KQ masks, sliding-window attention and n-gram drafts (out-of-bounds read when the prompt shrinks).
+- VTQ: codebook scale folded into the V dequantization.
+
+## 2026-06
+
+- **MTP speculative decoding:** upstream MTP integration (model classes, libllama MTP API, draft flags, server
+  speculation) plus an n-gram hybrid with a pretrained static cache. Qwen3.6-35B-A3B IQ2_XXS on 2× RTX 2060: 80 t/s on
+  free text, 176 t/s on repeated content. The Gemma 4 assistant MTP head is a net loss on real content in our tests.
+- Vision projector and speculation in the same server (speculation is skipped for requests with media).
+- Fixed: the `ngram-*` and `draft-simple` speculation types could corrupt the output.
+- Dequantization kernels with several warps per block and pre-scaled VTQ codebooks; Vulkan KTQ2_1 dequant test harness.
+- Eagle3 draft-head infrastructure: hidden states from three layers, GGUF keys, head graph fusion, converter for HF
+  checkpoints (dormant until a trained head loads).
+
+## 2026-05
+
+- **TurboQuant v8:** short type names `ktq1`-`ktq4` / `vtq1`-`vtq4`, new `vtq3_v8` (3.625 bpw, trellis with two fp16
+  outliers per block); `--no-tq-deferred-k/-v` for GPUs with little memory.
+- `ktq2_1` + `vtq2_1` could end long code generations early; the recommendation moved to `vtq2_2` (2026-05-03).
+- **LoRA fine-tuning on quantized MoE models:** `MUL_MAT_ID` adapter gradient, LoRA on the expert tensors (3D adapters),
+  adapters saved as `.lora.gguf`, `--lora-train-target/-rank/-alpha`, adapter flush on SIGTERM / SIGINT, layer split over
+  two GPUs; Qwen3.6-35B-A3B IQ2_XXS trains on one 12 GB GPU.
+- `GGML_OP_QUANTIZE_DEQUANTIZE_FAKE` with a straight-through backward (groundwork for quantization-aware training).
+- Vulkan backend tuned for Turing (KV rows per thread).
+
+## 2026-04
+
+- **TurboQuant KV cache, v1-v7 (2026-04-06 to 04-14):** K quantized after a randomized Hadamard transform with Lloyd-Max
+  codebooks (inspired by PolarQuant and TurboQuant), CPU reference, warp-parallel FWHT, precomputed sign bits and compact
+  blocks (3.5 / 4.5 / 5.5 bpw), K·Q dot product in the Hadamard domain (decode +65 % on Turing over v6). QJL was tried and
+  removed.
+- 2026-04-16: KTQ/VTQ split; the VTQ V types are rotated in the graph and dequantize with a single codebook lookup.
+- 2026-04-23: VTQ trellis types (`vtq*_2`, group Viterbi) and trellis with fp16 outliers (`vtq*_3`).
+- 2026-04-24: tensor-core path for KTQ prompt processing on Turing.
+- 2026-04-26: MoE speed-ups for models larger than VRAM (huge pages, `mul_mat_id` prefetch, adaptive layer split, AVX2
+  FWHT): Qwen3-Next-80B decode +18.5 %.
+- 2026-04-27: `--moe-pin-experts`, head size 64 fix for gpt-oss, Anthropic-compatible `/v1/messages` with prompt
+  caching. XQuant cross-layer K reuse (removed 2026-10-09).

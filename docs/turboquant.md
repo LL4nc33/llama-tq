@@ -431,31 +431,5 @@ This implementation is inspired by but deviates from the cited papers. KTQ uses 
 
 ## Version History
 
-- **v1** (2026-04-06): Initial TurboQuant-inspired implementation + CPU reference.
-- **v2** (2026-04-07): Warp-parallel FWHT, CUDA QJL attempt.
-- **v3** (2026-04-08): Paper-compliant: stored `r_norm`, QJL on CUDA, Beta-exact codebooks.
-- **v4** (2026-04-09): TQ4_1 (4-bit, 16 centroids), Sparse V Dequant, asymmetric K/V support.
-- **v5** (2026-04-10): Precomputed sign bits in `sb[4]`, struct compaction (3.5/4.5/5.5 bpw), norm correction, Philox 6-round, QJL fully removed.
-- **v6** (2026-04-13): Warp-cooperative FWHT in FA via `__shfl_xor_sync`, SET_ROWS kernel, FA dispatch registration, warp-cooperative V-dequant.
-- **v7** (2026-04-14): Hadamard-domain KQ dot product, branchless sign × norm fusion. PP +13% on CC 6.1, TG +65% on CC 7.5 vs v6.
-- **v7+VTQ split** (2026-04-16): KTQ/VTQ split. VTQ v1 types (`vtq{1..4}_1`) for V-cache — no FWHT, no sign bits, `__forceinline__` dequant. TQ renamed to KTQ. Shared `PQ_CODEBOOK` constants.
-- **2026-04-23**: VTQ v2 Trellis family (`vtq{2,3,4}_2`) — group-Viterbi, inverse-Gaussian CDF table. VTQ v3 outlier-channel-split (`vtq{2,3,4}_3`) — 4 fp16 outliers per block.
-- **2026-04-24**: MMA-KTQ tensor-core path live on CC ≥ 7.5 (Turing-tested). PP128 727 t/s vs 431 f16.
-- **2026-04-25**: Default switched to `ktq2_1 + vtq2_2` (2.78 bpw avg, +0.15% PPL, 83% smaller KV) after vtq2_2 vs vtq2_1 sweep showed v2 wins or ties on PPL/pp/tg.
-- **2026-04-26**: 80B-TQ1_0 deployed full-VRAM (54.93 t/s, +50% vs IQ2_XXS). Phase 4 perf stack: `MADV_HUGEPAGE`, `mul_mat_id` prefetch, `OMP_WAIT_POLICY=active`, adaptive layer-split (80B: 18/18/12), P2P opt-in, AVX2-FWHT-32. Cumulative +18.5% TG on 80B, +9.3% on 122B.
-- **2026-04-27**: XQuant Phase 1–5 code-complete (XKTQ2_1, dormant on hybrid SSM; removed later). `--moe-pin-experts` opt-in (+3.3% TG on 80B-IQ2). gpt-oss-20b head_dim=64 fix (commit `c818f6c84`). Anthropic `/v1/messages` with prompt caching, `TCP_NODELAY`, gzip.
-- **2026-04-28**: model directory layout on the test box consolidated. Doc rewrite — this file.
-- **2026-05-02 — TurboQuant v8 unified type aliases**: short CLI names `ktq{1,2,3,4}` + `vtq{1,2,3,4}` map to the proven defaults. New `vtq3_v8` (enum 58, 3.625 bpw) = trellis-3bit + 2 fp16 outliers — close to f16 on 35B-A3B (−0.03% PPL drift vs f16 baseline, 12% smaller than legacy `vtq3_3`). Legacy long names (`ktq2_1`, `vtq2_2`, …) remain accepted.
-- **2026-05-03 — EOS-cutoff regression fix**: long-context coding outputs (Snake-game generation) cut off mid-function with `ktq2_1 + vtq2_1` on the post-S199-plumbing build. A/B test (n=5, Snake prompt with 9k input): `ktq2_1+vtq2_1` 1/3 cutoffs, `ktq2+vtq2_2` 0/5 cutoffs. Fix is a pure KV-type switch (no `--logit-bias` workaround). Hypothesis: the S199 `extern __constant__ float d_ktq_sparse_k_threshold;` symbol changes nvcc codegen for the `vtq2_1` dispatch path; `vtq2_2` is unaffected. Bisect against `e054a3088` not yet performed.
-- **2026-05-05 — Repo cleanup**: doc tone pass. Vendored upstream content untouched. Math fix: VRAM-saved tier-table values corrected (e.g. 2.78 bpw is 83% saved, not 91%). v6 roadmap defined.
-- **2026-05-18 — MoE LoRA fine-tuning lands** (independent of TurboQuant; tracked here only because the same fork ships both). `MUL_MAT_ID` backward, LoRA bootstrap for `ffn_*_exps`, adapter save as `.lora.gguf`, and a SIGTERM/SIGINT safety flush land in `llama-finetune`. Qwen3.6-A35B-IQ2_XXS now trains end-to-end on a single 12 GB GPU. Full details in [docs/finetune.md](finetune.md).
-- **2026-06-08 — MTP + n-gram hybrid speculative decoding lands** (independent of TurboQuant; same caveat). Full upstream MTP integration (model-class refactor, libllama MTP API, CLI draft flags, server speculation wiring) plus a fork-side n-gram hybrid with pretrained static cache. Deploy on Qwen3.6-35B-A3B-IQ2_XXS + KTQ2_1 + VTQ2_1 + 200k ctx: 80 t/s creative, 176 t/s repeat (2.28× universal boost) on 2× RTX 2060 12 GB. mmproj + spec coexistence via per-request `has_media()` gate (upstream-PR ready).
-- **2026-06-09 — Dequant kernel perf-cluster lands** (PR #12). Multi-warp-per-CTA NC dequant for VTQ + KTQ2_1 convert (4× occupancy on Turing), pre-scaled VTQ codebook in read-path decoders (eliminates one mul per element), VTQ2_1 4-outputs-per-thread NC dequant kernel. Smoke parity verified: 0.8B-Q8 TG 225.40 t/s vs 224.37 baseline (within noise). Plus Vulkan KTQ2_1 dequant validation harness (PR #11) for the dormant Vulkan port.
-- **2026-06-09 — Eagle3 draft-head infrastructure lands** (PR #10). Hidden-state extraction at three configurable layer taps (low/mid/high) via `llama_get_embeddings_eagle3_{low,mid,high}_ith` C-API, GGUF KV plumbing (`eagle3_layer_low/mid/high`), head graph fusion (`build_eagle3_fusion` in qwen35 dense + MoE), `LLM_TENSOR_NEXTN_EAGLE3_FC` tensor type, loader, and Python converter for HF eagle3 checkpoints. Single-stream MTP path unchanged when no eagle3 head is present. Driver-side wire-up of the embd buffer fill (C.4 part 2) deferred until a trained head exists.
-- **2026-10-04 — KTQ fix and fast decode**: CUDA KTQ sign bits and rounding match the CPU reference (Qwen3.8-27B `ktq2_1` PPL 16.8 → 6.09). Shared KTQ sign pattern, GQA decode kernel, tensor-core decode kernel, warp-cooperative SET_ROWS, `--tq-protect-layers`, split-dequant prefill at head size 512. Recommendation changed to `ktq4_1`/`vtq4_1`.
-- **2026-10-11 — Encoder scale search**: KTQ/VTQ encoders assign the block to the codebook at 32 trial scales, keep the
-  assignment with the smallest angle and store an unbiased scale (a least-squares scale shrinks V, which the attention
-  average does not remove). KLD vs f16 KV: `ktq4_1`/`vtq4_1` 0.045 → 0.025 (Qwen3-4B, below `q4_0` 0.034), 0.55 → 0.36
-  (gpt-oss, = `q4_0`); `ktq2_1`/`vtq2_1` 1.38 → 0.40 (Qwen3-4B). Format unchanged. CUDA and CPU encoders are bit-identical
-  (IEEE intrinsics in the encoders), SET_ROWS for the TurboQuant types is tested against the CPU. Decode with the cache
-  quantized per token −1.7 % (`ktq4_1`/`vtq4_1`, RTX 2060).
+The history of the TurboQuant types (v1 in April 2026 to the encoder scale search) is in the
+[changelog](../CHANGELOG.md).

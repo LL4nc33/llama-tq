@@ -221,25 +221,4 @@ not been validated in training.
 
 ## History
 
-- 2026-10-09 (evening): chat examples packed whole into windows without overlap (each token once per epoch,
-  previously twice), flash attention on by default, KV cache writes need no `GGML_BACKWARD_SKIP_INPLACE`,
-  `-ngl 0` in a CUDA build; 2 epochs Qwen3-4B: RTX 2060 321 s (PyTorch QLoRA 260 s), RTX 5090 54 s (PyTorch 102 s).
-- 2026-10-09 (later): flash attention backward on cuBLAS GEMMs (2–3.5× faster for long windows); repository
-  cleanup (unused experiments removed, `--moe-pin-experts` works again).
-- 2026-10-09: gradient checkpointing (`--grad-checkpoint`), logits only for trained positions, training 3.1×
-  faster (CUDA `ACC` for strided/permuted operands, `out_prod` on f16 tensor cores, labels on the device).
-- 2026-10-09: flash attention backward (CPU, CUDA; `-fa on`), PyTorch QLoRA comparison, checked on an
-  RTX 5090 (Blackwell) as a second system; the VTQ flash attention dispatch compiles in eleven parallel TUs.
-- 2026-10-08 (later): `CLAMP` backward (the MoE weight normalization had no gradient), `SUB`/`DIV` backward with a
-  broadcast operand, no double free when a `--lora` file fails to load, RPC op count.
-- 2026-10-08: chat rendering follows `--reasoning`; crash-safe checkpoints; tolerant chat data; alpha
-  check on resume; backward for `GEGLU`, `REGLU`, `GEGLU_QUICK`, `SWIGLU_OAI`, `ADD_ID`; CUDA
-  `rms_norm_back` on strided inputs; out-of-memory message; early stopping.
-- 2026-10-07: chat data with an assistant-only loss, gradient clipping, warmup, exact resume; gradient
-  through the KV cache; CUDA `out_prod` stride for LoRA shapes; CPU `rms_norm_back` inplace; optimizer
-  state per parameter; Gated DeltaNet, `SSM_CONV`, `CONCAT`, `TANH` backward; accuracy over trained
-  tokens; `test-opt` re-enabled.
-- 2026-10-06: gradient accumulators cleared after each step, LoRA A initialization, input gradients of
-  quantized experts and dense matmuls on CUDA, AdamW on two GPUs.
-- 2026-05: `MUL_MAT_ID` adapter gradient, LoRA training on quantized MoE experts, layer split over two
-  GPUs.
+In the [changelog](../CHANGELOG.md) (MoE LoRA from 2026-05, the full fine-tuning work from 2026-10-06).
