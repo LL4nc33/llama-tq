@@ -1375,8 +1375,13 @@ void llama_context::set_warmup(bool value) {
 
     cparams.warmup = value;
 
-    // warmups are usually with small batches, so no need to reserve
-    //sched_need_reserve = true;
+    // the warmup graph routes every token to all experts, so its shape differs from the regular graphs
+    // (e.g. the MoE fusions that add alloc deps do not apply). reserving it shrinks the recorded sizes;
+    // without a fresh worst-case reserve, every later ubatch with a larger KV view re-reserves again and
+    // synchronizes all backends (no pipeline overlap). reserve again once the warmup is over.
+    if (!value) {
+        sched_need_reserve = true;
+    }
 }
 
 bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
