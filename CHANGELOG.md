@@ -137,6 +137,8 @@
   indexer with sparse flash attention at head size 256, conversion of real checkpoints, model saver and
   `test-llama-archs` coverage (released 2026-10-03).
 - Ternary weight types `PQ2_0` / `PTQ1_0` (groups of 128, Hadamard-rotated activations) for Ternary-Bonsai-2-27B.
+- PCIe peer-to-peer between two RTX 2060 investigated on four paths: Turing consumer GPUs cannot do it in hardware, which
+  led to the tensor split through pinned host memory (2026-10-03).
 
 ## 2026-08
 
@@ -159,6 +161,8 @@
   free text, 176 t/s on repeated content. The Gemma 4 assistant MTP head is a net loss on real content in our tests.
 - Vision projector and speculation in the same server (speculation is skipped for requests with media).
 - Fixed: the `ngram-*` and `draft-simple` speculation types could corrupt the output.
+- Fixed: `llama-finetune` crashed in the warm-up pass after upstream merges (fused Gated DeltaNet detection) and two
+  follow-up regressions; the MoE training pipeline runs end to end again.
 - Dequantization kernels with several warps per block and pre-scaled VTQ codebooks; Vulkan KTQ2_1 dequant test harness.
 - Eagle3 draft-head infrastructure: hidden states from three layers, GGUF keys, head graph fusion, converter for HF
   checkpoints (dormant until a trained head loads).
@@ -173,6 +177,8 @@
   two GPUs; Qwen3.6-35B-A3B IQ2_XXS trains on one 12 GB GPU.
 - `GGML_OP_QUANTIZE_DEQUANTIZE_FAKE` with a straight-through backward (groundwork for quantization-aware training).
 - Vulkan backend tuned for Turing (KV rows per thread).
+- Inline tensor-core kernel for KTQ+VTQ prompt processing: 2-3.5× faster prefill from 1k to 59k tokens (replaced on
+  2026-10-05 by f16 split dequantization plus the standard tensor-core kernel).
 
 ## 2026-04
 
@@ -180,6 +186,8 @@
   codebooks (inspired by PolarQuant and TurboQuant), CPU reference, warp-parallel FWHT, precomputed sign bits and compact
   blocks (3.5 / 4.5 / 5.5 bpw), K·Q dot product in the Hadamard domain (decode +65 % on Turing over v6). QJL was tried and
   removed.
+- 2026-04-15: garbage output with flash attention and TurboQuant K and V together traced to the interaction of the K and
+  V paths; fixed in steps, with an asymmetric K/V workaround in between.
 - 2026-04-16: KTQ/VTQ split; the VTQ V types are rotated in the graph and dequantize with a single codebook lookup.
 - 2026-04-23: VTQ trellis types (`vtq*_2`, group Viterbi) and trellis with fp16 outliers (`vtq*_3`).
 - 2026-04-24: tensor-core path for KTQ prompt processing on Turing.
