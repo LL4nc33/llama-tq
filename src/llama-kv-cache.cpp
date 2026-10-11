@@ -566,6 +566,7 @@ void llama_kv_cache::clear(bool data) {
     // reset deferred K quantization state for next sequence
     if (deferred_state != TQ_DEFERRED_OFF) {
         deferred_state = TQ_DEFERRED_STAGING;
+        deferred_convert_failed = false;
     }
 }
 
@@ -895,7 +896,7 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
     GGML_UNUSED(embd_all);
 
     // deferred K quantization: detect prefill->decode transition
-    if (deferred_state == TQ_DEFERRED_STAGING && balloc.get_n_tokens() == 1) {
+    if (deferred_state == TQ_DEFERRED_STAGING && !deferred_convert_failed && balloc.get_n_tokens() == 1) {
         deferred_state = TQ_DEFERRED_READY;
         LLAMA_LOG_INFO("%s: deferred K quantization: triggering bulk convert (prefill->decode)\n", __func__);
         // return FAILED_PREPARE to trigger memory_update(true) -> update() -> bulk convert
@@ -1175,16 +1176,23 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, bool do_deferre
 
         res->reset();
 
+        // on failure keep the f16 staging buffers: they hold every token so far and stay correct for decoding
+        auto keep_staging = [&](const char * what) {
+            LLAMA_LOG_WARN("%s: failed to %s the deferred K/V convert, keeping the f16 staging buffers for this sequence\n", __func__, what);
+            deferred_state          = TQ_DEFERRED_STAGING;
+            deferred_convert_failed = true;
+        };
+
         auto * gf = build_graph_deferred_convert(res, lctx);
         if (!ggml_backend_sched_alloc_graph(sched, gf)) {
-            LLAMA_LOG_ERROR("%s: failed to allocate compute graph for deferred K convert\n", __func__);
+            keep_staging("allocate");
             return updated;
         }
 
         res->set_inputs(nullptr);
 
         if (lctx->graph_compute(gf, false) != GGML_STATUS_SUCCESS) {
-            LLAMA_LOG_ERROR("%s: failed to compute deferred K convert\n", __func__);
+            keep_staging("compute");
             return updated;
         }
 
@@ -2424,37 +2432,47 @@ ggml_cgraph * llama_kv_cache::build_graph_deferred_convert(llm_graph_result * re
         }
     }
 
+    // convert only the used cells of each stream, in chunks of rows: the f32 copy of one chunk is the
+    // largest temporary, so the compute buffer no longer scales with the context size. at most 8 chunks
+    // per stream keep the node count within the graph budget of small models
+    const int64_t chunk_min  = 16384;
+    const int64_t max_chunks = 8;
+
+    auto convert = [&](ggml_tensor * staging, ggml_tensor * cache) {
+        const int64_t n_embd  = staging->ne[0];
+        const int64_t kv_size = staging->ne[1];
+        const int64_t n_rows  = kv_size * staging->ne[2];
+
+        GGML_ASSERT(inp->idxs && inp->idxs->ne[0] == n_rows);
+
+        ggml_tensor * src = ggml_reshape_2d(ctx, staging, n_embd, n_rows);
+        ggml_tensor * dst = ggml_reshape_2d(ctx, cache,   n_embd, n_rows);
+
+        for (int64_t s = 0; s < staging->ne[2]; ++s) {
+            const int64_t n_used = v_cells[s].used_max_p1();
+            const int64_t chunk  = std::max(chunk_min, (n_used + max_chunks - 1) / max_chunks);
+            for (int64_t r0 = 0; r0 < n_used; r0 += chunk) {
+                const int64_t nr   = std::min(chunk, n_used - r0);
+                const int64_t row0 = s*kv_size + r0;
+
+                ggml_tensor * src_c = ggml_view_2d(ctx, src, n_embd, nr, src->nb[1], row0*src->nb[1]);
+                ggml_tensor * idx_c = ggml_view_1d(ctx, inp->idxs, nr, row0*ggml_element_size(inp->idxs));
+
+                // set_rows needs f32 input; the quantization (bulk Viterbi) happens in set_rows
+                ggml_build_forward_expand(gf, ggml_set_rows(ctx, dst, ggml_cast(ctx, src_c, GGML_TYPE_F32), idx_c));
+            }
+        }
+    };
+
     for (const auto & layer : layers) {
         // K staging -> KTQ conversion
         if (layer.k_staging) {
-            const int64_t n_embd_k_gqa = layer.k_staging->ne[0];
-            const int64_t n_rows       = layer.k_staging->ne[1] * layer.k_staging->ne[2];
-
-            GGML_ASSERT(inp->idxs && inp->idxs->ne[0] == n_rows);
-
-            // cast f16 staging -> f32 (required by set_rows)
-            ggml_tensor * src = ggml_reshape_2d(ctx, layer.k_staging, n_embd_k_gqa, n_rows);
-            ggml_tensor * src_f32 = ggml_cast(ctx, src, GGML_TYPE_F32);
-
-            // set_rows: f32 -> TQ (quantization happens here — bulk Viterbi)
-            ggml_tensor * dst = ggml_reshape_2d(ctx, layer.k, n_embd_k_gqa, n_rows);
-
-            ggml_build_forward_expand(gf, ggml_set_rows(ctx, dst, src_f32, inp->idxs));
+            convert(layer.k_staging, layer.k);
         }
 
-        // V staging -> VTQ conversion (bulk Viterbi on entire prefill V)
+        // V staging -> VTQ conversion
         if (layer.v_staging) {
-            const int64_t n_embd_v_gqa = layer.v_staging->ne[0];
-            const int64_t n_rows       = layer.v_staging->ne[1] * layer.v_staging->ne[2];
-
-            GGML_ASSERT(inp->idxs && inp->idxs->ne[0] == n_rows);
-
-            ggml_tensor * src = ggml_reshape_2d(ctx, layer.v_staging, n_embd_v_gqa, n_rows);
-            ggml_tensor * src_f32 = ggml_cast(ctx, src, GGML_TYPE_F32);
-
-            ggml_tensor * dst = ggml_reshape_2d(ctx, layer.v, n_embd_v_gqa, n_rows);
-
-            ggml_build_forward_expand(gf, ggml_set_rows(ctx, dst, src_f32, inp->idxs));
+            convert(layer.v_staging, layer.v);
         }
     }
 

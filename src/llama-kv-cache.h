@@ -321,6 +321,10 @@ private:
     // TurboQuant deferred K quantization
     tq_deferred_state deferred_state = TQ_DEFERRED_OFF;
 
+    // set when the bulk convert could not be allocated or computed: the cache then keeps reading and
+    // writing the f16 staging buffers for the rest of the sequence instead of retrying every token
+    bool deferred_convert_failed = false;
+
     // user-selected cache types (for type_k()/type_v() accessors when boundary protection is active)
     ggml_type user_type_k = GGML_TYPE_F16;
     ggml_type user_type_v = GGML_TYPE_F16;
