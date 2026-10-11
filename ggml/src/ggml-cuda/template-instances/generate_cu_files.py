@@ -122,7 +122,7 @@ for ncols in [8, 16, 32, 64]:
                     continue
                 if head_size_kq == 72:
                     continue
-                if head_size_kq == 512 and ncols2 not in (4, 8):
+                if head_size_kq == 512 and ncols2 not in (2, 4, 8): # Gemma 4 (+ MTP)
                     continue
                 if head_size_kq != 576 and ncols2 in (16, 32):
                     continue
