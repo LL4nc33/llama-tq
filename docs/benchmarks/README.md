@@ -1,8 +1,8 @@
 # Benchmarks
 
-All comparison tables in one place (2026-10-10/11); the README and the other pages link here instead of repeating the
-numbers. The result of each documented setup command is next to the command in [models.md](../models.md). Older logs
-are in [history/](history/); their numbers are not comparable with these.
+Decode and prefill speed per GPU and KV type (2026-10-10/11). Accuracy, fine-tuning and per-model setups each have their
+own page (links at the end), so every number lives in one place. Older logs are in [history/](history/); their numbers
+are not comparable with these.
 
 ## Decode speed, one GPU
 
@@ -35,39 +35,10 @@ RTX 2060, decode at empty / 16k context (`llama-bench -n 64`, 2026-10-11):
 prompt); over 256 generated tokens 47 t/s.
 
 gpt-oss-20b MXFP4 on one RTX 2060, decode at empty / 8k context: `q8_0`/`q8_0` 78 / 70, `q8_0`/`vtq4_1` 77 / 70,
-`ktq4_1`/`vtq4_1` 77 / 53 t/s (2026-10-11; `q8_0`/`vtq4_1` is the accurate compact setting for this model).
+`ktq4_1`/`vtq4_1` 77 / 53 t/s (2026-10-11).
 
-## KV cache accuracy
+## Accuracy and fine-tuning
 
-KL divergence against an f16 KV cache with the cache quantized during prefill: table in
-[turboquant.md#accuracy](../turboquant.md#accuracy). Summary: `q8_0` is at the noise floor of every model, `ktq4_1`/`vtq4_1`
-is at or above the `q4_0` level (Qwen3-4B 0.025 vs 0.034), the 2- and 3-bit types lose clearly; gpt-oss is sensitive to
-every 4-bit K type. Measured on wikitext-2 (Qwen3-4B) and on the models' own prose (gpt-oss, Gemma 4).
-
-## Models on 2× RTX 2060 12 GB
-
-Maximum context and decode speed measured on 2026-10-04 (before the encoder change, which costs 1–2 %). These rows show
-what fits, not the recommended KV type: for accuracy prefer `q8_0`, or `q8_0` K with `vtq4_1` V (gpt-oss needs 8-bit K).
-The commands in [models.md](../models.md) use the recommended types and list their own numbers.
-
-| Model | KV cache | Max context | Decode, short | Decode, long |
-|---|---|---|---|---|
-| Qwen3.8-27B Q4_K_M (tensor split) | f16 | 72k | 24 t/s | |
-| Qwen3.8-27B Q4_K_M (tensor split) | `ktq2_1` / `vtq2_1` | 256k | 24 t/s | 15.8 t/s at 118k |
-| Ternary-Bonsai-2-27B PTQ1_0 (tensor split) | f16 | 200k | 40 t/s | 21.6 t/s at 171k |
-| Kolibri-1 78B MoE Q3_K_S | `ktq4_1` / `vtq4_1` | 128k | 35 t/s | |
-| gpt-oss-20b MXFP4 | `ktq4_1` / `vtq4_1` | 128k | 77 t/s | 40 t/s at 64k |
-
-## Fine-tuning
-
-LoRA directly on the quantized GGUF against PyTorch + PEFT + bitsandbytes (nf4), Qwen3-4B, attention q/k/v/o, rank 16,
-AdamW 2e-4, 2 epochs, same data and metric (100 held-out examples):
-
-| GPU | llama-tq | PyTorch QLoRA | Exact match |
-|---|---:|---:|---:|
-| RTX 5090 | 54 s, 7.8 GB | 102 s, 11.0 GB | 100 % / 100 % |
-| RTX 2060 | 321 s, 7.2 GB | 260 s, 10.5 GB | 100 % / 100 % |
-
-All 12 evaluated models (dense, MoE, Gated DeltaNet, ternary, up to 78B and 72.5 GB files) reach 100 % exact match on
-the task after one LoRA run: [finetune.md](../finetune.md). The task and its scripts:
-[examples/training/termine](../../examples/training/termine/README.md).
+KV cache accuracy per type and model: [turboquant.md#accuracy](../turboquant.md#accuracy). Fine-tuning results and the
+comparison with PyTorch QLoRA: [finetune.md#results](../finetune.md#results). Command and result per model:
+[models.md](../models.md).

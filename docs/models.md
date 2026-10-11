@@ -2,8 +2,7 @@
 
 Architectures and weight types that this fork adds or runs differently from upstream llama.cpp, with the command we
 use on 2× RTX 2060 12 GB (Turing, no P2P) and what that command reaches. Comparisons across GPUs and KV types are on the
-[benchmarks page](benchmarks/README.md), KV accuracy in [turboquant.md](turboquant.md#accuracy) (`q8_0` when accuracy
-matters, `q8_0` K with `vtq4_1` V when it should also be compact).
+[benchmarks page](benchmarks/README.md); which KV type to pick: [turboquant.md](turboquant.md#recommendation).
 
 All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md).
 
@@ -23,7 +22,7 @@ GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m Ternary-Bonsai-2-27B-PTQ1_0.gguf
   --jinja --reasoning off
 ```
 
-Decode: 34 t/s short, 28 t/s at 23k, 22 t/s at 74k.
+Decode: 34 t/s short, 28 t/s at 23k, 22 t/s at 74k. One slot with f16 KV: 200k context, 40 t/s short, 21.6 t/s at 171k.
 
 ## Qwen3.8-27B (hybrid, Gated DeltaNet)
 
@@ -38,7 +37,7 @@ GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m Qwen3.8-27B-UD-Q4_K_M.gguf \
   -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
 ```
 
-Decode: 22.5 t/s short, 17.2 t/s at 118k. Prefill 190–250 t/s.
+Decode: 22.5 t/s short, 17.2 t/s at 118k. Prefill 190–250 t/s. With f16 KV the context ends at 72k (24 t/s short).
 
 ## Qwen3.8-Flash-Next (`qwen4exp`)
 
@@ -134,8 +133,7 @@ Decode barely drops with context (38 t/s at 10k). KV accuracy: perplexity +0.5 %
 
 ## gpt-oss-20b
 
-Head size 64 with attention sinks; quantized KV goes through the tensor-core decode kernel. gpt-oss needs 8-bit K:
-every 4-bit K type (`q4_0`, `ktq4_1`) costs it about 0.35 KL divergence, `q8_0` K with `vtq4_1` V 0.04
+Head size 64 with attention sinks; quantized KV goes through the tensor-core decode kernel. gpt-oss needs 8-bit K
 ([accuracy](turboquant.md#accuracy)). Accurate and compact (6.5 bpw):
 
 ```bash

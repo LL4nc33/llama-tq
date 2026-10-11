@@ -10,7 +10,7 @@ Vulkan-vs-CUDA TG gap on `sm_75` hardware.
   upstream-maintained shaders.
 - **TurboQuant KV cache** (KTQ1-4 / VTQ1-4): **CUDA-only**; the Vulkan backend
   has no kernels for these types. With a Vulkan build use the upstream KV types
-  (`q8_0`, `q4_0`). A GLSL port is a multi-week effort and is not scheduled.
+  (`q8_0`, `q4_0`). A GLSL port is planned for later, after the CUDA work (a multi-week effort).
 - **Multi-GPU**: works through Vulkan device selection (`--main-gpu`,
   `--tensor-split`).
 - **Turing TG tuning**: `rm_kq=4` is enabled by default on `NVIDIA_TURING`

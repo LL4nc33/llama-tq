@@ -22,7 +22,7 @@
 
 ## 2026-10-10
 
-- **All 12 evaluated models reach 100 % exact match** on the held-out appointment task after one LoRA run: Qwen3-4B,
+- **All 12 evaluated models reach 100 % exact match** on the held-out appointment task (some after tuning learning rate or epochs): Qwen3-4B,
   Qwen3.5-0.8B and Qwen3.8-27B (Gated DeltaNet), Qwen3.8-Flash-Next (hyper-connections, sparse attention, 72.5 GB),
   Ternary-Bonsai-2-27B (ternary), Qwen3.6-35B-A3B and K2-Horizon-36B (MoE), Kolibri-1 78B (MoE, 8 min on one 96 GB GPU),
   Gemma-4-12B and Gemma-4-26B-A4B, gpt-oss-20b (MXFP4), Ministral-3B. Settings per model in [docs/finetune.md](docs/finetune.md).

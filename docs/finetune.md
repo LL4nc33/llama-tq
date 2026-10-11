@@ -102,6 +102,12 @@ training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 
 the exact training input, evaluation script and the PyTorch reference are in
 [examples/training/termine](../examples/training/termine/README.md).
 
+All 12 evaluated models reach 100 % exact match on the held-out examples, some only after tuning the learning rate or the
+number of epochs (the table lists every run, including the ones that stopped below 100 %): Qwen3-4B, Qwen3.5-0.8B, Qwen3.8-27B, Qwen3.8-Flash-Next, Qwen3.6-35B-A3B,
+Ternary-Bonsai-2-27B, K2-Horizon-MoVA-36B-A4B, Kolibri-1, Gemma-4-12B, Gemma-4-26B-A4B, gpt-oss-20b, Ministral-3-3B.
+This is one task (structured extraction); it shows that training works on these architectures, not how well it
+generalizes to other tasks.
+
 | Model | Setup | Time | Exact match before → after | Validation loss / accuracy |
 |---|---|---|---|---|
 | Qwen3-4B-Instruct-2507 Q4_K_M | attention q/k/v/o, rank 16, AdamW 2e-4, 2 epochs | 28 min | 0 % → **100 %** | 1.27 / 88.9 % → 0.131 / 98.0 % |

@@ -15,9 +15,7 @@ GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m model.gguf -ngl 99 -fa on -sm te
 | `GGML_CUDA_HOST_ALLREDUCE_BF16=1` | sends the partial sums as bf16, halving the traffic over the host link |
 | `GGML_CUDA_HOST_ALLREDUCE=0` | disables the host reduction (upstream behaviour) |
 
-When it helps: decode of dense models that fit the combined VRAM, where every token touches all weights. For MoE models
-with experts in system RAM, or when one GPU holds the whole model, `-sm layer` or a single GPU is usually as fast.
+Where we measured it: decode of dense 27B models that fit the combined VRAM of 2× RTX 2060 (Qwen3.8-27B,
+Ternary-Bonsai-2-27B, see [models.md](models.md)). For MoE models with experts in system RAM, or when one GPU holds the
+whole model, we have no comparison; try `-sm layer` and a single GPU as well.
 The TurboQuant KV types work with it; the 27B setups in [models.md](models.md) use both.
-
-Measured setups (Qwen3.8-27B, Ternary-Bonsai-2-27B on 2× RTX 2060): [benchmarks](benchmarks/README.md),
-commands per model: [models.md](models.md).

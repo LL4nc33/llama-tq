@@ -1,14 +1,17 @@
 # TurboQuant — KTQ/VTQ KV Cache Quantization for CUDA
 
-**Status (2026-10-11):** the KTQ/VTQ encoders now search the block scale (32 trial scales, unbiased scale), which
-roughly halves the KL divergence of `ktq4_1` and cuts that of the 2-bit types to a third; `ktq4_1`/`vtq4_1` (5 bpw) is now
-at or above `q4_0` accuracy on all measured models (see [Accuracy](#accuracy)). Quality is measured with the KV cache
+**Status (2026-10-11):** the KTQ/VTQ encoders now search the block scale (32 trial scales, unbiased scale). KL divergence
+of `ktq4_1`/`vtq4_1` drops by 44 % on Qwen3-4B and 35 % on gpt-oss; the 2-bit types gain a lot on Qwen3-4B
+(1.38 → 0.40) but little on gpt-oss (4.05 → 3.65). `ktq4_1`/`vtq4_1` (5 bpw) is now more accurate than `q4_0` on Qwen3-4B
+and equal to it on gpt-oss and Gemma-4-12B, the three models measured (see [Accuracy](#accuracy)). Quality is measured with the KV cache
 really quantized: in prefill K is staged in f16 by default (deferred K quantization) and only quantized at the
 prefill→decode boundary, so a perplexity run without `--no-tq-deferred-k` measures f16 K. The attention-rotation feature
 (Hadamard rotation of Q/K in the graph) is not applied to KTQ caches, which made them worse; the remaining K/V rotations run
 as the fast Walsh-Hadamard transform.
 
-**Recommendation (accuracy first, then speed, then memory):** use `f16` when the context fits, otherwise `-ctk q8_0 -ctv
+## Recommendation
+
+Accuracy first, then speed, then memory: use `f16` when the context fits, otherwise `-ctk q8_0 -ctv
 q8_0` (at the numerical noise floor of the model, same speed). `-ctk q8_0 -ctv vtq4_1` (6.5 bpw) stays close to that and
 decodes as fast as `q8_0`; it is the choice for models that need 8-bit K such as gpt-oss. `-ctk ktq4_1 -ctv vtq4_1`
 (5 bpw) is as accurate as or more accurate than `q4_0`; use it when you need the memory. The 2-bit types still lose a lot.

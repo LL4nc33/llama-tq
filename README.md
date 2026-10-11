@@ -17,8 +17,9 @@
 
 A few options to get `llama-tq`:
 
-- Download a build for your GPU generation from the [releases page](https://github.com/LL4nc33/llama-tq/releases)
-  (Linux: CUDA per generation, CPU and Vulkan for x64 and arm64)
+- Download a Linux build from the [releases page](https://github.com/LL4nc33/llama-tq/releases) (CPU and Vulkan for x64
+  and arm64, CUDA for x64). The current release (v2026.10.06) predates the changes since 2026-10-07; for those, build
+  from source until the next release, which also brings one CUDA archive per GPU generation
 - Run the CPU server image with Docker: `ghcr.io/ll4nc33/llama-tq:server` (see [Docker](docs/docker.md))
 - Build from source with CUDA, see the [build guide](docs/build.md):
   `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
@@ -41,10 +42,11 @@ llama-finetune -m model.gguf -f train.jsonl -o task.gguf --lora-train-rank 16 -n
 
 `llama-tq` is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that aims to run large models with long
 context, and to fine-tune them, on consumer NVIDIA GPUs with 12 to 32 GB. It is developed on 2× RTX 2060 12 GB without
-P2P and tested on RTX 30, 40 and 50 cards. Everything upstream offers stays available; the fork adds:
+P2P; speed and fine-tuning were also measured on RTX 30, 40 and 50 cards. Upstream fixes are cherry-picked rather than
+merged continuously, so the fork can lag behind the newest upstream. The fork adds:
 
-- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types with fast decode kernels; `ktq4_1`/`vtq4_1` stores the
-  cache at 5 bits per value with accuracy at or above `q4_0`, `q8_0` K with `vtq4_1` V is close to `q8_0`
+- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 3 to 5.5 bits per value with fast decode
+  kernels, for long context on small GPUs ([which type to pick](docs/turboquant.md#recommendation))
 - **Fine-tuning on quantized models:** LoRA on k-quant, IQ, MXFP4 and ternary GGUFs without dequantized weights, MoE
   experts, models larger than VRAM, flash attention backward on CPU and CUDA
 - **Tensor split without P2P:** `-sm tensor` across GPUs that have no peer access or NCCL
@@ -52,19 +54,21 @@ P2P and tested on RTX 30, 40 and 50 cards. Everything upstream offers stays avai
 - **More architectures:** Kolibri-1, K2-Horizon, Qwen3.8 and Qwen3.8-Flash-Next, Ternary-Bonsai-2
 - **Speculative decoding:** MTP with n-gram drafts, DFlash/DFlash2 block diffusion, with vision
 
-Measured speed and accuracy for every GPU and model: [docs/benchmarks](docs/benchmarks/README.md).
+Measurements: speed per GPU in [docs/benchmarks](docs/benchmarks/README.md), KV accuracy in
+[docs/turboquant.md](docs/turboquant.md#accuracy), fine-tuning in [docs/finetune.md](docs/finetune.md#results).
 
 ## Supported GPUs
 
-| GPU generation | Release archive | Tested on |
+| GPU generation | CUDA architecture | Measured on |
 | --- | --- | --- |
-| Turing (RTX 20, T4) | `cuda-12.8-sm75` (also runs newer GPUs through PTX) | RTX 2060 |
-| Ampere (RTX 30, A100) | `cuda-12.8-sm86` | RTX 3060, RTX 3090 |
-| Ada (RTX 40, L4) | `cuda-12.8-sm89` | RTX 4060 Ti, RTX 4090 |
-| Blackwell (RTX 50, RTX PRO 6000) | `cuda-12.8-sm120` | RTX 5090, RTX PRO 6000 |
+| Turing (RTX 20, T4) | 75 | RTX 2060 (development) |
+| Ampere (RTX 30, A100) | 80, 86 | RTX 3060, RTX 3090 (decode speed) |
+| Ada (RTX 40, L4) | 89 | RTX 4060 Ti, RTX 4090 (decode speed) |
+| Blackwell (RTX 50, RTX PRO 6000) | 120 | RTX 5090 (decode speed, fine-tuning), RTX PRO 6000 (fine-tuning) |
 | CPU, Vulkan, other backends | upstream backends | |
 
-The TurboQuant KV types need CUDA; the other backends use the upstream KV types.
+The TurboQuant KV types need CUDA; the other backends use the upstream KV types. Kernel tuning was done on Turing; on the
+newer generations the code runs and is measured, but not tuned for them yet.
 
 ## Documentation
 
