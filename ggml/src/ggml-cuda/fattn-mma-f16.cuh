@@ -309,13 +309,14 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
         const int32_t * const __restrict__ indices = nullptr) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     // K/V data is loaded with decreasing granularity for D for better memory bandwidth.
-    // The minimum granularity with cp.async is 16 bytes, with synchronous data loading it's 4 bytes.
+    // The minimum granularity is 16 bytes.
+    constexpr int h2_per_chunk = 16/sizeof(half2);
+    const int chunks_per_row = D2 / h2_per_chunk;
     if constexpr (use_cp_async) {
+        static_assert(warp_size == 32, "bad warp_size");
         static_assert(!oob_check, "OOB check not compatible with cp_async");
         static_assert(!use_sparse, "sparse gather not compatible with cp_async");
         constexpr int preload = 64;
-        constexpr int h2_per_chunk = 16/sizeof(half2);
-        const int chunks_per_row = D2 / h2_per_chunk;
 
         const unsigned int tile_KV_32 = ggml_cuda_cvta_generic_to_shared(tile_KV);
 
@@ -353,11 +354,11 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
         // 6: max  1*16= 16 bytes,   8 half
         ggml_cuda_unroll<6>{}(load);
     } else {
-        // TODO use ggml_cuda_memcpy_1
+        const half2 zero[4] = {{0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}};
         auto load = [&] __device__ (const int n) {
-            const int stride_k = warp_size >> n;
-            const int k0_start = stride_k == warp_size ? 0 : D2 - D2 % (2*stride_k);
-            const int k0_stop  =                             D2 - D2 % (1*stride_k);
+            const int stride_k = 32 >> n;
+            const int k0_start = stride_k == 32 ? 0 : chunks_per_row - chunks_per_row % (2*stride_k);
+            const int k0_stop  =                      chunks_per_row - chunks_per_row % (1*stride_k);
             const int stride_i = warp_size / stride_k;
 
             if (k0_start == k0_stop) {
@@ -376,20 +377,24 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
                 for (int k0 = k0_start; k0 < k0_stop; k0 += stride_k) {
                     const int k = k0 + (stride_k == warp_size ? threadIdx.x : threadIdx.x % stride_k);
 
+                    const half2 * src;
                     if constexpr (use_sparse) {
                         const int32_t index = i < i_sup ? indices[i] : -1;
-                        tile_KV[i*stride_tile + k] = index >= 0 ? KV[int64_t(index)*stride_KV + k] : make_half2(0.0f, 0.0f);
+                        src = index >= 0 ? KV + int64_t(index)*stride_KV + k*h2_per_chunk : zero;
                     } else {
-                        tile_KV[i*stride_tile + k] = !oob_check || i < i_sup ? KV[i*stride_KV + k] : make_half2(0.0f, 0.0f);
+                        src = !oob_check || i < i_sup ? KV + i*stride_KV + k*h2_per_chunk : zero;
                     }
+                    ggml_cuda_memcpy_1<16>(tile_KV + i*stride_tile + k*h2_per_chunk, src);
                 }
             }
         };
-        // 1: max 32* 4=128 bytes,  64 half
-        // 2: max 16* 4= 64 bytes,  32 half
-        // 3: max  8* 4= 32 bytes,  16 half
-        // 4: max  4* 4= 16 bytes,   8 half
-        ggml_cuda_unroll<4>{}(load);
+        // 1: max 32*16=512 bytes, 256 half
+        // 2: max 16*16=256 bytes, 128 half
+        // 3: max  8*16=128 bytes,  64 half
+        // 4: max  4*16= 64 bytes,  32 half
+        // 5: max  2*16= 32 bytes,  16 half
+        // 6: max  1*16= 16 bytes,   8 half
+        ggml_cuda_unroll<6>{}(load);
     }
 }
 
