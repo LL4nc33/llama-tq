@@ -19,6 +19,23 @@
   quantization was an artifact of that text: `q8_0` is at their noise floor.
 - Fixed: SET_ROWS into a KTQ/VTQ tensor on the CPU called a null pointer (no CPU encoder registered); test-backend-ops had
   no SET_ROWS cases for these types; test-quantize-fns overflowed its buffer for types with an F32 dot product type.
+- Fixed: tool-call parameters that start with indentation lost one space (Qwen3.5 / Qwen3.8 XML tool calls, e.g. Python
+  code); Nemotron-3-Nano put an empty reasoning block into the content with thinking off; Nemotron-Nano-v2 tool calls and
+  reasoning were not parsed (its handler from upstream #24674 had been dropped, now restored with the matching parser
+  pieces of upstream #21892 and #22654). The full chat test suite passes again.
+- Release archives: the binaries find their libraries from any directory, the CUDA archives no longer need NCCL,
+  `llama-finetune` is in every archive, and each archive is checked before upload (scripts/check-release-archive.sh).
+  Releases and Docker images are built only on demand. `--version`, the server log and `/props` report the release
+  version; the web interface is named llama-tq and has an About page with version, source links and license.
+- The Claude Code launcher is now `scripts/llama-tq-launch-claude.sh` (environment variables `LLAMA_TQ_SERVER_URL`,
+  `LLAMA_TQ_MODEL`; before: `onllama-launch-claude.sh`, `ONLLAMA_*`).
+- CI for this fork: a Linux build with all tests on every push and pull request that changes code, and a docs check (links, internal
+  details, the same measurement on two pages; scripts/check-docs.py).
+- Trellis V re-measured with V quantized in prefill: `vtq2_2` (2.25 bpw) KLD 0.033 vs `vtq2_1` (2.5 bpw) 0.049 on
+  Qwen3-4B; more accurate per bit, but without the fast decode kernels ([turboquant.md](docs/turboquant.md)).
+- Docs: removed the sparse V dequant sections (the code is gone); prompt caching for `/v1/messages` does not apply to
+  streaming requests such as Claude Code's; speculative-decoding speed-ups from 2026-06 were measured with the KTQ sign
+  bug and are marked as historical.
 
 ## 2026-10-10
 
@@ -104,9 +121,9 @@
   - New decode kernel for quantized KV with grouped-query attention: one block per GQA group, a whole warp per K/V row, the column dot products reduced together, codebooks in shared memory. It also takes q8_0 and q5_0 K/V (q8_0 decode is now faster than f16) and the sparse attention of Qwen3.8-Flash-Next.
   - Warp-cooperative TurboQuant quantization when writing the KV cache.
   - Tensor-core decode kernel for TurboQuant and q5_0 KV (`GGML_CUDA_TQ_WMMA=0` disables it): attention 12-29 % faster than the GQA kernel.
-- KV type guidance from perplexity: `ktq4_1`/`vtq4_1` equals f16 on Qwen3.8-27B and Ternary-Bonsai-2-27B; `ktq2_1`/`vtq2_1` costs about +2.6 % there.
+- KV type guidance from perplexity: `ktq4_1`/`vtq4_1` equals f16 on Qwen3.8-27B and Ternary-Bonsai-2-27B; `ktq2_1`/`vtq2_1` costs about +2.6 % there (these perplexity runs kept K in f16 during the prompt, see 2026-10-10; superseded by the KL divergence table of 2026-10-11).
 - q5_0 K/V flash attention without `GGML_CUDA_FA_ALL_QUANTS` (tensor cores for batches, the GQA kernel for decode).
-- **K2-Horizon-MoVA-36B-A4B** (`k2-horizon`, MoE with routed value experts in attention). Q3_K_M on 2x RTX 2060: 47 t/s decode, 840 t/s prefill. With `ktq4_1`/`vtq4_1` KV plus `--tq-protect-layers 4` the PPL is +0.8 % over f16 at about a third of the KV memory.
+- **K2-Horizon-MoVA-36B-A4B** (`k2-horizon`, MoE with routed value experts in attention). Q3_K_M on 2x RTX 2060: 47 t/s decode, 840 t/s prefill. With `ktq4_1`/`vtq4_1` KV plus `--tq-protect-layers 4` the PPL is +0.8 % over f16 at about a third of the KV memory (whether K was quantized during the prompt is not recorded, see 2026-10-10).
 - Tensor split with a quantized KV cache (attention rotation, staging cache, views of row-split tensors) and for routed value experts.
 - Qwen3.8-Flash-Next: the TurboQuant deferred-staging options now reach its hybrid memory (`--no-tq-deferred-k/v` were ignored).
 - Fixed: the fused Gated DeltaNet state gather could read freed row ids (illegal memory access on long prompts with hybrid Qwen3.5 / 3.8 models).
@@ -144,7 +161,7 @@
 
 - **DFlash / DFlash2 block-diffusion speculative decoding:** draft model and speculator, features from several target
   layers, token embeddings shared with the target, MRoPE, trimming of the draft KV tail. Code generation on 2× RTX 2060
-  roughly doubled (26-28 t/s instead of 15.5 t/s, acceptance up to 100 %).
+  about 1.7-1.8x faster (26-28 t/s instead of 15.5 t/s, acceptance up to 100 %).
 - Qwen3.8-27B (dense Gated DeltaNet hybrid) runs; Gated DeltaNet tests with several draft tokens per step (MTP).
 - Upstream picks for vision, reasoning output, correctness and the server.
 

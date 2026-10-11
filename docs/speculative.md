@@ -188,7 +188,9 @@ statistics ngram_map_k: #calls(b,g,a) = 6 1690 26, #gen drafts = 26, #acc drafts
 
 ### Model-class config matrix
 
-Measured in 2026-06 on 2x RTX 2060 12 GB with a KTQ/VTQ KV cache (builds of that time). Speed-up vs `--spec-type none`.
+Measured in 2026-06 on 2x RTX 2060 12 GB with a KTQ/VTQ KV cache. Builds of that time had a CUDA bug that negated every
+K value of KTQ caches (fixed 2026-10-04), so these numbers are historical; re-measure with `q8_0` KV before relying on
+them. Speed-up vs `--spec-type none`.
 
 | Model | Quant | Baseline | Best spec config | Creative | Repeat |
 |---|---|---|---|---|---|
@@ -247,7 +249,7 @@ llama-server -m Qwen3.8-27B-Q4_K_M.gguf -md dflash2-draft-Q4_K_M.gguf \
     --spec-type draft-dflash -ngl 99 -ngld 99 -fa on
 ```
 
-The draft GGUF carries its target layer ids (`dflash.target_layers`). Measured on 2x RTX 2060
+The draft GGUF carries its target layer ids (`dflash.target_layers`). Measured in 2026-08 on 2x RTX 2060
 12 GB with Qwen3.8-27B Q4_K_M: code generation about 26-28 t/s instead of 15.5 t/s, output
 unchanged at temperature 0. Prose gains less; repeat-heavy text is still best served by
 `ngram-mod`.
@@ -255,8 +257,8 @@ unchanged at temperature 0. Prose gains less; repeat-heavy text is still best se
 ### Earlier notes on the 2x ceiling
 
 With single-layer MTP heads and n-gram caches alone, a universal 2x was not reachable on
-2x 12 GB with IQ2 MoE models; MTP drafts on dense Qwen3.8 even cost 10-14 %. Block drafting
-(DFlash above) is the path that reaches 2x on code. Repeat-heavy workloads (lists, code
+2x 12 GB with IQ2 MoE models; MTP drafts on dense Qwen3.8 even cost 10-14 % (2026-08). Block drafting
+(DFlash above) reaches about 1.7-1.8x on code. Repeat-heavy workloads (lists, code
 boilerplate, log scanning) reach 1.5-3.8x with `ngram-cache` / `ngram-mod`.
 
 ### Hybrid-recurrent fix

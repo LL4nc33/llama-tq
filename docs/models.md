@@ -6,15 +6,14 @@ use on 2× RTX 2060 12 GB (Turing, no P2P) and what that command reaches. Compar
 
 All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md). The speed and
 perplexity numbers on this page were measured before the KTQ/VTQ encoder change of
-2026-10-11 (decode with a KTQ/VTQ cache changes by 1-2 %, their accuracy improves).
+2026-10-11; current KV accuracy: [turboquant.md](turboquant.md#accuracy).
 
 ## Ternary-Bonsai-2-27B (`PQ2_0`, `PTQ1_0`)
 
 Ternary weights in groups of 128 with Hadamard-rotated activations. `PTQ1_0` packs them at
-1.75 bits and is both smaller and faster than the 2-bit `PQ2_0` container at the same
-quality. Source: [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
+1.75 bits, `PQ2_0` at 2 bits. Source: [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
 
-Two slots with 200k context each, vision, KV equal to f16 in perplexity:
+Two slots with 200k context each, vision:
 
 ```bash
 GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m Ternary-Bonsai-2-27B-PTQ1_0.gguf \
@@ -31,7 +30,7 @@ Decode: 34 t/s short, 28 t/s at 23k, 22 t/s at 74k. One slot with f16 KV: 200k c
 Dense hybrid model: one in four layers has full attention, the rest are Gated DeltaNet, so the
 KV cache is small. Source: [unsloth/Qwen3.8-27B-GGUF](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF).
 
-Full 256k context with `ktq4_1`/`vtq4_1` (PPL 6.039 vs 6.036 with f16):
+Full 256k context with `ktq4_1`/`vtq4_1`:
 
 ```bash
 GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m Qwen3.8-27B-UD-Q4_K_M.gguf \
@@ -60,8 +59,7 @@ Decode: 15.5 t/s at 118k with a peak of 11.6 GB per GPU.
 ## K2-Horizon-MoVA-36B-A4B (`k2-horizon`)
 
 MoE whose attention layers route the value projection through experts (mixture of value
-experts). All 48 layers use full attention, so the KV cache grows quickly; the outer layers are
-the most sensitive to a quantized K. Source:
+experts). All 48 layers use full attention, so the KV cache grows quickly. Source:
 [NANI-Nithin/K2-Horizon-MoVA-36B-A4B-GGUF](https://huggingface.co/NANI-Nithin/K2-Horizon-MoVA-36B-A4B-GGUF).
 
 ```bash
@@ -71,12 +69,8 @@ llama-server -m K2-Horizon-MoVA-36B-A4B-Q3_K_M.gguf \
   --tq-protect-layers 4 --jinja
 ```
 
-| KV cache | PPL vs f16 |
-|---|---:|
-| `ktq4_1` / `vtq4_1` | +3.3 % |
-| `ktq4_1` / `vtq4_1` + `--tq-protect-layers 4` | +0.8 % |
-| `q5_0` / `q5_0` | +0.4 % |
-| `q8_0` / `q8_0` | equal |
+The KV accuracy of this model has not been measured with the cache quantized in prefill; if accuracy matters more than
+context, use `-ctk q8_0 -ctv vtq4_1` ([turboquant.md](turboquant.md#accuracy)).
 
 Decode: 47 t/s short, 22 t/s at 40k. Prefill 650 t/s short, 416 t/s at 38k.
 
@@ -129,8 +123,7 @@ GGML_OP_OFFLOAD_MIN_BATCH=256 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 13
 An MoE expert cache in VRAM (tried as `--moe-cache-mib`, since removed) did not pay off here: with 5 GB of cache and a 91 % hit
 rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU.
 
-Decode barely drops with context (38 t/s at 10k). KV accuracy: perplexity +0.5 % with
-`ktq4_1`/`vtq4_1` against f16 (cache quantized in prefill, before the encoder change of 2026-10-11). Reasoning effort is set per request through `chat_template_kwargs`
+Decode barely drops with context (38 t/s at 10k). KV accuracy: [turboquant.md](turboquant.md#accuracy). Reasoning effort is set per request through `chat_template_kwargs`
 (`reasoning_effort`: none, low, medium, high); tool calls use the Hermes format.
 
 ## gpt-oss-20b
@@ -149,7 +142,7 @@ llama-server -m gpt-oss-20b-MXFP4.gguf -ngl 99 -fa on -c 131072 \
   -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
 ```
 
-Decode 77 t/s short, 57 t/s at 22k, 40 t/s at 64k (2× RTX 2060). Prompt processing 1100-2300 t/s.
+With this server command on 2× RTX 2060: 57 t/s at 22k, 40 t/s at 64k; prompt processing 1100-2300 t/s.
 
 ## Gemma 4
 

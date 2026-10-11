@@ -1,4 +1,8 @@
-# Build llama.cpp locally
+# Build llama-tq locally
+
+This is the upstream llama.cpp build guide; it applies to this fork unchanged. For the TurboQuant KV cache types build
+with CUDA and set the architecture of your GPU: `-DCMAKE_CUDA_ARCHITECTURES=75` (Turing), `86` (Ampere), `89` (Ada),
+`120` (Blackwell), several as `"86;89"`.
 
 The main product of this project is the `llama` library. Its C-style interface can be found in [include/llama.h](../include/llama.h).
 
@@ -7,8 +11,8 @@ The project also includes many example programs and tools using the `llama` libr
 **To get the Code:**
 
 ```bash
-git clone https://github.com/ggml-org/llama.cpp
-cd llama.cpp
+git clone https://github.com/LL4nc33/llama-tq
+cd llama-tq
 ```
 
 The following sections describe how to build with different backends and options.

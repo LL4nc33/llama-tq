@@ -6,8 +6,8 @@ IQ2_XXS, see *Measured* below).
 
 ## Status
 
-- **Standard quants** (Q4_K_M, IQ-types, F16, etc.): fully supported via
-  upstream-maintained shaders.
+- **Standard quants** (Q4_K_M, IQ-types, F16, etc.): supported through the
+  upstream shaders (the fork measured the models in the table below).
 - **TurboQuant KV cache** (KTQ1-4 / VTQ1-4): **CUDA-only**; the Vulkan backend
   has no kernels for these types. With a Vulkan build use the upstream KV types
   (`q8_0`, `q4_0`). A GLSL port is planned for later, after the CUDA work (a multi-week effort).

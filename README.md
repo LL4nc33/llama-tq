@@ -18,8 +18,11 @@
 A few options to get `llama-tq`:
 
 - Download a Linux build from the [releases page](https://github.com/LL4nc33/llama-tq/releases) (CPU and Vulkan for x64
-  and arm64, CUDA for x64). The current release (v2026.10.06) predates the changes since 2026-10-07; for those, build
-  from source until the next release, which also brings one CUDA archive per GPU generation
+  and arm64, CUDA for x64). The CUDA archives need an NVIDIA driver for CUDA 12.8 (570 or newer) and the CUDA 12 runtime
+  libraries `libcudart.so.12` and `libcublas.so.12` (e.g. the packages `cuda-cudart-12-8` and `libcublas-12-8` from
+  NVIDIA's repository). The current release (v2026.10.06) predates the changes since 2026-10-07, and its CUDA archive
+  also needs `libnccl.so.2` and has to be started from its own directory; for now, build from source. The next release
+  brings one CUDA archive per GPU generation without these limits
 - Run the CPU server image with Docker: `ghcr.io/ll4nc33/llama-tq:server` (see [Docker](docs/docker.md))
 - Build from source with CUDA, see the [build guide](docs/build.md):
   `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
@@ -46,7 +49,7 @@ context, and to fine-tune them, on consumer NVIDIA GPUs with 12 to 32 GB. It is 
 P2P; speed was also measured on RTX 30, 40 and 50 cards, fine-tuning on RTX 50 cards. Upstream fixes are cherry-picked rather than
 merged continuously, so the fork can lag behind the newest upstream. The fork adds:
 
-- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value with fast decode
+- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value with dedicated decode
   kernels, for long context on small GPUs ([which type to pick](docs/turboquant.md#recommendation))
 - **Fine-tuning on quantized models:** LoRA on k-quant, IQ, MXFP4 and ternary GGUFs without dequantized weights, MoE
   experts, models larger than VRAM, flash attention backward on CPU and CUDA
@@ -88,7 +91,7 @@ newer generations the code runs and is measured, but not tuned for them yet.
 
 - [server](tools/server/README.md), [cli](tools/cli/README.md), [multimodal](docs/multimodal.md),
   [function calling](docs/function-calling.md)
-- [build](docs/build.md), [Docker](docs/docker.md), [models](https://github.com/ggml-org/llama.cpp/blob/master/docs/models.md)
+- [build](docs/build.md), [Docker](docs/docker.md), [upstream models](https://github.com/ggml-org/llama.cpp/blob/master/docs/models.md)
 
 ## Contributing
 

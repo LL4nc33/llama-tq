@@ -1,6 +1,6 @@
 # Upstream Integration Log
 
-Running record of upstream `llama.cpp` cherry-picks, feature ports, and the bench-parity gate each had to pass. The high-level status lives in [ROADMAP.md](../ROADMAP.md); this file is the detail log and is updated as new upstream work lands.
+Running record of upstream `llama.cpp` cherry-picks, feature ports, and the bench-parity gate each had to pass. The high-level status lives in [ROADMAP.md](../../ROADMAP.md); this file is the detail log and is updated as new upstream work lands.
 
 **Parity gate:** every entry below was verified against the local PPL + TG/PP gates on `0.8B-Q8` and `35B-A3B-IQ2_XXS` (KTQ2_1 + VTQ2_1) before landing. TurboQuant KV kernels stay untouched by upstream picks unless explicitly noted.
 
