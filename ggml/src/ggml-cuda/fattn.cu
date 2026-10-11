@@ -552,8 +552,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // passed byte strides instead of block-unit strides to ggml_get_to_fp16_nc_cuda;
         // fixed in fattn-mma-ktq.cu.
         // Batches (prefill): expand TurboQuant K (KTQ) and/or V (VTQ) to f16 and use the MMA kernel;
-        // the VEC kernel is slow for many query columns at long context.
-        const bool k_split = K->type == GGML_TYPE_F16 || GGML_TYPE_IS_KTQ(K->type);
+        // the VEC kernel is slow for many query columns. Standard quantized K (q8_0, q4_0, ...) next to a VTQ V
+        // takes the same path: without it, q8_0 K + vtq4_1 V prefilled through the VEC kernel.
+        const bool k_split = K->type == GGML_TYPE_F16 || GGML_TYPE_IS_KTQ(K->type) ||
+                             ggml_get_to_fp16_nc_cuda(K->type) != nullptr;
         const bool v_split = V->type == GGML_TYPE_F16 || (is_vtq_v && ggml_get_to_fp16_nc_cuda(V->type) != nullptr);
         // the MMA kernel takes head size 512 (Gemma 4 global layers) only with GQA batching
         const bool d_split = K->ne[0] == V->ne[0] && (K->ne[0] == 64 || K->ne[0] == 80 || K->ne[0] == 96 ||

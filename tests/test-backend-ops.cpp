@@ -9710,6 +9710,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // prompt batches with a VTQ V next to a standard quantized K (split-dequant tensor-core path)
+    for (int hs : {64, 128, 256, 512}) {
+        for (int64_t nb : {32, 512}) {
+            for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+                    {GGML_TYPE_Q8_0, GGML_TYPE_VTQ4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ2_1},
+                    {GGML_TYPE_Q4_0, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}}) {
+                test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {hs == 512 ? 8 : 4, 1}, 1024, nb, true,
+                            hs == 64, 0, 0, GGML_PREC_F32, kv_types.first, kv_types.second));
+            }
+        }
+    }
+
     // TurboQuant K/V with sparse attention (qwen4exp: head 256, 2 KV heads, GQA 12, n_kv_max cells per query)
     for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
             {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}, {GGML_TYPE_KTQ2_1, GGML_TYPE_F16}, {GGML_TYPE_F16, GGML_TYPE_VTQ2_1}}) {
