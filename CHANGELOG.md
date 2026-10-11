@@ -8,8 +8,8 @@
   prefill: `ktq4_1`/`vtq4_1` 0.045 -> 0.025 on Qwen3-4B (`q4_0` 0.034) and 0.55 -> 0.36 on gpt-oss (`q4_0` 0.36);
   `ktq2_1`/`vtq2_1` 1.38 -> 0.40 on Qwen3-4B. Format unchanged; decode with the cache quantized per token -1.7 %
   (`ktq4_1`/`vtq4_1`, RTX 2060). CUDA and CPU encoders pick bit-identical codes.
-- **Fast decode for `q8_0` K with VTQ V**, the accurate compact setting (6.5 bpw): the GQA and tensor-core decode kernels
-  take the pair (head 64 with sinks, 128, 256, 512). Qwen3-4B at 16k context 17.5 -> 50.7 t/s (`vtq4_1`), gpt-oss at 8k
+- **Fast decode for `q8_0` K with `vtq4_1` / `vtq2_1` V**, the accurate compact setting (6.5 bpw): the GQA and tensor-core
+  decode kernels take the pair (head 64 with sinks, 128, 256, 512). Qwen3-4B at 16k context 17.5 -> 50.7 t/s (`vtq4_1`), gpt-oss at 8k
   50.8 -> 70.4 t/s, both as fast as `q8_0`/`q8_0` (RTX 2060). gpt-oss needs 8-bit K: every 4-bit K type costs it KLD ~0.35,
   `q8_0`/`vtq4_1` 0.039.
 - KV accuracy table re-measured on wikitext-2 (Qwen3-4B) and on the models' own prose (gpt-oss, Gemma 4; raw wikitext is
@@ -22,7 +22,7 @@
 
 ## 2026-10-10
 
-- **All 13 evaluated models reach 100 % exact match** on the held-out appointment task after one LoRA run: Qwen3-4B,
+- **All 12 evaluated models reach 100 % exact match** on the held-out appointment task after one LoRA run: Qwen3-4B,
   Qwen3.5-0.8B and Qwen3.8-27B (Gated DeltaNet), Qwen3.8-Flash-Next (hyper-connections, sparse attention, 72.5 GB),
   Ternary-Bonsai-2-27B (ternary), Qwen3.6-35B-A3B and K2-Horizon-36B (MoE), Kolibri-1 78B (MoE, 8 min on one 96 GB GPU),
   Gemma-4-12B and Gemma-4-26B-A4B, gpt-oss-20b (MXFP4), Ministral-3B. Settings per model in [docs/finetune.md](docs/finetune.md).
@@ -90,7 +90,7 @@
 
 ## 2026-10-05
 
-- **MoE expert cache** (`--moe-cache-mib N`, upstream PR #29887): an LRU cache in VRAM for experts kept in host memory (`-cmoe` / `-ncmoe` / `-ot`). Decode batches (up to 32 tokens) remap the selected experts to cached copies instead of reading them over PCIe. With several GPUs the cache sits on the device whose layers keep the most experts in host memory; pipeline parallelism is turned off while the cache is active.
+- **MoE expert cache** (`--moe-cache-mib N`, upstream PR #29887) (removed 2026-10-09: no gain in our setups): an LRU cache in VRAM for experts kept in host memory (`-cmoe` / `-ncmoe` / `-ot`). Decode batches (up to 32 tokens) remap the selected experts to cached copies instead of reading them over PCIe. With several GPUs the cache sits on the device whose layers keep the most experts in host memory; pipeline parallelism is turned off while the cache is active.
 - Fixed: the server crashed with a null context when the context could not be created (for example out of memory); it now exits with an error.
 - Removed: the DiffusionGemma text-diffusion model, its examples, CUDA sampler, context API and WebUI preview.
 - Removed: the inline KTQ MMA flash-attention path (dead since the split dequant + tensor-core path); `vtq_mixed` is no longer offered on the command line (the type enum stays for compatibility).

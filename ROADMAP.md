@@ -18,15 +18,16 @@ the history in the [changelog](CHANGELOG.md).
 ## In flight
 
 - **Eagle3 draft head:** extraction and GGUF plumbing landed; dormant until a trained head loads.
-- **Vulkan KTQ/VTQ port:** researched, not started; worth it for AMD, Intel Arc and Pascal (where Vulkan decodes faster
-  than CUDA), not for Turing. → [vulkan.md](docs/vulkan.md)
-- **QAT:** `ggml_quantize_dequantize_fake` landed; CLI flag and LoRA graph integration queued. → [finetune.md](docs/finetune.md)
+- **QAT:** `--qat-target-quant` fake-quantizes the LoRA delta in training; landed, not yet validated on a task.
+  → [finetune.md](docs/finetune.md)
 
 ## Planned
 
 - TurboQuant on every RTX generation: speed within 5 % of f16 on Turing to Blackwell, better 2- and 3-bit K accuracy, a
   cheaper encoder scale search. → [turboquant.md](docs/turboquant.md)
 - CUDA release for arm64 (GH200, DGX Spark).
+- Vulkan KTQ/VTQ port: researched, not scheduled; worth it for AMD, Intel Arc and Pascal (where Vulkan decodes faster
+  than CUDA), not for Turing. → [vulkan.md](docs/vulkan.md)
 - Fine-tuning: faster CPU path and layer prefetch for experts in RAM, SSM (Mamba) training, fewer small kernels on Turing.
   → [finetune.md](docs/finetune.md)
 

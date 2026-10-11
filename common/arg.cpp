@@ -417,7 +417,7 @@ static ggml_type kv_cache_type_from_str(const std::string & s) {
     if (s == "ktq3") { return GGML_TYPE_KTQ3_1; }
     if (s == "ktq4") { return GGML_TYPE_KTQ4_1; }
     if (s == "vtq1") { return GGML_TYPE_VTQ1_1; }
-    if (s == "vtq2") { return GGML_TYPE_VTQ2_2; }  // current prod default (trellis)
+    if (s == "vtq2") { return GGML_TYPE_VTQ2_2; }  // trellis; the fast decode kernels cover vtq2_1
     if (s == "vtq3") { return GGML_TYPE_VTQ3_V8; } // v8: trellis-3bit + 2 outliers (3.625 bpw)
     if (s == "vtq4") { return GGML_TYPE_VTQ4_1; }
 
@@ -4081,7 +4081,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--qat-target-quant"}, "TYPE",
         "Stage-4 QAT: fake-quantize the LoRA delta to TYPE in forward (e.g. q4_0, q8_0, iq4_nl, ktq2_1). "
         "Backward is straight-through. The adapter learns to compensate for the target quant's error. "
-        "Off by default. Requires --lora-train-regex.",
+        "Off by default. Requires --lora-train-target.",
         [](common_params & params, const std::string & value) {
             // Accept any ggml_type whose ggml_type_name matches. Look across
             // all enum values up to GGML_TYPE_COUNT (a tight enum, so the

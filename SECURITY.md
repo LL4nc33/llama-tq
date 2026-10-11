@@ -43,7 +43,7 @@ Only vulnerabilities that fall within these parts of the project are considered 
     - Features not recommended for use in untrusted environments (e.g., router, MCP)
     - Bugs that can lead to Denial-of-Service attack
 
-Note that none of the topics under [Using llama.cpp securely](#using-llamacpp-securely) are considered vulnerabilities in LLaMA C++.
+Note that none of the topics under [Using llama.cpp securely](#using-llamacpp-securely) are considered vulnerabilities in llama-tq.
 
 For vulnerabilities that fall within the `vendor` directory, please report them directly to the third-party project.
 
@@ -65,7 +65,7 @@ For maximum security when handling untrusted inputs, you may need to employ the 
 
 * Sandboxing: Isolate the environment where the inference happens.
 * Pre-analysis: Check how the model performs by default when exposed to prompt injection (e.g. using [fuzzing for prompt injection](https://github.com/FonduAI/awesome-prompt-injection?tab=readme-ov-file#tools)). This will give you leads on how hard you will have to work on the next topics.
-* Updates: Keep both LLaMA C++ and your libraries updated with the latest security patches.
+* Updates: Keep both llama-tq and your libraries updated with the latest security patches.
 * Input Sanitation: Before feeding data to the model, sanitize inputs rigorously. This involves techniques such as:
     * Validation: Enforce strict rules on allowed characters and data types.
     * Filtering: Remove potentially malicious scripts or code fragments.

@@ -3,13 +3,17 @@
 KTQ and VTQ ship with `PQ_CODEBOOK_2BIT` / `PQ_CODEBOOK_3BIT` / `PQ_CODEBOOK_4BIT`
 constants that are Lloyd-Max optimal for the *theoretical* post-RHT marginal
 `Beta((d-1)/2, (d-1)/2) = Beta(15.5, 15.5)` at `d = QK_KTQ = 32`. See
-`docs/turboquant.md` §"Quantization Pipeline" for the derivation.
+[turboquant.md, How It Works](turboquant.md#how-it-works) for the pipeline.
+
+**Status:** the script below fits calibrated codebooks and writes them as a header; using that header in the build is
+not implemented yet, so the shipped codebooks are always used. Since 2026-10-11 the encoder also searches the block scale,
+which already takes up much of what a re-fitted codebook would gain.
 
 In practice the empirical post-RHT distribution can deviate -- attention sinks,
 RoPE artefacts, or layer-1 dominance produce heavier tails than the analytical
-marginal. Re-fitting the codebook against a calibration set typically yields
-~10-25% MSE reduction, which maps to ~2-4% PPL improvement at zero runtime
-cost (only a constant table changes).
+marginal. Re-fitting the codebook against a calibration set lowers the
+reconstruction error on those samples (the example below: 0.01-2.4 %); the
+effect on perplexity has not been measured.
 
 ## When to Calibrate
 
@@ -43,8 +47,8 @@ python3 scripts/calibrate_ktq_codebook.py \
 
 ### From extracted samples (recommended)
 
-If you have post-RHT samples on disk -- e.g. from `extract_v_samples.py` or any
-`tq_calibrate_*` extraction tool -- pass them directly. The script will fit a
+If you have post-RHT samples on disk (the repository has no extraction tool for
+them; dump the rotated blocks from your own build), pass them directly. The script will fit a
 symmetric-Beta via method-of-moments AND run Lloyd-Max on the raw samples.
 
 ```bash
@@ -68,22 +72,17 @@ Output is a header file:
 
 ## Activating the Override
 
-The override is **opt-in** so the upstream-aligned baseline never changes
-silently. Build with:
+Planned, not implemented: an opt-in build switch so the shipped codebooks never
+change silently:
 
 ```bash
 cmake -B build -DPQ_CODEBOOK_USE_CALIBRATED=ON ...
 cmake --build build
 ```
 
-When that flag is set, `ggml/src/ggml-quants.c` includes the override header
-and substitutes `PQ_CODEBOOK_*BIT_CALIBRATED` for the shipped constants. CUDA
-constants `PQ_CUDA_CB_*BIT` are derived from the same source and pick up the
-override automatically (see `ggml/src/ggml-cuda/turboquant.cuh`).
-
-> **Note:** at the time of writing the include-and-substitute glue itself is
-> not yet wired into `ggml-quants.c`. The script and header format are stable
-> and forward-compatible; the C-side switch lands as a follow-up commit.
+With that switch, `ggml/src/ggml-quants.c` would include the override header and use `PQ_CODEBOOK_*BIT_CALIBRATED`
+instead of the shipped constants, and the CUDA constants `PQ_CUDA_CB_*BIT` would follow
+(`ggml/src/ggml-cuda/turboquant.cuh`). Neither part exists yet.
 
 ## Validating the Result
 
@@ -126,8 +125,7 @@ remains the source of truth for whether to keep an override.
 
 4. **No KV-cache live path yet.** Option B in the original task (a `'M'` tag
    in the former router profiler for K-tensor mean post-FWHT) is *not*
-   implemented. `--mode samples` requires offline extraction (e.g. via
-   `extract_v_samples.py` adapted for K).
+   implemented. `--mode samples` requires offline extraction of the samples.
 
 ## See Also
 

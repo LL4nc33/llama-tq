@@ -46,7 +46,9 @@ every 4-bit K type. Measured on wikitext-2 (Qwen3-4B) and on the models' own pro
 
 ## Models on 2× RTX 2060 12 GB
 
-Commands for these setups: [models.md](../models.md).
+Maximum context and decode speed measured on 2026-10-04 (before the encoder change, which costs 1–2 %). These rows show
+what fits, not the recommended KV type: for accuracy prefer `q8_0`, or `q8_0` K with `vtq4_1` V (gpt-oss needs 8-bit K).
+The commands in [models.md](../models.md) use the recommended types and list their own numbers.
 
 | Model | KV cache | Max context | Decode, short | Decode, long |
 |---|---|---|---|---|
@@ -66,6 +68,6 @@ AdamW 2e-4, 2 epochs, same data and metric (100 held-out examples):
 | RTX 5090 | 54 s, 7.8 GB | 102 s, 11.0 GB | 100 % / 100 % |
 | RTX 2060 | 321 s, 7.2 GB | 260 s, 10.5 GB | 100 % / 100 % |
 
-All 13 evaluated models (dense, MoE, Gated DeltaNet, ternary, up to 78B and 72.5 GB files) reach 100 % exact match on
+All 12 evaluated models (dense, MoE, Gated DeltaNet, ternary, up to 78B and 72.5 GB files) reach 100 % exact match on
 the task after one LoRA run: [finetune.md](../finetune.md). The task and its scripts:
 [examples/training/termine](../../examples/training/termine/README.md).

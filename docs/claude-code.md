@@ -130,8 +130,8 @@ server invocation:
 
 ```bash
 ./build/bin/llama-server -m model.gguf \
-    -c 400000 -ngl 99 -fa on --parallel 2 \
-    --cache-type-k ktq2_1 --cache-type-v vtq2_1 \
+    -c 131072 -ngl 99 -fa on --parallel 2 \
+    --cache-type-k q8_0 --cache-type-v vtq4_1 \
     --cache-reuse 256
 ```
 

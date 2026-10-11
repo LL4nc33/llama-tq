@@ -8,9 +8,9 @@ Vulkan-vs-CUDA TG gap on `sm_75` hardware.
 
 - **Standard quants** (Q4_K_M, IQ-types, F16, etc.): fully supported via
   upstream-maintained shaders.
-- **TurboQuant KV cache** (KTQ1-4 / VTQ1-4): **CUDA-only**. Vulkan builds
-  silently fall back to F16 KV. A GLSL port is a multi-week effort and is
-  not on the immediate roadmap.
+- **TurboQuant KV cache** (KTQ1-4 / VTQ1-4): **CUDA-only**; the Vulkan backend
+  has no kernels for these types. With a Vulkan build use the upstream KV types
+  (`q8_0`, `q4_0`). A GLSL port is a multi-week effort and is not scheduled.
 - **Multi-GPU**: works through Vulkan device selection (`--main-gpu`,
   `--tensor-split`).
 - **Turing TG tuning**: `rm_kq=4` is enabled by default on `NVIDIA_TURING`
@@ -132,9 +132,8 @@ sites where the heuristic might not match the device.
 
 ## Caveats
 
-- The TurboQuant cache-type flags (`--cache-type-k ktq2`, etc.) silently
-  fall back to F16 under Vulkan today. If you depend on aggressive KV
-  quantisation for VRAM headroom, stay on CUDA.
+- The TurboQuant cache types (`ktq*`, `vtq*`) have no Vulkan kernels. If you
+  depend on aggressive KV quantisation for VRAM headroom, stay on CUDA.
 - TG on IQ-quants is memory-bandwidth-bound at this point; further gains
   require a DP4A MMVQ shader for IQ2_XXS (sign-flip makes packed-int-dot
   non-trivial — see `mul_mat_vecq_funcs.glsl` for the IQ1_S/M reference).

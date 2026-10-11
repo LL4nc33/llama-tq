@@ -112,7 +112,7 @@ If a draft model is combined with a draftless decoding the draftless decoding ha
                                         (default: 0)
                                         (env: LLAMA_ARG_DRAFT_MIN)
 [...]
---spec-type [none|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]
+--spec-type [none|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod|draft-simple|draft-mtp|draft-dflash]
                                         type of speculative decoding to use when no draft model is provided
                                         (default: none)
 --spec-ngram-size-n N                   ngram size N for ngram-simple/ngram-map speculative decoding, length
@@ -134,6 +134,9 @@ Specifies a type of speculative decoding without draft model.
 | `ngram-map-k` | Use n-gram pattern matching with n-gram-keys |
 | `ngram-map-k4v` | Use n-gram pattern matching with n-gram-keys and up to four m-gram values (experimental) |
 | `ngram-mod` | Use basic ngram hasher for speculative decoding with shared pool |
+| `draft-simple` | Classic draft model given with `-md` |
+| `draft-mtp` | The model's own MTP head as drafter |
+| `draft-dflash` | DFlash / DFlash2 block-diffusion drafter given with `-md` (see below) |
 
 **Example:** Server-instance used to refactor source code.
 ```bash
@@ -203,7 +206,7 @@ DRAFT_MTP is supported and respects `--draft-p-min` (default 0.75). On consumer
 single-GPU + IQ2-class MoE models it consistently underperforms ngram-cache
 because the single-layer MTP head caps per-step confidence so position 1-3 of a
 dm=4 draft fail the p_min filter (observed: avg 1.30 tokens/draft, firing 32%
-of TG-iterations with the Phase 29 decay patch — still net-negative).
+of TG-iterations with the `LLAMA_MTP_DECAY` patch — still net-negative).
 
 When to enable DRAFT_MTP:
 - Q4 or higher quantization (the MTP head retains useful sharpness)
@@ -218,8 +221,8 @@ When NOT to enable DRAFT_MTP:
 
 | Env var | Default | Range | Effect |
 |---|---|---|---|
-| `LLAMA_SPEC_RELAX` | 0 | 0..50 | Lower ngram-cache acceptance thresholds for noisier-quant models (Phase 28) |
-| `LLAMA_MTP_DECAY` | 0.70 | 0.30..1.00 | DRAFT_MTP per-position p_min decay; 1.0 = strict at every step (Phase 29) |
+| `LLAMA_SPEC_RELAX` | 0 | 0..50 | Lower ngram-cache acceptance thresholds for noisier-quant models |
+| `LLAMA_MTP_DECAY` | 0.70 | 0.30..1.00 | DRAFT_MTP per-position p_min decay; 1.0 = strict at every step |
 | `FORK_MTP_PROFILE_ACC=1` | — | — | Print draft/accept stats per TG batch |
 | `FORK_SPEC_TRACE=1` | — | — | Verbose spec-flow log (very noisy, debug only) |
 
