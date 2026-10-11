@@ -1,29 +1,8 @@
 name: Server WebUI
 
 on:
-  workflow_dispatch: # allows manual triggering
-    inputs:
-      sha:
-        description: 'Commit SHA1 to build'
-        required: false
-        type: string
-  push:
-    branches:
-      - master
-    paths: [
-      '.github/workflows/server-webui.yml',
-      'tools/server/webui/**.*',
-      'tools/server/tests/**.*',
-      'tools/server/public/**'
-    ]
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths: [
-      '.github/workflows/server-webui.yml',
-      'tools/server/webui/**.*',
-      'tools/server/tests/**.*',
-      'tools/server/public/**'
-    ]
+  # upstream llama.cpp workflow; this fork runs ci.yml automatically, this one only on demand
+  workflow_dispatch:
 
 env:
   LLAMA_LOG_COLORS: 1

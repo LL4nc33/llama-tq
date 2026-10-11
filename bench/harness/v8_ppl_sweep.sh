@@ -58,7 +58,7 @@ CONFIGS=(
   "ktq2:vtq3:v8-quality"
   "ktq3:vtq3:v8-research"
   "ktq4:vtq4:v8-max"
-  "ktq2_1:vtq2_2:legacy-2025-prod"
+  "ktq2_1:vtq2_2:legacy-2025-default"
   "ktq2_1:vtq3_1:legacy-aggressive"
   "ktq2_1:vtq4_1:legacy-quality"
 )

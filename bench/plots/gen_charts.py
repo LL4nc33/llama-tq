@@ -646,7 +646,7 @@ def chart_cross_project_dual():
 def chart_large_moe_tg():
     # TG tok/s across the four large-MoE deployments, same box
     # (Ryzen 7 3700X host + 2x RTX 2060, KVM guest VM with 12 vCPUs),
-    # production KV config (ktq2_1 K + vtq2_2 V at 2.78 bpw), measured
+    # default KV config (ktq2_1 K + vtq2_2 V at 2.78 bpw), measured
     # 2026-04-25 to 2026-04-27. Each bar annotated with the physics
     # ceiling (memory-bandwidth bound on CPU-offloaded traffic) and
     # the resulting efficiency. The 80B-TQ1_0 tier eliminates CPU

@@ -1,29 +1,8 @@
 name: Server (sanitize)
 
 on:
-  workflow_dispatch: # allows manual triggering
-    inputs:
-      sha:
-        description: 'Commit SHA1 to build'
-        required: false
-        type: string
-      slow_tests:
-        description: 'Run slow tests'
-        required: true
-        type: boolean
-  push:
-    branches:
-      - master
-    paths: [
-      '.github/workflows/server-sanitize.yml',
-      '**/CMakeLists.txt',
-      '**/Makefile',
-      '**/*.h',
-      '**/*.hpp',
-      '**/*.c',
-      '**/*.cpp',
-      'tools/server/**.*'
-    ]
+  # upstream llama.cpp workflow; this fork runs ci.yml automatically, this one only on demand
+  workflow_dispatch:
 
 env:
   LLAMA_LOG_COLORS: 1

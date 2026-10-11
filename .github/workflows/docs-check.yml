@@ -1,0 +1,20 @@
+name: Docs check
+
+# links, internal details and duplicated measurements in the fork's pages (scripts/check-docs.py)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - turboquant
+    paths: ['**/*.md', 'scripts/check-docs.py', '.github/workflows/docs-check.yml']
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: ['**/*.md', 'scripts/check-docs.py', '.github/workflows/docs-check.yml']
+
+jobs:
+  docs-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check docs
+        run: python3 scripts/check-docs.py

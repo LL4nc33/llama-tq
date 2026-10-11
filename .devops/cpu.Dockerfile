@@ -3,6 +3,8 @@ ARG UBUNTU_VERSION=24.04
 FROM ubuntu:$UBUNTU_VERSION AS build
 
 ARG TARGETARCH
+# release version reported by --version and the server, set by the release images
+ARG LLAMA_TQ_VERSION=
 
 RUN apt-get update && \
     apt-get install -y gcc-14 g++-14 build-essential git cmake libssl-dev
@@ -14,7 +16,7 @@ WORKDIR /app
 COPY . .
 
 RUN if [ "$TARGETARCH" = "amd64" ] || [ "$TARGETARCH" = "arm64" ]; then \
-        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON; \
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_TQ_VERSION="$LLAMA_TQ_VERSION"; \
     else \
         echo "Unsupported architecture"; \
         exit 1; \

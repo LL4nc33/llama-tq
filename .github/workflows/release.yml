@@ -7,39 +7,21 @@ on:
         description: 'Create new release'
         required: true
         type: boolean
-  push:
-    branches:
-      - turboquant
-    paths: [
-      '.github/workflows/release.yml',
-      '**/CMakeLists.txt',
-      '**/.cmake',
-      '**/*.h',
-      '**/*.hpp',
-      '**/*.c',
-      '**/*.cpp',
-      '**/*.cu',
-      '**/*.cuh',
-      '**/*.swift',
-      '**/*.m',
-      '**/*.metal',
-      '**/*.comp',
-      '**/*.glsl',
-      'tools/server/public/**'
-    ]
+  # manual only: Actions -> Release -> Run workflow on the turboquant branch, with "Create new release" ticked
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }} # a newer push cancels the build of an older one
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false # a second manual start waits instead of killing a running build
 
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
-  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON"
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON"
 
 jobs:
 
   ubuntu-cpu:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - build: 'x64'
@@ -80,6 +62,10 @@ jobs:
           echo "CC=gcc-14" >> "$GITHUB_ENV"
           echo "CXX=g++-14" >> "$GITHUB_ENV"
 
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
       - name: Build
         id: cmake_build
         run: |
@@ -90,18 +76,18 @@ jobs:
             -DGGML_NATIVE=OFF \
             -DGGML_CPU_ALL_VARIANTS=ON \
             -DLLAMA_FATAL_WARNINGS=ON \
+            -DLLAMA_TQ_VERSION=${{ steps.tag.outputs.name }} \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
-
-      - name: Determine tag name
-        id: tag
-        uses: ./.github/actions/get-tag-name
 
       - name: Pack artifacts
         id: pack_artifacts
         run: |
           cp LICENSE ./build/bin/
           tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-${{ matrix.build }}.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Check archive
+        run: bash scripts/check-release-archive.sh llama-${{ steps.tag.outputs.name }}-bin-ubuntu-${{ matrix.build }}.tar.gz cpu ${{ steps.tag.outputs.name }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
@@ -112,6 +98,7 @@ jobs:
 
   ubuntu-vulkan:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - build: 'x64'
@@ -149,6 +136,10 @@ jobs:
             echo "CXX=g++-14" >> "$GITHUB_ENV"
           fi
 
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
       - name: Build
         id: cmake_build
         run: |
@@ -159,18 +150,18 @@ jobs:
             -DGGML_NATIVE=OFF \
             -DGGML_CPU_ALL_VARIANTS=ON \
             -DGGML_VULKAN=ON \
+            -DLLAMA_TQ_VERSION=${{ steps.tag.outputs.name }} \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
-
-      - name: Determine tag name
-        id: tag
-        uses: ./.github/actions/get-tag-name
 
       - name: Pack artifacts
         id: pack_artifacts
         run: |
           cp LICENSE ./build/bin/
           tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-${{ matrix.build }}.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Check archive
+        run: bash scripts/check-release-archive.sh llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-${{ matrix.build }}.tar.gz vulkan ${{ steps.tag.outputs.name }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
@@ -222,6 +213,10 @@ jobs:
           key: ubuntu-cuda-${{ matrix.cuda }}-${{ matrix.gpu.name }}
           evict-old-files: 1d
 
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
       - name: Build
         id: cmake_build
         run: |
@@ -230,27 +225,33 @@ jobs:
           # linker resolves the CUDA driver symbols (cuMemCreate, cuMemMap, ...);
           # at runtime they bind to the host's real driver.
           export LIBRARY_PATH="/usr/local/cuda/lib64/stubs:${LIBRARY_PATH:-}"
+          # $ORIGIN: the binaries find the bundled libllama/libggml next to them from any directory (the default
+          # build RUNPATH is the CI checkout path). No NCCL: users rarely have it, and -sm tensor reduces across GPUs
+          # through host memory without it.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
             -DGGML_CUDA=ON \
+            -DGGML_CUDA_NCCL=OFF \
             -DCMAKE_CUDA_ARCHITECTURES="${{ matrix.gpu.archs }}" \
             -DCMAKE_EXE_LINKER_FLAGS="-Wl,--allow-shlib-undefined" \
-            -DLLAMA_BUILD_TESTS=OFF
+            -DLLAMA_TQ_VERSION=${{ steps.tag.outputs.name }} \
+            ${{ env.CMAKE_ARGS }}
           # Cap parallelism: nvcc compiling the TurboQuant template instances for
           # the TQ kernels peaks at ~3-4 GB per job; -j $(nproc) (4 on the runner) blew
           # past the 16 GB runner RAM and the build got OOM-killed (exit 137) at
           # ~74 min. -j2 keeps peak memory in budget; ccache covers repeat runs.
           cmake --build build --config Release -j 2
 
-      - name: Determine tag name
-        id: tag
-        uses: ./.github/actions/get-tag-name
-
       - name: Pack artifacts
         id: pack_artifacts
         run: |
           cp LICENSE ./build/bin/
           tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-cuda-${{ matrix.cuda }}-${{ matrix.gpu.name }}-x64.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Check archive
+        run: bash scripts/check-release-archive.sh llama-${{ steps.tag.outputs.name }}-bin-ubuntu-cuda-${{ matrix.cuda }}-${{ matrix.gpu.name }}-x64.tar.gz cuda ${{ steps.tag.outputs.name }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
@@ -260,7 +261,7 @@ jobs:
 
 
   release:
-    if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/turboquant' ) || github.event.inputs.create_release == 'true' }}
+    if: ${{ github.event.inputs.create_release == 'true' && github.ref == 'refs/heads/turboquant' }}
 
     # Fine-grant permission
     # https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#modifying-the-permissions-for-the-github_token
@@ -296,9 +297,10 @@ jobs:
         id: move_artifacts
         run: |
           mkdir -p release
-          shopt -s nullglob
-          mv -v artifact/*.tar.gz release 2>/dev/null || echo "no .tar.gz artifacts"
-          shopt -u nullglob
+          mv -v artifact/*.tar.gz release
+          # every archive of the build matrix: CPU and Vulkan for x64 and arm64, CUDA for four GPU generations
+          n=$(ls release/*.tar.gz | wc -l)
+          [ "$n" -eq 8 ] || { echo "expected 8 archives, got $n"; exit 1; }
 
       - name: Create release
         id: create_release
@@ -307,15 +309,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.tag.outputs.name }}
+          commitish: ${{ github.sha }}
           release_name: llama-tq ${{ steps.tag.outputs.name }}
           body: |
             Changes: [CHANGELOG.md](https://github.com/LL4nc33/llama-tq/blob/${{ steps.tag.outputs.name }}/CHANGELOG.md)
-
-            <details>
-
-            ${{ github.event.head_commit.message }}
-
-            </details>
 
             **Linux (x86-64):**
             - [Ubuntu x64 (CPU)](https://github.com/LL4nc33/llama-tq/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-x64.tar.gz)
@@ -328,6 +325,7 @@ jobs:
 
             Docker (CPU, amd64): `ghcr.io/ll4nc33/llama-tq:server` (also `full` / `light`).
             Pick the CUDA archive for your GPU generation; the Turing archive also runs on newer GPUs through PTX (slower first start). Other architectures: build from source.
+            The CUDA archives need an NVIDIA driver for CUDA 12.8 (570 or newer) and the CUDA 12 runtime libraries `libcudart.so.12` and `libcublas.so.12` (e.g. the packages `cuda-cudart-12-8` and `libcublas-12-8` from NVIDIA's repository).
 
       - name: Upload release
         id: upload_release

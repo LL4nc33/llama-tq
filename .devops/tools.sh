@@ -19,6 +19,8 @@ elif [[ "$arg1" == '--bench' || "$arg1" == '-b' ]]; then
     exec ./llama-bench "$@"
 elif [[ "$arg1" == '--perplexity' || "$arg1" == '-p' ]]; then
     exec ./llama-perplexity "$@"
+elif [[ "$arg1" == '--finetune' || "$arg1" == '-f' ]]; then
+    exec ./llama-finetune "$@"
 elif [[ "$arg1" == '--all-in-one' || "$arg1" == '-a' ]]; then
     echo "Converting PTH to GGML..."
     for i in $(ls $1/$2/ggml-model-f16.bin*); do
@@ -42,6 +44,8 @@ else
     echo "              ex: -m model.gguf"
     echo "  --perplexity (-p): Measure the perplexity of a model over a given text."
     echo "              ex: -m model.gguf -f file.txt"
+    echo "  --finetune (-f): LoRA fine-tuning on a GGUF model, see docs/finetune.md"
+    echo "              ex: -m /models/model.gguf -f train.jsonl -o task.gguf -ngl 99 --lora-train-target '^blk\\.[0-9]+\\.attn_(q|k|v|output)\\.weight\$'"
     echo "  --convert (-c): Convert a llama model into ggml"
     echo "              ex: --outtype f16 \"/models/7B/\" "
     echo "  --quantize (-q): Optimize with quantization process ggml"

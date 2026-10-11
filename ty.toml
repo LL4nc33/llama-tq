@@ -11,11 +11,13 @@ exclude = [
     # TurboQuant fork: research/PoC scripts, calibration tools, and
     # vendored upstream benchmarks. In-tree for reproducibility, but
     # missing third-party deps (jieba, fuzzywuzzy, rouge, wonderwords, ...)
-    # and not on the production path.
+    # and not part of the build.
     "./tests/trellis-phase1/**",
     "./bench/**",
     "./scripts/calibrate_ktq_codebook.py",
     "./scripts/tq_calibrate_outliers.py",
+    # PyTorch QLoRA reference for the fine-tuning comparison; needs peft and bitsandbytes, which the CI does not install
+    "./examples/training/termine/peft_termine.py",
 ]
 
 [[overrides]]

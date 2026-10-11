@@ -17,7 +17,7 @@ exclude =
     dist,  # This is generated with `python build .` for package releases
     # TurboQuant fork: exclude research/PoC scripts, calibration tools,
     # and vendored upstream benchmarks. Tracked in-tree for reproducibility
-    # but not part of the production code path; lint-clean is not a goal
+    # but not part of the build; lint-clean is not a goal
     # there.
     tests/trellis-phase1,
     bench,
