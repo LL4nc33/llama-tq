@@ -9,8 +9,9 @@ prefill→decode boundary, so a perplexity run without `--no-tq-deferred-k` meas
 as the fast Walsh-Hadamard transform.
 
 **Recommendation (accuracy first, then speed, then memory):** use `f16` when the context fits, otherwise `-ctk q8_0 -ctv
-q8_0` (at the numerical noise floor of the model, same speed). `-ctk ktq4_1 -ctv vtq4_1` (5 bpw) is as accurate as or more
-accurate than `q4_0` and keeps the fast decode kernels; use it when you need the memory. The 2-bit types still lose a lot.
+q8_0` (at the numerical noise floor of the model, same speed). `-ctk q8_0 -ctv vtq4_1` (6.5 bpw) stays close to that and
+decodes as fast as `q8_0`; it is the choice for models that need 8-bit K such as gpt-oss. `-ctk ktq4_1 -ctv vtq4_1`
+(5 bpw) is as accurate as or more accurate than `q4_0`; use it when you need the memory. The 2-bit types still lose a lot.
 
 ## Overview
 
@@ -38,6 +39,9 @@ Pick a tier by passing two cache-type flags. `-fa on` is required.
 ```bash
 # Accurate: at the noise floor of the model (see Accuracy), same decode speed as f16 at long context
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk q8_0 -ctv q8_0
+
+# Accurate and compact: 8-bit K, 4-bit V (6.5 bpw), as fast as q8_0
+./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk q8_0 -ctv vtq4_1
 
 # More context: 5 bpw, at or above q4_0 accuracy, fast decode kernels
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk ktq4_1 -ctv vtq4_1
@@ -144,7 +148,9 @@ flash attention off: the numerical noise floor of the model, below which no KV t
 - `ktq4_1`/`vtq4_1` is more accurate than `q4_0` on Qwen3-4B and equal on gpt-oss and Gemma 4, at 5 instead of 4.5 bpw.
   Before the encoder change (2026-10-10) it was 0.045 (Qwen3-4B) and 0.55 (gpt-oss).
 - `q8_0` is at the noise floor of every model; `vtq4_1` V costs little on Qwen3-4B and gpt-oss.
-- gpt-oss is sensitive in K: every 4-bit K type (`q4_0`, `ktq4_1`) costs about 0.35, V only 0.04. Gemma 4 is sensitive in V
+- gpt-oss is sensitive in K: every 4-bit K type (`q4_0`, `ktq4_1`) costs about 0.35, V only 0.04; protecting outer layers
+  helps only in proportion (`--tq-protect-layers 4`: 0.145, 8 of 24 layers each side: 0.097), so use `q8_0` K with
+  `vtq4_1` V there (0.039). Gemma 4 is sensitive in V
   (`vtq2_1` 1.66); it reacts to any numerical change (flash attention on vs off already 0.32) and its same-top-token share
   stays the better guide there.
 - 2-bit K and 3-bit K lose clearly on all three models.
@@ -152,8 +158,8 @@ flash attention off: the numerical noise floor of the model, below which no KV t
   with `-ctk K -ctv V --no-tq-deferred-k --no-tq-deferred-v --kl-divergence-base base.kld --kl-divergence`.
 - Hybrid models with few attention layers lose much less (Qwen3.8-27B, 16 of 64 layers with attention: `ktq4_1`/`vtq4_1`
   PPL 6.039 vs 6.036 with f16, cache quantized in prefill, earlier encoder), see [docs/models.md](models.md).
-- `q8_0` K with `vtq*_1` V is accurate but has no dedicated decode kernel yet: at 16k context it decodes at 18 t/s
-  (`vtq4_1`) instead of 52 t/s (RTX 2060, Qwen3-4B); use it for short contexts only.
+- `q8_0` K with `vtq*_1` V uses the GQA and tensor-core decode kernels (since 2026-10-11): Qwen3-4B at 16k context
+  50.7 t/s with `vtq4_1` (`q8_0`/`q8_0` 52), gpt-oss at 8k 70.4 t/s (RTX 2060).
 
 Decode speed on an RTX 2060 (Qwen3-4B Q4_K_M, 128 tokens, empty / 16k context): f16 90 / 52, `q8_0` 84 / 52, `q4_0`
 87 / 47, `ktq4_1`/`vtq4_1` 87 / 48 t/s (2026-10-10; the encoder scale search costs 1–2 % decode with `ktq4_1`/`vtq4_1`).

@@ -30,7 +30,7 @@ doc — this file is the index. Feedback and PRs welcome.
 ## 🎯 Planned
 
 - TurboQuant on every RTX generation: speed within 5 % of f16 on Turing to Blackwell, better 2- and 3-bit K accuracy, a
-  cheaper encoder scale search (1–2 % decode today), a decode kernel for `q8_0` K with VTQ V.
+  cheaper encoder scale search (1–2 % decode today).
   → [turboquant.md](docs/turboquant.md)
 - Fine-tuning: faster CPU path and layer prefetch for experts in RAM, SSM (Mamba) training, fewer small kernels on Turing.
   → [finetune.md](docs/finetune.md)
@@ -41,9 +41,8 @@ doc — this file is the index. Feedback and PRs welcome.
   with any engine (upstream gives the same values); use other measures for their KV quality.
   → [models.md](docs/models.md)
 - **Low-bit K:** `ktq4_1` is at or above `q4_0`, but the 2- and 3-bit K types still lose a lot, and gpt-oss loses with
-  every 4-bit K type (`q4_0` as well). Use `f16`/`q8_0` when accuracy matters.
+  every 4-bit K type (`q4_0` as well). Use `f16`/`q8_0`, or `q8_0` K with `vtq4_1` V, when accuracy matters.
   → [turboquant.md](docs/turboquant.md#accuracy)
-- **q8_0 K with VTQ V** is accurate but has no dedicated decode kernel yet (slow at long context).
 
 ## Maintenance policy
 

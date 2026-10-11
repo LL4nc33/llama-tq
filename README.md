@@ -61,7 +61,7 @@ docker run -p 8080:8080 -v /path/to/models:/models ghcr.io/ll4nc33/llama-tq:serv
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
 cmake --build build -j --target llama-server
 
-# two GPUs without P2P, q8_0 KV (accurate); -ctk ktq4_1 -ctv vtq4_1 for more context
+# two GPUs without P2P, q8_0 KV (accurate); -ctv vtq4_1 for a smaller V, -ctk ktq4_1 -ctv vtq4_1 for the most context
 llama-server -m model.gguf -ngl 99 -fa on -sm tensor -c 65536 -ctk q8_0 -ctv q8_0
 ```
 

@@ -8,6 +8,10 @@
   prefill: `ktq4_1`/`vtq4_1` 0.045 -> 0.025 on Qwen3-4B (`q4_0` 0.034) and 0.55 -> 0.36 on gpt-oss (`q4_0` 0.36);
   `ktq2_1`/`vtq2_1` 1.38 -> 0.40 on Qwen3-4B. Format unchanged; decode with the cache quantized per token -1.7 %
   (`ktq4_1`/`vtq4_1`, RTX 2060). CUDA and CPU encoders pick bit-identical codes.
+- **Fast decode for `q8_0` K with VTQ V**, the accurate compact setting (6.5 bpw): the GQA and tensor-core decode kernels
+  take the pair (head 64 with sinks, 128, 256, 512). Qwen3-4B at 16k context 17.5 -> 50.7 t/s (`vtq4_1`), gpt-oss at 8k
+  50.8 -> 70.4 t/s, both as fast as `q8_0`/`q8_0` (RTX 2060). gpt-oss needs 8-bit K: every 4-bit K type costs it KLD ~0.35,
+  `q8_0`/`vtq4_1` 0.039.
 - KV accuracy table re-measured on wikitext-2 (Qwen3-4B) and on the models' own prose (gpt-oss, Gemma 4; raw wikitext is
   far out of distribution for these chat models, [scripts/kld-gen-text.py](scripts/kld-gen-text.py)), with the noise
   floor of each model (flash attention on vs off). The earlier table used the appointment dataset as text, on which
