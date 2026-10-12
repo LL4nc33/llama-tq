@@ -347,6 +347,20 @@ llama_kv_cache::llama_kv_cache(
             }
         }
 
+        // a trellis block spans 128 values of one head: heads that are not a multiple of it (gpt-oss: 64) take the
+        // codebook type with the same bits
+        if (GGML_TYPE_IS_VTQ_TRELLIS(eff_type_v) && hparams.n_embd_head_v(il) % ggml_blck_size(eff_type_v) != 0) {
+            const ggml_type trellis_type = eff_type_v;
+            switch (trellis_type) {
+                case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_3:                       eff_type_v = GGML_TYPE_VTQ2_1; break;
+                case GGML_TYPE_VTQ3_2: case GGML_TYPE_VTQ3_3: case GGML_TYPE_VTQ3_V8: eff_type_v = GGML_TYPE_VTQ3_1; break;
+                default:                                                           eff_type_v = GGML_TYPE_VTQ4_1; break;
+            }
+            LLAMA_LOG_WARN("%s: layer %3d: head size %u is not a multiple of the %s block (%d), using %s\n", __func__, il,
+                hparams.n_embd_head_v(il), ggml_type_name(trellis_type), (int) ggml_blck_size(trellis_type),
+                ggml_type_name(eff_type_v));
+        }
+
         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, eff_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, eff_type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
 
