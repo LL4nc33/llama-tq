@@ -29,6 +29,12 @@ bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tens
     const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
     const bool use_sparse = n_kv_max > 0 && mask->ne[0] == K->ne[1] && mask->ne[2] == 1 && K->ne[1] >= 2*int64_t(n_kv_max);
 
+    // with a single KQ tile there is nothing to split across the GQA blocks: the per-head VEC kernel is faster there
+    // (Qwen3-4B q8_0 decode, RTX 2060: 87.3 vs 85.8 t/s at 256 cells, 83.7 vs 85.4 at 512)
+    if (!use_sparse && K->ne[1] <= FATTN_KQ_STRIDE) {
+        return false;
+    }
+
     // GQA groups of up to 4 Q heads fit one 4-column block, larger groups use blocks of 8.
     // The kernels are compiled in template-instances/fattn-gqa-instance-*.cu, one TU per (head size, ncols).
     const int64_t D = Q->ne[0];
