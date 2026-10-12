@@ -8611,6 +8611,13 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_VTQ2_1:  quantize_row_vtq2_1_ref(src + start, (block_vtq2_1 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_VTQ3_1:  quantize_row_vtq3_1_ref(src + start, (block_vtq3_1 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_VTQ4_1:  quantize_row_vtq4_1_ref(src + start, (block_vtq4_1 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ2_2:  quantize_row_vtq2_2_ref(src + start, (block_vtq2_2 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ3_2:  quantize_row_vtq3_2_ref(src + start, (block_vtq3_2 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ4_2:  quantize_row_vtq4_2_ref(src + start, (block_vtq4_2 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ2_3:  quantize_row_vtq2_3_ref(src + start, (block_vtq2_3 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ3_3:  quantize_row_vtq3_3_ref(src + start, (block_vtq3_3 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ4_3:  quantize_row_vtq4_3_ref(src + start, (block_vtq4_3 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_VTQ3_V8: quantize_row_vtq3_v8_ref(src + start, (block_vtq3_v8 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_IQ2_XXS: result = quantize_iq2_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XS:  result = quantize_iq2_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
