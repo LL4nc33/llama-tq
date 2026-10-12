@@ -8416,6 +8416,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 256, 11, 1, 2 }, { 2, 3, }, 7, false));
     }
 
+    // trellis V types: the CUDA Viterbi encoder against the CPU reference (small shapes, the CPU encoder is slow)
+    for (ggml_type type : {GGML_TYPE_VTQ2_2, GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2, GGML_TYPE_VTQ2_3, GGML_TYPE_VTQ3_3,
+                           GGML_TYPE_VTQ4_3, GGML_TYPE_VTQ3_V8}) {
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 3, 2, 1 }, { 1, 1, }, 2, false));
+    }
+
     for (int mode : { GGML_ROPE_TYPE_NORMAL, GGML_ROPE_TYPE_NEOX, GGML_ROPE_TYPE_MROPE, GGML_ROPE_TYPE_VISION }) {
         for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
             for (int ne2 : {1, 8, 512}) {
@@ -9797,6 +9803,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                 test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {hs == 512 ? 8 : 4, 1}, 1024, nb, true,
                             hs == 64, 0, 0, GGML_PREC_F32, kv_types.first, kv_types.second));
             }
+        }
+    }
+
+    // trellis V types: decode and prompt batches (the V cache is dequantized for the tensor-core kernels in prompt
+    // batches and read by the VEC kernel in decode)
+    for (int64_t nb : {1, 32}) {
+        for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+                {GGML_TYPE_F16, GGML_TYPE_VTQ3_2}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_2},
+                {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_3}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_V8}}) {
+            test_cases.emplace_back(new test_flash_attn_ext(128, 128, 1, {4, 1}, 256, nb, true, false, 0, 0,
+                        GGML_PREC_F32, kv_types.first, kv_types.second));
         }
     }
 

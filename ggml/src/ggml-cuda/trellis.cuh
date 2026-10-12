@@ -123,6 +123,7 @@ static __global__ void k_dequantize_trellis(const void * __restrict__ vx, dst_t 
 
 template <typename block_t, int K, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
 static void trellis_dequantize_row_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
+    GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
     const int64_t nb = (ne + QK_VTQ_TRELLIS - 1) / QK_VTQ_TRELLIS;
     const int threads = 128;
     const int blocks = (int)((nb + threads - 1) / threads);
@@ -223,6 +224,7 @@ static void trellis_dequantize_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
     GGML_ASSERT(ne00 % QK_VTQ_TRELLIS == 0);
+    GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
     const int64_t nb_per_row = ne00 / QK_VTQ_TRELLIS;
     const int64_t ne0203 = ne02*ne03;
     const uint3 ne02_fdv = init_fastdiv_values(ne02);
