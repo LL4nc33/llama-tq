@@ -270,6 +270,11 @@ int main(int argc, char * argv[]) {
             continue;
         }
 
+        // the trellis encoders run a full Viterbi search: a slow reference, measured only when asked for with --type
+        if (GGML_TYPE_IS_VTQ_TRELLIS(type) && params.include_types.empty()) {
+            continue;
+        }
+
         if (qfns_cpu->from_float && qfns->to_float) {
             printf("%s\n", ggml_type_name(type));
 
