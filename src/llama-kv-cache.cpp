@@ -153,6 +153,11 @@ llama_kv_cache::llama_kv_cache(
     const bool is_vtq2_type_v = GGML_TYPE_IS_VTQ_TRELLIS(type_v);
     const bool use_deferred_v = is_vtq2_type_v && !tq_no_deferred_v;
     (void) tq_deferred_v; // positive flag retained for backwards compat; opt-in is auto via VTQ_2 type
+    if (is_vtq2_type_v) {
+        // staging covers the prompt only: every decoded token still runs the Viterbi encoder
+        LLAMA_LOG_WARN("%s: V cache type %s is a trellis type: its encoder runs for every new token, decode reaches only "
+                       "1-3 t/s; the codebook types vtq*_1 decode at full speed\n", __func__, ggml_type_name(type_v));
+    }
 
     // create a context for each buffer type
     // extra tensors per layer when deferred is active: staging + staging_stream views
