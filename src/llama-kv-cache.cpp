@@ -2658,16 +2658,27 @@ const slot_info_vec_t *   sinfos_in) {
         throw std::runtime_error("n_stream mismatch");
     }
 
-    // restore deferred K quantization state
+    // deferred K/V quantization state of the saved cache: the K/V data was written from the staging buffers or from
+    // the quantized cache depending on it, and is read back the same way
     uint8_t ds;
     io.read_to(&ds, sizeof(ds));
-    if (deferred_state != TQ_DEFERRED_OFF) {
-        deferred_state = (tq_deferred_state) ds;
-    }
 
     // a whole-context restore replaces every stream, so the cache is emptied once here
     if (seq_id == -1) {
-        clear(true);
+        clear(true); // resets the deferred state, so the saved state is applied afterwards
+    }
+
+    if (deferred_state != TQ_DEFERRED_OFF && (tq_deferred_state) ds != deferred_state) {
+        bool empty = true;
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            empty = empty && v_cells[s].get_used() == 0;
+        }
+        // a single sequence can only adopt the saved state when no other sequence holds data in the current one
+        if (!empty) {
+            throw std::runtime_error("failed to restore kv cache: the saved deferred K/V state differs from the cache in use");
+        }
+        deferred_state          = (tq_deferred_state) ds;
+        deferred_convert_failed = false;
     }
 
     for (uint32_t s = 0; s < n_stream; ++s) {
