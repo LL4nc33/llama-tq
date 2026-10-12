@@ -70,7 +70,9 @@ void vtq_free_encode_workspace(void);
 //   - dst_block = dst + ((dst_row*s1 + i02*s2 + i03*s3) / sizeof(block_t))
 //                       + (i00 / qk)
 // Other threads read resolved pointers from shared memory.
-template <typename block_t, typename idx_t, int K>
+// N_OUT > 0 (vtq*_3, vtq3_v8): the N_OUT largest |x| of a block are stored in fp16 next to the trellis and zeroed
+// before the encode, as in ggml_trellis_outliers_pick on the CPU.
+template <typename block_t, typename idx_t, int K, int N_OUT>
 __global__ void k_vtq_encode_trellis_set_rows(
         const float * __restrict__ src0,
         const idx_t * __restrict__ src1,
@@ -163,11 +165,55 @@ __global__ void k_vtq_encode_trellis_set_rows(
     __shared__ float    s_inv_norm;
     __shared__ uint32_t s_best_state;
 
-    // 1) Load x + compute norm
+    // 1) Load x, pick the outliers, compute the norm of the rest
+    for (int j = tid; j < N; j += VTQ_ENC_THREADS) {
+        s_xn[j] = x_row[j];
+    }
+    if constexpr (N_OUT > 0) {
+        __syncthreads();
+        if (tid == 0) {
+            // top N_OUT by |x| (strict >, earlier position wins ties), emitted in ascending position order
+            int   top_pos[N_OUT];
+            float top_mag[N_OUT];
+            #pragma unroll
+            for (int j = 0; j < N_OUT; j++) { top_pos[j] = -1; top_mag[j] = -1.0f; }
+            for (int i = 0; i < N; i++) {
+                const float m = fabsf(s_xn[i]);
+                if (m > top_mag[N_OUT - 1]) {
+                    int ins = N_OUT - 1;
+                    while (ins > 0 && m > top_mag[ins - 1]) {
+                        top_mag[ins] = top_mag[ins - 1];
+                        top_pos[ins] = top_pos[ins - 1];
+                        ins--;
+                    }
+                    top_mag[ins] = m;
+                    top_pos[ins] = i;
+                }
+            }
+            for (int a = 1; a < N_OUT; a++) {
+                const int key = top_pos[a];
+                int b = a - 1;
+                while (b >= 0 && top_pos[b] > key) { top_pos[b + 1] = top_pos[b]; b--; }
+                top_pos[b + 1] = key;
+            }
+            #pragma unroll
+            for (int j = 0; j < N_OUT; j++) {
+                const int p = top_pos[j];
+                if (p < 0) { // only with NaN input; the CPU leaves pos 0 / val 0 there as well
+                    dst_block->outlier_pos[j] = 0;
+                    dst_block->outlier_val[j] = __float2half(0.0f);
+                    continue;
+                }
+                dst_block->outlier_pos[j] = (uint8_t) p;
+                dst_block->outlier_val[j] = __float2half(s_xn[p]);
+                s_xn[p] = 0.0f;
+            }
+        }
+        __syncthreads();
+    }
     float local_sq = 0.0f;
     for (int j = tid; j < N; j += VTQ_ENC_THREADS) {
-        float v = x_row[j];
-        s_xn[j] = v;
+        const float v = s_xn[j];
         local_sq += v * v;
     }
     s_partial[tid] = local_sq;
@@ -325,7 +371,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
 }
 
 // Host-side launcher that mirrors set_rows_cuda_pq signature.
-template <typename idx_t, typename block_t, int K>
+template <typename idx_t, typename block_t, int K, int N_OUT = 0>
 static void vtq_cuda_encode_set_rows(
         const float * src0_d, const idx_t * src1_d, block_t * dst_d,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
@@ -368,7 +414,7 @@ static void vtq_cuda_encode_set_rows(
         dim3 grid(wave_n, 1, 1);
         dim3 block(VTQ_ENC_THREADS, 1, 1);
 
-        k_vtq_encode_trellis_set_rows<block_t, idx_t, K><<<grid, block, 0, stream>>>(
+        k_vtq_encode_trellis_set_rows<block_t, idx_t, K, N_OUT><<<grid, block, 0, stream>>>(
             src0_d, src1_d, dst_d, ne_total,
             ne10, ne11, ne12, ne13,
             s01, s02, s03, s10, s11, s12, s1, s2, s3,
