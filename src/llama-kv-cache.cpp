@@ -1176,6 +1176,19 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, bool do_deferre
         }
     }
 
+    // nothing staged yet (e.g. the first decode step runs on an empty cache): switch to the quantized cache directly
+    if (do_deferred_convert) {
+        bool any_used = false;
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            any_used = any_used || v_cells[s].used_max_p1() > 0;
+        }
+        if (!any_used) {
+            deferred_state     = TQ_DEFERRED_DONE;
+            do_deferred_convert = false;
+            updated            = true;
+        }
+    }
+
     if (do_deferred_convert) {
         LLAMA_LOG_INFO("%s: performing deferred K/V quantization (f16 -> K=%s V=%s)\n",
                        __func__, ggml_type_name(user_type_k), ggml_type_name(user_type_v));
@@ -2401,7 +2414,8 @@ public:
 void llm_graph_input_deferred_convert::set_input(const llama_ubatch * ubatch) {
     GGML_UNUSED(ubatch);
 
-    if (idxs) {
+    // the index tensor is only allocated when the graph converts at least one chunk
+    if (idxs && idxs->buffer) {
         kv_self->set_input_deferred_convert(idxs);
     }
 }
