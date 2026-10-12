@@ -171,8 +171,8 @@ llama_memory_context_ptr llama_kv_cache_iswa::init_batch(llama_batch_allocr & ba
     GGML_UNUSED(embd_all);
 
     // both caches may stage K/V in f16 (deferred quantization); evaluate both, then let memory_update() convert
-    const bool convert_base = kv_base->deferred_convert_due(balloc);
-    const bool convert_swa  = kv_swa ->deferred_convert_due(balloc);
+    const bool convert_base = kv_base->deferred_convert_due(balloc, embd_all);
+    const bool convert_swa  = kv_swa ->deferred_convert_due(balloc, embd_all);
     if (convert_base || convert_swa) {
         return std::make_unique<llama_kv_cache_iswa_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);
     }

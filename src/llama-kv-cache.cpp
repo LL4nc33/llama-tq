@@ -635,6 +635,19 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
         }
     }
 
+    // an empty cache starts over with deferred staging (the server clears with seq_rm, not clear()), so the next
+    // prompt is staged again and a failed convert does not disable deferral for the rest of the process
+    if (deferred_state != TQ_DEFERRED_OFF && !other) {
+        bool empty = true;
+        for (uint32_t s = 0; s < n_stream; ++s) {
+            empty = empty && v_cells[s].get_used() == 0;
+        }
+        if (empty) {
+            deferred_state          = TQ_DEFERRED_STAGING;
+            deferred_convert_failed = false;
+        }
+    }
+
     return true;
 }
 
@@ -889,11 +902,35 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache::memory_breakdown() 
     return ret;
 }
 
-bool llama_kv_cache::deferred_convert_due(const llama_batch_allocr & balloc) {
-    // prompt batches request one output per sequence, decode steps (one or more parallel slots, speculative
-    // verification) and perplexity batches request an output for every token. the first such batch converts
-    if (deferred_state != TQ_DEFERRED_STAGING || deferred_convert_failed ||
-            balloc.get_n_tokens() == 0 || balloc.get_n_outputs() != balloc.get_n_tokens()) {
+bool llama_kv_cache::deferred_convert_due(const llama_batch_allocr & balloc, bool embd_all) {
+    // a cache sharing the layers of another one follows the owner's conversion (see staging_state)
+    if (other || deferred_state != TQ_DEFERRED_STAGING || deferred_convert_failed || embd_all) {
+        return false;
+    }
+
+    // decode steps (one or more parallel slots, speculative verification of up to n_draft tokens) request an
+    // output for every token and carry only a few tokens per sequence; prompt batches request one output per
+    // sequence, or every output (MTP drafting, embeddings) over many tokens per sequence
+    const llama_batch & batch = balloc.get_batch();
+    const int32_t n_tokens = batch.n_tokens;
+    if (n_tokens == 0 || (int32_t) balloc.get_n_outputs() != n_tokens) {
+        return false;
+    }
+
+    std::vector<bool> seen(LLAMA_MAX_SEQ, false);
+    int32_t n_seqs = 0;
+    for (int32_t i = 0; i < n_tokens; ++i) {
+        for (int32_t j = 0; j < batch.n_seq_id[i]; ++j) {
+            const llama_seq_id s = batch.seq_id[i][j];
+            if (s >= 0 && s < LLAMA_MAX_SEQ && !seen[s]) {
+                seen[s] = true;
+                ++n_seqs;
+            }
+        }
+    }
+
+    const int32_t max_tokens_per_seq = 80; // covers the speculative verification batches (ngram-mod drafts up to 64)
+    if (n_tokens > max_tokens_per_seq*std::max(1, n_seqs)) {
         return false;
     }
 
@@ -903,13 +940,17 @@ bool llama_kv_cache::deferred_convert_due(const llama_batch_allocr & balloc) {
     return true;
 }
 
+tq_deferred_state llama_kv_cache::staging_state() const {
+    return other ? other->deferred_state : deferred_state;
+}
+
 llama_memory_context_ptr llama_kv_cache::init_batch(
             llama_batch_allocr & balloc,
             uint32_t n_ubatch,
             bool embd_all) {
     GGML_UNUSED(embd_all);
 
-    if (deferred_convert_due(balloc)) {
+    if (deferred_convert_due(balloc, embd_all)) {
         return std::make_unique<llama_kv_cache_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);
     }
 
@@ -1594,7 +1635,7 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     const int32_t ikv = map_layer_ids.at(il);
 
     // deferred K quantization: during prefill, read from f16 staging buffer
-    auto * k = (deferred_state == TQ_DEFERRED_STAGING && layers[ikv].k_staging)
+    auto * k = (staging_state() == TQ_DEFERRED_STAGING && layers[ikv].k_staging)
                ? layers[ikv].k_staging : layers[ikv].k;
 
     const uint64_t kv_size      = get_size();
@@ -1616,7 +1657,7 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
     const int32_t ikv = map_layer_ids.at(il);
 
     // deferred V quantization: during staging, read from f16 buffer instead of quantized V
-    auto * v = (deferred_state == TQ_DEFERRED_STAGING && layers[ikv].v_staging)
+    auto * v = (staging_state() == TQ_DEFERRED_STAGING && layers[ikv].v_staging)
                ? layers[ikv].v_staging : layers[ikv].v;
 
     const uint64_t kv_size      = get_size();
@@ -1726,7 +1767,7 @@ ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggm
     const int32_t ikv = map_layer_ids.at(il);
 
     // deferred K quantization: during prefill, write to f16 staging buffer
-    ggml_tensor * k = (deferred_state == TQ_DEFERRED_STAGING && layers[ikv].k_staging)
+    ggml_tensor * k = (staging_state() == TQ_DEFERRED_STAGING && layers[ikv].k_staging)
                       ? layers[ikv].k_staging : layers[ikv].k;
 
     const int64_t n_embd_head = k_cur->ne[0];
@@ -1765,7 +1806,7 @@ ggml_tensor * llama_kv_cache::cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggm
     // deferred V quantization: during prefill/decode, write to f16 staging buffer.
     // The bulk Viterbi encode runs at the prefill->decode transition (READY state)
     // via build_graph_deferred_convert().
-    auto * v = (deferred_state == TQ_DEFERRED_STAGING && layers[ikv].v_staging)
+    auto * v = (staging_state() == TQ_DEFERRED_STAGING && layers[ikv].v_staging)
                ? layers[ikv].v_staging : layers[ikv].v;
 
     const int64_t n_embd_head = v_cur->ne[0];
@@ -2457,10 +2498,15 @@ ggml_cgraph * llama_kv_cache::build_graph_deferred_convert(llm_graph_result * re
     }
 
     // convert only the used cells of each stream, in chunks of rows: the f32 copy of one chunk is the
-    // largest temporary, so the compute buffer no longer scales with the context size. at most 8 chunks
-    // per stream keep the node count within the graph budget of small models
-    const int64_t chunk_min  = 16384;
-    const int64_t max_chunks = 8;
+    // largest temporary, so the compute buffer no longer scales with the context size. every chunk adds 4 nodes
+    // (2 views, cast, set_rows), so the chunk count per stream is bounded by the graph size
+    const int64_t chunk_min = 16384;
+    int64_t n_staged = 0;
+    for (const auto & layer : layers) {
+        n_staged += (layer.k_staging ? 1 : 0) + (layer.v_staging ? 1 : 0);
+    }
+    const int64_t max_chunks = std::max<int64_t>(1, std::min<int64_t>(8,
+            (ggml_graph_size(gf) - 2*n_staged) / std::max<int64_t>(1, 4*n_staged*(int64_t) n_stream)));
 
     auto convert = [&](ggml_tensor * staging, ggml_tensor * cache) {
         const int64_t n_embd  = staging->ne[0];

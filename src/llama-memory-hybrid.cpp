@@ -80,7 +80,7 @@ llama_memory_hybrid::llama_memory_hybrid(
 
 llama_memory_context_ptr llama_memory_hybrid::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
     // the attention cache may stage K/V in f16 (deferred quantization); memory_update() converts it
-    if (mem_attn->deferred_convert_due(balloc)) {
+    if (mem_attn->deferred_convert_due(balloc, embd_all)) {
         return std::make_unique<llama_memory_hybrid_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);
     }
 

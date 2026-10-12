@@ -136,7 +136,7 @@ public:
 
     // deferred K/V quantization: true when this batch starts decoding (every token requests an output), so the
     // f16 staging buffers have to be converted first. callers return FAILED_PREPARE, which runs memory_update()
-    bool deferred_convert_due(const llama_batch_allocr & balloc);
+    bool deferred_convert_due(const llama_batch_allocr & balloc, bool embd_all);
 
     llama_memory_context_ptr init_batch(
             llama_batch_allocr & balloc,
@@ -180,6 +180,10 @@ public:
     ggml_type type_v() const;
 
     tq_deferred_state get_deferred_state() const;
+
+    // the staging state that decides which buffers the graph reads and writes: a cache that shares the layers of
+    // another one (other != nullptr) follows the owner, which is the only one that converts
+    tq_deferred_state staging_state() const;
 
     // Trick 2 PR1: per-head V variance/kurtosis profiling accessor
     // Returns the number of kv layers currently allocated. Fills:
