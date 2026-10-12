@@ -1,6 +1,6 @@
 # Benchmarks
 
-Decode and prefill speed per GPU and KV type (2026-10-10/11). Accuracy, fine-tuning and per-model setups each have their
+Decode and prefill speed per GPU and KV type (2026-10-10/12). Accuracy, fine-tuning and per-model setups each have their
 own page (links at the end), so every number lives in one place. Older logs are in [history/](history/); their numbers
 are not comparable with these.
 
@@ -34,8 +34,33 @@ Same model on the RTX 2060, decode at empty / 16k context (`llama-bench -n 64`, 
 ² includes the one-time conversion of the f16 prefill buffer to KTQ at the first decode step (about 0.1 s after a 16k
 prompt); over 256 generated tokens 47 t/s.
 
-gpt-oss-20b MXFP4 on one RTX 2060, decode at empty / 8k context: `q8_0`/`q8_0` 78 / 70, `q8_0`/`vtq4_1` 77 / 70,
-`ktq4_1`/`vtq4_1` 77 / 53 t/s (2026-10-11).
+## Against upstream, two GPUs
+
+2× RTX 2060 (pipeline parallelism), `llama-bench -fa 1 -t 4 -p 2048 -n 128 -b 2048 -ub 512 -d 0,32768 -r 1`,
+2026-10-12; upstream llama.cpp at 23b0202 against this fork with the fixes of 2026-10-12. Prefill is `pp2048`, decode
+`tg128`, "32k" means after 32768 tokens of context, all numbers in t/s.
+
+| Model | prefill f16 | prefill f16 32k | decode `q8_0` | decode f16 32k | decode `q8_0` 32k |
+|---|---:|---:|---:|---:|---:|
+| Qwen3-4B-Instruct-2507 Q4_K_M | 3598 → 3624 | 1196 → 1207 | 90.1 → 91.1 | 37.4 → 37.6 | 20.1 → 42.8 |
+| gpt-oss-20b MXFP4 | 2647 → 2678 | 1777 → 1791 | 79.0 → 80.4 | 65.8 → 66.8 | 44.6 → 58.3 |
+| Gemma 4 12B Q4_K_M | 1334 → 1305 | 855 → 809 | 33.8 → 33.9 | 32.0 → 32.1 | 28.0 → 29.6 |
+| Qwen3.6-35B-A3B Q4_K_M | 1802 → 1887 | 1294 → 1241 | 78.5 → 81.5 | 68.1 → 70.0 | 46.6 → 68.9 |
+| Qwen3.8-27B Q4_K_M | 644 → 678 | 429 → 418 | 16.5 → 16.7 | 14.9 → 15.0 | 12.4 → 15.0 |
+
+Decode with a quantized KV cache at long context is where the fork is ahead (its flash attention decode kernels read
+`q8_0` and the TurboQuant types directly). Prefill at 32k with an f16 cache is still 3-5 % behind upstream on Gemma 4
+(head size 256), Qwen3.6 and Qwen3.8, and Gemma 4 prefill without context 2 %; the cause is open.
+
+The fork's TurboQuant rows at 32k (same run):
+
+| Model | `q8_0` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` prefill 32k |
+|---|---:|---:|---:|
+| Qwen3-4B-Instruct-2507 Q4_K_M | 42.6 | 31.4 | 1109 |
+| gpt-oss-20b MXFP4 | 60.0 | 58.9 | 1737 |
+| Gemma 4 12B Q4_K_M | 27.9 | 29.0 | 773 |
+| Qwen3.6-35B-A3B Q4_K_M | 68.1 | 64.0 | 1215 |
+| Qwen3.8-27B Q4_K_M | 15.0 | 14.3 | 401 |
 
 ## Accuracy and fine-tuning
 

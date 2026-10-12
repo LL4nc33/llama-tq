@@ -33,8 +33,8 @@
   cost registers and load scheduling in every kernel: the `q8_0` flash attention decode kernel ran at half speed on
   Turing. The table is now reached through a pointer per translation unit. 2× RTX 2060: Qwen3-4B `q8_0` decode 85.8 ->
   91.1 t/s (upstream 90.3), at 8k context 65.9 -> 70.9 t/s (upstream 57.4); gpt-oss f16 prefill at 32k 1729 -> 1783 t/s
-  (upstream 1776). `libggml-cuda` shrinks from 230 MB to about 100 MB. Still open: Gemma 4 f16 prefill at 32k is 6 %
-  below upstream (head-256 flash attention kernel).
+  (upstream 1776). `libggml-cuda` shrinks from 230 MB to about 100 MB. Still open: f16 prefill at 32k is 3-5 %
+  below upstream on Gemma 4, Qwen3.6 and Qwen3.8 ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
 - Decode with a single KV tile (up to 256 cells) uses the VEC kernel instead of the GQA kernel, which is faster there.
 - **`vtq2` and `vtq3` now mean `vtq2_1` and `vtq3_1`.** They pointed to the trellis types `vtq2_2` and `vtq3_v8`, which
   decode at 1-3 t/s: their Viterbi encoder runs for every new token (13.7 ms per layer on an RTX 2060), and deferred
