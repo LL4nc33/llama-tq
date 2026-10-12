@@ -198,7 +198,8 @@ Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the
 history below only.
 
-The v2/v3 trellis V types (`vtq*_2`, `vtq*_3`, `vtq3_v8`) give correct output but decode at 1-3 t/s, because their encoder runs for every new token (see How It Works); use the v1 codebook types `vtq*_1`.
+The v2/v3 trellis V types (`vtq*_2`, `vtq*_3`, `vtq3_v8`) give correct output but decode at 1-3 t/s, because their encoder runs for every new token (see How It Works); use the v1 codebook types `vtq*_1`. A trellis block spans 128 values of one head; on models with smaller heads (gpt-oss:
+64) those layers use the codebook type with the same bits instead, and the log says so.
 
 ## Memory Savings
 

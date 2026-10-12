@@ -154,9 +154,9 @@ llama-server \
 ```
 
 **gemma-4 gotchas (learned the hard way):**
-- KV `ktq2_1`/`vtq2_3` produce `<unused49>` garbage on gemma-4 (SWA layers).
-  Use `q8_0/q8_0`, or — with a build that has them — `-ctk ktq2_1 -ctv vtq2_3`
-  **plus** `--cache-type-k-swa f16 --cache-type-v-swa vtq3` to keep SWA layers safe.
+- KV cache: `q8_0/q8_0`, or `q8_0/vtq4_1` for more context; accuracy per type and model in
+  [turboquant.md](../turboquant.md#accuracy). Older notes here recommended `ktq2_1`/`vtq2_3` with SWA overrides
+  against `<unused49>` output; `vtq2_3` is a trellis type that decodes at 1-3 t/s.
 - Vision needs the `gemma4uv` mmproj. The matching `gemma4uv`/`gemma4ua`
   projector support is already committed on the tricks branch (§3.2), so a
   source build has it; only an older *prebuilt release* may lack it. Image
