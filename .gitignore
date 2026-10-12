@@ -175,3 +175,17 @@ autoresearch/
 /tmp_*
 **/scratch-*/
 *.bundle
+
+# Profiling reports, fine-tuning checkpoints, KL-divergence base files
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+*.sqlite
+*.gguf.opt
+*.gguf.state
+*.kld
+
+# Python cache, local environment
+__pycache__/
+*.pyc
+.env
