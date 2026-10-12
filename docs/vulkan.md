@@ -8,7 +8,8 @@ IQ2_XXS, see *Measured* below).
 
 - **Standard quants** (Q4_K_M, IQ-types, F16, etc.): supported through the
   upstream shaders (the fork measured the models in the table below).
-- **TurboQuant KV cache** (KTQ1-4 / VTQ1-4): **CUDA-only**; the Vulkan backend
+- **TurboQuant KV cache** (all `ktq*` / `vtq*` types): **CUDA-only** (the CPU backend has only a slow
+  reference implementation); the Vulkan backend
   has no kernels for these types. With a Vulkan build use the upstream KV types
   (`q8_0`, `q4_0`). A GLSL port is planned for later, after the CUDA work (a multi-week effort).
 - **Multi-GPU**: works through Vulkan device selection (`--main-gpu`,
@@ -31,7 +32,7 @@ for. TG on IQ-quants is memory-bandwidth-bound (~80% SoL); further closing
 the gap requires a DP4A MMVQ shader for IQ2 (sign-flip makes packed-int-dot
 non-trivial).
 
-## Measured (2x RTX 2060, llama-tq vulkan-turing-rmkq, May 2026)
+## Measured (2026-05, 2x RTX 2060 12 GB, one GPU used)
 
 LunarG SDK 1.4.313 + shaderc 2025.2, vulkan1.3 SPIR-V target, single GPU
 (`-mg 0 -fa 1`), `rm_kq=4` Turing default on:

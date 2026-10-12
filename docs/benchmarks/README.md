@@ -1,12 +1,13 @@
 # Benchmarks
 
-Decode and prefill speed per GPU and KV type (2026-10-10/12). Accuracy, fine-tuning and per-model setups each have their
-own page (links at the end), so every number lives in one place. Older logs are in [history/](history/); their numbers
+Decode and prefill speed per GPU and KV type (2026-10-09 to 2026-10-12, the date is given per table). Accuracy,
+fine-tuning and per-model setups each have their own page (links at the end), so every number lives in one place. Older logs are in [history/](history/); their numbers
 are not comparable with these.
 
 ## Decode speed, one GPU
 
-Qwen3-4B-Instruct-2507 Q4_K_M, `llama-bench -fa 1 -n 128`, empty context:
+Qwen3-4B-Instruct-2507 Q4_K_M, `llama-bench -fa 1 -n 128`, empty context (RTX 2060 row 2026-10-12, the other rows
+2026-10-10 unless marked):
 
 | GPU | f16 KV | `q8_0` KV | `ktq2_1` / `vtq2_1` KV |
 |---|---:|---:|---:|
@@ -15,30 +16,30 @@ Qwen3-4B-Instruct-2507 Q4_K_M, `llama-bench -fa 1 -n 128`, empty context:
 | RTX 3090 | 203 t/s | | 176 t/s ¹ |
 | RTX 3060 | 103 t/s | | 96 t/s ¹ |
 | RTX 4060 Ti | 95 t/s | | 90 t/s ¹ |
-| RTX 2060 | 90 t/s | 84 t/s | 87 t/s |
+| RTX 2060 | 92 t/s | 89 t/s | 88 t/s |
 
 ¹ measured 2026-10-09, before the K/V rotations ran as the fast Walsh-Hadamard transform (RTX 5090 then: 272 t/s).
-The encoder scale search of 2026-10-11 costs 1–2 % of the TurboQuant numbers in this table.
+The encoder scale search of 2026-10-10 costs 1–2 % of the TurboQuant numbers in the rows measured before it.
 
-Same model on the RTX 2060, decode at empty / 16k context (`llama-bench -n 64`, 2026-10-11, builds with the encoder scale search):
+Same model on one RTX 2060, decode at empty / 16k context (`llama-bench -n 64 -r 2`, 2026-10-12):
 
 | KV cache | empty | 16k |
 |---|---:|---:|
-| `q8_0` / `q8_0` | 83 t/s | 52 t/s |
-| `q8_0` / `vtq4_1` | 82 t/s | 51 t/s |
-| `q8_0` / `vtq2_1` | 82 t/s | 53 t/s |
-| `ktq4_1` / `vtq4_1` | 86 t/s | 43 t/s ² |
-| f16 / f16 (2026-10-10) | 90 t/s | 52 t/s |
-| `q4_0` / `q4_0` (2026-10-10) | 87 t/s | 47 t/s |
+| `q8_0` / `q8_0` | 88 t/s | 57 t/s |
+| `q8_0` / `vtq4_1` | 86 t/s | 57 t/s |
+| `q8_0` / `vtq2_1` | 88 t/s | 58 t/s |
+| `ktq4_1` / `vtq4_1` | 87 t/s | 44 t/s ² |
+| f16 / f16 | 91 t/s | 53 t/s |
+| `q4_0` / `q4_0` | 88 t/s | 47 t/s |
 
 ² includes the one-time conversion of the f16 prefill buffer to KTQ at the first decode step (about 0.1 s after a 16k
-prompt); over 256 generated tokens 47 t/s.
+prompt).
 
 ## Against upstream, two GPUs
 
 2× RTX 2060 (pipeline parallelism), `llama-bench -fa 1 -t 4 -p 2048 -n 128 -b 2048 -ub 512 -d 0,32768 -r 1`,
 2026-10-12; upstream llama.cpp at 23b0202 against this fork with the fixes of 2026-10-12. Prefill is `pp2048`, decode
-`tg128`, "32k" means after 32768 tokens of context, all numbers in t/s.
+`tg128`, "32k" means after 32768 tokens of context, all numbers in t/s, each cell upstream → llama-tq.
 
 | Model | prefill f16 | prefill f16 32k | decode `q8_0` | decode f16 32k | decode `q8_0` 32k |
 |---|---:|---:|---:|---:|---:|
@@ -49,8 +50,8 @@ prompt); over 256 generated tokens 47 t/s.
 | Qwen3.8-27B Q4_K_M | 644 → 678 | 429 → 418 | 16.5 → 16.7 | 14.9 → 15.0 | 12.4 → 15.0 |
 
 Decode with a quantized KV cache at long context is where the fork is ahead (its flash attention decode kernels read
-`q8_0` and the TurboQuant types directly). Prefill at 32k with an f16 cache is still 3-5 % behind upstream on Gemma 4
-(head size 256), Qwen3.6 and Qwen3.8, and Gemma 4 prefill without context 2 %; the cause is open.
+`q8_0` and the TurboQuant types directly). Prefill at 32k with an f16 cache is still behind upstream on Gemma 4 (head size
+256, 5.4 %), Qwen3.6 (4.1 %) and Qwen3.8 (2.6 %), and Gemma 4 prefill without context by 2.2 %; the cause is open.
 
 The fork's TurboQuant rows at 32k (same run):
 

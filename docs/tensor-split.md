@@ -1,10 +1,14 @@
 # Tensor split without P2P
 
 `-sm tensor` splits every weight matrix across the GPUs, so all GPUs work on each token at the same time (upstream's
-default `-sm layer` gives each GPU a range of layers, which then run one after the other). Upstream's tensor split needs
-peer-to-peer access or NCCL to add up the partial results. This fork reduces them through mapped pinned host memory
-instead, so it also runs on consumer boards where the GPUs have no peer access (e.g. two RTX 2060 on a B450 board with
-x16/x4 slots).
+default `-sm layer` gives each GPU a range of layers, which then run one after the other). Without peer access or NCCL,
+upstream's tensor split falls back to slow copies to add up the partial results (it logs that NCCL is unavailable and
+multi-GPU performance will be suboptimal). This fork reduces them through mapped pinned host memory instead, so it also
+runs fast on consumer boards where the GPUs have no peer access (e.g. two RTX 2060 on a B450 board with x16/x4 slots).
+
+The host reduction is used only in builds without NCCL: the release archives, or a source build where NCCL is not
+installed or `-DGGML_CUDA_NCCL=OFF` is set. When NCCL is compiled in, NCCL does the reduction and the variables below
+have no effect.
 
 ```bash
 GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m model.gguf -ngl 99 -fa on -sm tensor -c 65536 -ctk q8_0 -ctv q8_0

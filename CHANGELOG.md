@@ -16,10 +16,13 @@
   table in [turboquant.md](docs/turboquant.md#accuracy) was already measured with the cache quantized; KTQ perplexities
   in older notes that did not pass the flag are too good.
 - `llama-bench` decode rows with KTQ K on sliding-window and hybrid models measured the f16 buffer until this fix; the
-  numbers in [benchmarks](docs/benchmarks/README.md) are re-measured.
+  two-GPU comparison in [benchmarks](docs/benchmarks/README.md) is measured with the fix, and the single-GPU tables use
+  dense Qwen3-4B, which the bug did not affect.
 - **Two GPUs, pipeline parallelism:** prefill was a third slower than upstream (Qwen3.6-35B-A3B pp2048 1230 vs 1908 t/s on
   2× RTX 2060). The scheduler shrank its reservation after the all-experts warmup graph and after empty ubatches, and from
-  then on every growing KV view forced a re-reservation that synchronized both GPUs. Now 1903 t/s.
+  then on every growing KV view forced a re-reservation that synchronized both GPUs. Now 1903 t/s. These numbers and
+  those in the relocatable device code entry below come from separate runs; the comparison table in
+  [benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus) is from the final build.
 - **Maximum context closer to upstream:** the MTP layer is loaded only when it is used (upstream #26296; 856 MiB on
   Qwen3.6), the compute buffer reserves logits only for the outputs the context can produce (#23861), and the f16 copy
   of a quantized K/V cache for flash attention is reserved at startup (#23907). Pipeline parallelism is turned off at
@@ -33,8 +36,8 @@
   cost registers and load scheduling in every kernel: the `q8_0` flash attention decode kernel ran at half speed on
   Turing. The table is now reached through a pointer per translation unit. 2× RTX 2060: Qwen3-4B `q8_0` decode 85.8 ->
   91.1 t/s (upstream 90.3), at 8k context 65.9 -> 70.9 t/s (upstream 57.4); gpt-oss f16 prefill at 32k 1729 -> 1783 t/s
-  (upstream 1776). `libggml-cuda` shrinks from 230 MB to about 100 MB. Still open: f16 prefill at 32k is 3-5 %
-  below upstream on Gemma 4, Qwen3.6 and Qwen3.8 ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
+  (upstream 1776). `libggml-cuda` shrinks from 230 MB to about 100 MB. Still open: f16 prefill at 32k is 2.6-5.4 %
+  below upstream (Gemma 4 5.4 %, Qwen3.6 4.1 %, Qwen3.8 2.6 %) ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
 - Decode with a single KV tile (up to 256 cells) uses the VEC kernel instead of the GQA kernel, which is faster there.
 - **`vtq2` and `vtq3` now mean `vtq2_1` and `vtq3_1`.** They pointed to the trellis types `vtq2_2` and `vtq3_v8`, which
   decode at 1-3 t/s: their Viterbi encoder runs for every new token (13.7 ms per layer on an RTX 2060), and deferred

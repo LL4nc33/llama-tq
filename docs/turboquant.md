@@ -1,18 +1,22 @@
 # TurboQuant — KTQ/VTQ KV Cache Quantization for CUDA
 
-**Status (2026-10-11):** the KTQ/VTQ encoders now search the block scale (32 trial scales, unbiased scale). KL divergence
+**Status (2026-10-12):** the KTQ/VTQ encoders now search the block scale (32 trial scales, unbiased scale). KL divergence
 of `ktq4_1`/`vtq4_1` drops by 44 % on Qwen3-4B and 35 % on gpt-oss; the 2-bit types gain a lot on Qwen3-4B
 (1.38 → 0.40) but little on gpt-oss (4.05 → 3.65). `ktq4_1`/`vtq4_1` (5 bpw) is now more accurate than `q4_0` on Qwen3-4B
 and equal to it on gpt-oss and Gemma-4-12B, the three models measured (see [Accuracy](#accuracy)). Quality is measured with the KV cache
 really quantized: in prefill K is staged in f16 by default (deferred K quantization) and only quantized at the
-prefill→decode boundary, so a perplexity run without `--no-tq-deferred-k` measures f16 K. The attention-rotation feature
+prefill→decode boundary; `llama-perplexity` turns the staging off, so it scores the quantized cache
+(`--tq-deferred-k`/`--tq-deferred-v` keep the f16 staging there). The attention-rotation feature
 (Hadamard rotation of Q/K in the graph) is not applied to KTQ caches, which made them worse; the remaining K/V rotations run
-as the fast Walsh-Hadamard transform.
+as the fast Walsh-Hadamard transform on CUDA.
+
+CPU: all TurboQuant types can be written (`SET_ROWS` through `from_float`, the trellis encoders since 2026-10-12) and read
+in CPU flash attention; there are no tuned CPU kernels, and the V rotation runs as a dense matmul.
 
 ## Recommendation
 
 Accuracy first, then speed, then memory: use `f16` when the context fits, otherwise `-ctk q8_0 -ctv
-q8_0` (at the numerical noise floor of the model; at 16k context as fast as f16, 7 % slower at empty context). `-ctk q8_0 -ctv vtq4_1` (6.5 bpw) stays close to that and
+q8_0` (at the numerical noise floor of the model; speed: [benchmarks](benchmarks/README.md)). `-ctk q8_0 -ctv vtq4_1` (6.5 bpw) stays close to that and
 decodes as fast as `q8_0`; it is the choice for models that need 8-bit K such as gpt-oss. `-ctk ktq4_1 -ctv vtq4_1`
 (5 bpw) is as accurate as or more accurate than `q4_0`; use it when you need the memory. The 2-bit types still lose a lot.
 
@@ -24,8 +28,8 @@ Two type families exist, split by cache role:
 
 - **KTQ** (K-cache) — RHT (one shared random sign pattern + FWHT) + Lloyd-Max codebook. Attention kernels rotate Q once per query and dot it against codebook values, so K is never explicitly dequantized on the decode path. Prompt batches dequantize K/V to f16 and use the tensor-core kernel.
 - **VTQ** (V-cache) — three sub-families:
-  - **v1** (`vtq*_1`, codebook lookup): fixed D·H·D rotation applied once at the graph level via `self_v_rot`, then a flat codebook lookup per entry inside attention. The GQA and tensor-core decode kernels cover `vtq2_1`, `vtq3_1` and `vtq4_1` (not `vtq1_1`).
-  - **v2 Trellis** (`vtq*_2`): group-level Viterbi trellis with shared state and shared scale, 16-state shift-register, 16-bit open-start state, inverse-Gaussian CDF code table.
+  - **v1** (`vtq*_1`, codebook lookup): fixed D·H·D rotation applied once at the graph level via `self_v_rot`, then a flat codebook lookup per entry inside attention. The GQA and tensor-core decode kernels cover `vtq2_1`, `vtq3_1` and `vtq4_1` (not `vtq1_1`); next to `q8_0` K only `vtq2_1` and `vtq4_1`.
+  - **v2 Trellis** (`vtq*_2`): group-level Viterbi trellis with shared state and shared scale, 16-bit shift register (L = 16, 65536 states), 16-bit open-start state, inverse-Gaussian CDF code table.
   - **v3 Trellis + outlier-split** (`vtq*_3`): same Viterbi backbone as v2, plus a 4-fp16-outliers-per-block sidecar that keeps the largest absolute V values in fp16.
 
 The suffix tells the method:
@@ -62,17 +66,18 @@ Pick a tier by passing two cache-type flags. `-fa on` is required.
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk ktq4_1 -ctv vtq4_1 --tq-protect-layers 4
 ```
 
-`--cache-type-k` accepts the stock quants (`f16`, `q8_0`, `q5_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1`. `--cache-type-v` accepts the stock quants plus `vtq{1,2,3,4}_1` (v1), `vtq{2,3,4}_2` (v2 Trellis), and `vtq{2,3,4}_3` (v3 Trellis + outlier-split). The short aliases `ktq1`-`ktq4` and `vtq1`-`vtq4` map to the `*_1` types (`vtq2` and `vtq3` pointed to the trellis types `vtq2_2` / `vtq3_v8` until 2026-10-12).
+`--cache-type-k` accepts the stock quants (`f16`, `q8_0`, `q5_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1`. `--cache-type-v` accepts the stock quants plus `vtq{1,2,3,4}_1` (v1), `vtq{2,3,4}_2` (v2 Trellis), `vtq{2,3,4}_3` (v3 Trellis + outlier-split) and `vtq3_v8`; a `ktq*_1` type given as V is stored as f16 with a warning. The short aliases `ktq1`-`ktq4` and `vtq1`-`vtq4` map to the `*_1` types (`vtq2` and `vtq3` pointed to the trellis types `vtq2_2` / `vtq3_v8` until 2026-10-12).
 
 Related options:
 
 | Option | Effect |
 |---|---|
 | `--tq-protect-layers N` | keep the first and last N layers in q8_0 (TurboQuant types only) |
-| `--tq-protect-sinks N` | keep the V cache of layer 0 in f16 when N > 0 (off by default) |
-| `--no-tq-deferred-k`, `--no-tq-deferred-v` | skip the f16 staging buffer used during prefill; saves VRAM for full context |
+| `--tq-protect-sinks N` | keep the V cache of the first attention layer in f16 when N > 0 (off by default; the value of N does not matter otherwise) |
+| `--no-tq-deferred-k`, `--no-tq-deferred-v` | skip the f16 staging buffer used during prefill; saves VRAM for full context (env `LLAMA_ARG_NO_TQ_DEFERRED_K`, `LLAMA_ARG_NO_TQ_DEFERRED_V`) |
+| `--tq-deferred-k`, `--tq-deferred-v` | keep the f16 staging in `llama-perplexity`, which turns it off by default |
 | `GGML_CUDA_TQ_WMMA=0` | disable the tensor-core decode kernel (falls back to the GQA kernel) |
-| `GGML_CUDA_TQ_VEC_NO_GQA=1` | disable the GQA decode kernel (falls back to the generic vector kernel) |
+| `GGML_CUDA_TQ_VEC_NO_GQA` | set to any value: disable the GQA decode kernel (falls back to the generic vector kernel) |
 
 
 ## Available Types
@@ -103,7 +108,7 @@ Note: `vtq3_1` is **4.0 bpw**, not 3.5 — block layout is `[d:2B] [qs: 12 B of 
 
 ### V-cache v2 — Trellis (`vtq*_2`)
 
-Group-level Viterbi trellis. 16-state shift register; 16-bit `start_state` per block plus 16-bit `d`. `QK_VTQ_TRELLIS=128` (halved from 256 in April 2026). Index-rate is the bare `K` bits/sample; structural bpw includes the 4-byte (`d`+`start_state`) overhead per 128-sample block.
+Group-level Viterbi trellis. 16-bit shift register (L = 16, 65536 states); 16-bit `start_state` per block plus 16-bit `d`. `QK_VTQ_TRELLIS=128` (halved from 256 in April 2026). Index-rate is the bare `K` bits/sample; structural bpw includes the 4-byte (`d`+`start_state`) overhead per 128-sample block.
 
 | Type   | enum | Index bits | bpw (index-rate) | bpw (struct) | Block |
 |--------|:---:|:---:|:---:|:---:|:---:|
@@ -122,7 +127,7 @@ against f16 KV; a separate run from the table under Accuracy, which uses 40 chun
 
 The trellis is more accurate per bit than the codebook types, but it is not usable for interactive decode: its Viterbi
 encoder searches all 65536 states for every 128 values and runs for every new token, 13.7 ms per layer on an RTX 2060,
-so decode reaches 1-3 t/s (Qwen3-4B with `vtq3_2`: 1.0 t/s on an RTX 2060, 2.5 t/s on an RTX 5080; `vtq3_1`: 97 t/s on
+so decode reaches 1-3 t/s (2026-10-12; Qwen3-4B with `vtq3_2`: 1.0 t/s on an RTX 2060, 2.5 t/s on an RTX 5080; `vtq3_1`: 97 t/s on
 the RTX 2060). Deferred staging (the
 default for these types) only moves the prompt's encoding to one pass after the prompt; the perplexity run with V
 quantized in prefill took more than an hour, the codebook types take minutes. The types are also not covered by the GQA
@@ -142,7 +147,8 @@ Same Viterbi backbone as v2, plus 4 fp16 outliers per block (largest absolute V 
 
 `vtq3_v8` (enum 58, 3.625 bpw) is a trellis 3-bit variant with two fp16 outliers per block. Like the v2 types these are
 not covered by the GQA and tensor-core decode kernels, and their April 2026 perplexity numbers were taken with V staged in f16 during
-prefill; not re-measured.
+prefill; not re-measured. Before 2026-10-12 the CUDA encoder did not store the outliers of `vtq*_3` / `vtq3_v8`, so
+earlier CUDA results for these types are without them.
 
 ### Reserved / dormant
 
@@ -238,7 +244,7 @@ float[32] -> normalize -> per-block sign flip -> FWHT -> scale search over the L
 4. **Scale search over the codebook:** the codebooks are Lloyd-Max optimal for `Beta((d-1)/2, (d-1)/2) = Beta(15.5, 15.5)`
    at d=32 (the marginal of a unit vector coordinate after random rotation). The block is assigned to the nearest
    centroids at 32 trial scales of the codebook (0.36x .. 1.60x); the assignment with the smallest angle to the block wins
-   (since 2026-10-11; before, one assignment at the nominal scale).
+   (since 2026-10-11; before, one assignment at the nominal scale). Only the 2-4 bit types search; 1 bit stores the sign.
 5. **Unbiased scale:** store `||x|| / <x_hat, c>`, which keeps the component of the reconstruction along the input exact.
    A least-squares scale would shrink every block, and the attention average over many tokens keeps that shrink. Before
    2026-10-11 the scale kept the length of the block (`||x|| / ||c||`, "norm correction").
@@ -266,8 +272,8 @@ Decode (one query token per sequence) has two dedicated CUDA kernels for quantiz
 
 | Kernel | Source | How it works | Covers |
 |---|---|---|---|
-| Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group). `ktq{2,3,4}_1` × `vtq{2,3,4}_1`, `q5_0`, `q4_0` at D=128/256/512 and D=64 with sinks (gpt-oss); KTQ or VTQ mixed with f16 at D=256/512; `q8_0` and `q8_0` K with `vtq{2,4}_1` V at D=64/512 |
-| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4 or 8 query heads), one warp per K/V row, the column dot products reduced together; 3/4-bit codebooks in shared memory. Supports the sparse index lists of Qwen3.8-Flash-Next. | KTQ, VTQ v1, `q8_0` (also with `vtq{2,4}_1` V), `q5_0`, f16 mixes at D=128/256 |
+| Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group); attention sinks (gpt-oss) are supported. | GQA ratio 2-16. Same-bit pairs `ktq{2,3,4}_1` × `vtq{2,3,4}_1` and `q4_0` at D=64/128/256/512; `q5_0` at D=128/256/512; `q8_0` and `q8_0` K with `vtq{2,4}_1` V at D=64/512; f16 K with `vtq{2,3,4}_1` V at D=64, with `vtq{2,4}_1` V at D=256/512; `ktq{2,4}_1` K with f16 V at D=256 |
+| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4-column blocks for GQA ratio 3-4, 8-column blocks above 4), one warp per K/V row, the column dot products reduced together; 3/4-bit codebooks in shared memory. Supports the sparse index lists of Qwen3.8-Flash-Next. | GQA ratio ≥ 3, no sinks; contexts of a single KQ tile go to the generic vector kernel. `ktq{2,3,4}_1` K with `vtq{2,3,4}_1` or f16 V at D=128/256; f16 K with `vtq{2,3,4}_1` V at D=256 only; `q8_0` (also with `vtq{2,4}_1` V) and `q5_0` at D=128/256. Not `ktq1_1`/`vtq1_1` |
 
 Kernel-only microbenchmark of the attention op at 16k context (one RTX 2060, `test-backend-ops perf`, 2026-10-04,
 before the encoder change; end-to-end speeds are on the [benchmarks](benchmarks/README.md) page):
@@ -279,7 +285,7 @@ before the encoder change; end-to-end speeds are on the [benchmarks](benchmarks/
 
 Measured speeds: [benchmarks](benchmarks/README.md); per model setup: [models.md](models.md).
 
-The KV cache write (`SET_ROWS`) quantizes one 32-value block per warp (`GGML_CUDA_TQ_SET_ROWS_SERIAL=1` restores the one-thread-per-block kernel for comparison).
+The KV cache write (`SET_ROWS`) quantizes one 32-value block per warp (`GGML_CUDA_TQ_SET_ROWS_SERIAL`, set to any value, restores the one-thread-per-block kernel for comparison).
 
 ### VTQ v1 — codebook lookup
 
@@ -294,24 +300,25 @@ FA V-dequant reduces to:
 v_approx[j] = CB[q_j] * scale;   // ~8 thread-local registers, __forceinline__
 ```
 
-After FA accumulates the weighted sum, a graph-level `Rᵀ · VKQ` matmul applies the inverse rotation. Eliminates the ~40-register staging buffer that caused FA accumulator corruption in the original combined-KTQ V path.
+The rotation works on blocks of 64 values and is applied only when the V head size is a multiple of 64. After FA accumulates the weighted sum, a graph-level `Rᵀ · VKQ` matmul applies the inverse rotation. Eliminates the ~40-register staging buffer that caused FA accumulator corruption in the original combined-KTQ V path.
 
 ### VTQ v2 — Trellis
 
-Group-level Viterbi trellis with shared state and shared scale, 16-state shift register, 16-bit open-start state, inverse-Gaussian CDF code table. Block layout: `[d:fp16] [start_state:u16] [packed indices: K · group_size / 8 bytes]`.
+Group-level Viterbi trellis with shared state and shared scale, 16-bit shift register (L = 16, 65536 states), 16-bit open-start state, inverse-Gaussian CDF code table. Block layout: `[d:fp16] [start_state:u16] [packed indices: K · group_size / 8 bytes]`.
 
 The Viterbi path optimizes globally over the block, adapting implicitly to the running model's V-distribution — every V-element leverages local statistics at the same average bpw.
 
-**Encoder cost is non-trivial** (~22 ms/call), so VTQ_2 auto-enables **f16 staging during prefill** and runs the bulk Viterbi exactly once at the prefill→decode boundary. Startup logs: `deferred V quantization enabled (N layers with f16 staging)`. Perplexity runs therefore need `--no-tq-deferred-v` to measure the quantized V cache; without it they measure f16 V.
+All trellis types (`vtq*_2`, `vtq*_3`, `vtq3_v8`) stage V in f16 during prefill and encode the prompt in one pass at the prefill→decode boundary; every decoded token still runs the encoder (cost: see [V-cache v2](#v-cache-v2--trellis-vtq_2)). Startup logs: `deferred V quantization enabled (N layers with f16 staging)`. `llama-perplexity` turns the staging off by default, so it scores the quantized V cache.
 
 ### VTQ v3 — Trellis + outlier-channel-split
 
-Same v2 backbone plus 4 fp16 outliers per block (largest absolute V values). Not re-measured with the cache quantized in prefill (see above).
+Same v2 backbone plus 4 fp16 outliers per block (largest absolute V values). Not re-measured with the cache quantized in prefill (see above). Before 2026-10-12 the CUDA encoder did not store the outliers of `vtq*_3` / `vtq3_v8`.
 
 ### Deferred K/V quantization
 
-During prefill the K (and VTQ v2/v3 V) cache is staged in f16 and converted in bulk at the prefill→decode boundary; this
-is automatic for any KTQ K type and any VTQ v2/v3 V type. It was introduced in April 2026 against repetition loops with
+During prefill the K (and trellis V) cache is staged in f16 and converted in bulk at the prefill→decode boundary; this
+is automatic for any KTQ K type and any trellis V type (`vtq*_2`, `vtq*_3`, `vtq3_v8`), except in `llama-perplexity`,
+which turns it off by default (`--tq-deferred-k` / `--tq-deferred-v` keep it there). It was introduced in April 2026 against repetition loops with
 K quantized per token in prefill (observed before the KTQ sign fix of 2026-10-04). `--no-tq-deferred-k` /
 `--no-tq-deferred-v` turn it off (in `llama-bench`: `LLAMA_ARG_NO_TQ_DEFERRED_K=1`, `LLAMA_ARG_NO_TQ_DEFERRED_V=1`), which
 saves the staging memory at full context and is how the accuracy numbers above are measured. The conversion runs once at the first decode step ([its cost](benchmarks/README.md)).
@@ -322,8 +329,9 @@ saves the staging memory at full context and is how the accuracy numbers above a
 
 ### Attention-sink protection
 
-`--tq-protect-sinks N` (off by default) keeps the V cache of layer 0 in f16 when N > 0, so the sink tokens that draw
-outsized attention on long contexts keep their full precision (StreamingLLM idea).
+`--tq-protect-sinks N` (off by default) keeps the V cache of the first attention layer (on hybrid models not necessarily
+layer 0) in f16 when N > 0; the value of N does not matter otherwise. The sink tokens that draw
+outsized attention on long contexts thus keep their full precision (StreamingLLM idea).
 
 ### Shared codebooks (`PQ_CODEBOOK_*`)
 
@@ -342,18 +350,18 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 |-----------------------------|---|
 | Hadamard-domain KQ          | FWHT on Q once per tile; dot against codebook values. Fewer warp shuffles per `vec_dot` call than an inverse FWHT on K. |
 | Warp-cooperative FWHT       | 32 lanes × 5 `__shfl_xor_sync` rounds (XOR masks 1/2/4/8/16); zero shared memory. |
-| AVX2-FWHT-32                | Host-side path used by deferred-K bulk conversion. |
 | MMA split-dequant           | sm_75+ tensor-core path for prompt batches with KTQ K and/or VTQ V, head sizes up to 512. |
-| Tensor-core decode          | WMMA decode kernel with grouped-query attention for TurboQuant, `q5_0` and `q4_0` at head sizes 64 (with sinks), 128, 256, 512; `q8_0` and `q8_0` K with `vtq{2,4}_1` V only at 64 and 512 (at 128/256 the GQA kernel takes them); `GGML_CUDA_TQ_WMMA=0` disables it. |
-| GQA decode                  | One block per GQA group, one warp per K/V row; KTQ, VTQ v1, `q8_0` (also with VTQ V), `q5_0`; sparse index lists. |
+| Tensor-core decode          | WMMA decode kernel with grouped-query attention; type and head-size coverage in [Decode kernels](#decode-kernels-2026-10-04). `q8_0` and `q8_0` K with `vtq{2,4}_1` V only at 64 and 512 (at 128/256 the GQA kernel takes them); `GGML_CUDA_TQ_WMMA=0` disables it. |
+| GQA decode                  | One block per GQA group, one warp per K/V row; sparse index lists; coverage in [Decode kernels](#decode-kernels-2026-10-04). |
 | Warp SET_ROWS               | One warp quantizes one 32-value block when writing the KV cache; each lane evaluates one trial scale. |
 | Branchless sign × norm      | `(1 − 2·bit) · norm` replaces ternary; eliminates warp divergence. |
 | Shared sign pattern         | All KTQ blocks use the same signs, so Q is rotated once per query. |
 | VTQ v1 V-dequant            | `codebook[idx] * scale`, `__forceinline__`, ~8 registers, no LMEM spills. |
 | VTQ pre-rotation            | `self_v_rot` matmul before cache write + inverse `Rᵀ` matmul after FA. |
-| FA dispatch                 | KTQ1_1..KTQ4_1 (K), VTQ1_1..VTQ4_1 (v1), VTQ2_2..VTQ4_2 (v2), VTQ2_3..VTQ4_3 (v3). |
-| SET_ROWS kernels            | `k_set_rows_ktq*` + `k_set_rows_vtq*`. |
-| `head_dim` support          | KTQ: 64/128/256/512. VTQ v2: D=64/128/256/512 (checked in April 2026 on Gemma 4 D=256/512, Qwen3.6-35B D=128, gpt-oss-20b D=64). |
+| FA dispatch                 | KTQ1_1..KTQ4_1 (K), VTQ1_1..VTQ4_1 (v1), VTQ2_2..VTQ4_2 (v2), VTQ2_3..VTQ4_3 (v3), VTQ3_V8. |
+| SET_ROWS kernels            | `k_set_rows_pq` / `k_set_rows_pq_warp` (KTQ, VTQ v1) in `set-rows.cu`; trellis encoder in `trellis-encode.cuh`. |
+| `head_dim` support          | KTQ: 64/128/256/512. Trellis V needs head sizes that are multiples of 128 (128/256/512); layers with smaller heads (gpt-oss: 64) use the codebook type with the same bits. |
+| CPU                         | Inverse rotation in KTQ dequantization (`kktq_rht_inverse_sb`, AVX2 path, `ggml/src/ggml-quants.c`). |
 | Compute capability          | Developed on CC 7.5 (Turing, RTX 2060); tested on Ampere (RTX 3060, 3090), Ada (RTX 4060 Ti, 4090) and Blackwell (RTX 5090) for decode speed. Untested below CC 7.5; the tensor-core paths need CC 7.5+. |
 
 ## Source Files
@@ -361,13 +369,21 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 | File                                       | Description |
 |--------------------------------------------|---|
 | `ggml/include/ggml.h`                      | Type enums: KTQ1_1=45, KTQ2_1=42, KTQ3_1=43, KTQ4_1=44. VTQ1_1=46, VTQ2_1=47, VTQ3_1=48, VTQ4_1=49. VTQ2_2=50, VTQ3_2=51, VTQ4_2=52. 53 reserved (was VTQ_MIXED). VTQ2_3=54, VTQ3_3=55, VTQ4_3=56. 57 reserved (was XKTQ2_1). VTQ3_V8=58. |
-| `ggml/src/ggml-common.h`                   | Block structs: `block_ktq*` (with `sb[4]`), `block_vtq*_1`, `block_vtq*_2` (Trellis), `block_vtq*_3` (Trellis + outliers). |
+| `ggml/src/ggml-common.h`                   | Block structs: `block_ktq*` (with `sb[4]`), `block_vtq*_1`, `block_vtq*_2` (Trellis), `block_vtq*_3` (Trellis + outliers), `block_vtq3_v8`. |
+| `ggml/src/ggml-trellis.{c,h}`              | Trellis code table, CPU group encoder/decoder and outlier selection (`GGML_TRELLIS_L` = 16). |
 | `ggml/src/ggml-cuda/turboquant.cuh`        | CUDA kernels: KTQ Philox, FWHT, quantize, dequant; VTQ v1 quantize/dequant. |
-| `ggml/src/ggml-cuda/fattn-common.cuh`      | FA: `vec_dot_KQ_ktq*`, `dequantize_V_ktq*`, `dequantize_V_vtq*` (v1/v2/v3). |
+| `ggml/src/ggml-cuda/fattn-tq.cuh`          | FA: `vec_dot_fattn_vec_KQ_ktq`, `dequantize_V_ktq`, `dequantize_V_vtq*` (v1/v2/v3, `vtq3_v8`). |
+| `ggml/src/ggml-cuda/fattn-tq-wmma.cu`      | Tensor-core decode kernel. |
+| `ggml/src/ggml-cuda/fattn-vec-gqa.{cu,cuh}` | GQA decode kernel. |
 | `ggml/src/ggml-cuda/fattn-mma-ktq.{cu,cuh}` | MMA-KTQ tensor-core split-dequant path (CC ≥ 7.5). |
+| `ggml/src/ggml-cuda/set-rows.cu`           | KV cache write: `k_set_rows_pq`, `k_set_rows_pq_warp`, trellis encoder instances. |
+| `ggml/src/ggml-cuda/trellis-encode.cuh`    | CUDA trellis encoder (full Viterbi). |
+| `ggml/src/ggml-cuda/trellis.cu`            | Trellis code table per device and encoder workspace. |
 | `ggml/src/ggml-cuda/convert.cu`            | CUDA dequant dispatch (contiguous + NC) for KTQ + all VTQ families. |
 | `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ; shared `PQ_CODEBOOK_*` constants. |
-| `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_3`. |
+| `src/llama-kv-cache.cpp`                   | Per-layer cache types (layer and sink protection, trellis head-size fallback), deferred K/V staging, V rotation. |
+| `tools/perplexity/perplexity.cpp`          | Turns deferred staging off unless `--tq-deferred-k`/`--tq-deferred-v` is given. |
+| `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_3`, `vtq3_v8`. |
 | `docs/benchmarks/history/LIVE_NUMBERS.md` | Historical TG/PPL/HellaSwag snapshot. |
 
 ## Tried and discarded
@@ -396,6 +412,8 @@ Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style
 ## Known Issues
 
 - **2- and 3-bit K** still lose a lot of accuracy on every measured model (see [Accuracy](#accuracy)); gpt-oss needs 8-bit K.
+- **KTQ K with a stock-quant V** (e.g. `-ctk ktq4_1 -ctv q8_0`) has no CUDA flash-attention kernel unless built with
+  `-DGGML_CUDA_FA_ALL_QUANTS=ON`.
 - **VTQ v1 on Qwen3-Next-80B with `-b 1 -ub 1`**: reported in April 2026 to crash through the fused Gated DeltaNet path; not re-checked since. Batched mode and other models were unaffected.
 
 ## References

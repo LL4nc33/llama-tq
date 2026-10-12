@@ -43,14 +43,15 @@ prompt), and an adapter trained on one form only partly transfers to the other.
 |---|---|
 | `--lora-train-target REGEX` | Create a LoRA pair for every model tensor matching the regex (3D expert tensors get one pair per expert). All model tensors stay frozen; only the adapter trains. |
 | `--lora-train-rank N`, `--lora-train-alpha A` | Rank (default 16) and alpha (default 32); the adapter scale is alpha / rank. |
-| `-opt adamw\|sgd`, `-lr`, `-wd`, `--epochs`, `-val-split` | Optimizer (AdamW keeps two moments per trained value), learning rate, weight decay, epochs, share of the data used for validation. |
-| `--lr-warmup N` | Raise the learning rate linearly over the first N optimizer steps. |
+| `-opt adamw\|sgd`, `-lr`, `-wd`, `--epochs`, `-val-split` | Optimizer (AdamW keeps two moments per trained value), learning rate (default 1e-5), weight decay (default 0), epochs (default 2), share of the data used for validation (default 0.05). |
+| `--lr-warmup N` | Raise the learning rate linearly over the first N optimizer steps (default 0). After the warmup the learning rate stays constant unless `-lr-min` is set. |
+| `-lr-min X`, `-decay-epochs N` | Decay the learning rate exponentially to X, reached after N epochs (default: all epochs) and kept from then on. |
 | `--grad-clip N` | Clip the global gradient norm to N (default 1.0, 0 = off). |
 | `--early-stop N` | Stop after N epochs without a lower validation loss. The adapter with the best validation loss is always kept as `<adapter>.best`. |
 | `--reasoning on\|off\|auto` | Render chat data as the server does with this setting. |
 | `--resume` | Continue a stopped run from the adapter, `<adapter>.opt` (step count, AdamW moments) and `<adapter>.state` (position, learning-rate step, early-stop state). The result is bit-identical to an uninterrupted run. Refuses an adapter trained with another alpha. |
 | `--stop-after N` | Stop after N context windows and save everything for `--resume`. SIGINT/SIGTERM do the same after the current window (a second signal exits at once). |
-| `--grad-checkpoint` | Gradient checkpointing: only the layer outputs are kept, each layer is recomputed in the backward pass (about one more forward pass). Same gradients; Qwen3-4B, c=512: 8.2 → 4.4 GB. |
+| `--grad-checkpoint` | Gradient checkpointing: only the layer outputs are kept, each layer is recomputed in the backward pass (about one more forward pass). Same gradients; Qwen3-4B, `-c 512 -ub 512`, without flash attention, RTX 2060 (2026-10-09): 8.2 → 4.4 GB. |
 | `--train-stride N` | Tokens between window starts. Default: the context size for chat JSONL (whole examples are packed into windows, an example that does not fit starts the next window), half of it for plain text. Resume with the same value. |
 | `--checkpoint-every N` | Also save adapter and state every N training ubatches (at the end of a window). |
 | `--train-skip-regex REGEX` | Without a LoRA target: train the model tensors not matching the regex directly (see below). |
@@ -88,7 +89,6 @@ adds or fixes:
 - **Optimizer:** gradient accumulators are cleared after every step, moments and accumulators live next
   to their parameter (two GPUs), the state is kept per parameter (graphs may differ between ubatches),
   global-norm clipping, save/restore of the AdamW state.
-
 - **Flash attention** (`-fa on`): `GGML_OP_FLASH_ATTN_BACK` on CPU and CUDA recomputes the softmax from q
   and k instead of storing the attention probabilities (masks, GQA, softcap, ALiBi, sinks).
 
@@ -98,7 +98,10 @@ and the kernel of `GELU_ERF` are not trainable.
 ## Results
 
 Extracting an appointment from a German message as JSON with a fixed schema: 700 chat examples for
-training, 100 held out, greedy decoding through `llama-server` (2× RTX 2060 12 GB). Data generator, prompts, conventions,
+training, 100 held out, greedy decoding through `llama-server`. Runs of 2026-10-08 to 2026-10-10 on 2× RTX 2060 12 GB
+unless a row names another GPU. Rows with packed windows (and the `same` rows that continue them) ran after the
+training speed fixes of 2026-10-09; the other rows (overlapping windows) ran before them, so their times are not
+comparable. Data generator, prompts, conventions,
 the exact training input, evaluation script and the PyTorch reference are in
 [examples/training/termine](../examples/training/termine/README.md).
 
@@ -140,7 +143,8 @@ generalizes to other tasks.
 | same, packed windows, all 700 examples, model fully in VRAM (1× RTX PRO 6000 96 GB), 1 epoch / 2 epochs | | 4 min / 8 min | 0 % → 99 % / **100 %** | 0.0001 / 0.00001 |
 
 Short runs (60 windows, attention LoRA) also converge on Gemma-4-26B-A4B, Qwen3.8-27B and
-Ternary-Bonsai-2-27B (PTQ1_0). Gemma 4 needs a lower learning rate (1e-4 diverged, 5e-5 trains).
+Ternary-Bonsai-2-27B (PTQ1_0). In these early runs (2026-10-08, before packed windows) Gemma 4 diverged at 1e-4 and
+trained at 5e-5; with packed windows 1e-4 trains Gemma-4-12B and Gemma-4-26B-A4B to 100 % (table above).
 
 **Long context** (Qwen3-4B, peak memory): without flash attention `-c 4096 -ub 512` takes 18.7 GB,
 `-c 8192 -ub 256` 19.2 GB and `-c 16384 -ub 128` 23.0 GB, because every layer keeps its attention
@@ -161,7 +165,9 @@ RTX 2060 (Qwen3-4B, including setup): `-c 2048 -ub 2048 --grad-checkpoint` 16 s 
 loss differs from the non-flash path by 0.7 % on the CPU backend (Qwen3-4B) and by 1–2 % on CUDA.
 
 **Compared with PyTorch QLoRA** (same model, data, LoRA setup — attention q/k/v/o, rank 16, AdamW 2e-4,
-warmup 20, 2 epochs — and the same exact-match metric on the 100 held-out examples):
+warmup 20, 2 epochs — and the same exact-match metric on the 100 held-out examples). The schedules differ: PEFT
+decays the learning rate linearly to 0 and trains batches of 4 examples, llama-finetune keeps it constant after the
+warmup and trains windows of the context size:
 
 | System | | Exact match | Training time | Peak memory |
 |---|---|---|---|---|
@@ -211,6 +217,9 @@ that an automatic placement made without the adapter does not reserve.
   the non-flash gradient norm within 0.5–1.4 % (the flash attention forward rounds K/V to F16).
 - Resume: stopping (`--stop-after`, SIGTERM, within and across epochs) and resuming gives a bit-identical
   adapter with SGD and with AdamW + warmup.
+- Regression run 2026-10-12 (after the KV cache and scheduler changes of that day, 2× RTX 2060): gpt-oss-20b,
+  Gemma-4-12B and Ministral-3-3B give bit-identical loss and gradient norms over 60 steps compared with the previous
+  build; Qwen3.5-0.8B and Qwen3.6-35B-A3B (Gated DeltaNet) differ by 0.2–0.3 % in the final loss. All train normally.
 
 ## Training without LoRA
 

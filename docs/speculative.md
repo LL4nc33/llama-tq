@@ -124,7 +124,7 @@ If a draft model is combined with a draftless decoding the draftless decoding ha
 
 ### `--spec-type TYPE`
 
-Specifies a type of speculative decoding without draft model.
+Selects the speculative decoding type; `draft-simple` and `draft-dflash` also need a draft model (`-md`).
 
 | Type | Description |
 |------|-------------|
@@ -209,7 +209,8 @@ DRAFT_MTP is supported and respects `--draft-p-min` (default 0.75). On consumer
 single-GPU + IQ2-class MoE models it consistently underperforms ngram-cache
 because the single-layer MTP head caps per-step confidence so position 1-3 of a
 dm=4 draft fail the p_min filter (observed: avg 1.30 tokens/draft, firing 32%
-of TG-iterations with the `LLAMA_MTP_DECAY` patch — still net-negative; measured 2026-06).
+of TG-iterations with the `LLAMA_MTP_DECAY` patch — still net-negative; measured 2026-06 on RTX 2060 12 GB with the
+KTQ/VTQ cache of the table above, so before the KTQ fix of 2026-10-04).
 
 On IQ2/IQ3 models use `ngram-cache` instead. Where DRAFT_MTP pays off (higher-bit quants, larger active parameter
 counts) was not measured; compare it against `ngram-cache` on your setup.
@@ -257,7 +258,7 @@ unchanged at temperature 0. Prose gains less; repeat-heavy text is still best se
 ### Earlier notes on the 2x ceiling
 
 With single-layer MTP heads and n-gram caches alone, a universal 2x was not reachable on
-2x 12 GB with IQ2 MoE models; MTP drafts on dense Qwen3.8 even cost 10-14 % (2026-08). Block drafting
+2x 12 GB with IQ2 MoE models; MTP drafts on dense Qwen3.8 even cost 10-14 % (2026-08, 2x RTX 2060 12 GB). Block drafting
 (DFlash above) reaches about 1.7-1.8x on code. Repeat-heavy workloads (lists, code
 boilerplate, log scanning) reach 1.5-3.8x with `ngram-cache` / `ngram-mod`.
 

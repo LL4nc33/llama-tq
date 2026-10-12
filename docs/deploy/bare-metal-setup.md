@@ -1,9 +1,8 @@
 # llama-tq — Bare-Metal Setup (fresh Ubuntu 24.04 + NVIDIA GPU)
 
-Real, tested setup path for bringing up llama-tq on a **fresh** Ubuntu 24.04 box
-(here: a KVM VM with GPU passthrough, 1× RTX 2060 12 GB, 15 GB RAM, 4 cores).
-Every step below is something a clean machine actually needs — discovered while
-standing up a brand-new server from zero.
+Setup path for bringing up llama-tq on a **fresh** Ubuntu 24.04 box, tested in
+July 2026 on a KVM VM with GPU passthrough (1× RTX 2060 12 GB, 15 GB RAM, 4 cores).
+Every step below is something a clean machine actually needed.
 
 There are **two ways** to get a running server:
 - **Fast path (A):** download a prebuilt release binary — no compiler, ~20 min.
@@ -44,37 +43,21 @@ echo -e "nvidia\nnvidia_uvm\nnvidia_modeset" | sudo tee /etc/modules-load.d/nvid
 
 ## 2. Fast path (A): prebuilt release binary
 
-The GitHub release ships CUDA-linked `.so`s but **not** the CUDA runtime libs.
-On a machine with no CUDA toolkit you still need `libcudart.so.12`,
-`libcublas.so.12`, `libnccl.so.2`. Two ways to get them without installing the
-full toolkit:
+Download the CUDA archive (from the next release on, one per GPU generation) from the
+[releases page](https://github.com/LL4nc33/llama-tq/releases); what it needs (CUDA runtime libraries, driver) is
+listed in [build.md, Release archives](../build.md#release-archives). The current release v2026.10.06 still needs
+`libnccl.so.2` and `LD_LIBRARY_PATH` pointing at its own directory; the next release needs neither.
 
 ```bash
-# download the binary
 mkdir -p ~/llama-tq-bin && cd ~/llama-tq-bin
-curl -sL https://github.com/LL4nc33/llama-tq/releases/download/<tag>/llama-<tag>-bin-ubuntu-cuda-12.8-x64.tar.gz -o llama-cuda.tar.gz
-tar xzf llama-cuda.tar.gz
-
-# gather the runtime libs into one dir
-mkdir -p ~/cuda-libs
-# cudart + cublas often already present (e.g. from an Ollama install):
-cp ~/.local/lib/ollama/cuda_v12/libcudart.so.12*  ~/cuda-libs/ 2>/dev/null
-cp ~/.local/lib/ollama/cuda_v12/libcublas*.so.12* ~/cuda-libs/ 2>/dev/null
-# nccl from the pip wheel (single-GPU never calls it, but it's a link-time dep):
-pip download --no-deps nvidia-nccl-cu12 -d /tmp/nccl
-python3 - <<'PY'
-import zipfile, glob, os, shutil
-w = glob.glob('/tmp/nccl/*.whl')[0]
-with zipfile.ZipFile(w) as z:
-    for n in z.namelist():
-        if 'libnccl.so' in n:
-            with z.open(n) as s, open(os.path.expanduser('~/cuda-libs/')+os.path.basename(n),'wb') as d:
-                shutil.copyfileobj(s, d)
-PY
-
-# run it
+tar xzf ~/Downloads/<archive>.tar.gz
 BIN=~/llama-tq-bin/llama-<tag>
-LD_LIBRARY_PATH=$BIN:~/cuda-libs $BIN/llama-server --version    # should print "found N CUDA devices"
+
+# v2026.10.06 only: libnccl.so.2 from the pip wheel (single-GPU never calls it, but it is a link-time dependency)
+pip download --no-deps nvidia-nccl-cu12 -d nccl-wheel
+python3 -m zipfile -e nccl-wheel/*.whl nccl-wheel/x
+cp $(find nccl-wheel/x -name 'libnccl.so*') $BIN/
+LD_LIBRARY_PATH=$BIN $BIN/llama-server --version    # should print "found N CUDA devices"
 ```
 
 **Limitation:** an older release may lack `--cache-type-k-swa`/`-v-swa`,
@@ -90,7 +73,7 @@ load, you need the full build (path B).
 
 apt's `nvidia-cuda-toolkit` is 12.0 on 24.04 — too old to match a 12.8 runtime
 / recent driver. Use NVIDIA's repo and install **only the toolkit** (the driver
-already runs):
+already runs; for Blackwell use 12.9 or newer, see [build.md](../build.md#build-llama-tq-locally)):
 
 ```bash
 curl -sL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o /tmp/cuda-keyring.deb
@@ -104,23 +87,21 @@ nvcc --version
 ### 3.2 clone + build
 
 ```bash
-git clone <repo-url> llama-tq && cd llama-tq
-git checkout <branch-with-tricks>      # must have SWA-KV flags + gemma4uv vision
+git clone https://github.com/LL4nc33/llama-tq && cd llama-tq
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75   # 75 = Turing (RTX 2060)
 ```
 
-The gemma4uv/gemma4ua vision+audio projector is committed on this branch
-(`tools/mtmd/models/gemma4uv.cpp` / `gemma4ua.cpp`) — a plain checkout builds
+The gemma4uv/gemma4ua vision+audio projector is in the source tree
+(`tools/mtmd/models/gemma4uv.cpp` / `gemma4ua.cpp`), so a plain clone builds
 it in. No manual `git apply` of an mtmd patch is needed; if those files are
-missing, you're on the wrong branch.
+missing, your checkout is older than the current source.
 
-**Low-RAM warning:** the TurboQuant `fattn` templates are RAM-hungry. On a
-15 GB / 4-core VM, build with **`-j1`** (higher `-j` triggers OOM-kills) and
-enable ccache. Expect a long compile (the vtq/ktq kernels alone take a while).
+**Low-RAM warning:** the TurboQuant `fattn` templates are RAM-hungry. On 16 GB
+RAM build with **`-j2`** (each nvcc job for the TurboQuant templates takes about
+3-4 GB) and enable ccache. Expect a long compile.
 
 ```bash
-export CCACHE_DIR=~/.ccache
-setsid bash -c 'cmake --build build --target llama-server -j1 > /tmp/build.log 2>&1' < /dev/null &
+cmake --build build --target llama-server -j2
 ```
 
 ---
@@ -158,7 +139,7 @@ llama-server \
   [turboquant.md](../turboquant.md#accuracy). Older notes here recommended `ktq2_1`/`vtq2_3` with SWA overrides
   against `<unused49>` output; `vtq2_3` is a trellis type that decodes at 1-3 t/s.
 - Vision needs the `gemma4uv` mmproj. The matching `gemma4uv`/`gemma4ua`
-  projector support is already committed on the tricks branch (§3.2), so a
+  projector support is in the source tree (§3.2), so a
   source build has it; only an older *prebuilt release* may lack it. Image
   detail depends on `--image-max-tokens` (budgets: 70/140/280/560/1120; use
   **1120** for OCR / small text) with `-ub 2048 -b 2048`.
@@ -174,7 +155,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
 **ngram-spec note:** `--spec-type ngram-cache` is lossless and content-dependent —
 the cache learns from generated text, so short prompts show no speed-up (draft
 stats read `#gen drafts = 0`). On repetitive content (code, lists, repeated
-structure) it kicks in: measured ~33 t/s → ~59 t/s (≈1.8×) on gemma-4-12B / RTX 2060.
+structure) it kicks in: measured ~33 t/s → ~59 t/s (≈1.8×) on gemma-4-12B (2026-07, 1× RTX 2060 12 GB).
 
 ---
 

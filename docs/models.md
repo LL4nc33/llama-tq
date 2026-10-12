@@ -5,9 +5,10 @@ reaches. Kolibri-1 and the `PQ2_0` / `PTQ1_0` ternary files load only here; K2-H
 are now also supported by upstream llama.cpp. Comparisons across GPUs and KV types are on the
 [benchmarks page](benchmarks/README.md); which KV type to pick: [turboquant.md](turboquant.md#recommendation).
 
-All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md). The speed and
-perplexity numbers on this page were measured before the KTQ/VTQ encoder change of
-2026-10-11; current KV accuracy: [turboquant.md](turboquant.md#accuracy).
+All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md). The speed numbers
+on this page were measured on 2× RTX 2060 between 2026-10-03 and 2026-10-06 (date per section), before the KTQ/VTQ
+encoder change of 2026-10-10, which costs 1–2 % decode with the TurboQuant types; current KV accuracy:
+[turboquant.md](turboquant.md#accuracy).
 
 ## Ternary-Bonsai-2-27B (`PQ2_0`, `PTQ1_0`)
 
@@ -20,11 +21,12 @@ Two slots with 200k context each, vision:
 GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m Ternary-Bonsai-2-27B-PTQ1_0.gguf \
   --mmproj Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf \
   -ngl 99 -fa on -sm tensor -c 409600 --parallel 2 -ub 512 \
-  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v \
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k \
   --jinja --reasoning off
 ```
 
-Decode: 34 t/s short, 28 t/s at 23k, 22 t/s at 74k. One slot with f16 KV: 200k context, 40 t/s short, 21.6 t/s at 171k.
+Decode (2026-10-04): 34 t/s short, 28 t/s at 23k, 22 t/s at 74k. One slot with f16 KV (2026-10-03): 200k context, 40 t/s
+short, 21.6 t/s at 171k.
 
 ## Qwen3.8-27B (hybrid, Gated DeltaNet)
 
@@ -36,10 +38,10 @@ Full 256k context with `ktq4_1`/`vtq4_1`:
 ```bash
 GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m Qwen3.8-27B-UD-Q4_K_M.gguf \
   -ngl 99 -fa on -sm tensor -c 262144 \
-  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --jinja
 ```
 
-Decode: 22.5 t/s short, 17.2 t/s at 118k. Prefill 190–250 t/s. With f16 KV the context ends at 72k (24 t/s short).
+Decode (2026-10-04): 22.5 t/s short, 17.2 t/s at 118k. Prefill 190–250 t/s. With f16 KV the context ends at 72k (24 t/s short).
 
 ## Qwen3.8-Flash-Next (`qwen4exp`)
 
@@ -52,10 +54,11 @@ on the CPU:
 llama-server -m Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf \
   -ngl 99 -fa on -ts 24,24 -c 131072 -ub 256 -t 6 \
   -ot "blk\..*\.ffn_down_exps\.weight=CPU" --no-op-offload \
-  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --jinja
 ```
 
-Decode: 15.5 t/s at 118k with a peak of 11.6 GB per GPU.
+Decode (2026-10-04): 15.5 t/s at 118k with a peak of 11.6 GB per GPU, measured before the VTQ fix of 2026-10-12 for
+this model (VTQ V gave wrong output here); to be re-measured.
 
 ## K2-Horizon-MoVA-36B-A4B (`k2-horizon`)
 
@@ -66,14 +69,14 @@ experts). All 48 layers use full attention, so the KV cache grows quickly. Sourc
 ```bash
 llama-server -m K2-Horizon-MoVA-36B-A4B-Q3_K_M.gguf \
   -ngl 99 -fa on -ts 25,23 -c 65536 -ub 512 -t 4 \
-  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v \
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k \
   --tq-protect-layers 4 --jinja
 ```
 
 The KV accuracy of this model has not been measured with the cache quantized in prefill; if accuracy matters more than
 context, use `-ctk q8_0 -ctv vtq4_1` ([turboquant.md](turboquant.md#accuracy)).
 
-Decode: 47 t/s short, 22 t/s at 40k. Prefill 650 t/s short, 416 t/s at 38k.
+Decode (2026-10-04): 47 t/s short, 22 t/s at 40k. Prefill 650 t/s short, 416 t/s at 38k.
 
 ## Qwen3-Coder-Next (`UD-TQ1_0`)
 
@@ -84,10 +87,10 @@ calls stay valid JSON in our tests. Source:
 ```bash
 llama-server -m Qwen3-Coder-Next-UD-TQ1_0.gguf \
   -ngl 99 -fa on -ts 12,12 -c 131072 \
-  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --jinja
 ```
 
-Decode: 61 t/s short, 37 t/s at 72k.
+Decode (2026-10-04): 61 t/s short, 37 t/s at 72k.
 
 ## Aleph Alpha Kolibri-1 (`kolibri1`)
 
@@ -109,11 +112,11 @@ instead of being streamed, which cuts the time to the first token of short promp
 
 ```bash
 GGML_OP_OFFLOAD_MIN_BATCH=256 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 131072 -b 4096 -ub 4096 -t 4 \
-  --device CUDA1,CUDA0 -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v \
+  --device CUDA1,CUDA0 -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k \
   --temp 1.0 --top-p 0.97 --top-k 128 --jinja --reasoning off
 ```
 
-2x RTX 2060 12 GB, 131k context, `-ub 4096`, server timings (time to the first token):
+2x RTX 2060 12 GB, 131k context, `-ub 4096`, server timings (time to the first token), 2026-10-06:
 
 | Placement | Decode | 81 tok | 562 tok | 1.3k tok | 3.4k tok |
 |---|---:|---:|---:|---:|---:|
@@ -124,7 +127,8 @@ GGML_OP_OFFLOAD_MIN_BATCH=256 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 13
 An MoE expert cache in VRAM (tried as `--moe-cache-mib`, since removed) did not pay off here: with 5 GB of cache and a 91 % hit
 rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU.
 
-Decode barely drops with context (38 t/s at 10k). KV accuracy: [turboquant.md](turboquant.md#accuracy). Reasoning effort is set per request through `chat_template_kwargs`
+Decode barely drops with context: 38 t/s at 10k in an earlier setup (2026-10-04: 32k context, f16 KV, experts of 20
+layers in RAM). KV accuracy: [turboquant.md](turboquant.md#accuracy). Reasoning effort is set per request through `chat_template_kwargs`
 (`reasoning_effort`: none, low, medium, high); tool calls use the Hermes format.
 
 ## gpt-oss-20b
@@ -140,17 +144,23 @@ As fast as `q8_0`/`q8_0` ([benchmarks](benchmarks/README.md)). The most context 
 
 ```bash
 llama-server -m gpt-oss-20b-MXFP4.gguf -ngl 99 -fa on -c 131072 \
-  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --no-tq-deferred-v --jinja
+  -ctk ktq4_1 -ctv vtq4_1 --no-tq-deferred-k --jinja
 ```
 
-With this server command on 2× RTX 2060: 57 t/s at 22k, 40 t/s at 64k; prompt processing 1100-2300 t/s.
+This is at `q4_0` accuracy on gpt-oss (KLD 0.36 instead of 0.039 for `q8_0`/`vtq4_1`,
+[accuracy](turboquant.md#accuracy)). With this server command on 2× RTX 2060 (2026-10-04): 57 t/s at 22k, 40 t/s at
+64k; prompt processing 1100-2300 t/s.
 
 ## Gemma 4
 
 Global layers use head size 512 with GQA 8-16 and a quantized cache runs through the tensor-core
-decode kernel. Decode at 32k context (llama-bench, `ktq4_1`/`vtq4_1`, f16 KV in brackets):
-12B Q4_K_M 28.8 (31.0), 26B-A4B UD-IQ2_XXS 53.7 (62.9), 26B-A4B UD-Q4_K_M 45.0 (51.3),
-31B UD-IQ2_XXS 11.1 (12.1), 31B Q4_K_M 11.3 (12.2).
+decode kernel. Gemma 4 is sensitive in V ([accuracy](turboquant.md#accuracy)), so the accurate setup keeps 8-bit K and V:
+
+```bash
+llama-server -m gemma-4-12b-it-Q4_K_M.gguf -ngl 99 -fa on -c 131072 -ctk q8_0 -ctv q8_0 --jinja
+```
+
+Compact (6.5 bpw): the same with `-ctv vtq4_1`. Speed: [benchmarks](benchmarks/README.md#against-upstream-two-gpus).
 
 ## Known limitations
 

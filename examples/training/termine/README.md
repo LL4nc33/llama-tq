@@ -37,7 +37,8 @@ Value ranges and conventions (the model has to learn them from the data):
 
 ## Training input (what the model sees)
 
-`llama-finetune` renders each chat with the model's own chat template (`--jinja`), with the same `--reasoning` setting
+`llama-finetune` renders each chat with the model's own chat template, always through the Jinja engine
+(`--chat-template-file` overrides the template), with the same `--reasoning` setting
 as the server, and trains only the assistant answer including its end-of-turn token. The answer is trained after the
 prompt exactly as the server renders it for generation. Two examples (`[[ ]]` = trained tokens,
 `LLAMA_FINETUNE_SHOW_MASK=1` prints this):
@@ -87,4 +88,6 @@ adapter every tested model scores 0 % exact.
 
 `peft_termine.py` is the PyTorch reference (Hugging Face Transformers + PEFT + bitsandbytes nf4) with the same data,
 LoRA setup (q/k/v/o, rank 16, alpha 32, no dropout), optimizer (AdamW 2e-4, 20 warmup steps, 2 epochs), loss mask
-(assistant turn only) and metric: `peft_termine.py HF_MODEL_DIR termine-train.jsonl termine-test.jsonl OUT_DIR`.
+(assistant turn only) and metric: `peft_termine.py HF_MODEL_DIR termine-train.jsonl termine-test.jsonl OUT_DIR`. The
+schedule differs: PEFT decays the learning rate linearly to 0 and trains batches of 4 examples, llama-finetune keeps
+it constant after the warmup and trains packed windows.

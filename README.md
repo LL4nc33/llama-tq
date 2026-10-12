@@ -16,7 +16,8 @@
 ## Quick start
 
 - **Download** a Linux build from the [releases page](https://github.com/LL4nc33/llama-tq/releases)
-  ([requirements](docs/build.md#release-archives); the current release is older than these changes, build from source for now)
+  ([requirements](docs/build.md#release-archives); the current release v2026.10.06 predates the changes since 2026-10-07,
+  build from source for now)
 - **Docker** (CPU): `ghcr.io/ll4nc33/llama-tq:server` ([Docker](docs/docker.md))
 - **Build** with CUDA: `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
   (75 Turing, 86 Ampere, 89 Ada, 120 Blackwell; [build guide](docs/build.md))
@@ -27,7 +28,10 @@ Then:
 # OpenAI-compatible server with an accurate 8-bit KV cache
 llama-server -m model.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0
 
-# more context on the same GPU: compact TurboQuant KV cache
+# compact and still accurate: 8-bit K, 4-bit TurboQuant V (6.5 bpw)
+llama-server -m model.gguf -ngl 99 -fa on -ctk q8_0 -ctv vtq4_1
+
+# most context: 5 bpw, at q4_0 accuracy
 llama-server -m model.gguf -ngl 99 -fa on -ctk ktq4_1 -ctv vtq4_1
 
 # LoRA fine-tuning directly on the quantized GGUF
@@ -39,7 +43,7 @@ llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
 
 `llama-tq` is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that aims to run large models with long
 context, and to fine-tune them, on consumer NVIDIA GPUs with 12 to 32 GB. It is developed on 2× RTX 2060 12 GB without
-P2P; speed was also measured on RTX 30, 40 and 50 cards, fine-tuning on RTX 50 cards. Upstream fixes are cherry-picked rather than
+P2P; speed was also measured on RTX 30, 40 and 50 cards, fine-tuning on the RTX 2060, RTX 5090 and RTX PRO 6000. Upstream fixes are cherry-picked rather than
 merged continuously, so the fork can lag behind the newest upstream. The fork adds:
 
 - **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value ([types](docs/turboquant.md#available-types)) with dedicated decode
@@ -68,7 +72,8 @@ Measurements: speed per GPU in [docs/benchmarks](docs/benchmarks/README.md), KV 
 | Blackwell (RTX 50, RTX PRO 6000) | 120 | RTX 5090 (decode speed, fine-tuning), RTX PRO 6000 (fine-tuning) |
 | CPU, Vulkan, other backends | upstream backends | |
 
-The TurboQuant KV types need CUDA; the other backends use the upstream KV types. Kernel tuning was done on Turing; on the
+The fast TurboQuant KV kernels are CUDA-only; the CPU backend has a slow reference implementation (used for tests),
+Vulkan and the other backends have none and use the upstream KV types. Kernel tuning was done on Turing; on the
 newer generations the code runs and is measured, but not tuned for them yet.
 
 ## Documentation

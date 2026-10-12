@@ -2,7 +2,8 @@
 
 This is the upstream llama.cpp build guide; it applies to this fork unchanged. For the TurboQuant KV cache types build
 with CUDA and set the architecture of your GPU: `-DCMAKE_CUDA_ARCHITECTURES=75` (Turing), `86` (Ampere), `89` (Ada),
-`120` (Blackwell), several as `"86;89"`.
+`120` (Blackwell), several as `"86;89"`. Blackwell needs CUDA 12.9 or newer: with CUDA 12.8 the device link for
+`sm_120a` failed (tested 2026-10-11, see [.github/workflows/release.yml](../.github/workflows/release.yml)).
 
 ## Release archives
 
