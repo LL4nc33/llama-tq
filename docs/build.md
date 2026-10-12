@@ -4,6 +4,18 @@ This is the upstream llama.cpp build guide; it applies to this fork unchanged. F
 with CUDA and set the architecture of your GPU: `-DCMAKE_CUDA_ARCHITECTURES=75` (Turing), `86` (Ampere), `89` (Ada),
 `120` (Blackwell), several as `"86;89"`.
 
+## Release archives
+
+The [releases page](https://github.com/LL4nc33/llama-tq/releases) has Linux builds: CPU and Vulkan for x64 and arm64,
+CUDA for x64. The CUDA archives need the CUDA runtime libraries `libcudart.so.12` and `libcublas.so.12` (e.g. the
+packages `cuda-cudart-12-8` and `libcublas-12-8` from NVIDIA's repository) and a driver for CUDA 12.8 (570 or newer);
+the Blackwell archive is built with CUDA 12.9 and needs the 12.9 packages and a driver 575 or newer. The current release
+(v2026.10.06) predates the changes since 2026-10-07, and its CUDA archive also needs `libnccl.so.2` and has to be started
+from its own directory; for now, build from source. The next release brings one CUDA archive per GPU generation without
+these limits.
+
+## Building from source
+
 The main product of this project is the `llama` library. Its C-style interface can be found in [include/llama.h](../include/llama.h).
 
 The project also includes many example programs and tools using the `llama` library. The examples range from simple, minimal code snippets to sophisticated sub-projects such as an OpenAI-compatible HTTP server.

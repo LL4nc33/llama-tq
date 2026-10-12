@@ -15,20 +15,13 @@
 
 ## Quick start
 
-A few options to get `llama-tq`:
+- **Download** a Linux build from the [releases page](https://github.com/LL4nc33/llama-tq/releases)
+  ([requirements](docs/build.md#release-archives); the current release is older than these changes, build from source for now)
+- **Docker** (CPU): `ghcr.io/ll4nc33/llama-tq:server` ([Docker](docs/docker.md))
+- **Build** with CUDA: `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
+  (75 Turing, 86 Ampere, 89 Ada, 120 Blackwell; [build guide](docs/build.md))
 
-- Download a Linux build from the [releases page](https://github.com/LL4nc33/llama-tq/releases) (CPU and Vulkan for x64
-  and arm64, CUDA for x64). The CUDA archives need the CUDA runtime libraries `libcudart.so.12` and `libcublas.so.12`
-  (e.g. the packages `cuda-cudart-12-8` and `libcublas-12-8` from NVIDIA's repository) and a driver for CUDA 12.8 (570 or
-  newer); the Blackwell archive is built with CUDA 12.9 and needs the 12.9 packages and a driver 575 or newer. The current release (v2026.10.06) predates the changes since 2026-10-07, and its CUDA archive
-  also needs `libnccl.so.2` and has to be started from its own directory; for now, build from source. The next release
-  brings one CUDA archive per GPU generation without these limits
-- Run the CPU server image with Docker: `ghcr.io/ll4nc33/llama-tq:server` (see [Docker](docs/docker.md))
-- Build from source with CUDA, see the [build guide](docs/build.md):
-  `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
-  (75 Turing, 86 Ampere, 89 Ada, 120 Blackwell)
-
-Once installed:
+Then:
 
 ```sh
 # OpenAI-compatible server with an accurate 8-bit KV cache
