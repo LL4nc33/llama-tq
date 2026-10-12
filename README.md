@@ -54,7 +54,7 @@ and 50 cards, fine-tuning on the RTX 2060, RTX 5090 and RTX PRO 6000. The fork a
   without NCCL, [details](docs/tensor-split.md))
 - **Ternary weights:** `PQ2_0` and `PTQ1_0` with Hadamard-rotated activations (upstream's own ternary types `Q2_0` /
   `TQ1_0` use other formats; the GGUF files are not interchangeable)
-- **Kolibri-1** (Aleph Alpha, 78B MoE), which upstream llama.cpp does not support (as of 2026-10)
+- **Kolibri-1:** support for Aleph Alpha's 78B MoE model ([setup](docs/models.md#aleph-alpha-kolibri-1-kolibri1))
 
 Measurements: speed per GPU in [docs/benchmarks](docs/benchmarks/README.md), KV accuracy in
 [docs/turboquant.md](docs/turboquant.md#accuracy), fine-tuning in [docs/finetune.md](docs/finetune.md#results).
