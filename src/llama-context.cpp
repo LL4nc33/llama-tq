@@ -423,11 +423,16 @@ llama_context::llama_context(
     // the runtime f16 scratch of flash attention for a TurboQuant cache: one layer's K and V for the whole context.
     // the TurboQuant prefill path dequantizes from the CUDA pool; the f16 copy of other quantized types is part of
     // the flash attention node and therefore of the reserved compute buffer
+    // with deferred staging (the default for KTQ K) prefill reads the f16 staging buffer and needs no copy of K;
+    // sliding-window layers only span the window
     if (!hparams.vocab_only) {
-        const bool qk = GGML_TYPE_IS_KTQ(params.type_k);
+        const bool qk = GGML_TYPE_IS_KTQ(params.type_k) && params.tq_no_deferred_k;
         const bool qv = GGML_TYPE_IS_KTQ(params.type_v) || GGML_TYPE_IS_VTQ(params.type_v);
         for (uint32_t il = 0; il < hparams.n_layer && (qk || qv); ++il) {
-            const size_t n_kv = cparams.n_ctx_seq;
+            size_t n_kv = cparams.n_ctx_seq;
+            if (hparams.is_swa(il) && hparams.n_swa > 0) {
+                n_kv = std::min<size_t>(n_kv, (size_t) hparams.n_swa + cparams.n_ubatch);
+            }
             const size_t need = (qk ? n_kv*hparams.n_embd_k_gqa(il) : 0) + (qv ? n_kv*hparams.n_embd_v_gqa(il) : 0);
             fa_kv_f16_scratch = std::max(fa_kv_f16_scratch, need*sizeof(ggml_fp16_t));
         }
@@ -787,7 +792,10 @@ void llama_context::sched_reserve() {
         // pipeline parallelism multiplies the compute buffers. with a TurboQuant cache flash attention later takes
         // an f16 copy of one layer's K/V from the CUDA pool; if that no longer fits next to the reserved buffers,
         // prefill would run out of memory mid-prompt, so give the memory back and reserve without it
-        if (cparams.pipeline_parallel && cparams.flash_attn && fa_kv_f16_scratch > 0 && !model.hparams.no_alloc) {
+        // only at the first reserve: later reserves (after the warmup) see the CUDA pool that the warmup grew
+        if (cparams.pipeline_parallel && cparams.flash_attn && fa_kv_f16_scratch > 0 && !model.hparams.no_alloc &&
+                !pp_headroom_checked) {
+            pp_headroom_checked = true;
             const size_t margin = 128ull*1024*1024;
             bool fits = true;
             for (auto * backend : backend_ptrs) {
@@ -2596,7 +2604,15 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
 
     this->n_outputs = 0;
 
-    GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max);
+    // the caller asked for more output rows than the context was reserved for (e.g. a server decision task marks
+    // every prompt token as output): this batch re-allocates the compute graph on demand, and the next decode
+    // reserves the worst case for the new limit, so the following batches do not re-allocate again
+    if ((uint32_t) n_outputs_max > cparams.n_outputs_max) {
+        LLAMA_LOG_WARN("%s: batch requests %" PRId64 " outputs, more than the %u reserved - raising the limit\n",
+                __func__, n_outputs_max, cparams.n_outputs_max);
+        cparams.n_outputs_max = std::min<uint32_t>(cparams.n_batch, (uint32_t) n_outputs_max);
+        sched_need_reserve = true;
+    }
 
     return n_outputs_max;
 }
