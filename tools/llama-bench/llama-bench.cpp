@@ -511,10 +511,10 @@ static ggml_type ggml_type_from_name(const std::string & s) {
         return GGML_TYPE_VTQ1_1;
     }
     if (s == "vtq2") {
-        return GGML_TYPE_VTQ2_2;  // current prod default (trellis)
+        return GGML_TYPE_VTQ2_1;
     }
     if (s == "vtq3") {
-        return GGML_TYPE_VTQ3_V8;  // v8: trellis-3bit + 2 outliers (3.625 bpw)
+        return GGML_TYPE_VTQ3_1;
     }
     if (s == "vtq4") {
         return GGML_TYPE_VTQ4_1;

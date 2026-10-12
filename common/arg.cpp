@@ -417,8 +417,8 @@ static ggml_type kv_cache_type_from_str(const std::string & s) {
     if (s == "ktq3") { return GGML_TYPE_KTQ3_1; }
     if (s == "ktq4") { return GGML_TYPE_KTQ4_1; }
     if (s == "vtq1") { return GGML_TYPE_VTQ1_1; }
-    if (s == "vtq2") { return GGML_TYPE_VTQ2_2; }  // trellis; the fast decode kernels cover vtq2_1
-    if (s == "vtq3") { return GGML_TYPE_VTQ3_V8; } // v8: trellis-3bit + 2 outliers (3.625 bpw)
+    if (s == "vtq2") { return GGML_TYPE_VTQ2_1; }  // codebook types: the trellis types (vtq*_2, vtq*_3, vtq3_v8) decode at 1-2 t/s
+    if (s == "vtq3") { return GGML_TYPE_VTQ3_1; }
     if (s == "vtq4") { return GGML_TYPE_VTQ4_1; }
 
     for (const auto & type : kv_cache_types) {

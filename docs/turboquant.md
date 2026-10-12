@@ -53,7 +53,7 @@ Pick a tier by passing two cache-type flags. `-fa on` is required.
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk ktq4_1 -ctv vtq4_1 --tq-protect-layers 4
 ```
 
-`--cache-type-k` accepts the stock quants (`f16`, `q8_0`, `q5_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1`. `--cache-type-v` accepts the stock quants plus `vtq{1,2,3,4}_1` (v1), `vtq{2,3,4}_2` (v2 Trellis), and `vtq{2,3,4}_3` (v3 Trellis + outlier-split). The short aliases from 2026-05 map `ktq1`-`ktq4` to `ktq*_1`, `vtq1` and `vtq4` to `vtq1_1` / `vtq4_1`, but `vtq2` to the trellis type `vtq2_2` and `vtq3` to `vtq3_v8`; use the long names for the fast `vtq*_1` types.
+`--cache-type-k` accepts the stock quants (`f16`, `q8_0`, `q5_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1`. `--cache-type-v` accepts the stock quants plus `vtq{1,2,3,4}_1` (v1), `vtq{2,3,4}_2` (v2 Trellis), and `vtq{2,3,4}_3` (v3 Trellis + outlier-split). The short aliases `ktq1`-`ktq4` and `vtq1`-`vtq4` map to the `*_1` types (`vtq2` and `vtq3` pointed to the trellis types `vtq2_2` / `vtq3_v8` until 2026-10-12).
 
 Related options:
 
