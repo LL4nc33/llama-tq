@@ -44,7 +44,7 @@ def join_continuations(text):
 
 def read_macros():
     """Function-like macros of the vec instance machinery: name -> (params, body)."""
-    macros = {}
+    macros: dict[str, tuple[list[str], str]] = {}
     for path in MACRO_HEADERS:
         text = join_continuations(strip_comments(path.read_text()))
         for m in re.finditer(r"^[ \t]*#[ \t]*define[ \t]+(\w+)\(([^)]*)\)(.*)$", text, flags=re.M):
@@ -57,7 +57,9 @@ def read_macros():
 
 def expand(text, macros, extern_only=False):
     """All (D, type_K, type_V) combos that the macro invocations in text expand to."""
-    names = "|".join(sorted(list(macros) + list(TERMINALS), key=len, reverse=True))
+    keys: list[str] = list(macros) + list(TERMINALS)
+    keys.sort(key=len, reverse=True)  # longest first, so a name never matches a prefix of another
+    names = "|".join(keys)
     combos = []
     for m in re.finditer(r"(\bextern\s+)?\b(" + names + r")\s*\(([^()]*)\)", text):
         is_extern, name, args = m.group(1) is not None, m.group(2), [a.strip() for a in m.group(3).split(",")]
@@ -229,7 +231,7 @@ def check_gqa():
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     parser.add_argument("--write", action="store_true", help="rewrite the default list in fattn-vec-instances.cmake")
     args = parser.parse_args()
 
