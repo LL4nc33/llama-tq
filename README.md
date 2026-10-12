@@ -56,10 +56,6 @@ and 50 cards, fine-tuning on the RTX 2060, RTX 5090 and RTX PRO 6000. The fork a
   `TQ1_0` use other formats; the GGUF files are not interchangeable)
 - **Kolibri-1** (Aleph Alpha, 78B MoE), which upstream llama.cpp does not support (as of 2026-10)
 
-K2-Horizon, Qwen3.8 / Qwen3.8-Flash-Next and the DFlash, DFlash2, Eagle3 and MTP drafters are also supported by
-upstream llama.cpp now; [models.md](docs/models.md) and [speculative.md](docs/speculative.md) keep the setups we use with
-this fork.
-
 Measurements: speed per GPU in [docs/benchmarks](docs/benchmarks/README.md), KV accuracy in
 [docs/turboquant.md](docs/turboquant.md#accuracy), fine-tuning in [docs/finetune.md](docs/finetune.md#results).
 
