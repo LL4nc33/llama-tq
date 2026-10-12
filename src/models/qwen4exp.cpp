@@ -960,7 +960,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         k_cur = llama_mul_mat_hadamard(ctx0, k_cur, inp->self_k_rot);
     }
     if (inp->self_v_rot) {
-        v_cur = llama_mul_mat_hadamard(ctx0, v_cur, inp->self_v_rot);
+        v_cur = build_rot_v(v_cur, inp->self_v_rot_h, inp->self_v_rot_signs);
     }
 
     // expand together so they are not reordered (fewer graph splits)
@@ -1019,7 +1019,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
 
     // the rotation is its own inverse, so undo it on the value side of the output
     if (inp->self_v_rot) {
-        cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+        cur = build_rot_v(cur, inp->self_v_rot_h, inp->self_v_rot_signs);
     }
 
     return cur;

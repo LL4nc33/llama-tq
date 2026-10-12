@@ -1033,6 +1033,10 @@ struct llm_graph_context {
 
     llm_graph_input_attn_kv * build_attn_inp_kv() const;
 
+    // the V rotation of a quantized cache: H, or D*H*D with the random signs of a VTQ cache (the self_v_rot_h and
+    // self_v_rot_signs inputs). it is its own inverse, so it also undoes the rotation on the attention output
+    ggml_tensor * build_rot_v(ggml_tensor * cur, ggml_tensor * h, ggml_tensor * signs) const;
+
     ggml_tensor * build_attn(
             llm_graph_input_attn_kv * inp,
             ggml_tensor * wo,

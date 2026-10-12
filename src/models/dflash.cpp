@@ -645,7 +645,9 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
                     Kcur = llama_mul_mat_hadamard(ctx0, Kcur, k_rot);
                 }
                 if (v_rot) {
-                    Vcur = llama_mul_mat_hadamard(ctx0, Vcur, v_rot);
+                    // a VTQ cache rotates V with D*H*D: the input carries the signs of D in an extra row
+                    Vcur = is_swa ? build_rot_v(Vcur, inp_attn_iswa->self_v_rot_swa_h, inp_attn_iswa->self_v_rot_swa_signs)
+                                  : build_rot_v(Vcur, inp_attn_iswa->self_v_rot_h,     inp_attn_iswa->self_v_rot_signs);
                 }
                 ggml_build_forward_expand(gf, kv->cpy_k(ctx0, Kcur, k_idxs, il));
                 ggml_build_forward_expand(gf, kv->cpy_v(ctx0, Vcur, v_idxs, il));
@@ -655,7 +657,7 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
                     Kcur = llama_mul_mat_hadamard(ctx0, Kcur, inp_attn->self_k_rot);
                 }
                 if (inp_attn->self_v_rot) {
-                    Vcur = llama_mul_mat_hadamard(ctx0, Vcur, inp_attn->self_v_rot);
+                    Vcur = build_rot_v(Vcur, inp_attn->self_v_rot_h, inp_attn->self_v_rot_signs);
                 }
                 ggml_build_forward_expand(gf, inp_attn->mctx->cpy_k(ctx0, Kcur, inp_attn->get_k_idxs(), il));
                 ggml_build_forward_expand(gf, inp_attn->mctx->cpy_v(ctx0, Vcur, inp_attn->get_v_idxs(), il));

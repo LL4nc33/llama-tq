@@ -132,6 +132,10 @@ static ggml_tensor * ggml_rot_v(
     return ggml_reshape_4d(ctx, x, cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
 }
 
+ggml_tensor * llm_graph_context::build_rot_v(ggml_tensor * cur, ggml_tensor * h, ggml_tensor * signs) const {
+    return ggml_rot_v(ctx0, cur, h, signs, cparams.split_tensor);
+}
+
 void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
     if (ubatch->token) {
         const int64_t n_tokens = ubatch->n_tokens;
