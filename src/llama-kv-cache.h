@@ -134,6 +134,10 @@ public:
     // llama_memory_i
     //
 
+    // deferred K/V quantization: true when this batch starts decoding (every token requests an output), so the
+    // f16 staging buffers have to be converted first. callers return FAILED_PREPARE, which runs memory_update()
+    bool deferred_convert_due(const llama_batch_allocr & balloc);
+
     llama_memory_context_ptr init_batch(
             llama_batch_allocr & balloc,
             uint32_t n_ubatch,

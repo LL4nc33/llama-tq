@@ -889,17 +889,27 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_kv_cache::memory_breakdown() 
     return ret;
 }
 
+bool llama_kv_cache::deferred_convert_due(const llama_batch_allocr & balloc) {
+    // prompt batches request one output per sequence, decode steps (one or more parallel slots, speculative
+    // verification) and perplexity batches request an output for every token. the first such batch converts
+    if (deferred_state != TQ_DEFERRED_STAGING || deferred_convert_failed ||
+            balloc.get_n_tokens() == 0 || balloc.get_n_outputs() != balloc.get_n_tokens()) {
+        return false;
+    }
+
+    deferred_state = TQ_DEFERRED_READY;
+    LLAMA_LOG_INFO("%s: deferred K/V quantization: converting the f16 staging buffers before decoding\n", __func__);
+
+    return true;
+}
+
 llama_memory_context_ptr llama_kv_cache::init_batch(
             llama_batch_allocr & balloc,
             uint32_t n_ubatch,
             bool embd_all) {
     GGML_UNUSED(embd_all);
 
-    // deferred K quantization: detect prefill->decode transition
-    if (deferred_state == TQ_DEFERRED_STAGING && !deferred_convert_failed && balloc.get_n_tokens() == 1) {
-        deferred_state = TQ_DEFERRED_READY;
-        LLAMA_LOG_INFO("%s: deferred K quantization: triggering bulk convert (prefill->decode)\n", __func__);
-        // return FAILED_PREPARE to trigger memory_update(true) -> update() -> bulk convert
+    if (deferred_convert_due(balloc)) {
         return std::make_unique<llama_kv_cache_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);
     }
 

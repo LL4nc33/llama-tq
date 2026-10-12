@@ -86,6 +86,13 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
     }()) {}
 
 llama_memory_context_ptr llama_memory_hybrid_idx::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
+    // the attention and indexer caches may stage K/V in f16 (deferred quantization); memory_update() converts them
+    const bool convert_attn = get_mem_attn()->deferred_convert_due(balloc);
+    const bool convert_idx  = mem_idx && mem_idx->deferred_convert_due(balloc);
+    if (convert_attn || convert_idx) {
+        return std::make_unique<llama_memory_hybrid_idx_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);
+    }
+
     do {
         balloc.split_reset();
 

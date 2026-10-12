@@ -81,6 +81,13 @@ llama_memory_hybrid_iswa::llama_memory_hybrid_iswa(
     )) {}
 
 llama_memory_context_ptr llama_memory_hybrid_iswa::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
+    // both attention caches may stage K/V in f16 (deferred quantization); memory_update() converts them
+    const bool convert_base = mem_attn->get_base()->deferred_convert_due(balloc);
+    const bool convert_swa  = mem_attn->get_swa ()->deferred_convert_due(balloc);
+    if (convert_base || convert_swa) {
+        return std::make_unique<llama_memory_hybrid_iswa_context>(LLAMA_MEMORY_STATUS_FAILED_PREPARE);
+    }
+
     do {
         balloc.split_reset();
 

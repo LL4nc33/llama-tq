@@ -2042,6 +2042,15 @@ int main(int argc, char ** argv) {
         params.n_ctx += params.ppl_stride/2;
     }
 
+    // the scores have to reflect the quantized KV cache: deferred staging would keep K (and trellis V) in f16
+    // for the whole evaluation, because these batches never switch to decoding. --tq-deferred-k/-v keep it
+    if (!params.tq_deferred_k && !params.tq_no_deferred_k) {
+        params.tq_no_deferred_k = true;
+    }
+    if (!params.tq_deferred_v && !params.tq_no_deferred_v) {
+        params.tq_no_deferred_v = true;
+    }
+
     llama_backend_init();
     llama_numa_init(params.numa);
 

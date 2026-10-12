@@ -2129,19 +2129,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_PROFILE_HEADS"));
     add_opt(common_arg(
         {"--tq-deferred-k"},
-        "defer K quantization until prefill->decode transition for better quality\n"
-        "(NOTE: as of phase2, this is AUTO-ENABLED whenever --cache-type-k is a\n"
-        " KTQ type — flag retained for backwards compat; passing it is a no-op)",
+        "stage K in f16 during prefill and quantize it at the first decode step.\n"
+        "On by default for KTQ types; llama-perplexity turns it off so that it scores\n"
+        "the quantized cache - pass this flag there to keep the f16 staging",
         [](common_params & params) {
             params.tq_deferred_k = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD}).set_env("LLAMA_ARG_TQ_DEFERRED_K"));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY}).set_env("LLAMA_ARG_TQ_DEFERRED_K"));
     add_opt(common_arg(
         {"--tq-deferred-v"},
         "defer V quantization: stage V-writes as f16 during prefill, bulk-convert at\n"
         "prefill->decode transition. Avoids 21.7ms/call Viterbi on per-token decode writes.\n"
-        "(NOTE: as of phase2, AUTO-ENABLED whenever --cache-type-v is VTQ2_2/3_2/4_2\n"
-        " — flag retained for backwards compat; passing it is a no-op)",
+        "On by default for trellis VTQ types; llama-perplexity turns it off so that it\n"
+        "scores the quantized cache - pass this flag there to keep the f16 staging",
         [](common_params & params) {
             params.tq_deferred_v = true;
         }
