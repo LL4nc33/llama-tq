@@ -333,7 +333,8 @@ int main(int argc, char * argv[]) {
                 printf("\n");
             }
 
-            if (params.op_vec_dot_q) {
+            // V-cache types (VTQ) are only dequantized, they have no vec_dot
+            if (params.op_vec_dot_q && qfns_cpu->vec_dot) {
                 printf("  vec_dot_q\n");
                 qfns_cpu->from_float(test_data1, test_q1, largest);
                 qfns_cpu->from_float(test_data2, test_q2, largest);

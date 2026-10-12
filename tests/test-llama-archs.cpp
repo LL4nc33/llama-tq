@@ -235,6 +235,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
 
     if (moe) {
         ms.add_kv(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, n_ff);
+        ms.add_kv(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, n_ff);
         ms.add_kv(LLM_KV_INTERLEAVE_MOE_LAYER_STEP,  uint32_t(2));
         ms.add_kv(LLM_KV_EXPERT_COUNT,               uint32_t(2));
         ms.add_kv(LLM_KV_EXPERT_USED_COUNT,          uint32_t(1));
@@ -358,6 +359,7 @@ static bool moe_mandatory(const llm_arch arch) {
         case LLM_ARCH_QWEN3VLMOE:
         case LLM_ARCH_QWEN35MOE:
         case LLM_ARCH_QWEN4EXP:
+        case LLM_ARCH_KOLIBRI1:
         case LLM_ARCH_PHIMOE:
         case LLM_ARCH_DBRX:
         case LLM_ARCH_OLMOE:
@@ -438,6 +440,9 @@ static bool arch_supported(const llm_arch arch) {
     }
     if (arch == LLM_ARCH_DEEPSEEK2OCR) {
         return false;
+    }
+    if (arch == LLM_ARCH_DFLASH) {
+        return false; // draft model: its input is the hidden state of a target model (target_layers)
     }
 
     // FIXME some models are segfaulting with WebGPU:
