@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<b>llama.cpp for consumer NVIDIA GPUs: compact KV caches, fine-tuning on quantized models, multi-GPU without P2P</b>
+<b>A llama.cpp fork for consumer NVIDIA GPUs: quantized KV cache types, LoRA fine-tuning on quantized models, tensor split without P2P</b>
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/LL4nc33/llama-tq?color=brightgreen)](https://github.com/LL4nc33/llama-tq/releases)
@@ -41,26 +41,36 @@ llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
 
 ## Description
 
-`llama-tq` is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that aims to run large models with long
-context, and to fine-tune them, on consumer NVIDIA GPUs with 12 to 32 GB. It is developed on 2× RTX 2060 12 GB without
-P2P; speed was also measured on RTX 30, 40 and 50 cards, fine-tuning on the RTX 2060, RTX 5090 and RTX PRO 6000. Upstream fixes are cherry-picked rather than
-merged continuously, so the fork can lag behind the newest upstream. The fork adds:
+`llama-tq` is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) for running and fine-tuning models on consumer
+NVIDIA GPUs with 12 to 32 GB. It is developed on 2× RTX 2060 12 GB without P2P; speed was also measured on RTX 30, 40
+and 50 cards, fine-tuning on the RTX 2060, RTX 5090 and RTX PRO 6000. The fork adds:
 
-- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value ([types](docs/turboquant.md#available-types)) with dedicated decode
-  kernels, for long context on small GPUs ([which type to pick](docs/turboquant.md#recommendation))
-- **Fine-tuning on quantized models:** LoRA on k-quant, IQ, MXFP4 and ternary GGUFs without dequantized weights, MoE
-  experts, models larger than VRAM, flash attention backward on CPU and CUDA
-- **Tensor split without P2P:** `-sm tensor` across GPUs that have no peer access or NCCL
+- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value
+  ([types](docs/turboquant.md#available-types)) with their own decode kernels, to fit more context into the same VRAM
+  ([which type to pick](docs/turboquant.md#recommendation))
+- **Fine-tuning on quantized models:** LoRA directly on k-quant, IQ, MXFP4 and ternary GGUFs, including MoE experts and
+  models that do not fit into VRAM; flash attention backward on CPU and CUDA
+- **Tensor split without P2P:** `-sm tensor` reduces through pinned host memory on GPUs without peer access (builds
+  without NCCL, [details](docs/tensor-split.md))
 - **Ternary weights:** `PQ2_0` and `PTQ1_0` with Hadamard-rotated activations (upstream's own ternary types `Q2_0` /
   `TQ1_0` use other formats; the GGUF files are not interchangeable)
-- **Kolibri-1** (Aleph Alpha, 78B MoE), which upstream does not support
+- **Kolibri-1** (Aleph Alpha, 78B MoE), which upstream llama.cpp does not support (as of 2026-10)
 
-K2-Horizon, Qwen3.8 / Qwen3.8-Flash-Next and the DFlash, DFlash2, Eagle3 and MTP drafters, which this fork added
-earlier, are now also in upstream llama.cpp; [models.md](docs/models.md) and [speculative.md](docs/speculative.md) keep
-the setups we use.
+K2-Horizon, Qwen3.8 / Qwen3.8-Flash-Next and the DFlash, DFlash2, Eagle3 and MTP drafters are also supported by
+upstream llama.cpp now; [models.md](docs/models.md) and [speculative.md](docs/speculative.md) keep the setups we use with
+this fork.
 
 Measurements: speed per GPU in [docs/benchmarks](docs/benchmarks/README.md), KV accuracy in
 [docs/turboquant.md](docs/turboquant.md#accuracy), fine-tuning in [docs/finetune.md](docs/finetune.md#results).
+
+Limitations:
+
+- Kernels are tuned on Turing (RTX 20); on newer GPUs they run and are measured, but are not tuned.
+- Upstream fixes are cherry-picked rather than merged continuously, so the fork lags behind upstream.
+- Prefill with an f16 KV cache at long context is a few percent slower than upstream on some models
+  ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
+- The trellis V types (`vtq*_2`, `vtq*_3`) are accurate but decode slowly; use the `*_1` types
+  ([turboquant.md](docs/turboquant.md)).
 
 ## Supported GPUs
 
@@ -73,8 +83,7 @@ Measurements: speed per GPU in [docs/benchmarks](docs/benchmarks/README.md), KV 
 | CPU, Vulkan, other backends | upstream backends | |
 
 The fast TurboQuant KV kernels are CUDA-only; the CPU backend has a slow reference implementation (used for tests),
-Vulkan and the other backends have none and use the upstream KV types. Kernel tuning was done on Turing; on the
-newer generations the code runs and is measured, but not tuned for them yet.
+Vulkan and the other backends have none and use the upstream KV types.
 
 ## Documentation
 
