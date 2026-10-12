@@ -1,5 +1,5 @@
 // Trellis v2 CUDA support TU:
-//   - Decoder lives in trellis.cuh (header-only, per-TU LUT copy).
+//   - Decoder lives in trellis.cuh (header-only); this TU owns the per-device LUT copies.
 //   - Encoder kernel template lives in trellis-encode.cuh and is instantiated
 //     directly in set-rows.cu for each (idx_t, block_t, K) triple.
 //   - This TU owns the global-memory WORKSPACE POOL for the encoder:
@@ -10,13 +10,24 @@
 //     Default pool_slots = 8 → 262 MiB reserved per-device on first use.
 //     Override via env: GGML_CUDA_VTQ_POOL_SLOTS=<1..64>.
 
-// Emit the single definition of the LUT in THIS TU.
-#define VTQ_TRELLIS_TABLE_DEFINE
 #include "trellis.cuh"
 #include "trellis-encode.cuh"
 
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+
+const float * ggml_cuda_trellis_table_device(int device) {
+    static float *     tables[GGML_CUDA_MAX_DEVICES] = {};
+    static std::mutex  mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (tables[device] == nullptr) {
+        const size_t size = sizeof(float) * (1 << VTQ_TRELLIS_L);
+        CUDA_CHECK(cudaMalloc((void **) &tables[device], size));
+        CUDA_CHECK(cudaMemcpy(tables[device], ggml_trellis_table(), size, cudaMemcpyHostToDevice));
+    }
+    return tables[device];
+}
 
 // One pool per CUDA device. Pools are lazily allocated when the first encode
 // is requested from that device so that multi-GPU runs don't over-subscribe

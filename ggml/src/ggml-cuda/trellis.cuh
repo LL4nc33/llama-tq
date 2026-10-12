@@ -24,58 +24,27 @@
 // This file previously redefined it to 256, which was a silent stale value.
 #define VTQ_TRELLIS_L  16
 
-// Trellis LUT: SINGLE device-global definition in trellis.cu, referenced
-// via extern from every TU that includes this header. Requires RDC
-// (CUDA_SEPARABLE_COMPILATION=ON) — enabled in ggml/src/ggml-cuda/CMakeLists.txt.
-//
-// Trellis LUT — platform-specific storage strategy:
-//
-// CUDA (NVCC + nvlink): single __device__ definition in trellis.cu,
-//   `extern __device__` ref everywhere else. RDC
-//   (CUDA_SEPARABLE_COMPILATION=ON) lets nvlink resolve the cross-TU
-//   reference. Memory cost: 256 KiB total per device.
-//
-// HIP/AMDGCN (clang + amdgcn-lld) and MUSA (clang-14 + mtgpu-link):
-//   the linkers do per-TU partial link and don't honor cross-TU
-//   `extern __device__` even with RDC + visibility(default) + used —
-//   verified on CI. Workaround: every TU defines the LUT as a weak
-//   __device__ global. The linker collapses the duplicates into one
-//   symbol after compile, and `cudaMemcpyToSymbol` (→
-//   hipMemcpyToSymbol / musaMemcpyToSymbol) writes that single copy.
-//   Cost: 256 KiB final per device (linker dedup), plus a slight
-//   compile-time bloat for storing the zero-initialised data N times
-//   in per-TU object files.
+// Trellis LUT: one table per device in global memory (trellis.cu), reached through a pointer in constant memory
+// that every TU holds for itself. A TU binds its pointer before its first launch on a device
+// (GGML_CUDA_INIT_TRELLIS_TABLE_IMPL). A single extern __device__ table would need relocatable device code for the
+// whole backend, which costs registers and load scheduling in every kernel (the q8_0 flash attention decode kernel
+// ran at half speed on Turing).
+static __constant__ const float * vtq_trellis_table_storage;
 
-#if defined(__HIP_PLATFORM_AMD__) || defined(__MUSA__)
-// Weak per-TU definition — linker dedups to a single symbol.
-__attribute__((weak)) __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
-#else
-// CUDA path — single owning TU.
-#  ifdef VTQ_TRELLIS_TABLE_DEFINE
-__device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
-#  else
-extern __device__ float vtq_trellis_table_storage[1 << VTQ_TRELLIS_L];
-#  endif
-#endif
+// the device copy of ggml_trellis_table() for this device, created on first use
+const float * ggml_cuda_trellis_table_device(int device);
 
-// Host-side init: called once per CUDA context before any dequant.
-// Uses cudaMemcpyToSymbol on the caller's TU symbol.
-//
-// Casts the cudaGetDevice / cudaMemcpyToSymbol return values to (void)
-// because HIP's hipError_t is `[[nodiscard]]` and the -Werror=unused-value
-// quality-check would otherwise reject this macro on the HIP path. NVCC
-// doesn't mark cudaError_t nodiscard, so this is a no-op on the CUDA path.
-#define GGML_CUDA_INIT_TRELLIS_TABLE_IMPL()                              \
-    do {                                                                 \
-        int _cur_dev = 0;                                                \
-        (void) cudaGetDevice(&_cur_dev);                                 \
-        static bool _init_done[16] = {false};                            \
-        if (_cur_dev >= 0 && _cur_dev < 16 && !_init_done[_cur_dev]) {   \
-            const float * host_tbl = ggml_trellis_table();               \
-            (void) cudaMemcpyToSymbol(vtq_trellis_table_storage, host_tbl, \
-                               sizeof(float) * (1 << VTQ_TRELLIS_L));    \
-            _init_done[_cur_dev] = true;                                 \
-        }                                                                \
+// Casts the return values to (void) because HIP's hipError_t is [[nodiscard]].
+#define GGML_CUDA_INIT_TRELLIS_TABLE_IMPL()                                                    \
+    do {                                                                                       \
+        int _cur_dev = 0;                                                                      \
+        (void) cudaGetDevice(&_cur_dev);                                                       \
+        static bool _init_done[GGML_CUDA_MAX_DEVICES] = {false};                               \
+        if (_cur_dev >= 0 && _cur_dev < GGML_CUDA_MAX_DEVICES && !_init_done[_cur_dev]) {      \
+            const float * _tbl = ggml_cuda_trellis_table_device(_cur_dev);                     \
+            (void) cudaMemcpyToSymbol(vtq_trellis_table_storage, &_tbl, sizeof(_tbl));         \
+            _init_done[_cur_dev] = true;                                                       \
+        }                                                                                      \
     } while (0)
 
 // Decode one block: sequential shift register, 256 samples.

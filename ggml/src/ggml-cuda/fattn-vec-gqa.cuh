@@ -448,6 +448,9 @@ static void ggml_cuda_flash_attn_ext_vec_gqa_case(ggml_backend_cuda_context & ct
             flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, true,  false>;
     }
     constexpr int nwarps = 128 / WARP_SIZE;
+    if constexpr (GGML_TYPE_IS_VTQ_TRELLIS(type_V)) {
+        GGML_CUDA_INIT_TRELLIS_TABLE_IMPL(); // the trellis V decoder reads the LUT through this TU's pointer
+    }
     launch_fattn<D, 1, ncols>(ctx, dst, fattn_kernel, nwarps, 0, 128, false, false, false, WARP_SIZE, use_sparse);
 }
 
