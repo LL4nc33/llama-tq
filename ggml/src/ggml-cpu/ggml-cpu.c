@@ -458,20 +458,34 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .from_float               = (ggml_from_float_t) quantize_row_vtq4_1_ref,
     },
     [GGML_TYPE_VTQ2_2] = {
-        // no .from_float: the trellis encoder runs only on CUDA (set-rows.cu), so the CPU does not offer SET_ROWS
+        .from_float               = (ggml_from_float_t) quantize_row_vtq2_2_ref, // full Viterbi: slow, but the reference for the CUDA encoder
         .vec_dot                  = ggml_vec_dot_vtq2_2_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_VTQ3_2] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq3_2_ref,
         .vec_dot                  = ggml_vec_dot_vtq3_2_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_VTQ4_2] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq4_2_ref,
         .vec_dot                  = ggml_vec_dot_vtq4_2_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
+    },
+    [GGML_TYPE_VTQ2_3] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq2_3_ref,
+    },
+    [GGML_TYPE_VTQ3_3] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq3_3_ref,
+    },
+    [GGML_TYPE_VTQ4_3] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq4_3_ref,
+    },
+    [GGML_TYPE_VTQ3_V8] = {
+        .from_float               = (ggml_from_float_t) quantize_row_vtq3_v8_ref,
     },
     [GGML_TYPE_I32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
