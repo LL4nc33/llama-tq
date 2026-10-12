@@ -28,6 +28,15 @@ Two type families exist, split by cache role:
   - **v2 Trellis** (`vtq*_2`): group-level Viterbi trellis with shared state and shared scale, 16-state shift-register, 16-bit open-start state, inverse-Gaussian CDF code table.
   - **v3 Trellis + outlier-split** (`vtq*_3`): same Viterbi backbone as v2, plus a 4-fp16-outliers-per-block sidecar that keeps the largest absolute V values in fp16.
 
+The suffix tells the method:
+
+| Suffix | Method | Types | Decode |
+|---|---|---|---|
+| `_1` | Hadamard rotation + codebook | `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1` | full speed |
+| `_2` | trellis | `vtq{2,3,4}_2` | 1-3 t/s |
+| `_3` | trellis + 4 fp16 outliers per block | `vtq{2,3,4}_3` | 1-3 t/s |
+| `_v8` | trellis 3-bit + 2 fp16 outliers (added in TurboQuant v8) | `vtq3_v8` | 1-3 t/s |
+
 Reference: PolarQuant (Han et al., arXiv:2502.02617, ICLR 2026) and TurboQuant (Zandieh et al., arXiv:2504.19874).
 
 ## Quick Start
@@ -111,9 +120,13 @@ against f16 KV; a separate run from the table under Accuracy, which uses 40 chun
 | `vtq2_2` (trellis) | 2.25 | 0.033 |
 | `vtq3_1` | 4.0 | 0.019 |
 
-The trellis is more accurate per bit than the codebook types, but it is not covered by the GQA and tensor-core decode kernels, and its
-Viterbi encoder is slow when every token is quantized directly: the `vtq2_2` run took more than an hour, the codebook types
-take minutes. With deferred staging (the default for these types) the encoder runs once after the prompt. The April 2026
+The trellis is more accurate per bit than the codebook types, but it is not usable for interactive decode: its Viterbi
+encoder searches all 65536 states for every 128 values and runs for every new token, 13.7 ms per layer on an RTX 2060,
+so decode reaches 1-3 t/s (Qwen3-4B with `vtq3_2`: 1.0 t/s on an RTX 2060, 2.5 t/s on an RTX 5080; `vtq3_1`: 97 t/s on
+the RTX 2060). Deferred staging (the
+default for these types) only moves the prompt's encoding to one pass after the prompt; the perplexity run with V
+quantized in prefill took more than an hour, the codebook types take minutes. The types are also not covered by the GQA
+and tensor-core decode kernels. The April 2026
 finding that `vtq2_2` / `vtq3_2` / `vtq4_2` give bit-identical perplexity was an artifact of that staging (V stayed f16
 during prefill). Prefer `vtq*_1` for speed.
 
@@ -185,7 +198,7 @@ Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the
 history below only.
 
-The v2/v3 trellis V types (`vtq*_2`, `vtq*_3`) still work but are not covered by the GQA and tensor-core decode kernels (see How It Works); prefer the v1 codebook types for speed.
+The v2/v3 trellis V types (`vtq*_2`, `vtq*_3`, `vtq3_v8`) give correct output but decode at 1-3 t/s, because their encoder runs for every new token (see How It Works); use the v1 codebook types `vtq*_1`.
 
 ## Memory Savings
 

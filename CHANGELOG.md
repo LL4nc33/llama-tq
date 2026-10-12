@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-10-12
+
+- **Fixed: deferred K/V quantization never converted on most models.** The f16 prefill buffer was converted to KTQ/VTQ
+  only in the plain KV cache; sliding-window caches (gpt-oss, Gemma) and hybrid caches (Qwen3.5/3.6, Qwen3.8,
+  Qwen3.8-Flash-Next) kept decoding from the f16 buffer, with both buffers in VRAM, and with two or more slots the
+  conversion never ran on any model. It now runs in every memory type as soon as every token of a batch wants an output
+  (decode, several slots, speculative verification).
+- Fixed: at long context the conversion cast the whole cache to f32 and ran out of memory (1.84 GiB at 262k); the state
+  stayed "ready", every token retried it, and decode read a cache without the prompt. It now converts only used rows, in
+  up to 8 chunks, and keeps the f16 buffer if memory is short. A first decode on an empty cache crashed; a session restore
+  did not restore the staging state.
+- **`llama-perplexity` scores the quantized cache by default.** Without `--no-tq-deferred-k` it measured f16 K
+  (Qwen3-4B `ktq2_1`: 9.12 instead of 11.48). `--tq-deferred-k` / `--tq-deferred-v` bring the staging back. The accuracy
+  table in [turboquant.md](docs/turboquant.md#accuracy) was already measured with the cache quantized; KTQ perplexities
+  in older notes that did not pass the flag are too good.
+- `llama-bench` decode rows with KTQ K on sliding-window and hybrid models measured the f16 buffer until this fix; the
+  numbers in [benchmarks](docs/benchmarks/README.md) are re-measured.
+- **Two GPUs, pipeline parallelism:** prefill was a third slower than upstream (Qwen3.6-35B-A3B pp2048 1230 vs 1908 t/s on
+  2× RTX 2060). The scheduler shrank its reservation after the all-experts warmup graph and after empty ubatches, and from
+  then on every growing KV view forced a re-reservation that synchronized both GPUs. Now 1903 t/s.
+- **Maximum context closer to upstream:** the MTP layer is loaded only when it is used (upstream #26296; 856 MiB on
+  Qwen3.6), the compute buffer reserves logits only for the outputs the context can produce (#23861), and the f16 copy
+  of a quantized K/V cache for flash attention is reserved at startup (#23907). Pipeline parallelism is turned off at
+  startup when that copy would not fit with it.
+- CUDA flash attention fixes from upstream: divergent barrier in the f16 kernel (#27870), two Volta cases (#29803), the
+  Gemma E4B MTP case (#25148), V-type validation (#24403, extended to the TurboQuant types), PDL wait before the mask scan
+  (#25185).
+- Fixed: Qwen3.8-Flash-Next sparse attention and DFlash rotated V with the plain Hadamard matrix instead of D·H·D, so VTQ
+  V caches gave wrong output there; gpt-oss with KTQ K decoded through the slow VEC kernel while K was still staged.
+- **The CUDA backend is built without relocatable device code.** It was needed only for one shared trellis table, and it
+  cost registers and load scheduling in every kernel: the `q8_0` flash attention decode kernel ran at half speed on
+  Turing. The table is now reached through a pointer per translation unit. 2× RTX 2060: Qwen3-4B `q8_0` decode 85.8 ->
+  91.1 t/s (upstream 90.3), at 8k context 65.9 -> 70.9 t/s (upstream 57.4); gpt-oss f16 prefill at 32k 1729 -> 1783 t/s
+  (upstream 1776). `libggml-cuda` shrinks from 230 MB to about 100 MB. Still open: Gemma 4 f16 prefill at 32k is 6 %
+  below upstream (head-256 flash attention kernel).
+- Decode with a single KV tile (up to 256 cells) uses the VEC kernel instead of the GQA kernel, which is faster there.
+- **`vtq2` and `vtq3` now mean `vtq2_1` and `vtq3_1`.** They pointed to the trellis types `vtq2_2` and `vtq3_v8`, which
+  decode at 1-3 t/s: their Viterbi encoder runs for every new token (13.7 ms per layer on an RTX 2060), and deferred
+  staging only covers the prompt. The trellis types stay available under their full names
+  ([turboquant.md](docs/turboquant.md)).
+- Fixed: with `vtq*_3` / `vtq3_v8` V on CUDA the outliers were never stored (left for a CPU pass that did not exist):
+  every block decoded its first sample as 0, and each write cleared the first blocks of the whole V cache. The GPU
+  encoder now stores the outliers like the CPU encoder. Qwen3-4B, wikitext-2, 3 chunks of 512, V quantized in prefill:
+  `vtq3_3` 10.09 -> 9.89, `vtq3_v8` 10.09 -> 9.83 (f16 9.91, `vtq3_2` 9.90). Heads that are not a multiple of the
+  128-value trellis block (gpt-oss: 64) gave garbage with a trellis V; those layers now use the codebook type with the
+  same bits.
+- Tests: `test-llama-archs` and `test-quantize-perf` run through all types and architectures again; test-backend-ops
+  covers the trellis V types (SET_ROWS, flash attention decode and prompt batches), which had no case before.
+
 ## 2026-10-11
 
 - **TurboQuant encoders search the block scale:** each KTQ/VTQ block is assigned to the codebook at 32 trial scales and the
