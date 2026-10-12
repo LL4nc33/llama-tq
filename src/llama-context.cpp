@@ -420,6 +420,17 @@ llama_context::llama_context(
         }
     }
 
+    // the runtime f16 scratch of flash attention for a quantized cache: one layer's K and V for the whole context
+    if (!hparams.vocab_only) {
+        const bool qk = ggml_is_quantized(params.type_k);
+        const bool qv = ggml_is_quantized(params.type_v);
+        for (uint32_t il = 0; il < hparams.n_layer && (qk || qv); ++il) {
+            const size_t n_kv = cparams.n_ctx_seq;
+            const size_t need = (qk ? n_kv*hparams.n_embd_k_gqa(il) : 0) + (qv ? n_kv*hparams.n_embd_v_gqa(il) : 0);
+            fa_kv_f16_scratch = std::max(fa_kv_f16_scratch, need*sizeof(ggml_fp16_t));
+        }
+    }
+
     // init the memory module
     if (!hparams.vocab_only) {
         llama_memory_params params_mem = {
@@ -768,6 +779,37 @@ void llama_context::sched_reserve() {
             }
             if (!gf) {
                 throw std::runtime_error("failed to allocate compute pp buffers");
+            }
+        }
+
+        // pipeline parallelism multiplies the compute buffers. with a quantized cache flash attention later takes
+        // an f16 copy of one layer's K/V from the CUDA pool; if that no longer fits next to the reserved buffers,
+        // prefill would run out of memory mid-prompt, so give the memory back and reserve without it
+        if (cparams.pipeline_parallel && cparams.flash_attn && fa_kv_f16_scratch > 0 && !model.hparams.no_alloc) {
+            const size_t margin = 128ull*1024*1024;
+            bool fits = true;
+            for (auto * backend : backend_ptrs) {
+                ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+                if (dev == nullptr || ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
+                    continue;
+                }
+                size_t free = 0, total = 0;
+                ggml_backend_dev_memory(dev, &free, &total);
+                if (free < fa_kv_f16_scratch + margin) {
+                    LLAMA_LOG_WARN("%s: %s has %.0f MiB free after the pipeline-parallel reserve, flash attention needs ~%.0f MiB "
+                            "for the f16 K/V copy - reserving without pipeline parallelism\n", __func__, ggml_backend_dev_name(dev),
+                            free/1024.0/1024.0, (fa_kv_f16_scratch + margin)/1024.0/1024.0);
+                    fits = false;
+                    break;
+                }
+            }
+            if (!fits) {
+                cparams.pipeline_parallel = false;
+                sched_create(max_nodes, false);
+                gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
+                if (!gf) {
+                    throw std::runtime_error("failed to allocate compute pp buffers");
+                }
             }
         }
 

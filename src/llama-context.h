@@ -276,6 +276,10 @@ private:
 
     llama_cparams cparams;
 
+    // largest f16 copy of one layer's quantized K and V that flash attention makes at runtime from the CUDA pool
+    // (prefill with a quantized cache), outside the reserved compute buffers
+    size_t fa_kv_f16_scratch = 0;
+
     llama_adapter_cvec_ptr  cvec;
     llama_adapter_loras_ptr loras;
 
