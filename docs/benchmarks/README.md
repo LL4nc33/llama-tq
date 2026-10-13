@@ -1,6 +1,6 @@
 # Benchmarks
 
-Decode and prefill speed per GPU and KV type (2026-10-09 to 2026-10-12, the date is given per table). Accuracy,
+Decode and prefill speed per GPU and KV type (2026-10-09 to 2026-10-13, the date is given per table). Accuracy,
 fine-tuning and per-model setups each have their own page (links at the end), so every number lives in one place. Older logs are in [history/](history/); their numbers
 are not comparable with these.
 
