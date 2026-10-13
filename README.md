@@ -63,8 +63,7 @@ Limitations:
 
 - Kernels are tuned on Turing (RTX 20); on newer GPUs they run and are measured, but are not tuned.
 - Upstream fixes are cherry-picked rather than merged continuously, so the fork lags behind upstream.
-- Prefill with an f16 KV cache at long context is a few percent slower than upstream on some models
-  ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
+- Prefill on Gemma 4 is 1-2 % slower than upstream ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
 - The trellis V types (`vtq*_2`, `vtq*_3`) are accurate but decode slowly; use the `*_1` types
   ([turboquant.md](docs/turboquant.md)).
 

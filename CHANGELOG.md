@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-13
+
+- **f16 prefill on par with upstream.** The CUDA flash attention MMA kernel (`fattn-mma-f16.cuh`) and the tile helpers
+  (`mma.cuh`) are now upstream's versions; the fork's copies were older upstream states with the swizzle and the sparse
+  gather ported on top. On Turing they compiled to two to four times more register spills (Gemma 4 global layers, head
+  size 512: 704-856 bytes per thread instead of ~180), mostly because upstream #29152 (thinner tiles for large head
+  sizes) was missing. 2× RTX 2060, pp2048 at 32k with an f16 cache, upstream → llama-tq: Qwen3.8-27B 427 → 429 (before:
+  4.8 % behind), Qwen3.6-35B-A3B 1286 → 1276, Gemma 4 12B 843 → 824 (before: 5.4 % behind). Gemma 4 is still 1-2 %
+  behind; see [benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus).
+- The earlier comparison (2026-10-12) ran upstream first in every round; on these GPUs the first build of a round is
+  2-3 % faster, so part of the gap given there was the order. The benchmark table now alternates the builds (upstream,
+  llama-tq, llama-tq, upstream) and averages.
+- Fixed: `--split-mode tensor` aborted on DeepSeek V4 (hyper-connection ops missing in the meta backend, upstream
+  #25585) and on views of host tensors inside a tensor-split graph (upstream #30217). `test-llama-archs` caught both; it
+  only runs these paths with a GPU, so the GitHub CI (CPU only) did not. It still aborts on a later architecture with
+  tensor split; that is open.
+
 ## 2026-10-12
 
 - **Fixed: deferred K/V quantization never converted on most models.** The f16 prefill buffer was converted to KTQ/VTQ
