@@ -9775,6 +9775,26 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // every K cache type with every V cache type, decode (1 query) and prompt (32 queries), GQA 4: a pair without a
+    // CUDA kernel shows up as not supported
+    for (ggml_type type_K : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_0, GGML_TYPE_Q4_0,
+                             GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ4_1}) {
+        for (ggml_type type_V : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_0, GGML_TYPE_Q4_0,
+                                 GGML_TYPE_VTQ2_1, GGML_TYPE_VTQ3_1, GGML_TYPE_VTQ4_1,
+                                 GGML_TYPE_VTQ2_2, GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2,
+                                 GGML_TYPE_VTQ2_3, GGML_TYPE_VTQ3_3, GGML_TYPE_VTQ4_3, GGML_TYPE_VTQ3_V8}) {
+            if (type_K == type_V) {
+                continue; // covered above
+            }
+            for (int hs : {128, 256}) {
+                for (int64_t nb : {1, 32}) {
+                    test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {4, 1}, 256, nb, true, false, 0, 0,
+                                GGML_PREC_F32, type_K, type_V));
+                }
+            }
+        }
+    }
+
     // TurboQuant K/V at head 64 with attention sinks (gpt-oss: 8 KV heads, GQA 8)
     for (bool sinks : {false, true}) {
         for (int64_t nb : {1, 2, 8}) {
