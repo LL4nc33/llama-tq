@@ -12,6 +12,13 @@
 - The q6_K, q4_0, q5_0 and q3_K matrix kernels subtract packed bytes without saturation where the result cannot
   overflow (upstream #29478); on Turing the saturating form is emulated with more instructions. Prefill +0.4 to +0.7 %
   (Gemma 4, Qwen3-4B, Qwen3.6; not yet in the benchmark table), results unchanged.
+- **Faster KTQ decode at long context with head size 128** (for example Qwen3, Llama): from 2k context the decode
+  uses the grouped-query vector kernel instead of the tensor-core one (2× RTX 2060, Qwen3-4B: +3-5 % at 4k, +8-14 % at
+  32k; the tensor-core kernel stays below 2k, where it is 0.5-4 % faster, and for heads 256 and 512).
+- `llama-bench` counted the one-time conversion of the f16 K staging to KTQ in the decode time of generation tests
+  (Qwen3-4B at 32k: tg64 28.4, tg256 32.8 t/s for the same speed); it now runs that conversion before timing. Together
+  with the kernel choice: `ktq4_1` / `vtq4_1` at 32k 31.4 → 39.9 t/s, `q8_0` / `vtq4_1` 42.8. The TurboQuant rows in
+  [benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus) are measured again.
 - The earlier comparison (2026-10-12) ran upstream first in every round; on these GPUs the first build of a round is
   2-3 % faster, so part of the gap given there was the order. The benchmark table now alternates the builds (upstream,
   llama-tq, llama-tq, upstream) and averages.

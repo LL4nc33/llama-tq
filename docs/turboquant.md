@@ -321,7 +321,7 @@ is automatic for any KTQ K type and any trellis V type (`vtq*_2`, `vtq*_3`, `vtq
 which turns it off by default (`--tq-deferred-k` / `--tq-deferred-v` keep it there). It was introduced in April 2026 against repetition loops with
 K quantized per token in prefill (observed before the KTQ sign fix of 2026-10-04). `--no-tq-deferred-k` /
 `--no-tq-deferred-v` turn it off (in `llama-bench`: `LLAMA_ARG_NO_TQ_DEFERRED_K=1`, `LLAMA_ARG_NO_TQ_DEFERRED_V=1`), which
-saves the staging memory at full context and is how the accuracy numbers above are measured. The conversion runs once at the first decode step ([its cost](benchmarks/README.md)).
+saves the staging memory at full context and is how the accuracy numbers above are measured. The conversion runs once at the first decode step ([its cost](benchmarks/README.md#against-upstream-two-gpus)).
 
 ### Boundary-layer protection
 
