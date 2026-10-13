@@ -405,7 +405,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
 }
 
 
-// Shared-memory Viterbi for small state spaces (L <= 12, S <= 4096 states).
+// Shared-memory Viterbi for state spaces up to L = 14 (S <= 16384 states).
 //
 // The shift-register trellis decomposes into butterflies: the 2^K states g<<K | e (e < 2^K) are exactly the
 // predecessors of the 2^K states g | b<<(L-K) (b < 2^K), for every g < 2^(L-K). The cost of an edge depends only on
@@ -417,7 +417,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
 // global workspace. A CUDA block walks over trellis blocks in a grid-stride loop and keeps its slot, so all trellis
 // blocks are encoded by one launch without host synchronization.
 #define VTQ_ENC_SMEM_THREADS 512
-#define VTQ_ENC_BT_CHUNK     16384 // bytes of shared memory for the backtrack chunks
+#define VTQ_ENC_SMEM_MAX_S   16384 // a thread keeps S/512 codes in registers
 
 template <int K>
 static constexpr __host__ __device__ int vtq_enc_smem_threads() {
@@ -438,11 +438,12 @@ __global__ void k_vtq_encode_trellis_smem(
     constexpr int      NE  = 1 << K;              // predecessors per butterfly
     constexpr int      NG  = S / NE;              // butterflies
     constexpr int      GPT = (NG + NT - 1) / NT;  // butterflies per thread
-    static_assert(S <= 4096, "the shared-memory encoder takes at most 4096 states");
+    static_assert(S <= VTQ_ENC_SMEM_MAX_S, "the shared-memory encoder takes at most VTQ_ENC_SMEM_MAX_S states");
+    constexpr int BT_CHUNK = 2*NG*sizeof(float) <= 16384 ? 16384 : 8192; // bytes for the backtrack chunks, within 48 KiB
     static_assert(NE % 4 == 0, "predecessor costs are read as float4");
 
     __shared__ float4   s_m4[2][NG/4];
-    __shared__ uint4    s_bt4[VTQ_ENC_BT_CHUNK / sizeof(uint4)];
+    __shared__ uint4    s_bt4[BT_CHUNK / sizeof(uint4)];
     __shared__ float    s_xn[N];
     __shared__ float    s_red[NT/WARP_SIZE];
     __shared__ uint32_t s_red_u[NT/WARP_SIZE];
@@ -654,7 +655,7 @@ static void vtq_cuda_encode_set_rows(
     const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
     const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
-    if constexpr (VTQ_ENC_S <= 4096) {
+    if constexpr (VTQ_ENC_S <= VTQ_ENC_SMEM_MAX_S) {
         // one launch, each CUDA block keeps one workspace slot (N * S/2^K bytes of backtrack) and walks over trellis blocks
         const int64_t slot_bytes = (int64_t) VTQ_ENC_N * (VTQ_ENC_S >> K);
         const int     nblocks    = (int) std::min<int64_t>(ne_total, (int64_t) pool_slots * (int64_t) sizeof(uint16_t) * VTQ_ENC_N * VTQ_ENC_S / slot_bytes);
