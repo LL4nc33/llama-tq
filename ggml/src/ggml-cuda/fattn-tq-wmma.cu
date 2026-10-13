@@ -7,7 +7,8 @@
 // dequantizes tiles of T K/V rows to f16 in shared memory and computes S = K·Qᵀ and O += Vᵀ·P with WMMA.
 // KTQ K stays in the rotated (Hadamard) domain: Q is rotated once (shared sign pattern, then the 32-point FWHT).
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+// nvcuda::wmma exists only in the host pass and for Volta and newer: a Pascal device pass must not name it
+#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA)
 #include <mma.h>
 namespace tq_wmma = nvcuda::wmma;
 #define FATTN_TQ_WMMA_AVAILABLE
