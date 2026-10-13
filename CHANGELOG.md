@@ -12,6 +12,14 @@
 - The q6_K, q4_0, q5_0 and q3_K matrix kernels subtract packed bytes without saturation where the result cannot
   overflow (upstream #29478); on Turing the saturating form is emulated with more instructions. Prefill +0.4 to +0.7 %
   (Gemma 4, Qwen3-4B, Qwen3.6; not yet in the benchmark table), results unchanged.
+- **Fixed: some K/V cache type pairs aborted.** `q4_0` K with a trellis V (`vtq*_2`, `vtq*_3`, `vtq3_v8`) and
+  `ktq2_1` K with `vtq3_1`/`vtq4_1` V (also `ktq3_1` with `vtq4_1`) passed the CUDA support check but had no vector
+  kernel, so decode at short context ended in `GGML_ABORT` (in `fattn.cu`). The vector kernel's own case list now decides
+  where it runs, and every other pair converts K and V to f16 for the MMA kernel (tile kernel before Turing).
+- Every K/V cache type pair now runs on CUDA: mixed stock types (e.g. `q8_0` / `q4_0`, f16 / `q8_0`), KTQ K with a stock
+  V and `q5_0` K with a VTQ V had no kernel and ran on the CPU. A new test covers all 94 pairs of 7 K and 14 V types
+  (decode and prompt, head 128 and 256). These pairs convert the cache at every decode step, see
+  [known issues](docs/turboquant.md#known-issues).
 - **Faster KTQ decode at long context with head size 128** (for example Qwen3, Llama): from 2k context the decode
   uses the grouped-query vector kernel instead of the tensor-core one (2× RTX 2060, Qwen3-4B: +3-5 % at 4k, +8-14 % at
   32k; the tensor-core kernel stays below 2k, where it is 0.5-4 % faster, and for heads 256 and 512).

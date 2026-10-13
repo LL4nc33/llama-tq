@@ -412,8 +412,10 @@ Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style
 ## Known Issues
 
 - **2- and 3-bit K** still lose a lot of accuracy on every measured model (see [Accuracy](#accuracy)); gpt-oss needs 8-bit K.
-- **KTQ K with a stock-quant V** (e.g. `-ctk ktq4_1 -ctv q8_0`) has no CUDA flash-attention kernel unless built with
-  `-DGGML_CUDA_FA_ALL_QUANTS=ON`.
+- **K/V pairs without a dedicated kernel** (e.g. `-ctk ktq4_1 -ctv q8_0`, `-ctk q8_0 -ctv q4_0`, `q5_0` K with a VTQ V)
+  run on CUDA by converting K and V to f16 at every step; correct, but decode slows down with context (Qwen3-4B on
+  2× RTX 2060 at 8k: `ktq4_1` / `q8_0` 30 t/s, `q8_0` / `q4_0` 45 t/s, against 69-71 t/s for `ktq4_1` / `vtq4_1` and
+  `q8_0` / `q8_0`). Building with `-DGGML_CUDA_FA_ALL_QUANTS=ON` compiles vector kernels for more pairs.
 - **VTQ v1 on Qwen3-Next-80B with `-b 1 -ub 1`**: reported in April 2026 to crash through the fused Gated DeltaNet path; not re-checked since. Batched mode and other models were unaffected.
 
 ## References
