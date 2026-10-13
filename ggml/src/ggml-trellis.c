@@ -122,7 +122,7 @@ void ggml_trellis_decode_group(
     const float cb_scale = 1.0f / sqrtf((float)N);
     const float * table = ggml_trellis_table();
     const uint32_t Kmask = (1u << K) - 1u;
-    const uint32_t Lmask = 0xFFFFu;  // L=16
+    const uint32_t Lmask = (1u << L) - 1u;
 
     if (d == 0.0f) {
         memset(y, 0, (size_t)N * sizeof(float));

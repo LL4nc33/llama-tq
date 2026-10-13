@@ -196,7 +196,7 @@ static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8
 
     if (stream_bit + L <= L) {
         // Trivial case, should not happen for i>=1
-        return (uint32_t)s0 & 0xFFFFu;
+        return (uint32_t)s0 & ((1u << L) - 1u);
     }
 
     if (stream_bit < L) {
@@ -220,7 +220,7 @@ static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8
     uint32_t b1 = qs[byte + 1];
     uint32_t b2 = qs[byte + 2];
     uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
-    return (w >> shift) & 0xFFFFu;
+    return (w >> shift) & ((1u << L) - 1u);
 }
 
 template <typename block_t, int K, typename T, int ne>

@@ -50,7 +50,7 @@
 // Was 256 prior to task #143; OOB-wrote 32-64 bytes into next-block headers,
 // corrupting all VTQ_2 / VTQ_3 PPL measurements (see blog 2026-04-25).
 #define VTQ_ENC_N QK_VTQ_TRELLIS
-#define VTQ_ENC_L 16
+#define VTQ_ENC_L GGML_TRELLIS_L
 #define VTQ_ENC_S (1u << VTQ_ENC_L)
 
 struct vtq_encode_workspace {
@@ -279,7 +279,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
             const float diff = xi - code;
             const float d2   = diff * diff;
 
-            const uint32_t base = (next << K) & 0xFFFFu;
+            const uint32_t base = (next << K) & (S - 1u);
 
             float    best_cost = FLT_MAX;
             uint32_t best_prev = 0;
@@ -296,7 +296,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
 
             // Coalesced writes: adjacent tids → adjacent next.
             dp_next[next] = best_cost;
-            bt_i[next]    = (uint16_t)(best_prev & 0xFFFFu);
+            bt_i[next]    = (uint16_t)(best_prev & (S - 1u));
         }
         __syncthreads();
 
@@ -335,7 +335,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
     // 5) Backtrack + emit (thread 0)
     __shared__ uint16_t s_states[VTQ_ENC_N + 1];
     if (tid == 0) {
-        s_states[N] = (uint16_t)(s_best_state & 0xFFFFu);
+        s_states[N] = (uint16_t)(s_best_state & (S - 1u));
         for (int step = N - 1; step >= 0; step--) {
             uint16_t * bt_i = bt_base + (int64_t)step * (int64_t)S;
             s_states[step] = bt_i[s_states[step + 1]];

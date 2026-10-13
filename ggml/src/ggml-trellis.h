@@ -22,7 +22,10 @@
 extern "C" {
 #endif
 
+// state bits; overridable at build time for format experiments (start_state holds up to 16 bits)
+#ifndef GGML_TRELLIS_L
 #define GGML_TRELLIS_L        16
+#endif
 #define GGML_TRELLIS_QK_GROUP 128  // samples per ggml-block (task #143: was 256)
 // 256 divides typical V-cache row sizes (head_dim * n_head_kv / tp):
 //   Qwen3.5-27B:  128*2 = 256     (exactly)

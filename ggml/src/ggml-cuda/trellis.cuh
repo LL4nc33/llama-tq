@@ -22,7 +22,7 @@
 
 // QK_VTQ_TRELLIS now defined in ggml/src/ggml-common.h (task #143: halved to 128).
 // This file previously redefined it to 256, which was a silent stale value.
-#define VTQ_TRELLIS_L  16
+#define VTQ_TRELLIS_L  GGML_TRELLIS_L
 
 // Trellis LUT: one table per device in global memory (trellis.cu), reached through a pointer in constant memory
 // that every TU holds for itself. A TU binds its pointer before its first launch on a device
@@ -53,7 +53,7 @@ __device__ __forceinline__
 void trellis_decode_block(uint16_t start_state, float d, const uint8_t * qs, float * y) {
     constexpr int N = QK_VTQ_TRELLIS;
     constexpr int L = VTQ_TRELLIS_L;
-    constexpr uint32_t Lmask = 0xFFFFu;
+    constexpr uint32_t Lmask = (1u << L) - 1u;
     constexpr uint32_t Kmask = (1u << K) - 1u;
     const float cb_scale = rsqrtf((float)N);
 
@@ -304,7 +304,7 @@ __device__ __forceinline__
 float trellis_decode_element(uint16_t start_state, float d, const uint8_t * qs, int j) {
     constexpr int N = QK_VTQ_TRELLIS;
     constexpr int L = VTQ_TRELLIS_L;
-    constexpr uint32_t Lmask = 0xFFFFu;
+    constexpr uint32_t Lmask = (1u << L) - 1u;
     constexpr uint32_t Kmask = (1u << K) - 1u;
     const float cb_scale = rsqrtf((float)N);
 
