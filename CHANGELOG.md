@@ -9,6 +9,9 @@
   sizes) was missing. 2× RTX 2060, pp2048 at 32k with an f16 cache, upstream → llama-tq: Qwen3.8-27B 427 → 429 (before:
   4.8 % behind), Qwen3.6-35B-A3B 1286 → 1276, Gemma 4 12B 843 → 824 (before: 5.4 % behind). Gemma 4 is still 1-2 %
   behind; see [benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus).
+- The q6_K, q4_0, q5_0 and q3_K matrix kernels subtract packed bytes without saturation where the result cannot
+  overflow (upstream #29478); on Turing the saturating form is emulated with more instructions. Prefill +0.4 to +0.7 %
+  (Gemma 4, Qwen3-4B, Qwen3.6; not yet in the benchmark table), results unchanged.
 - The earlier comparison (2026-10-12) ran upstream first in every round; on these GPUs the first build of a round is
   2-3 % faster, so part of the gap given there was the order. The benchmark table now alternates the builds (upstream,
   llama-tq, llama-tq, upstream) and averages.
