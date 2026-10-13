@@ -23,6 +23,11 @@
 - **Faster KTQ decode at long context with head size 128** (for example Qwen3, Llama): from 2k context the decode
   uses the grouped-query vector kernel instead of the tensor-core one (2× RTX 2060, Qwen3-4B: +3-5 % at 4k, +8-14 % at
   32k; the tensor-core kernel stays below 2k, where it is 0.5-4 % faster, and for heads 256 and 512).
+- Flash attention for head sizes 192 (K) / 128 (V) and 320 / 256 on CUDA, as upstream has it (MiMo-V2.5, Mistral Small
+  4): the MMA kernel on Turing and newer, the tile kernel before. Both need grouped-query attention with a GQA ratio that
+  is a multiple of 8 (192) or 32 (320); other shapes ran on the CPU and still do.
+- Fixed: the CUDA build for Pascal and older (`sm_61`) stopped in `fattn-tq-wmma.cu`, which named the tensor-core API
+  that only exists from Volta on. The release archives start at Turing, so they were not affected.
 - `llama-bench` counted the one-time conversion of the f16 K staging to KTQ in the decode time of generation tests
   (Qwen3-4B at 32k: tg64 28.4, tg256 32.8 t/s for the same speed); it now runs that conversion before timing. Together
   with the kernel choice: `ktq4_1` / `vtq4_1` at 32k 31.4 → 39.9 t/s, `q8_0` / `vtq4_1` 42.8. The TurboQuant rows in
