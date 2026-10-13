@@ -15,9 +15,8 @@
 
 ## Quick start
 
-- **Download** a Linux build from the [releases page](https://github.com/LL4nc33/llama-tq/releases)
-  ([requirements](docs/build.md#release-archives); the current release v2026.10.06 predates the changes since 2026-10-07,
-  build from source for now)
+- **Download** a Linux build from the [releases page](https://github.com/LL4nc33/llama-tq/releases): CPU, Vulkan, and
+  one CUDA archive per GPU generation ([requirements](docs/build.md#release-archives))
 - **Docker** (CPU): `ghcr.io/ll4nc33/llama-tq:server` ([Docker](docs/docker.md))
 - **Build** with CUDA: `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
   (75 Turing, 86 Ampere, 89 Ada, 120 Blackwell; [build guide](docs/build.md))
