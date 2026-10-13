@@ -348,6 +348,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
         for (int b = 0; b < qs_bytes; b++) qs[b] = 0;
 
         float recon_sq = 0.0f;
+        float dot      = 0.0f;
         for (int step = 0; step < N; step++) {
             uint32_t st   = (uint32_t)s_states[step + 1];
             uint32_t bits = (st >> kshift) & Kmask;
@@ -363,9 +364,15 @@ __global__ void k_vtq_encode_trellis_set_rows(
             }
             float code = vtq_trellis_table_storage[st] * cb_scale;
             recon_sq += code * code;
+            dot      += code * s_xn[step];
         }
         float recon_norm = sqrtf(recon_sq);
+#if GGML_TRELLIS_UNBIASED_SCALE
+        float d_out = dot > 1e-30f ? norm / dot : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
+#else
+        (void) dot;
         float d_out = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
+#endif
         dst_block->d = __float2half(d_out);
     }
 }

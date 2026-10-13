@@ -23,6 +23,10 @@ extern "C" {
 #endif
 
 // state bits; overridable at build time for format experiments (start_state holds up to 16 bits)
+// scale experiment: 0 = decoded block keeps the norm of x, 1 = unbiased (projection of the decoded block onto x equals x)
+#ifndef GGML_TRELLIS_UNBIASED_SCALE
+#define GGML_TRELLIS_UNBIASED_SCALE 0
+#endif
 #ifndef GGML_TRELLIS_L
 #define GGML_TRELLIS_L        16
 #endif

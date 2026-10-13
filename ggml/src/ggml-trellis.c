@@ -324,12 +324,19 @@ void ggml_trellis_encode_group(
 
     // Norm-correction: scale so decoded group matches x's L2 norm.
     double recon_sq = 0.0;
+    double dot      = 0.0;
     for (int i = 0; i < N; i++) {
         float code = table[states[i + 1]] * cb_scale;
         recon_sq += (double)code * (double)code;
+        dot      += (double)code * (double)xn[i];
     }
     float recon_norm = (float)sqrt(recon_sq);
+#if GGML_TRELLIS_UNBIASED_SCALE
+    *out_d = (dot > 1e-30) ? (float)(norm / dot) : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
+#else
+    GGML_UNUSED(dot);
     *out_d = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
+#endif
 
     free(states); free(xn); free(dp_cur); free(dp_next); free(bt);
 }
