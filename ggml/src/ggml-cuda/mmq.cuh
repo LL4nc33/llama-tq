@@ -1146,7 +1146,7 @@ static __device__ __forceinline__ void vec_dot_mxfp4_mxfp4_mma(const int * __res
             for (int n = 0; n < ntx; ++n) {
                 tile_C C;
 
-                mma_block_scaled(C, A[n][k01 / (2 * QI_MXFP4)], B, scaleA[n][k01 / (2 * QI_MXFP4)], scaleB);
+                mma_block_scaled_fp4<GGML_TYPE_MXFP4>(C, A[n][k01 / (2 * QI_MXFP4)], B, scaleA[n][k01 / (2 * QI_MXFP4)], scaleB);
 #pragma unroll
                 for (int l = 0; l < tile_C::ne; ++l) {
                     sum[(j0 / tile_C::J + n) * tile_C::ne + l] += C.x[l];
