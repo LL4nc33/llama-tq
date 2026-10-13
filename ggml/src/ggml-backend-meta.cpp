@@ -450,7 +450,18 @@ static struct ggml_tensor * ggml_backend_meta_buffer_simple_tensor(const struct 
     return it->second[index];
 }
 
+// a view of a tensor in a host buffer: ggml-alloc never allocates views, so it is not in a meta buffer even when it lands
+// in a meta split (the scheduler copies its source); the view node itself is a no-op (upstream #30217)
+static bool ggml_backend_meta_is_host_view(const struct ggml_tensor * tensor) {
+    return ggml_is_view(tensor) && ggml_backend_buffer_is_host(tensor->view_src->buffer);
+}
+
 static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(const struct ggml_tensor * tensor, bool assume_sync) {
+    if (!ggml_backend_buffer_is_meta(tensor->buffer)) {
+        GGML_ASSERT(ggml_backend_meta_is_host_view(tensor));
+        // not allocated in the meta buffer, not split across the sub-devices
+        return {GGML_BACKEND_SPLIT_AXIS_NONE, {0}, 1};
+    }
     const size_t n_bufs = ggml_backend_meta_buffer_n_bufs(tensor->buffer);
     ggml_backend_meta_buffer_context * buf_ctx = (ggml_backend_meta_buffer_context *) tensor->buffer->context;
 
@@ -1707,9 +1718,9 @@ static enum ggml_status ggml_backend_meta_graph_compute(ggml_backend_t backend, 
 
         for (int i = 0; i < cgraph->n_nodes; i++) {
             ggml_tensor * node = cgraph->nodes[i];
-            if (node->view_src != nullptr && node->view_src->op == GGML_OP_NONE && ggml_backend_buffer_is_host(node->view_src->buffer)) {
-                // FIXME s_copy_main is on the CPU and its view seems to be incorrectly added to the graph nodes.
-                // For regular usage this doesn't matter since it's a noop but trying to call ggml_backend_meta_buffer_simple_tensor results in a crash.
+            if (!ggml_backend_buffer_is_meta(node->buffer)) {
+                // a host view (see ggml_backend_meta_is_host_view): keep the node, it has no simple tensor to map to
+                GGML_ASSERT(ggml_backend_meta_is_host_view(node));
                 bcj.nodes[i] = node;
                 continue;
             }
