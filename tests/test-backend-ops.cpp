@@ -9766,6 +9766,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
+    // from 2k context the KTQ decode at head 128 switches from the tensor-core kernel to the GQA kernel
+    for (int nr2 : {4, 8}) {
+        for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+                {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}, {GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1}}) {
+            test_cases.emplace_back(new test_flash_attn_ext(128, 128, 2, {nr2, 1}, 4096, 1, true, false, 0, 0,
+                        GGML_PREC_F32, kv_types.first, kv_types.second));
+        }
+    }
 
     // TurboQuant K/V at head 64 with attention sinks (gpt-oss: 8 KV heads, GQA 8)
     for (bool sinks : {false, true}) {
