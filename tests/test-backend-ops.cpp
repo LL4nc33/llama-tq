@@ -8461,6 +8461,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                            GGML_TYPE_VTQ4_3, GGML_TYPE_VTQ3_V8}) {
         test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 3, 2, 1 }, { 1, 1, }, 2, false));
     }
+    // more trellis blocks (1024) than the shared-memory encoder launches CUDA blocks, so each CUDA block encodes several
+    for (ggml_type type : {GGML_TYPE_VTQ2_2, GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2}) {
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 64, 16, 1 }, { 1, 1, }, 64, false));
+    }
 
     for (int mode : { GGML_ROPE_TYPE_NORMAL, GGML_ROPE_TYPE_NEOX, GGML_ROPE_TYPE_MROPE, GGML_ROPE_TYPE_VISION }) {
         for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
