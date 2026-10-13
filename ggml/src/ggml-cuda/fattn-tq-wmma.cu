@@ -421,6 +421,12 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     }
     const int64_t D = Q->ne[0];
 
+    // head 128 with KTQ K: from about 2k context the GQA kernel is faster (2x RTX 2060, Qwen3-4B, ktq2/3/4_1: +3-5 % at
+    // 4k, +8-14 % at 32k), without context this kernel is (0.5-4 %). Heads 256 and 512 stay here at every length.
+    if (D == 128 && GGML_TYPE_IS_KTQ(K->type) && K->ne[1] >= 2048) {
+        return false;
+    }
+
     // head 64 (gpt-oss, with attention sinks) has no GQA decode kernel either
     FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
