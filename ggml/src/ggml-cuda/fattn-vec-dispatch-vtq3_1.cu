@@ -3,7 +3,7 @@
 
 #include "fattn-vec-dispatch.cuh"
 
-bool try_dispatch_vec_vtq3_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+bool try_dispatch_vec_vtq3_1(ggml_backend_cuda_context * ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
     ggml_tensor * K = dst->src[1];
     ggml_tensor * V = dst->src[2];

@@ -21,13 +21,13 @@
         const bool type_K_okay = K->type == (type_K) || (K->type == GGML_TYPE_F32 && (type_K) == GGML_TYPE_F16); \
         const bool type_V_okay = V->type == (type_V) || (V->type == GGML_TYPE_F32 && (type_V) == GGML_TYPE_F16); \
         if (Q->ne[0] == (D_val) && type_K_okay && type_V_okay && Q->ne[1] == 1) {                                \
-            ggml_cuda_flash_attn_ext_vec_vtq2_case<D_val, type_K, type_V>(ctx, dst);                             \
+            if (ctx) { ggml_cuda_flash_attn_ext_vec_vtq2_case<D_val, type_K, type_V>(*ctx, dst); }               \
             return true;                                                                                         \
         }                                                                                                        \
     }
 #endif  // FATTN_VTQ2_CACHED && FATTN_VTQ2_CACHED_ENABLE
 
-bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+bool try_dispatch_vec_vtq2(ggml_backend_cuda_context * ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
     ggml_tensor * K = dst->src[1];
     ggml_tensor * V = dst->src[2];

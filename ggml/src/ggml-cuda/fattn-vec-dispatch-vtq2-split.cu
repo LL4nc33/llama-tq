@@ -15,7 +15,7 @@
 #include "convert.cuh"
 
 // Forward declaration — implemented in fattn-vec-dispatch-f16.cu.
-extern bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+extern bool try_dispatch_vec_f16(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 
 #ifdef FATTN_VTQ2_SPLIT_ENABLE
 
@@ -23,10 +23,14 @@ extern bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * 
 // Returns true if this function handled the dispatch (and the FA kernel ran).
 // Returns false if the fast-path preconditions are not met (caller should
 // fall through to the legacy try_dispatch_vec_vtq2).
-bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context * ctx, ggml_tensor * dst) {
     ggml_tensor * Q = dst->src[0];
     ggml_tensor * V = dst->src[2];
 
+    // the availability check (ctx == nullptr) goes through the regular vtq2 dispatch
+    if (ctx == nullptr) {
+        return false;
+    }
     // Preconditions: VTQ_2 V-cache + ncols=1 (decode path).
     if (!GGML_TYPE_IS_VTQ_TRELLIS(V->type)) {
         return false;
@@ -62,8 +66,8 @@ bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * 
     const int64_t s02 = V->nb[2] / ts;
     const int64_t s03 = V->nb[3] / ts;
 
-    ggml_cuda_pool_alloc<half> v_scratch(ctx.pool(), scratch_elems);
-    to_fp16(V->data, v_scratch.get(), ne00, ne01, ne02, ne03, s01, s02, s03, ctx.stream());
+    ggml_cuda_pool_alloc<half> v_scratch(ctx->pool(), scratch_elems);
+    to_fp16(V->data, v_scratch.get(), ne00, ne01, ne02, ne03, s01, s02, s03, ctx->stream());
 
     // Save + swap V tensor fields. dst->src[2] is a non-const ggml_tensor*,
     // mutation is observable to downstream dispatch. We restore before returning.
@@ -96,7 +100,7 @@ bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
 #else // !FATTN_VTQ2_SPLIT_ENABLE
 
-bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context * ctx, ggml_tensor * dst) {
     GGML_UNUSED(ctx); GGML_UNUSED(dst);
     return false;
 }

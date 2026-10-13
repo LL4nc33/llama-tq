@@ -382,17 +382,25 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     // The per-TU try_dispatch_vec_* helpers walk the same (D, K, V)
     // match list as the original monolithic switch; at most one helper
     // returns true (the matching K/V type families are disjoint).
-    if (try_dispatch_vec_f16(ctx, dst)) return;
-    if (try_dispatch_vec_ktq(ctx, dst)) return;
-    if (try_dispatch_vec_vtq1(ctx, dst)) return;
+    if (try_dispatch_vec_f16(&ctx, dst)) return;
+    if (try_dispatch_vec_ktq(&ctx, dst)) return;
+    if (try_dispatch_vec_vtq1(&ctx, dst)) return;
     // E14 split-decode: intercepts VTQ_2 family at ncols=1 (decode) and runs
     // bulk dequant + F16 FA. Only active when FATTN_VTQ2_SPLIT_ENABLE is
     // defined, otherwise this function is a no-op returning false.
-    if (try_dispatch_vec_vtq2_split(ctx, dst)) return;
-    if (try_dispatch_vec_vtq2(ctx, dst)) return;
-    if (try_dispatch_vec_vtq3(ctx, dst)) return;
+    if (try_dispatch_vec_vtq2_split(&ctx, dst)) return;
+    if (try_dispatch_vec_vtq2(&ctx, dst)) return;
+    if (try_dispatch_vec_vtq3(&ctx, dst)) return;
 
-    GGML_ABORT("fatal error");
+    GGML_ABORT("no vec kernel for this head size and K/V pair; ggml_cuda_get_best_fattn_kernel should not pick it");
+}
+
+// whether the vec kernel has an instance for the head size and K/V types of dst: the dispatch helpers without a
+// context only report a match, so their case lists are the one list of what the vec kernel covers
+static bool ggml_cuda_fattn_vec_available(const ggml_tensor * dst) {
+    ggml_tensor * t = const_cast<ggml_tensor *>(dst);
+    return try_dispatch_vec_f16(nullptr, t) || try_dispatch_vec_ktq(nullptr, t) || try_dispatch_vec_vtq1(nullptr, t) ||
+           try_dispatch_vec_vtq2(nullptr, t) || try_dispatch_vec_vtq3(nullptr, t);
 }
 
 
@@ -406,31 +414,33 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_MMA_KTQ  = 500,
 };
 
-// is_v: VTQ types are V-cache only; KTQ types are accepted for K and (symmetric TurboQuant) for V
+// is_v: VTQ types are V-cache only; KTQ types are accepted for K and (symmetric TurboQuant) for V. Every type that
+// converts to f16 is supported: a pair without a dedicated kernel converts K and/or V to f16 (see
+// ggml_cuda_fattn_convert_kernel).
 static bool ggml_cuda_fattn_kv_type_supported(ggml_type type, bool is_v) {
-    if (GGML_TYPE_IS_KTQ(type) || (is_v && GGML_TYPE_IS_VTQ(type))) {
+    if (GGML_TYPE_IS_VTQ(type) && !is_v) {
+        return false;
+    }
+    if (type == GGML_TYPE_F32 || type == GGML_TYPE_F16) {
         return true;
     }
+    if (ggml_get_to_fp16_nc_cuda(type) == nullptr) {
+        return false;
+    }
     switch (type) {
-        case GGML_TYPE_F32:
-        case GGML_TYPE_F16:
-            return true;
+        case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
-#ifndef GGML_CUDA_FA_ALL_QUANTS
-            return false;
-#endif // GGML_CUDA_FA_ALL_QUANTS
-        case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_BF16:
             return true;
         default:
-            return false;
+            return GGML_TYPE_IS_KTQ(type) || GGML_TYPE_IS_VTQ(type);
     }
 }
 
-static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
+static best_fattn_kernel ggml_cuda_get_preferred_fattn_kernel(const int device, const ggml_tensor * dst) {
 #ifndef FLASH_ATTN_AVAILABLE
     GGML_UNUSED(device); GGML_UNUSED(dst);
     return BEST_FATTN_KERNEL_NONE;
@@ -506,11 +516,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     const bool is_vtq_v = GGML_TYPE_IS_VTQ(V->type);
 
 #ifndef GGML_CUDA_FA_ALL_QUANTS
-    // Exception for asymmetric KTQ K + f16 V (MMA-KTQ split/inline paths below)
-    const bool is_tq_k_early = GGML_TYPE_IS_KTQ(K->type);
-    if (K->type != V->type && !is_vtq_v && !(is_tq_k_early && V->type == GGML_TYPE_F16)) {
-        return BEST_FATTN_KERNEL_NONE;
-    }
     // q5_0 K/V without VEC instances: batches convert to f16 for the MMA kernel, decode with GQA takes the
     // GQA or tensor-core decode kernel (tried first in ggml_cuda_flash_attn_ext)
     if (K->type == GGML_TYPE_Q5_0 && V->type == GGML_TYPE_Q5_0) {
@@ -539,12 +544,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         if (!can_use_vector_kernel_tq) {
             return BEST_FATTN_KERNEL_NONE;
         }
-#ifndef GGML_CUDA_FA_ALL_QUANTS
-        // Without FA_ALL_QUANTS, only symmetric TQ, K=standard+V=TQ, and VTQ V-types are compiled.
-        if (is_tq_k && !is_tq_v && !is_vtq_v && V->type != GGML_TYPE_F16) {
-            return BEST_FATTN_KERNEL_NONE;
-        }
-#endif
         // MMA-KTQ split-dequant: bulk-dequant KTQ K → fp16 scratch, dispatch
         // to the tensor-core MMA-F16 kernel. Measured on Qwen3.5-35B-A3B
         // IQ2_XS (2× RTX 2060, KTQ2_1 K + f16 V, prefill):
@@ -562,7 +561,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         // takes the same path: without it, q8_0 K + vtq4_1 V prefilled through the VEC kernel.
         const bool k_split = K->type == GGML_TYPE_F16 || GGML_TYPE_IS_KTQ(K->type) ||
                              ggml_get_to_fp16_nc_cuda(K->type) != nullptr;
-        const bool v_split = V->type == GGML_TYPE_F16 || (is_vtq_v && ggml_get_to_fp16_nc_cuda(V->type) != nullptr);
+        const bool v_split = V->type == GGML_TYPE_F16 || ggml_get_to_fp16_nc_cuda(V->type) != nullptr;
         // the MMA kernel takes head size 512 (Gemma 4 global layers) only with GQA batching
         const bool d_split = K->ne[0] == V->ne[0] && (K->ne[0] == 64 || K->ne[0] == 80 || K->ne[0] == 96 ||
                              K->ne[0] == 112 || K->ne[0] == 128 || K->ne[0] == 256 || (K->ne[0] == 512 && gqa_opt_applies));
@@ -672,6 +671,23 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         }
     }
     return BEST_FATTN_KERNEL_TILE;
+}
+
+// A head size and K/V pair without a vec kernel instance converts K and V to f16 in launch_fattn (the buffer is
+// reserved with the graph, see ggml_cuda_flash_attn_ext_get_alloc_size) and runs the MMA kernel on Turing and newer,
+// the tile kernel before. Correct for every type with an f16 conversion; at long context in decode it is slower than a
+// dedicated kernel, since every step converts the whole cache.
+static best_fattn_kernel ggml_cuda_fattn_convert_kernel(const int cc, const ggml_tensor * dst) {
+    const ggml_tensor * Q = dst->src[0];
+    return turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72 ? BEST_FATTN_KERNEL_MMA_F16 : BEST_FATTN_KERNEL_TILE;
+}
+
+static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
+    const best_fattn_kernel preferred = ggml_cuda_get_preferred_fattn_kernel(device, dst);
+    if (preferred == BEST_FATTN_KERNEL_VEC && !ggml_cuda_fattn_vec_available(dst)) {
+        return ggml_cuda_fattn_convert_kernel(ggml_cuda_info().devices[device].cc, dst);
+    }
+    return preferred;
 }
 
 size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * dst) {

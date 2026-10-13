@@ -9,7 +9,7 @@
 // The cases themselves live in one TU per V type (fattn-vec-dispatch-vtq<bits>_<family>.cu).
 #include "fattn-vec-dispatch.cuh"
 
-bool try_dispatch_vec_vtq3(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+bool try_dispatch_vec_vtq3(ggml_backend_cuda_context * ctx, ggml_tensor * dst) {
     if (try_dispatch_vec_vtq2_3(ctx, dst)) return true;
     if (try_dispatch_vec_vtq3_3(ctx, dst)) return true;
     if (try_dispatch_vec_vtq4_3(ctx, dst)) return true;

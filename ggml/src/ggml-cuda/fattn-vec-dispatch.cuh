@@ -14,7 +14,7 @@
 // but returns `true` as soon as a case matches (instead of `return;`)
 // and `false` if no case in its slice matched. The top-level
 // ggml_cuda_flash_attn_ext_vec in fattn.cu chains the helpers in the
-// original order and calls GGML_ABORT if none matched.
+// original order; the kernel choice in fattn.cu only picks the vec kernel when one of them matches.
 //
 // Order of evaluation across the split files MUST match the original
 // monolithic list.
@@ -31,7 +31,9 @@
         const bool type_K_okay = K->type == (type_K) || (K->type == GGML_TYPE_F32 && (type_K) == GGML_TYPE_F16); \
         const bool type_V_okay = V->type == (type_V) || (V->type == GGML_TYPE_F32 && (type_V) == GGML_TYPE_F16); \
         if (Q->ne[0] == (D) && type_K_okay && type_V_okay) {                                                     \
-            ggml_cuda_flash_attn_ext_vec_case<D, type_K, type_V>(ctx, dst);                                      \
+            if (ctx) {                                                                                           \
+                ggml_cuda_flash_attn_ext_vec_case<D, type_K, type_V>(*ctx, dst);                                 \
+            }                                                                                                    \
             return true;                                                                                         \
         }                                                                                                        \
     }
@@ -48,23 +50,24 @@
     FATTN_VEC_CASE_RET(512, type_K, type_V)
 
 // Helpers — implemented in fattn-vec-dispatch-*.cu TUs.
-// Each returns true iff a matching (D, type_K, type_V) was dispatched.
-bool try_dispatch_vec_f16(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_ktq(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+// Each returns true iff a matching (D, type_K, type_V) exists; it launches the kernel unless ctx is nullptr, so the
+// same list answers whether the vec kernel covers a pair (ggml_cuda_fattn_vec_available) and runs it.
+bool try_dispatch_vec_f16(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_ktq(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq1(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 // one TU per VTQ V type, called by the family helpers above
-bool try_dispatch_vec_vtq1_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq2_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq3_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq4_1(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq2_2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq3_2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq4_2(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq2_3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq3_3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq4_3(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-bool try_dispatch_vec_vtq3_v8(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq1_1(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_1(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_1(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq4_1(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq4_2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq4_3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_v8(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 // E14 split-decode path — see fattn-vec-dispatch-vtq2-split.cu.
-bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_split(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
