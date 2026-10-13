@@ -3377,7 +3377,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
             const uint32_t whi = vhi * 3;
             vlo = wlo & 0x00FF00FF;
             vhi = whi & 0x00FF00FF;
-            q[t] = __vsubss4(mmq_byte_perm(wlo, whi, 0x7531), 0x01010101);
+            q[t] = __vsub4(mmq_byte_perm(wlo, whi, 0x7531), 0x01010101);
             if (full_lane) {
                 row[dst_base + t*dst_step] = q[t];
             }
