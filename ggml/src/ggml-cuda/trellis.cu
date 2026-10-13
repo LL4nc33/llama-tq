@@ -3,11 +3,11 @@
 //   - Encoder kernel template lives in trellis-encode.cuh and is instantiated
 //     directly in set-rows.cu for each (idx_t, block_t, K) triple.
 //   - This TU owns the global-memory WORKSPACE POOL for the encoder:
-//       * dp_cur  : pool_slots * S   floats
-//       * dp_next : pool_slots * S   uint64 (packed cost<<32|prev during DP)
-//       * bt      : pool_slots * N * S  uint16_t
-//     Per slot: 256 KiB + 512 KiB + 32 MiB  ≈  32.75 MiB.
-//     Default pool_slots = 8 → 262 MiB reserved per-device on first use.
+//       * bt      : pool_slots * N * S  uint16_t (backtrack)
+//       * dp_cur  : pool_slots * S   floats, and
+//         dp_next : pool_slots * S   uint64 (packed cost<<32|prev), only for S > VTQ_ENC_SMEM_MAX_S, where the DP
+//                   rows do not fit in shared memory
+//     Per slot at L = 12: 1 MiB (8 MiB with the default 8 slots); at L = 16: 32.75 MiB (262 MiB).
 //     Override via env: GGML_CUDA_VTQ_POOL_SLOTS=<1..64>.
 
 #include "trellis.cuh"
@@ -56,23 +56,27 @@ const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t /*stream*/) {
 
     if (!*inited) {
         const int    slots         = get_pool_slots_env();
-        const size_t bytes_dp_cur  = (size_t)slots * (size_t)VTQ_ENC_S * sizeof(float);
+        // the shared-memory encoder keeps its DP rows on chip and needs only the backtrack
+        constexpr bool dp_global   = VTQ_ENC_S > VTQ_ENC_SMEM_MAX_S;
+        const size_t bytes_dp_cur  = dp_global ? (size_t)slots * (size_t)VTQ_ENC_S * sizeof(float)    : 0;
         // dp_next is reinterpreted as uint64_t during DP (packed cost + prev).
-        const size_t bytes_dp_next = (size_t)slots * (size_t)VTQ_ENC_S * sizeof(uint64_t);
+        const size_t bytes_dp_next = dp_global ? (size_t)slots * (size_t)VTQ_ENC_S * sizeof(uint64_t) : 0;
         const size_t bytes_bt      = (size_t)slots * (size_t)VTQ_ENC_N * (size_t)VTQ_ENC_S * sizeof(uint16_t);
 
         cudaError_t err;
-        err = cudaMalloc((void **)&ws->dp_cur, bytes_dp_cur);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "[vtq-enc] dev %d cudaMalloc(dp_cur, %zu B) failed: %s\n",
-                    device, bytes_dp_cur, cudaGetErrorString(err));
-            abort();
-        }
-        err = cudaMalloc((void **)&ws->dp_next, bytes_dp_next);
-        if (err != cudaSuccess) {
-            fprintf(stderr, "[vtq-enc] dev %d cudaMalloc(dp_next, %zu B) failed: %s\n",
-                    device, bytes_dp_next, cudaGetErrorString(err));
-            abort();
+        if (dp_global) {
+            err = cudaMalloc((void **)&ws->dp_cur, bytes_dp_cur);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "[vtq-enc] dev %d cudaMalloc(dp_cur, %zu B) failed: %s\n",
+                        device, bytes_dp_cur, cudaGetErrorString(err));
+                abort();
+            }
+            err = cudaMalloc((void **)&ws->dp_next, bytes_dp_next);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "[vtq-enc] dev %d cudaMalloc(dp_next, %zu B) failed: %s\n",
+                        device, bytes_dp_next, cudaGetErrorString(err));
+                abort();
+            }
         }
         err = cudaMalloc((void **)&ws->bt, bytes_bt);
         if (err != cudaSuccess) {
