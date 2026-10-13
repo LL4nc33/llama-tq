@@ -63,6 +63,125 @@ struct vtq_encode_workspace {
 const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t stream);
 void vtq_free_encode_workspace(void);
 
+// Source and destination block of flat trellis block i (see k_vtq_encode_trellis_set_rows for the layout).
+template <typename block_t, typename idx_t>
+static __device__ __forceinline__ void vtq_enc_block_ptrs(
+        const int64_t i, const float * __restrict__ src0, const idx_t * __restrict__ src1, block_t * __restrict__ dst,
+        const int64_t s01, const int64_t s02, const int64_t s03, const int64_t s10, const int64_t s11, const int64_t s12,
+        const int64_t s1, const int64_t s2, const int64_t s3,
+        const uint3 ne00, const uint3 ne01, const uint3 ne02, const uint3 ne11_fd, const uint3 ne12_fd,
+        const float ** src_block, block_t ** dst_block) {
+    const int64_t i_base = i * VTQ_ENC_N;
+    uint32_t tmp = (uint32_t) i_base;
+    uint2    dm;
+
+    dm = fast_div_modulo(tmp, ne00);
+    const int64_t i00 = dm.y;
+    tmp = dm.x;
+
+    dm = fast_div_modulo(tmp, ne01);
+    const int64_t i01 = dm.y;
+    tmp = dm.x;
+
+    dm = fast_div_modulo(tmp, ne02);
+    const int64_t i02 = dm.y;
+    const int64_t i03 = dm.x;
+
+    const int64_t i12 = fastmodulo((uint32_t) i03, ne12_fd);
+    const int64_t i11 = fastmodulo((uint32_t) i02, ne11_fd);
+    const int64_t i10 = i01;
+
+    const int64_t dst_row = *(src1 + i10*s10 + i11*s11 + i12*s12);
+
+    *src_block = src0 + i01*s01 + i02*s02 + i03*s03 + i00;
+    *dst_block = dst + (dst_row*s1 + i02*s2 + i03*s3) / sizeof(block_t) + i00 / VTQ_ENC_N;
+}
+
+// Thread 0: the N_OUT largest |x| (strict >, earlier position wins ties) are stored in fp16 in ascending position
+// order and zeroed in xn, as in ggml_trellis_outliers_pick on the CPU.
+template <typename block_t, int N_OUT>
+static __device__ __forceinline__ void vtq_enc_pick_outliers(float * xn, block_t * dst_block) {
+    constexpr int N = VTQ_ENC_N;
+    int   top_pos[N_OUT];
+    float top_mag[N_OUT];
+    #pragma unroll
+    for (int j = 0; j < N_OUT; j++) { top_pos[j] = -1; top_mag[j] = -1.0f; }
+    for (int i = 0; i < N; i++) {
+        const float m = fabsf(xn[i]);
+        if (m > top_mag[N_OUT - 1]) {
+            int ins = N_OUT - 1;
+            while (ins > 0 && m > top_mag[ins - 1]) {
+                top_mag[ins] = top_mag[ins - 1];
+                top_pos[ins] = top_pos[ins - 1];
+                ins--;
+            }
+            top_mag[ins] = m;
+            top_pos[ins] = i;
+        }
+    }
+    for (int a = 1; a < N_OUT; a++) {
+        const int key = top_pos[a];
+        int b = a - 1;
+        while (b >= 0 && top_pos[b] > key) { top_pos[b + 1] = top_pos[b]; b--; }
+        top_pos[b + 1] = key;
+    }
+    #pragma unroll
+    for (int j = 0; j < N_OUT; j++) {
+        const int p = top_pos[j];
+        if (p < 0) { // only with NaN input; the CPU leaves pos 0 / val 0 there as well
+            dst_block->outlier_pos[j] = 0;
+            dst_block->outlier_val[j] = __float2half(0.0f);
+            continue;
+        }
+        dst_block->outlier_pos[j] = (uint8_t) p;
+        dst_block->outlier_val[j] = __float2half(xn[p]);
+        xn[p] = 0.0f;
+    }
+}
+
+// Thread 0: packs the emitted bits of the state path states[0..N] and stores start state and block scale.
+template <typename block_t, int K>
+static __device__ __forceinline__ void vtq_enc_emit(
+        const uint16_t * states, const float * xn, const float norm, const float cb_scale, block_t * dst_block) {
+    constexpr int      N      = VTQ_ENC_N;
+    constexpr uint32_t Kmask  = (1u << K) - 1u;
+    constexpr int      kshift = VTQ_ENC_L - K;
+
+    dst_block->start_state = states[0];
+
+    uint8_t * qs = dst_block->qs;
+    const int qs_bytes = (N * K + 7) / 8;
+    for (int b = 0; b < qs_bytes; b++) qs[b] = 0;
+
+    float recon_sq = 0.0f;
+    float dot      = 0.0f;
+    for (int step = 0; step < N; step++) {
+        uint32_t st   = (uint32_t)states[step + 1];
+        uint32_t bits = (st >> kshift) & Kmask;
+        int bo        = step * K;
+        int byte      = bo >> 3;
+        int shift     = bo & 7;
+        qs[byte] |= (uint8_t)((bits << shift) & 0xFFu);
+        if (shift + K > 8) {
+            qs[byte + 1] |= (uint8_t)((bits >> (8 - shift)) & 0xFFu);
+            if (shift + K > 16) {
+                qs[byte + 2] |= (uint8_t)((bits >> (16 - shift)) & 0xFFu);
+            }
+        }
+        float code = vtq_trellis_table_storage[st] * cb_scale;
+        recon_sq += code * code;
+        dot      += code * xn[step];
+    }
+    float recon_norm = sqrtf(recon_sq);
+#if GGML_TRELLIS_UNBIASED_SCALE
+    float d_out = dot > 1e-30f ? norm / dot : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
+#else
+    (void) dot;
+    float d_out = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
+#endif
+    dst_block->d = __float2half(d_out);
+}
+
 // One CUDA block == one flat trellis-block index.
 //   i runs [0 .. ne_total-1], ne_total = (ne00*ne01*ne02*ne03)/qk.
 // Per-block, thread 0 decodes (i00, i01, i02, i03) and computes:
@@ -103,11 +222,8 @@ __global__ void k_vtq_encode_trellis_set_rows(
         const int64_t                 wave_block_offset)
 {
     constexpr int      N      = VTQ_ENC_N;
-    constexpr int      L      = VTQ_ENC_L;
-    constexpr int      QK_VTQ_T = N;  // 256
     constexpr uint32_t S      = VTQ_ENC_S;
     constexpr uint32_t Kmask  = (1u << K) - 1u;
-    constexpr int      kshift = L - K;
 
     const int     tid = threadIdx.x;
     const int64_t i   = wave_block_offset + (int64_t)blockIdx.x;
@@ -117,34 +233,8 @@ __global__ void k_vtq_encode_trellis_set_rows(
     __shared__ block_t     * s_dst_block;
 
     if (tid == 0) {
-        const int64_t i_base = i * QK_VTQ_T;
-        uint32_t tmp = (uint32_t) i_base;
-        uint2    dm;
-
-        dm = fast_div_modulo(tmp, ne00);
-        const int64_t i00 = dm.y;
-        tmp = dm.x;
-
-        dm = fast_div_modulo(tmp, ne01);
-        const int64_t i01 = dm.y;
-        tmp = dm.x;
-
-        dm = fast_div_modulo(tmp, ne02);
-        const int64_t i02 = dm.y;
-        const int64_t i03 = dm.x;
-
-        const int64_t i12 = fastmodulo((uint32_t) i03, ne12_fd);
-        const int64_t i11 = fastmodulo((uint32_t) i02, ne11_fd);
-        const int64_t i10 = i01;
-
-        const int64_t dst_row = *(src1 + i10*s10 + i11*s11 + i12*s12);
-
-        const float * src0_row   = src0 + i01*s01 + i02*s02 + i03*s03;
-        block_t     * dst_row_p  = dst + (dst_row*s1 + i02*s2 + i03*s3) / sizeof(block_t);
-
-        s_src_block = src0_row + i00;
-        s_dst_block = dst_row_p + i00 / QK_VTQ_T;
-
+        vtq_enc_block_ptrs(i, src0, src1, dst, s01, s02, s03, s10, s11, s12, s1, s2, s3, ne00, ne01, ne02, ne11_fd, ne12_fd,
+            &s_src_block, &s_dst_block);
         (void) ne10; (void) ne11; (void) ne12; (void) ne13;
     }
     __syncthreads();
@@ -172,42 +262,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
     if constexpr (N_OUT > 0) {
         __syncthreads();
         if (tid == 0) {
-            // top N_OUT by |x| (strict >, earlier position wins ties), emitted in ascending position order
-            int   top_pos[N_OUT];
-            float top_mag[N_OUT];
-            #pragma unroll
-            for (int j = 0; j < N_OUT; j++) { top_pos[j] = -1; top_mag[j] = -1.0f; }
-            for (int i = 0; i < N; i++) {
-                const float m = fabsf(s_xn[i]);
-                if (m > top_mag[N_OUT - 1]) {
-                    int ins = N_OUT - 1;
-                    while (ins > 0 && m > top_mag[ins - 1]) {
-                        top_mag[ins] = top_mag[ins - 1];
-                        top_pos[ins] = top_pos[ins - 1];
-                        ins--;
-                    }
-                    top_mag[ins] = m;
-                    top_pos[ins] = i;
-                }
-            }
-            for (int a = 1; a < N_OUT; a++) {
-                const int key = top_pos[a];
-                int b = a - 1;
-                while (b >= 0 && top_pos[b] > key) { top_pos[b + 1] = top_pos[b]; b--; }
-                top_pos[b + 1] = key;
-            }
-            #pragma unroll
-            for (int j = 0; j < N_OUT; j++) {
-                const int p = top_pos[j];
-                if (p < 0) { // only with NaN input; the CPU leaves pos 0 / val 0 there as well
-                    dst_block->outlier_pos[j] = 0;
-                    dst_block->outlier_val[j] = __float2half(0.0f);
-                    continue;
-                }
-                dst_block->outlier_pos[j] = (uint8_t) p;
-                dst_block->outlier_val[j] = __float2half(s_xn[p]);
-                s_xn[p] = 0.0f;
-            }
+            vtq_enc_pick_outliers<block_t, N_OUT>(s_xn, dst_block);
         }
         __syncthreads();
     }
@@ -341,39 +396,178 @@ __global__ void k_vtq_encode_trellis_set_rows(
             s_states[step] = bt_i[s_states[step + 1]];
         }
 
-        dst_block->start_state = s_states[0];
+        vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block);
+    }
+}
 
-        uint8_t * qs = dst_block->qs;
-        const int qs_bytes = (N * K + 7) / 8;
-        for (int b = 0; b < qs_bytes; b++) qs[b] = 0;
 
-        float recon_sq = 0.0f;
-        float dot      = 0.0f;
-        for (int step = 0; step < N; step++) {
-            uint32_t st   = (uint32_t)s_states[step + 1];
-            uint32_t bits = (st >> kshift) & Kmask;
-            int bo        = step * K;
-            int byte      = bo >> 3;
-            int shift     = bo & 7;
-            qs[byte] |= (uint8_t)((bits << shift) & 0xFFu);
-            if (shift + K > 8) {
-                qs[byte + 1] |= (uint8_t)((bits >> (8 - shift)) & 0xFFu);
-                if (shift + K > 16) {
-                    qs[byte + 2] |= (uint8_t)((bits >> (16 - shift)) & 0xFFu);
-                }
-            }
-            float code = vtq_trellis_table_storage[st] * cb_scale;
-            recon_sq += code * code;
-            dot      += code * s_xn[step];
+// Shared-memory Viterbi for small state spaces (L <= 12, S <= 4096 states): both DP rows live in shared memory, the
+// backtrack stores per step and state only the index e of the winning predecessor (one byte) in the block's slot of the
+// global workspace. A CUDA block walks over trellis blocks in a grid-stride loop and keeps its slot, so all trellis
+// blocks are encoded by one launch without host synchronization.
+//
+// Predecessors of `next` are the 2^K consecutive states ((next << K) | e) & (S - 1); they are read as float4 vectors
+// (consecutive threads read consecutive 16-byte chunks, no bank conflicts). Ties keep the lowest e, as the full kernel.
+#define VTQ_ENC_SMEM_THREADS 512
+
+template <typename block_t, typename idx_t, int K, int N_OUT>
+__launch_bounds__(VTQ_ENC_SMEM_THREADS, 1)
+__global__ void k_vtq_encode_trellis_smem(
+        const float * __restrict__ src0, const idx_t * __restrict__ src1, block_t * __restrict__ dst, const int64_t ne_total,
+        const int64_t s01, const int64_t s02, const int64_t s03, const int64_t s10, const int64_t s11, const int64_t s12,
+        const int64_t s1, const int64_t s2, const int64_t s3,
+        const uint3 ne00, const uint3 ne01, const uint3 ne02, const uint3 ne11_fd, const uint3 ne12_fd,
+        uint8_t * __restrict__ ws_bt) {
+    constexpr int      N   = VTQ_ENC_N;
+    constexpr uint32_t S   = VTQ_ENC_S;
+    constexpr int      NT  = VTQ_ENC_SMEM_THREADS;
+    constexpr int      SPT = S / NT;          // states per thread
+    constexpr int      NE  = 1 << K;          // predecessors per state
+    static_assert(S % NT == 0 && S <= 4096, "the shared-memory encoder takes at most 4096 states");
+    static_assert(NE % 4 == 0, "predecessors are read as float4");
+
+    __shared__ float4   s_dp4[2][S/4];
+    __shared__ float    s_xn[N];
+    __shared__ float    s_red[NT/WARP_SIZE];
+    __shared__ uint32_t s_red_u[NT/WARP_SIZE];
+    __shared__ uint16_t s_states[N + 1];
+    __shared__ const float * s_src_block;
+    __shared__ block_t     * s_dst_block;
+    __shared__ float    s_norm;
+
+    const int tid  = threadIdx.x;
+    const int lane = tid % WARP_SIZE;
+    const int warp = tid / WARP_SIZE;
+    uint8_t * bt   = ws_bt + (int64_t) blockIdx.x * N * S;
+    const float cb_scale = rsqrtf((float) N);
+
+    for (int64_t i = blockIdx.x; i < ne_total; i += gridDim.x) {
+        if (tid == 0) {
+            vtq_enc_block_ptrs(i, src0, src1, dst, s01, s02, s03, s10, s11, s12, s1, s2, s3, ne00, ne01, ne02, ne11_fd, ne12_fd,
+                &s_src_block, &s_dst_block);
         }
-        float recon_norm = sqrtf(recon_sq);
-#if GGML_TRELLIS_UNBIASED_SCALE
-        float d_out = dot > 1e-30f ? norm / dot : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
-#else
-        (void) dot;
-        float d_out = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
-#endif
-        dst_block->d = __float2half(d_out);
+        __syncthreads();
+        block_t * dst_block = s_dst_block;
+
+        // 1) load x, outliers, norm
+        for (int j = tid; j < N; j += NT) {
+            s_xn[j] = s_src_block[j];
+        }
+        if constexpr (N_OUT > 0) {
+            __syncthreads();
+            if (tid == 0) {
+                vtq_enc_pick_outliers<block_t, N_OUT>(s_xn, dst_block);
+            }
+        }
+        __syncthreads();
+        if (warp == 0) {
+            float sq = 0.0f;
+            for (int j = lane; j < N; j += WARP_SIZE) {
+                sq += s_xn[j] * s_xn[j];
+            }
+            sq = warp_reduce_sum(sq);
+            if (lane == 0) {
+                s_norm = sqrtf(sq);
+            }
+        }
+        __syncthreads();
+        const float norm = s_norm;
+        if (norm <= 1e-30f) {
+            if (tid == 0) {
+                dst_block->start_state = 0;
+                dst_block->d           = __float2half(0.0f);
+            }
+            for (int b = tid; b < (N * K + 7) / 8; b += NT) {
+                dst_block->qs[b] = 0;
+            }
+            __syncthreads();
+            continue;
+        }
+        const float inv_norm = 1.0f / norm;
+        for (int j = tid; j < N; j += NT) {
+            s_xn[j] *= inv_norm;
+        }
+
+        // 2) open start: every state costs 0
+        float * dp0 = (float *) s_dp4[0];
+        for (uint32_t st = tid; st < S; st += NT) {
+            dp0[st] = 0.0f;
+        }
+        __syncthreads();
+
+        // the codes of a thread's states are the same at every step
+        float code[SPT];
+        #pragma unroll
+        for (int j = 0; j < SPT; j++) {
+            code[j] = __ldg(vtq_trellis_table_storage + tid + j*NT) * cb_scale;
+        }
+
+        // 3) forward DP
+        for (int step = 0; step < N; step++) {
+            const float4 * dp_cur  = s_dp4[step & 1];
+            float        * dp_next = (float *) s_dp4[(step & 1) ^ 1];
+            uint8_t      * bt_i    = bt + (int64_t) step * S;
+            const float xi = s_xn[step];
+            #pragma unroll
+            for (int j = 0; j < SPT; j++) {
+                const uint32_t next = tid + j*NT;
+                const float    diff = xi - code[j];
+                const float    d2   = diff * diff;
+                const uint32_t base4 = ((next << K) & (S - 1u)) / 4;
+
+                // cost = predecessor cost + d2 before comparing, as the full kernel does (same ties)
+                float   best = FLT_MAX;
+                uint8_t best_e = 0;
+                #pragma unroll
+                for (int e4 = 0; e4 < NE/4; e4++) {
+                    const float4 pc = dp_cur[base4 + e4];
+                    const float c0 = pc.x + d2, c1 = pc.y + d2, c2 = pc.z + d2, c3 = pc.w + d2;
+                    if (c0 < best) { best = c0; best_e = 4*e4 + 0; }
+                    if (c1 < best) { best = c1; best_e = 4*e4 + 1; }
+                    if (c2 < best) { best = c2; best_e = 4*e4 + 2; }
+                    if (c3 < best) { best = c3; best_e = 4*e4 + 3; }
+                }
+                dp_next[next] = best;
+                bt_i[next]    = best_e;
+            }
+            __syncthreads();
+        }
+
+        // 4) argmin over the last row (lowest state wins ties)
+        const float * dp_last = (const float *) s_dp4[N & 1];
+        float    best   = FLT_MAX;
+        uint32_t best_s = 0;
+        for (uint32_t st = tid; st < S; st += NT) {
+            if (dp_last[st] < best) { best = dp_last[st]; best_s = st; }
+        }
+        #pragma unroll
+        for (int off = WARP_SIZE/2; off > 0; off >>= 1) {
+            const float    ob = __shfl_xor_sync(0xFFFFFFFF, best,   off, WARP_SIZE);
+            const uint32_t os = __shfl_xor_sync(0xFFFFFFFF, best_s, off, WARP_SIZE);
+            if (ob < best || (ob == best && os < best_s)) { best = ob; best_s = os; }
+        }
+        if (lane == 0) {
+            s_red[warp]   = best;
+            s_red_u[warp] = best_s;
+        }
+        __syncthreads();
+
+        // 5) backtrack and emit (thread 0)
+        if (tid == 0) {
+            best   = s_red[0];
+            best_s = s_red_u[0];
+            for (int w = 1; w < NT/WARP_SIZE; w++) {
+                if (s_red[w] < best || (s_red[w] == best && s_red_u[w] < best_s)) { best = s_red[w]; best_s = s_red_u[w]; }
+            }
+            uint32_t st = best_s;
+            s_states[N] = (uint16_t) st;
+            for (int step = N - 1; step >= 0; step--) {
+                st = ((st << K) | bt[(int64_t) step * S + st]) & (S - 1u);
+                s_states[step] = (uint16_t) st;
+            }
+            vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block);
+        }
+        __syncthreads();
     }
 }
 
@@ -411,6 +605,16 @@ static void vtq_cuda_encode_set_rows(
     const uint3 ne02_fd = init_fastdiv_values((uint32_t) ne02);
     const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
     const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
+
+    if constexpr (VTQ_ENC_S <= 4096) {
+        // one launch, each CUDA block keeps one workspace slot (N*S bytes of backtrack) and walks over trellis blocks
+        const int64_t slot_bytes = (int64_t) VTQ_ENC_N * VTQ_ENC_S;
+        const int     nblocks    = (int) std::min<int64_t>(ne_total, (int64_t) pool_slots * (int64_t) sizeof(uint16_t) * VTQ_ENC_N * VTQ_ENC_S / slot_bytes);
+        k_vtq_encode_trellis_smem<block_t, idx_t, K, N_OUT><<<nblocks, VTQ_ENC_SMEM_THREADS, 0, stream>>>(
+            src0_d, src1_d, dst_d, ne_total, s01, s02, s03, s10, s11, s12, s1, s2, s3,
+            ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd, (uint8_t *) ws->bt);
+        return;
+    }
 
     const int64_t num_waves = (ne_total + pool_slots - 1) / pool_slots;
     for (int64_t w = 0; w < num_waves; w++) {
