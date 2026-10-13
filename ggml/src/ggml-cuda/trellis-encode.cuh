@@ -139,47 +139,49 @@ static __device__ __forceinline__ void vtq_enc_pick_outliers(float * xn, block_t
     }
 }
 
-// Thread 0: packs the emitted bits of the state path states[0..N] and stores start state and block scale.
+// One warp: packs the emitted bits of the state path states[0..N] and stores start state and block scale. Each lane
+// assembles whole bytes of qs, so the block is written once instead of bit by bit.
 template <typename block_t, int K>
 static __device__ __forceinline__ void vtq_enc_emit(
-        const uint16_t * states, const float * xn, const float norm, const float cb_scale, block_t * dst_block) {
-    constexpr int      N      = VTQ_ENC_N;
-    constexpr uint32_t Kmask  = (1u << K) - 1u;
-    constexpr int      kshift = VTQ_ENC_L - K;
-
-    dst_block->start_state = states[0];
-
-    uint8_t * qs = dst_block->qs;
-    const int qs_bytes = (N * K + 7) / 8;
-    for (int b = 0; b < qs_bytes; b++) qs[b] = 0;
+        const uint16_t * states, const float * xn, const float norm, const float cb_scale, block_t * dst_block,
+        const int lane) {
+    constexpr int      N        = VTQ_ENC_N;
+    constexpr uint32_t Kmask    = (1u << K) - 1u;
+    constexpr int      kshift   = VTQ_ENC_L - K;
+    constexpr int      qs_bytes = (N * K + 7) / 8;
 
     float recon_sq = 0.0f;
     float dot      = 0.0f;
-    for (int step = 0; step < N; step++) {
-        uint32_t st   = (uint32_t)states[step + 1];
-        uint32_t bits = (st >> kshift) & Kmask;
-        int bo        = step * K;
-        int byte      = bo >> 3;
-        int shift     = bo & 7;
-        qs[byte] |= (uint8_t)((bits << shift) & 0xFFu);
-        if (shift + K > 8) {
-            qs[byte + 1] |= (uint8_t)((bits >> (8 - shift)) & 0xFFu);
-            if (shift + K > 16) {
-                qs[byte + 2] |= (uint8_t)((bits >> (16 - shift)) & 0xFFu);
-            }
-        }
-        float code = vtq_trellis_table_storage[st] * cb_scale;
+    for (int step = lane; step < N; step += WARP_SIZE) {
+        const float code = vtq_trellis_table_storage[states[step + 1]] * cb_scale;
         recon_sq += code * code;
         dot      += code * xn[step];
     }
-    float recon_norm = sqrtf(recon_sq);
+    recon_sq = warp_reduce_sum(recon_sq);
+    dot      = warp_reduce_sum(dot);
+
+    // byte b holds the bits [8b, 8b+8) of the stream; step s starts at bit s*K
+    for (int b = lane; b < qs_bytes; b += WARP_SIZE) {
+        uint32_t byte = 0;
+        for (int step = (8*b) / K; step <= (8*b + 7) / K && step < N; step++) {
+            const uint32_t bits = ((uint32_t) states[step + 1] >> kshift) & Kmask;
+            const int      pos  = step*K - 8*b;
+            byte |= pos >= 0 ? bits << pos : bits >> -pos;
+        }
+        dst_block->qs[b] = (uint8_t) (byte & 0xFFu);
+    }
+
+    if (lane == 0) {
+        dst_block->start_state = states[0];
+        const float recon_norm = sqrtf(recon_sq);
 #if GGML_TRELLIS_UNBIASED_SCALE
-    float d_out = dot > 1e-30f ? norm / dot : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
+        const float d_out = dot > 1e-30f ? norm / dot : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
 #else
-    (void) dot;
-    float d_out = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
+        (void) dot;
+        const float d_out = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
 #endif
-    dst_block->d = __float2half(d_out);
+        dst_block->d = __float2half(d_out);
+    }
 }
 
 // One CUDA block == one flat trellis-block index.
@@ -395,8 +397,10 @@ __global__ void k_vtq_encode_trellis_set_rows(
             uint16_t * bt_i = bt_base + (int64_t)step * (int64_t)S;
             s_states[step] = bt_i[s_states[step + 1]];
         }
-
-        vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block);
+    }
+    __syncthreads();
+    if (tid < WARP_SIZE) {
+        vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block, tid);
     }
 }
 
@@ -561,21 +565,44 @@ __global__ void k_vtq_encode_trellis_smem(
         }
         __syncthreads();
 
-        // 5) backtrack and emit (thread 0): the predecessor of st is (g << K) | e with g the low L-K bits of st
+        // 5) backtrack (thread 0): the predecessor of st is (g << K) | e with g the low L-K bits of st. The forward pass
+        // is done, so its DP rows take the backtrack bytes, a chunk of steps at a time from the last step down; the
+        // whole block loads a chunk, and the serial walk reads shared instead of global memory.
+        uint32_t st = 0;
         if (tid == 0) {
             best   = s_red[0];
             best_s = s_red_u[0];
             for (int w = 1; w < NT/WARP_SIZE; w++) {
                 if (s_red[w] < best || (s_red[w] == best && s_red_u[w] < best_s)) { best = s_red[w]; best_s = s_red_u[w]; }
             }
-            uint32_t st = best_s;
+            st = best_s;
             s_states[N] = (uint16_t) st;
-            for (int step = N - 1; step >= 0; step--) {
-                const uint32_t g = st & (NG - 1);
-                st = (g << K) | bt[step * NG + g];
-                s_states[step] = (uint16_t) st;
+        }
+        constexpr int ROWS = (int) (sizeof(s_dp4) / NG); // steps per chunk
+        static_assert(ROWS * NG % sizeof(uint4) == 0, "backtrack chunks are copied as uint4");
+        uint8_t * s_bt = (uint8_t *) s_dp4;
+        for (int hi = N; hi > 0; hi -= ROWS) {
+            const int lo = hi > ROWS ? hi - ROWS : 0;
+            const uint4 * src = (const uint4 *) (bt + lo * NG);
+            uint4       * dst = (uint4 *) s_bt;
+            __syncthreads(); // the previous chunk (or the last DP row) has been read
+            for (int j = tid; j < (hi - lo) * NG / (int) sizeof(uint4); j += NT) {
+                dst[j] = src[j];
             }
-            vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block);
+            __syncthreads();
+            if (tid == 0) {
+                for (int step = hi - 1; step >= lo; step--) {
+                    const uint32_t g = st & (NG - 1);
+                    st = (g << K) | s_bt[(step - lo) * NG + g];
+                    s_states[step] = (uint16_t) st;
+                }
+            }
+        }
+        __syncthreads();
+
+        // 6) emit (one warp)
+        if (warp == 0) {
+            vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block, lane);
         }
         __syncthreads();
     }
