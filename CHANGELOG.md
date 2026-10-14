@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-14
+
+- **Every common K/V pair decodes with the grouped-query kernel.** The GQA decode kernel (`fattn-vec-gqa.cu`) now takes
+  K f16, `q8_0`, `q5_0`, `q4_0` and `ktq2/3/4_1` with V f16, `q8_0`, `q5_0`, `q4_0` and `vtq2/3/4_1` at head sizes 128
+  and 256 (f16 / f16 stays with the tensor-core kernel). Pairs such as `q8_0` / `q4_0`, `ktq4_1` / `q8_0` or f16 /
+  `vtq4_1` used to convert the whole cache to f16 at every decode step. Qwen3-4B on one RTX 2060, decode at 32k:
+  `q8_0` / `q4_0` 18.4 → 43.9 t/s, `ktq4_1` / `q8_0` 10.3 → 41.4 t/s, f16 / `vtq4_1` 13.0 → 41.4 t/s; Qwen3.6-35B-A3B
+  on two GPUs: `ktq4_1` / `q8_0` 41.3 → 70.9 t/s.
+- **Faster decode at long context with quantized caches.** The same kernel reads each type in its own lane layout
+  (2-byte loads for 4 codes of the 4-bit types and for `q4_0`/`q5_0`), keeps the 2-bit codebooks in registers, applies
+  the block scale once per element, stores the scores row by row so that softmax and the V loop read all columns with
+  one load, and unrolls the V loop 4 times. Qwen3-4B, one RTX 2060, decode at 32k: `ktq4_1` / `vtq4_1` 38.9 → 46.0 t/s,
+  `ktq2_1` / `vtq2_1` 40.7 → 49.0 t/s, `q8_0` / `vtq4_1` 41.5 → 45.3 t/s, `q8_0` / `q8_0` 41.7 → 43.8 t/s (f16 / f16:
+  37.2). Tried and dropped: staging the rows in shared memory (shared memory and L1 share the load pipe on Turing, so it
+  only moved the narrow loads), element pairs or 4 consecutive elements per lane for `q8_0` K (3-7 % slower), reducing
+  the scores of several rows together (5-25 % slower: more live registers), the KQ loop unrolled 8 times (`q8_0` 5 %
+  slower) or 2 times, the V loop 8 times (no gain).
+- **Faster prompt processing with a `vtq*_1` V cache.** Prompt batches convert V to f16 for the tensor-core kernel at
+  every ubatch; the conversion now decodes 8 elements per thread with one 16-byte store and keeps the codebook in
+  shared memory (lanes reading different entries of constant memory are serialized). Qwen3-4B, one RTX 2060, `pp512`
+  at 32k context: `ktq4_1` / `vtq4_1` 705 → 727 t/s, `q8_0` / `vtq4_1` 669 → 705 t/s (f16 / f16: 753). The f16 copy of a
+  `q8_0`, `q5_0` or `q4_0` K next to such a V now also takes 8 elements per thread (the upstream kernel kept 64 of 256
+  threads busy at head size 128).
+- New tests: decode with the GQA kernel (1024 cells, GQA 4 and 8, softcap on and off) for every covered pair;
+  prompt batches with `vtq1_1` and `vtq3_1` V.
+
 ## 2026-10-13
 
 - **f16 prefill on par with upstream.** The CUDA flash attention MMA kernel (`fattn-mma-f16.cuh`) and the tile helpers

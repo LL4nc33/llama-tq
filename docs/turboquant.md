@@ -28,7 +28,7 @@ Two type families exist, split by cache role:
 
 - **KTQ** (K-cache) — RHT (one shared random sign pattern + FWHT) + Lloyd-Max codebook. Attention kernels rotate Q once per query and dot it against codebook values, so K is never explicitly dequantized on the decode path. Prompt batches dequantize K/V to f16 and use the tensor-core kernel.
 - **VTQ** (V-cache) — three sub-families:
-  - **v1** (`vtq*_1`, codebook lookup): fixed D·H·D rotation applied once at the graph level via `self_v_rot`, then a flat codebook lookup per entry inside attention. The GQA and tensor-core decode kernels cover `vtq2_1`, `vtq3_1` and `vtq4_1` (not `vtq1_1`); next to `q8_0` K only `vtq2_1` and `vtq4_1`.
+  - **v1** (`vtq*_1`, codebook lookup): fixed D·H·D rotation applied once at the graph level via `self_v_rot`, then a flat codebook lookup per entry inside attention. The GQA decode kernel takes `vtq2_1`, `vtq3_1` and `vtq4_1` (not `vtq1_1`) next to f16, `q8_0`, `q5_0`, `q4_0` and `ktq{2,3,4}_1` K at head sizes 128 and 256; the tensor-core decode kernel covers the pairs listed in [Decode kernels](#decode-kernels-2026-10-04).
   - **v2 Trellis** (`vtq*_2`): group-level Viterbi trellis with shared state and shared scale, 16-bit shift register (L = 16, 65536 states), 16-bit open-start state, inverse-Gaussian CDF code table.
   - **v3 Trellis + outlier-split** (`vtq*_3`): same Viterbi backbone as v2, plus a 4-fp16-outliers-per-block sidecar that keeps the largest absolute V values in fp16.
 
@@ -196,8 +196,9 @@ flash attention off: the numerical noise floor of the model, below which no KV t
   with `-ctk K -ctv V --no-tq-deferred-k --no-tq-deferred-v --kl-divergence-base base.kld --kl-divergence`.
 - Kolibri-1 Q3_K_S: perplexity +0.5 % with `ktq4_1`/`vtq4_1` against f16 (cache quantized in prefill, 2026-10-05, before
   the encoder change).
-- `q8_0` K with `vtq4_1` or `vtq2_1` V uses the GQA and tensor-core decode kernels (since 2026-10-11) and decodes about as
-  fast as `q8_0` ([benchmarks](benchmarks/README.md)).
+- Mixed pairs such as `q8_0` K with `vtq{2,3,4}_1` or `q4_0` V, or `ktq4_1` K with `q8_0` V, use the GQA decode kernel
+  (every pair of the listed types since 2026-10-14) and decode about as fast as `q8_0` / `q8_0`
+  ([benchmarks](benchmarks/README.md)).
 
 Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 
@@ -273,7 +274,7 @@ Decode (one query token per sequence) has two dedicated CUDA kernels for quantiz
 | Kernel | Source | How it works | Covers |
 |---|---|---|---|
 | Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group); attention sinks (gpt-oss) are supported. | GQA ratio 2-16. Same-bit pairs `ktq{2,3,4}_1` × `vtq{2,3,4}_1` at D=64/256/512, and at D=128 below 2k context (from 2k the GQA kernel is faster, since 2026-10-13); `q4_0` at D=64/128/256/512; `q5_0` at D=128/256/512; `q8_0` and `q8_0` K with `vtq{2,4}_1` V at D=64/512; f16 K with `vtq{2,3,4}_1` V at D=64, with `vtq{2,4}_1` V at D=256/512; `ktq{2,4}_1` K with f16 V at D=256 |
-| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4-column blocks for GQA ratio 3-4, 8-column blocks above 4), one warp per K/V row, the column dot products reduced together; 3/4-bit codebooks in shared memory. Supports the sparse index lists of Qwen3.8-Flash-Next. | GQA ratio ≥ 3, no sinks; contexts of a single KQ tile go to the generic vector kernel. `ktq{2,3,4}_1` K with `vtq{2,3,4}_1` or f16 V at D=128/256 (with `vtq` V at D=256 and below 2k context at D=128 only where the tensor-core kernel does not take them); f16 K with `vtq{2,3,4}_1` V at D=256 only; `q8_0` (also with `vtq{2,4}_1` V) and `q5_0` at D=128/256. Not `ktq1_1`/`vtq1_1` |
+| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4-column blocks for GQA ratio 3-4, 8-column blocks above 4), one warp per K/V row, the column dot products reduced together. Each lane reads several elements per load (2-byte loads for the 4-bit codes and `q4_0`/`q5_0`), the block scale is applied once per element, 2-bit codebooks sit in registers and 3/4-bit codebooks in shared memory; the scores are stored row by row so that the V loop reads the weights of all columns with one load. Supports the sparse index lists of Qwen3.8-Flash-Next. | GQA ratio ≥ 3, no sinks; contexts of a single KQ tile go to the generic vector kernel. Every pair of K f16, `q8_0`, `q5_0`, `q4_0`, `ktq{2,3,4}_1` and V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` at D=128/256 (since 2026-10-14), except f16 / f16 (tensor-core MMA kernel) and the pairs the tensor-core decode kernel takes first. Not `ktq1_1`/`vtq1_1` |
 
 Kernel-only microbenchmark of the attention op at 16k context (one RTX 2060, `test-backend-ops perf`, 2026-10-04,
 before the encoder change; end-to-end speeds are on the [benchmarks](benchmarks/README.md) page):
@@ -412,10 +413,11 @@ Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style
 ## Known Issues
 
 - **2- and 3-bit K** still lose a lot of accuracy on every measured model (see [Accuracy](#accuracy)); gpt-oss needs 8-bit K.
-- **K/V pairs without a dedicated kernel** (e.g. `-ctk ktq4_1 -ctv q8_0`, `-ctk q8_0 -ctv q4_0`, `q5_0` K with a VTQ V)
-  run on CUDA by converting K and V to f16 at every step; correct, but decode slows down with context (Qwen3-4B on
-  2× RTX 2060 at 8k: `ktq4_1` / `q8_0` 30 t/s, `q8_0` / `q4_0` 45 t/s, against 69-71 t/s for `ktq4_1` / `vtq4_1` and
-  `q8_0` / `q8_0`). Building with `-DGGML_CUDA_FA_ALL_QUANTS=ON` compiles vector kernels for more pairs.
+- **Mixed K/V pairs outside the decode kernels' coverage** (head sizes other than 128 and 256, GQA ratio 1-2,
+  `ktq1_1`/`vtq1_1`) run on CUDA by converting K and V to f16 at every step; correct, but decode slows down with
+  context. Since 2026-10-14 the GQA decode kernel takes every pair of f16, `q8_0`, `q5_0`, `q4_0` and the 2-4-bit
+  TurboQuant types at head sizes 128 and 256 (before, Qwen3-4B decoded `ktq4_1` / `q8_0` at 10 t/s at 32k, now 41 t/s).
+  Building with `-DGGML_CUDA_FA_ALL_QUANTS=ON` compiles vector kernels for more pairs.
 - **VTQ v1 on Qwen3-Next-80B with `-b 1 -ub 1`**: reported in April 2026 to crash through the fused Gated DeltaNet path; not re-checked since. Batched mode and other models were unaffected.
 
 ## References

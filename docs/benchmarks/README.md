@@ -1,6 +1,6 @@
 # Benchmarks
 
-Decode and prefill speed per GPU and KV type (2026-10-09 to 2026-10-13, the date is given per table). Accuracy,
+Decode and prefill speed per GPU and KV type (2026-10-09 to 2026-10-14, the date is given per table). Accuracy,
 fine-tuning and per-model setups each have their own page (links at the end), so every number lives in one place. Older logs are in [history/](history/); their numbers
 are not comparable with these.
 
@@ -33,6 +33,24 @@ Same model on one RTX 2060, decode at empty / 16k context (`llama-bench -n 64 -r
 | f16 / f16 | 91 t/s | 53 t/s |
 | `q4_0` / `q4_0` | 88 t/s | 47 t/s |
 
+Same model on one RTX 2060 at 32k context, before → after the GQA decode kernel change of 2026-10-14
+(`llama-bench -fa 1 -t 4 -n 64 -d 32768 -r 1`, builds alternated, mean of two runs per build):
+
+| KV cache | decode 32k | `pp512` at 32k |
+|---|---:|---:|
+| f16 / f16 | 37.2 t/s (tensor-core kernel, unchanged) | 753 t/s |
+| `q8_0` / `q8_0` | 41.7 → 43.8 t/s | |
+| `q8_0` / `vtq4_1` | 41.5 → 45.3 t/s | 669 → 705 t/s |
+| `ktq4_1` / `vtq4_1` | 38.9 → 46.0 t/s | 705 → 727 t/s |
+| `ktq2_1` / `vtq2_1` | 40.7 → 49.0 t/s | 724 → 730 t/s |
+| `q8_0` / `q4_0` ¹ | 18.4 → 43.9 t/s | |
+| `ktq4_1` / `q8_0` ¹ | 10.3 → 41.4 t/s | |
+| f16 / `vtq4_1` ¹ | 13.0 → 41.4 t/s | |
+
+¹ pairs that converted the whole cache to f16 at every decode step before; "after" measured with an earlier version
+of the kernel on 2026-10-13 (the final version is at least as fast on every pair measured with both).
+Qwen3.6-35B-A3B Q4_K_M on two RTX 2060 at 32k: `q8_0` / `q8_0` 69.8 → 70.4 t/s, `ktq4_1` / `q8_0` 41.3 → 70.9 t/s.
+
 
 ## Against upstream, two GPUs
 
@@ -53,8 +71,8 @@ Decode with a quantized KV cache at long context is where the fork is ahead (its
 `q8_0` and the TurboQuant types directly). Prefill with an f16 cache is within 1 % of upstream except on Gemma 4, which
 is 1.3 % behind without context and 2.3 % behind at 32k; the cause is not known yet.
 
-The fork's TurboQuant rows at 32k (same settings, 2026-10-13, after the KTQ decode change of that day; mean of two
-runs):
+The fork's TurboQuant rows at 32k (same settings, 2026-10-13, after the KTQ decode change of that day, before the
+GQA kernel change of 2026-10-14, see above; mean of two runs):
 
 | Model | `q8_0` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` prefill 32k |
 |---|---:|---:|---:|
