@@ -196,6 +196,38 @@ static void init_tensor_kq_mask(ggml_tensor * tensor, float min = -1.0f, float m
     ggml_backend_tensor_set(tensor, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
 }
 
+// a causal mask of the last ne1 queries over ne0 cells, as speculative decoding verifies them: query i sees the cells
+// [0, ne0 - (ne1 - 1 - i)*stride) with random values, -inf after; stride ne0/(2*ne1), so the first query sees about half
+// of the cells and whole tiles of it are -inf
+static void init_tensor_kq_mask_causal(ggml_tensor * tensor) {
+    GGML_ASSERT(tensor->type == GGML_TYPE_F16);
+
+    GGML_TENSOR_LOCALS(int64_t, ne, tensor, ne);
+
+    const int64_t stride = std::max<int64_t>(1, ne0/(2*ne1));
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+
+    std::vector<float>       data_f32(ne0*ne1*ne2*ne3);
+    std::vector<ggml_fp16_t> data_f16(ne0*ne1*ne2*ne3);
+    for (int64_t i3 = 0; i3 < ne3; i3++) {
+        for (int64_t i2 = 0; i2 < ne2; i2++) {
+            for (int64_t i1 = 0; i1 < ne1; i1++) {
+                const int64_t n_visible = std::max<int64_t>(1, ne0 - (ne1 - 1 - i1)*stride);
+                for (int64_t i0 = 0; i0 < ne0; i0++) {
+                    data_f32[((i3*ne2 + i2)*ne1 + i1)*ne0 + i0] = i0 < n_visible ? dis(gen) : -INFINITY;
+                }
+            }
+        }
+    }
+
+    ggml_fp32_to_fp16_row(data_f32.data(), data_f16.data(), ne0*ne1*ne2*ne3);
+
+    ggml_backend_tensor_set(tensor, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
+}
+
 // a mask with at most n_kv_max finite entries per row, at random columns, as a sparse attention builds it
 static void init_tensor_kq_mask_sparse(ggml_tensor * tensor, int64_t n_kv_max) {
     GGML_ASSERT(tensor->type == GGML_TYPE_F16);
@@ -7055,10 +7087,16 @@ struct test_flash_attn_ext : public test_case {
     // > 0: sparse mask with at most this many finite entries per row, passed on as the sparse hint
     const int64_t n_kv_max;
 
+    // causal mask (init_tensor_kq_mask_causal) instead of random values with random -inf blocks
+    const bool causal;
+
     std::string vars() override {
         std::string res = VARS_TO_STR14(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute);
         if (n_kv_max > 0) {
             res += "," + VAR_TO_STR(n_kv_max);
+        }
+        if (causal) {
+            res += "," + VAR_TO_STR(causal);
         }
         return res;
     }
@@ -7077,9 +7115,9 @@ struct test_flash_attn_ext : public test_case {
     test_flash_attn_ext(int64_t hsk = 128, int64_t hsv = 128, int64_t nh = 32, std::array<int64_t, 2> nr23 = {1, 1}, int64_t kv = 96, int64_t nb = 8,
                         bool mask = true, bool sinks = false, float max_bias = 0.0f, float logit_softcap = 0.0f, ggml_prec prec = GGML_PREC_F32,
                         ggml_type type_K = GGML_TYPE_F16, ggml_type type_V = GGML_TYPE_F16, std::array<int32_t, 4> permute = {0, 1, 2, 3},
-                        int64_t n_kv_max = 0)
+                        int64_t n_kv_max = 0, bool causal = false)
         : hsk(hsk), hsv(hsv), nh(nh), nr23(nr23), kv(kv), nb(nb), mask(mask), sinks(sinks), max_bias(max_bias), logit_softcap(logit_softcap), prec(prec),
-          type_K(type_K), type_V(type_V), permute(permute), n_kv_max(n_kv_max) {}
+          type_K(type_K), type_V(type_V), permute(permute), n_kv_max(n_kv_max), causal(causal) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         const int64_t hsk_padded = GGML_PAD(hsk, ggml_blck_size(type_K));
@@ -7154,6 +7192,8 @@ struct test_flash_attn_ext : public test_case {
             } else if (strcmp(t->name, "m") == 0) {
                 if (n_kv_max > 0) {
                     init_tensor_kq_mask_sparse(t, n_kv_max);
+                } else if (causal) {
+                    init_tensor_kq_mask_causal(t);
                 } else {
                     init_tensor_kq_mask(t);
                 }
@@ -9837,6 +9877,41 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                             GGML_PREC_F32, kv_types.first, kv_types.second));
             }
         }
+    }
+
+    // small batches of queries (speculative decoding verifies 2-16 at a time) with quantized caches: the tensor-core
+    // kernel with (query, head) columns, 16 per block while all queries and heads fit, else 32 and several query tiles
+    // (head 512: 16); causal mask, so that each column has its own mask row and some KV tiles are fully masked
+    for (int hs : {64, 128, 256, 512}) {
+        for (int gqa : {2, 4, 8, 16}) {
+            if (hs == 512 ? gqa < 8 : gqa > 8) {
+                continue; // head 512: GQA 8 and 16 (Gemma 4), the others: GQA 2, 4 and 8
+            }
+            for (int64_t nb : {2, 3, 4, 5, 8, 9, 16}) {
+                for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+                        {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_Q4_0, GGML_TYPE_Q4_0},
+                        {GGML_TYPE_Q5_0, GGML_TYPE_Q5_0}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},
+                        {GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1}, {GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1},
+                        {GGML_TYPE_F16, GGML_TYPE_VTQ4_1}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ4_1}}) {
+                    const bool ktq4 = kv_types.first == GGML_TYPE_KTQ4_1;
+                    if (hs == 512 && !ktq4 && kv_types != std::pair<ggml_type, ggml_type>{GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}) {
+                        continue;
+                    }
+                    for (float softcap : {0.0f, 10.0f}) {
+                        if (softcap != 0.0f && (!ktq4 || hs == 512)) {
+                            continue;
+                        }
+                        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {gqa, 1}, 1024, nb, true, false, 0, softcap,
+                                    GGML_PREC_F32, kv_types.first, kv_types.second, {0, 1, 2, 3}, 0, true));
+                    }
+                }
+            }
+        }
+    }
+    // with attention sinks (gpt-oss: head 64, GQA 8)
+    for (int64_t nb : {2, 5}) {
+        test_cases.emplace_back(new test_flash_attn_ext(64, 64, 2, {8, 1}, 1024, nb, true, true, 0, 0,
+                    GGML_PREC_F32, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1, {0, 1, 2, 3}, 0, true));
     }
 
     // prompt batches with a VTQ V next to a standard quantized K, and every KTQ K (split-dequant tensor-core path)
