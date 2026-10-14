@@ -71,16 +71,20 @@ Decode with a quantized KV cache at long context is where the fork is ahead (its
 `q8_0` and the TurboQuant types directly). Prefill with an f16 cache is within 1 % of upstream except on Gemma 4, which
 is 1.3 % behind without context and 2.3 % behind at 32k; the cause is not known yet.
 
-The fork's TurboQuant rows at 32k (same settings, 2026-10-13, after the KTQ decode change of that day, before the
-GQA kernel change of 2026-10-14, see above; mean of two runs):
+The fork's TurboQuant rows at 32k (same settings, 2026-10-14, after the GQA decode kernel change; mean of two runs,
+builds alternated with the rows of 2026-10-13, which are given in brackets where they differ by more than 1 %):
 
 | Model | `q8_0` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` prefill 32k |
 |---|---:|---:|---:|
-| Qwen3-4B-Instruct-2507 Q4_K_M | 42.8 | 39.9 | 1103 |
-| gpt-oss-20b MXFP4 | 59.6 | 60.9 | 1743 |
-| Gemma 4 12B Q4_K_M | 27.4 | 29.7 | 815 |
-| Qwen3.6-35B-A3B Q4_K_M | 69.0 | 67.6 | 1275 |
-| Qwen3.8-27B Q4_K_M | 15.0 | 14.7 | 424 |
+| Qwen3-4B-Instruct-2507 Q4_K_M | 46.1 (42.3) | 46.4 (39.5) | 1115 (1087) |
+| gpt-oss-20b MXFP4 | 58.2 | 60.1 | 1748 (1726) |
+| Gemma 4 12B Q4_K_M | 27.3 | 29.7 | 806 |
+| Qwen3.6-35B-A3B Q4_K_M | 69.6 | 66.9 | 1270 |
+| Qwen3.8-27B Q4_K_M | 15.2 | 14.7 | 426 |
+
+gpt-oss (attention sinks) is not covered by the GQA kernel. On Gemma 4 (mostly sliding-window layers), Qwen3.6-35B-A3B
+and Qwen3.8-27B (hybrid, few attention layers) attention over the cache is a small part of a decode step, so the
+change stays within noise there.
 
 KTQ K is staged in f16 during prefill and converted at the first decode step (about 0.1 s after a 16k prompt on one
 RTX 2060). `llama-bench` runs that conversion before it times a generation test; before 2026-10-13 it was counted in
