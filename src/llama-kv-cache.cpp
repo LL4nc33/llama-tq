@@ -153,10 +153,11 @@ llama_kv_cache::llama_kv_cache(
     const bool is_vtq2_type_v = GGML_TYPE_IS_VTQ_TRELLIS(type_v);
     const bool use_deferred_v = is_vtq2_type_v && !tq_no_deferred_v;
     (void) tq_deferred_v; // positive flag retained for backwards compat; opt-in is auto via VTQ_2 type
-    if (is_vtq2_type_v) {
-        // staging covers the prompt only: every decoded token still runs the Viterbi encoder
+    if (is_vtq2_type_v && !GGML_TYPE_IS_VTQ_TRELLIS_S(type_v)) {
+        // staging covers the prompt only: every decoded token still runs the Viterbi encoder (fast enough for the
+        // 12 state bits of vtq*_2s)
         LLAMA_LOG_WARN("%s: V cache type %s is a trellis type: its encoder runs for every new token, decode reaches only "
-                       "1-3 t/s; the codebook types vtq*_1 decode at full speed\n", __func__, ggml_type_name(type_v));
+                       "1-3 t/s; vtq*_2s (12 state bits) and the codebook types vtq*_1 decode much faster\n", __func__, ggml_type_name(type_v));
     }
 
     // create a context for each buffer type
@@ -352,9 +353,9 @@ llama_kv_cache::llama_kv_cache(
         if (GGML_TYPE_IS_VTQ_TRELLIS(eff_type_v) && hparams.n_embd_head_v(il) % ggml_blck_size(eff_type_v) != 0) {
             const ggml_type trellis_type = eff_type_v;
             switch (trellis_type) {
-                case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_3:                       eff_type_v = GGML_TYPE_VTQ2_1; break;
-                case GGML_TYPE_VTQ3_2: case GGML_TYPE_VTQ3_3: case GGML_TYPE_VTQ3_V8: eff_type_v = GGML_TYPE_VTQ3_1; break;
-                default:                                                           eff_type_v = GGML_TYPE_VTQ4_1; break;
+                case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_2S: case GGML_TYPE_VTQ2_3:                         eff_type_v = GGML_TYPE_VTQ2_1; break;
+                case GGML_TYPE_VTQ3_2: case GGML_TYPE_VTQ3_2S: case GGML_TYPE_VTQ3_3: case GGML_TYPE_VTQ3_V8: eff_type_v = GGML_TYPE_VTQ3_1; break;
+                default:                                                                                     eff_type_v = GGML_TYPE_VTQ4_1; break;
             }
             LLAMA_LOG_WARN("%s: layer %3d: head size %u is not a multiple of the %s block (%d), using %s\n", __func__, il,
                 hparams.n_embd_head_v(il), ggml_type_name(trellis_type), (int) ggml_blck_size(trellis_type),

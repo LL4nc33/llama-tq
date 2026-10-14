@@ -36,6 +36,9 @@ ggml_type type_from_name(const std::string & name) {
     if (n == "vtq2_2") return GGML_TYPE_VTQ2_2;
     if (n == "vtq3_2") return GGML_TYPE_VTQ3_2;
     if (n == "vtq4_2") return GGML_TYPE_VTQ4_2;
+    if (n == "vtq2_2s") return GGML_TYPE_VTQ2_2S;
+    if (n == "vtq3_2s") return GGML_TYPE_VTQ3_2S;
+    if (n == "vtq4_2s") return GGML_TYPE_VTQ4_2S;
     if (n == "vtq2_3") return GGML_TYPE_VTQ2_3;
     if (n == "vtq3_3") return GGML_TYPE_VTQ3_3;
     if (n == "vtq4_3") return GGML_TYPE_VTQ4_3;
@@ -197,9 +200,9 @@ std::vector<ggml_type> parse_override(const std::string & spec, int n_layer, std
 // bpw approximations for budget solver (block size 32)
 static float bpw_of(ggml_type t) {
     switch (t) {
-        case GGML_TYPE_VTQ2_2: return 34.0f * 8.0f / 32.0f; // 8.5
-        case GGML_TYPE_VTQ3_2: return 50.0f * 8.0f / 32.0f; // 12.5  -> actually 3.0625 bpw per value but matching block-level is fine for ranking
-        case GGML_TYPE_VTQ4_2: return 66.0f * 8.0f / 32.0f; // 16.5
+        case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_2S: return 34.0f * 8.0f / 32.0f; // 8.5
+        case GGML_TYPE_VTQ3_2: case GGML_TYPE_VTQ3_2S: return 50.0f * 8.0f / 32.0f; // 12.5  -> actually 3.0625 bpw per value but matching block-level is fine for ranking
+        case GGML_TYPE_VTQ4_2: case GGML_TYPE_VTQ4_2S: return 66.0f * 8.0f / 32.0f; // 16.5
         case GGML_TYPE_VTQ2_3: return 48.0f * 8.0f / 128.0f; // 3.0 bpw (block=128 samples)
         case GGML_TYPE_VTQ3_3: return 64.0f * 8.0f / 128.0f; // 4.0 bpw
         case GGML_TYPE_VTQ4_3: return 80.0f * 8.0f / 128.0f; // 5.0 bpw
@@ -212,14 +215,14 @@ static float bpw_of(ggml_type t) {
 // True bpw per element (block=32 samples)
 static float bpw_per_elem(ggml_type t) {
     switch (t) {
-        case GGML_TYPE_VTQ2_2: return 34.0f * 8.0f / 32.0f / 8.0f * 1.0f; // 1.0625 bytes / val is wrong
+        case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_2S: return 34.0f * 8.0f / 32.0f / 8.0f * 1.0f; // 1.0625 bytes / val is wrong
         default: break;
     }
     // simpler: 8 * nbytes_per_block / block_size
     switch (t) {
-        case GGML_TYPE_VTQ2_2: return (34.0f * 8.0f) / 32.0f; // 8.5
-        case GGML_TYPE_VTQ3_2: return (50.0f * 8.0f) / 32.0f; // 12.5
-        case GGML_TYPE_VTQ4_2: return (66.0f * 8.0f) / 32.0f; // 16.5
+        case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_2S: return (34.0f * 8.0f) / 32.0f; // 8.5
+        case GGML_TYPE_VTQ3_2: case GGML_TYPE_VTQ3_2S: return (50.0f * 8.0f) / 32.0f; // 12.5
+        case GGML_TYPE_VTQ4_2: case GGML_TYPE_VTQ4_2S: return (66.0f * 8.0f) / 32.0f; // 16.5
         case GGML_TYPE_VTQ2_3: return (48.0f * 8.0f) / 128.0f; // 3.00
         case GGML_TYPE_VTQ3_3: return (64.0f * 8.0f) / 128.0f; // 4.00
         case GGML_TYPE_VTQ4_3: return (80.0f * 8.0f) / 128.0f; // 5.00
