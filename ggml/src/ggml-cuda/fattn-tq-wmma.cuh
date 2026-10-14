@@ -37,13 +37,6 @@ namespace tq_wmma = nvcuda::wmma;
 #define GGML_CUDA_TQ_WMMA_MIN_BLOCKS 1
 #endif
 
-template <ggml_type type>
-static constexpr bool fattn_tq_wmma_supported() {
-    return type == GGML_TYPE_KTQ2_1 || type == GGML_TYPE_KTQ3_1 || type == GGML_TYPE_KTQ4_1 ||
-           type == GGML_TYPE_VTQ2_1 || type == GGML_TYPE_VTQ3_1 || type == GGML_TYPE_VTQ4_1 ||
-           type == GGML_TYPE_Q8_0   || type == GGML_TYPE_Q5_0   || type == GGML_TYPE_Q4_0   || type == GGML_TYPE_F16;
-}
-
 // dequantize rows [0, T) of a K/V tile (row stride nb bytes) to f16, row r at tile + r*ldt
 template <ggml_type type, int D, int T, int ldt, int nthreads>
 static __device__ __forceinline__ void fattn_tq_wmma_load_tile(

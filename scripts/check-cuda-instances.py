@@ -202,31 +202,40 @@ def check(macros, all_quants):
 
 
 def check_gqa():
-    """fattn-vec-gqa.cu references ggml_cuda_flash_attn_ext_vec_gqa_d<D, ncols>; template-instances/fattn-gqa-*.cu
-    define them. They are compiled in both modes."""
+    """fattn-vec-gqa.cu references ggml_cuda_flash_attn_ext_vec_gqa_d<D, ncols, type_K> for every K type that
+    DECL_FATTN_VEC_GQA_CASES_K(D, ncols) declares; template-instances/fattn-gqa-*.cu define them, one K type each.
+    They are compiled in both modes."""
     problems = []
+    header = strip_comments((CUDA / "fattn-vec-gqa.cuh").read_text())
+    macro = re.search(r"#define\s+DECL_FATTN_VEC_GQA_CASES_K\(D,\s*ncols\)(.*?)\n\n", header, re.S)
+    types = re.findall(r"DECL_FATTN_VEC_GQA_CASE\(\s*D\s*,\s*ncols\s*,\s*(GGML_TYPE_\w+)\s*\)", macro.group(1)) if macro else []
+    if not types:
+        problems.append("gqa: no K types found in DECL_FATTN_VEC_GQA_CASES_K")
     refs = {}
     for path in sorted(CUDA.glob("*.cu")):
         text = strip_comments(path.read_text())
-        for m in re.finditer(r"ggml_cuda_flash_attn_ext_vec_gqa_d\s*<\s*(\d+)\s*,\s*(\d+)\s*>", text):
-            refs.setdefault((int(m.group(1)), int(m.group(2))), []).append(path.name)
-    header = strip_comments((CUDA / "fattn-vec-gqa.cuh").read_text())
-    externs = {(int(d), int(n)) for d, n in re.findall(r"\bextern\s+DECL_FATTN_VEC_GQA_CASE\(\s*(\d+)\s*,\s*(\d+)\s*\)", header)}
+        for m in re.finditer(r"ggml_cuda_flash_attn_ext_vec_gqa_d\s*<\s*(\d+)\s*,\s*(\d+)\s*,", text):
+            for t in types:
+                refs.setdefault((int(m.group(1)), int(m.group(2)), t), []).append(path.name)
+    externs = {(int(d), int(n), t)
+               for d, n in re.findall(r"^\s*DECL_FATTN_VEC_GQA_CASES_K\(\s*(\d+)\s*,\s*(\d+)\s*\)", header, re.M)
+               for t in types}
     compiled = {}
     files = sorted(INSTANCES.glob("fattn-gqa*.cu"))
     for path in files:
         text = strip_comments(path.read_text())
-        for d, n in re.findall(r"(?<!extern )\bDECL_FATTN_VEC_GQA_CASE\(\s*(\d+)\s*,\s*(\d+)\s*\)", text):
-            compiled.setdefault((int(d), int(n)), []).append(path.name)
+        for d, n, t in re.findall(r"(?<!extern )\bDECL_FATTN_VEC_GQA_CASE\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(GGML_TYPE_\w+)\s*\)", text):
+            compiled.setdefault((int(d), int(n), t), []).append(path.name)
+    name = lambda key: f"D={key[0]} ncols={key[1]} {key[2]}"
     for key in sorted(set(refs) - externs):
-        problems.append(f"gqa: D={key[0]} ncols={key[1]} is referenced in {', '.join(refs[key])} but not declared extern")
+        problems.append(f"gqa: {name(key)} is referenced in {', '.join(sorted(set(refs[key])))} but not declared extern")
     for key, where in sorted(compiled.items()):
         if len(where) > 1:
-            problems.append(f"gqa: D={key[0]} ncols={key[1]} is defined in more than one file: {', '.join(where)}")
+            problems.append(f"gqa: {name(key)} is defined in more than one file: {', '.join(where)}")
     for key in sorted(set(refs) - set(compiled)):
-        problems.append(f"gqa: D={key[0]} ncols={key[1]} is referenced in {', '.join(refs[key])} but not compiled")
+        problems.append(f"gqa: {name(key)} is referenced in {', '.join(sorted(set(refs[key])))} but not compiled")
     for key in sorted(set(compiled) - set(refs)):
-        problems.append(f"gqa: D={key[0]} ncols={key[1]} is compiled in {', '.join(compiled[key])} but never referenced")
+        problems.append(f"gqa: {name(key)} is compiled in {', '.join(compiled[key])} but never referenced")
     print(f"gqa: {len(files)} instance files, {len(compiled)} instances compiled, {len(refs)} referenced")
     return problems
 
