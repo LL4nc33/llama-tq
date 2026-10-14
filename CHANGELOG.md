@@ -10,16 +10,21 @@
   `gated_delta_net` op takes the snapshot count as a parameter and writes the newest state snapshots without a padded
   input state, the snapshots reach the cache with one copy, and the batch splitter keeps the last `n_rs_seq + 1` tokens
   of a sequence in one ubatch (upstream #24086 and #25278). A context with rollback raises `n_ubatch` to at least
-  `n_rs_seq + 2`. Without speculative decoding nothing changes. Measured numbers follow.
+  `n_rs_seq + 2`. Without speculative decoding nothing changes. Qwen3.6-35B-A3B on two RTX 2060, 29k-token prompt,
+  n-gram speculation (draft max 8): prompt processing of the second and later requests 950 → 1560 t/s (`q8_0`) and
+  `ktq2_1` / `vtq2_1` 1282 (alternating 930/1630) → 1539 t/s, decode 80.4 → 82.9 t/s, same text; wall time of a
+  request with speculation 35.6 → 23.4 s (without it: 23.0 s). Writing the snapshots for every prompt ubatch costs
+  ~5 % prompt speed against a context without speculation. The n-gram modes also reserve output rows for a verify
+  batch instead of the whole batch, which shrinks the compute buffer of the output device (672 → 307 MiB).
 - **New V cache types `vtq2_2s`, `vtq3_2s`, `vtq4_2s`: the trellis with 12 state bits, fast enough for decode.** Same
   block layout and bits per value as `vtq{2,3,4}_2` (2.25 / 3.25 / 4.25 bpw, enums 59-61), but a 12-bit shift register
   (4096 states) instead of 16 bits (65536), so the Viterbi encoder, which runs for every new token, keeps its DP in
-  shared memory.
-  Qwen3-4B decodes at ~75 t/s with them against 1-2 t/s with `vtq*_2`. KL divergence (Qwen3-4B, 40 chunks, K f16):
-  `vtq4_2s` 0.00482, `vtq3_2s` 0.01014, `vtq2_2s` 0.0286, against `vtq3_2` 0.00889 and `vtq2_2` 0.02592 (16 state
-  bits) and `vtq4_1` 0.00514, `vtq3_1` 0.01197, `vtq2_1` 0.0471 (codebook). `vtq*_2`, `vtq*_3` and `vtq3_v8` keep 16
-  state bits and their format; the state bits are now a property of the type (the compile-time override of
-  `GGML_TRELLIS_L` used for the measurements is gone). The CUDA encoder workspace is allocated per state bit count (12 bits: 1 MiB per slot),
+  shared memory. Qwen3-4B (RTX 2060, `q8_0` K, tg32) decodes at 77.6 / 78.0 / 75.2 t/s with `vtq2_2s` / `vtq3_2s` /
+  `vtq4_2s` against 1-2 t/s with `vtq*_2` (`vtq3_1`: 89.1). KL divergence (Qwen3-4B, 40 chunks, K f16): `vtq4_2s`
+  0.00482, `vtq3_2s` 0.01014, `vtq2_2s` 0.0286, against `vtq3_2` 0.00889 and `vtq2_2` 0.02592 (16 state bits) and
+  `vtq4_1` 0.00514, `vtq3_1` 0.01197, `vtq2_1` 0.0471 (codebook). `vtq*_2`, `vtq*_3` and `vtq3_v8` keep 16 state bits
+  and their format; the state bits are now a property of the type (the compile-time override of `GGML_TRELLIS_L` used
+  for the measurements is gone). The CUDA encoder workspace is allocated per state bit count (12 bits: 1 MiB per slot),
   so the 12-bit types alone do not reserve the 536 MiB pool of the 16-bit types.
 
 ## 2026-10-14
