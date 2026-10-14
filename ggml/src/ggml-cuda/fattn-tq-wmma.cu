@@ -3,6 +3,11 @@
 // Tensor-core flash attention for quantized KV caches (fattn-tq-wmma.cuh). Returns false if the shape or the types
 // are not covered.
 
+// shortest cache (cells) from which one block of 17-32 columns runs here instead of converting the cache to f16. RTX
+// 2060, against the conversion: q8_0 +4-9 % at 8k, +10-15 % at 16k; ktq4_1/vtq4_1 -1 to +2 % at 8k, -1 to +5 % at
+// 16k; -3 % at 2k
+#define FATTN_TQ_WMMA_NC32_MIN_KV 8192
+
 static bool fattn_tq_wmma_enabled(const int device) {
     static const bool enabled = [] {
         const char * e = getenv("GGML_CUDA_TQ_WMMA");
@@ -37,9 +42,11 @@ static bool fattn_tq_wmma_dispatch(ggml_backend_cuda_context & ctx, ggml_tensor 
     }
 }
 
-// Small batches of queries (speculative decoding: 2-16) with a GQA ratio that divides the block width: the kernel
-// reads the quantized cache once per block instead of converting it to f16 for the MMA kernel every step. Also used
-// by ggml_cuda_flash_attn_ext_get_alloc_size: no f16 conversion buffer is reserved when this path runs.
+// Small batches of queries (speculative decoding) with a GQA ratio that divides the block width: the kernel reads the
+// quantized cache once per block instead of converting it to f16 for the MMA kernel every step. Only while all
+// (query, head) columns fit one block: a second block reads the cache again and loses to the conversion (RTX 2060,
+// 32k: 36 columns -25 %); 32 columns only on long caches (FATTN_TQ_WMMA_NC32_MIN_KV). Also used by
+// ggml_cuda_flash_attn_ext_get_alloc_size: no f16 conversion buffer is reserved when this path runs.
 bool ggml_cuda_flash_attn_ext_tq_wmma_batch(const int device, const ggml_tensor * dst) {
     const ggml_tensor * Q     = dst->src[0];
     const ggml_tensor * K     = dst->src[1];
@@ -60,6 +67,11 @@ bool ggml_cuda_flash_attn_ext_tq_wmma_batch(const int device, const ggml_tensor 
     if (gqa_ratio != 2 && gqa_ratio != 4 && gqa_ratio != 8 && gqa_ratio != 16) {
         return false;
     }
+    const int64_t ncols     = Q->ne[1]*gqa_ratio;
+    const int64_t ncols_max = Q->ne[0] == 512 ? 16 : 32;
+    if (ncols > ncols_max || (ncols > 16 && K->ne[1] < FATTN_TQ_WMMA_NC32_MIN_KV)) {
+        return false;
+    }
     return fattn_tq_wmma_has_case(Q->ne[0], K->type, V->type, false);
 }
 
@@ -73,10 +85,9 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     const int64_t D = Q->ne[0];
     const int gqa_ratio = Q->ne[2] / K->ne[2];
 
-    // 16 columns while all queries and their heads fit one block, else 32 (head 512: 16, more query tiles); more than
-    // 32 columns: several query tiles
+    // 16 columns while all queries and their heads fit, else 32 (head 512: always 16)
     if (ggml_cuda_flash_attn_ext_tq_wmma_batch(device, dst)) {
-        return fattn_tq_wmma_dispatch(ctx, dst, D, D == 512 || Q->ne[1]*gqa_ratio <= 16 ? 16 : 32);
+        return fattn_tq_wmma_dispatch(ctx, dst, D, Q->ne[1]*gqa_ratio <= 16 ? 16 : 32);
     }
 
     if (!fattn_tq_wmma_enabled(device)) {

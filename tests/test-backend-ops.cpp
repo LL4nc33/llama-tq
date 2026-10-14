@@ -9880,8 +9880,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     // small batches of queries (speculative decoding verifies 2-16 at a time) with quantized caches: the tensor-core
-    // kernel with (query, head) columns, 16 per block while all queries and heads fit, else 32 and several query tiles
-    // (head 512: 16); causal mask, so that each column has its own mask row and some KV tiles are fully masked
+    // kernel with (query, head) columns, one block of 16 (more columns: the f16 conversion path); causal mask, so that
+    // each column has its own mask row and some KV tiles are fully masked
     for (int hs : {64, 128, 256, 512}) {
         for (int gqa : {2, 4, 8, 16}) {
             if (hs == 512 ? gqa < 8 : gqa > 8) {
@@ -9904,6 +9904,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                         test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {gqa, 1}, 1024, nb, true, false, 0, softcap,
                                     GGML_PREC_F32, kv_types.first, kv_types.second, {0, 1, 2, 3}, 0, true));
                     }
+                }
+            }
+        }
+    }
+    // one block of 32 columns: only on caches of at least 8192 cells (FATTN_TQ_WMMA_NC32_MIN_KV)
+    for (int hs : {64, 128, 256}) {
+        for (int gqa : {2, 4, 8}) {
+            for (int64_t nb : {int64_t(16/gqa + 1), int64_t(32/gqa)}) {
+                for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+                        {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},
+                        {GGML_TYPE_Q8_0, GGML_TYPE_VTQ4_1}}) {
+                    test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {gqa, 1}, 8192, nb, true, false, 0, 0,
+                                GGML_PREC_F32, kv_types.first, kv_types.second, {0, 1, 2, 3}, 0, true));
                 }
             }
         }
