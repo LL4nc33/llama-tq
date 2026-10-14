@@ -9908,7 +9908,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             }
         }
     }
-    // one block of 32 columns: only on caches of at least 8192 cells (FATTN_TQ_WMMA_NC32_MIN_KV), not KTQ K at head 256
+    // one block of 32 columns: only on caches of at least 8192 cells (FATTN_TQ_WMMA_NC32_MIN_KV), not f16 K at head 256
     for (int hs : {64, 128, 256}) {
         for (int gqa : {2, 4, 8}) {
             for (int64_t nb : {int64_t(16/gqa + 1), int64_t(32/gqa)}) {
