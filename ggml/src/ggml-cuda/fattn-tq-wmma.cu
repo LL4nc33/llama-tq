@@ -5,7 +5,9 @@
 
 // shortest cache (cells) from which one block of 17-32 columns runs here instead of converting the cache to f16. RTX
 // 2060, against the conversion: q8_0 +4-9 % at 8k, +10-15 % at 16k; ktq4_1/vtq4_1 -1 to +2 % at 8k, -1 to +5 % at
-// 16k; -3 % at 2k
+// 16k; -3 % at 2k. Not with a KTQ K at head size 256: the 32-column tiles hold 16 rows, and the inverse Hadamard
+// transform of each tile costs more than the conversion saves (Qwen3.6-35B-A3B, 3-4 queries: -0.5 % at 4k to -4 % at
+// 32k; q8_0 +2-5 % at 32k)
 #define FATTN_TQ_WMMA_NC32_MIN_KV 8192
 
 static bool fattn_tq_wmma_enabled(const int device) {
@@ -69,7 +71,8 @@ bool ggml_cuda_flash_attn_ext_tq_wmma_batch(const int device, const ggml_tensor 
     }
     const int64_t ncols     = Q->ne[1]*gqa_ratio;
     const int64_t ncols_max = Q->ne[0] == 512 ? 16 : 32;
-    if (ncols > ncols_max || (ncols > 16 && K->ne[1] < FATTN_TQ_WMMA_NC32_MIN_KV)) {
+    if (ncols > ncols_max || (ncols > 16 && (K->ne[1] < FATTN_TQ_WMMA_NC32_MIN_KV ||
+                                             (Q->ne[0] == 256 && GGML_TYPE_IS_KTQ(K->type))))) {
         return false;
     }
     return fattn_tq_wmma_has_case(Q->ne[0], K->type, V->type, false);
