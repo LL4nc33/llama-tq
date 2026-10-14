@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-15
+
+- **Speculative decoding on hybrid models keeps one graph shape.** With n-gram (or MTP/draft) speculative decoding on
+  models with Gated DeltaNet layers (Qwen3.5/3.6), the recurrent layers built a different graph for single-token
+  decode, for each verify length and for prompt ubatches. Every change made the scheduler re-reserve the compute graph
+  and synchronize all backends; on two GPUs the prompt of every request after the first lost its pipeline overlap, and
+  decode reallocated whenever the verify length changed. Now every ubatch takes the same rollback path: the
+  `gated_delta_net` op takes the snapshot count as a parameter and writes the newest state snapshots without a padded
+  input state, the snapshots reach the cache with one copy, and the batch splitter keeps the last `n_rs_seq + 1` tokens
+  of a sequence in one ubatch (upstream #24086 and #25278). A context with rollback raises `n_ubatch` to at least
+  `n_rs_seq + 2`. Without speculative decoding nothing changes. Measured numbers follow.
+
 ## 2026-10-14
 
 - **Every common K/V pair decodes with the grouped-query kernel.** The GQA decode kernel (`fattn-vec-gqa.cu`) now takes
