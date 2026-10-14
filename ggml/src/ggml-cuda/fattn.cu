@@ -9,8 +9,10 @@
 
 // fattn-vec-gqa.cu: decode with a quantized KV cache, one block per GQA group
 bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
-// fattn-tq-wmma.cu: tensor-core decode for quantized KV (GGML_CUDA_TQ_WMMA=0 disables it)
+// fattn-tq-wmma.cu: tensor-core decode and small query batches for quantized KV (GGML_CUDA_TQ_WMMA=0 disables it)
 bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+// true if ggml_cuda_flash_attn_ext_tq_wmma takes this batch of queries (it reads the quantized cache directly)
+bool ggml_cuda_flash_attn_ext_tq_wmma_batch(int device, const ggml_tensor * dst);
 
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 // one list per group of ncols1 queries: a column is selected if any query of the group can see it
@@ -756,7 +758,10 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
     bool need_f16_K = false;
     bool need_f16_V = false;
 
-    switch (kernel) {
+    // small batches of queries with a quantized cache: no conversion (see ggml_cuda_flash_attn_ext)
+    const bool tq_wmma_batch = kernel != BEST_FATTN_KERNEL_NONE && ggml_cuda_flash_attn_ext_tq_wmma_batch(device, dst);
+
+    switch (tq_wmma_batch ? BEST_FATTN_KERNEL_NONE : kernel) {
         case BEST_FATTN_KERNEL_TILE:
         case BEST_FATTN_KERNEL_WMMA_F16:
         case BEST_FATTN_KERNEL_MMA_F16:
@@ -784,7 +789,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     // decode with quantized K/V and grouped-query attention: one block per GQA group beats the per-head VEC
     // kernel and the MMA kernel (which would first convert the whole cache to f16). The GQA kernel is faster than the
     // tensor-core one wherever it applies (Qwen3-4B, head 128, at 32k context: q4_0 49.1 vs 32.3 t/s, q5_0 43.7 vs
-    // 26.8; Qwen3.6-35B-A3B, head 256: +0.5-6.5 %, equal at 2k), so it goes first.
+    // 26.8; Qwen3.6-35B-A3B, head 256: +0.5-6.5 %, equal at 2k), so it goes first. The tensor-core kernel also takes
+    // small batches of queries (ggml_cuda_flash_attn_ext_tq_wmma_batch): they would convert the whole cache to f16
+    // every step otherwise.
     if (best != BEST_FATTN_KERNEL_NONE && (ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst) || ggml_cuda_flash_attn_ext_tq_wmma(ctx, dst))) {
         return;
     }

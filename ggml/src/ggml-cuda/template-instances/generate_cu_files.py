@@ -122,7 +122,8 @@ for head_size in [128, 256]:
                 f.write(SOURCE_FATTN_VEC_GQA.format(head_size=head_size, ncols=ncols, type_k=type_k))
 
 # tensor-core kernel for quantized caches (fattn-tq-wmma.cuh): one TU per head size and block width
-TQ_WMMA_CASES = [(64, 16), (128, 16), (256, 16), (512, 16)]
+# (32 columns for small batches of queries, not at head 512)
+TQ_WMMA_CASES = [(64, 16), (64, 32), (128, 16), (128, 32), (256, 16), (256, 32), (512, 16)]
 for head_size, ncols in TQ_WMMA_CASES:
     with open(f"fattn-tq-wmma-instance-d{head_size}-ncols{ncols}.cu", "w") as f:
         f.write(SOURCE_FATTN_TQ_WMMA.format(head_size=head_size, ncols=ncols))

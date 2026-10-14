@@ -2,12 +2,18 @@
 
 #include "fattn-vec-gqa.cuh"
 
-// Tensor-core decode kernel for quantized KV caches with grouped-query attention (GGML_CUDA_TQ_WMMA=0 disables it).
+// Tensor-core flash attention for quantized KV caches with grouped-query attention: decode and small batches of
+// queries (speculative decoding verifies 2-16 at a time). GGML_CUDA_TQ_WMMA=0 disables it.
 //
 // The GQA decode kernel (fattn-vec-gqa.cuh) reduces every K-row dot product across a warp with shuffles; that,
-// not memory bandwidth, bounds it. Here a block takes one KV head and the Q heads of its group as NC columns,
-// dequantizes tiles of T K/V rows to f16 in shared memory and computes S = K·Qᵀ and O += Vᵀ·P with WMMA.
+// not memory bandwidth, bounds it. Here a block takes one KV head and NC columns of (query, Q head of its group)
+// pairs, dequantizes tiles of T K/V rows to f16 in shared memory and computes S = K·Qᵀ and O += Vᵀ·P with WMMA.
+// Each K/V row is read once per block, a batch of queries no longer converts the whole cache to f16 first.
 // KTQ K stays in the rotated (Hadamard) domain: Q is rotated once (shared sign pattern, then the 32-point FWHT).
+//
+// Columns: if the GQA ratio G divides NC, the block takes NC/G consecutive queries with the G heads each (column c:
+// query q0 + c/G, head c%G of the group; launch_fattn<D, NC/G, G>). Otherwise one query and the G heads padded to NC
+// (launch_fattn<D, 1, NC>, decode only). Columns past the last query or head are computed with Q = 0 and dropped.
 //
 // The kernels are compiled in template-instances/fattn-tq-wmma-instance-*.cu, one TU per head size D and block width
 // NC; fattn-tq-wmma.cu dispatches.
@@ -145,8 +151,8 @@ static __global__ void flash_attn_ext_tq_wmma(
                             const int32_t ne31, const int32_t ne32, const int32_t ne33,
                             const int32_t nb31, const int32_t nb32, const int64_t nb33) {
 #if defined(FATTN_TQ_WMMA_AVAILABLE) && defined(FLASH_ATTN_AVAILABLE) && __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
-    GGML_UNUSED_VARS(KV_max, max_bias, m0, m1, n_head_log2, ne00, ne01, ne03, nb01,
-                     ne10, ne13, ne31, ne32, nb31, nb32);
+    GGML_UNUSED_VARS(KV_max, max_bias, m0, m1, n_head_log2, ne00, ne03,
+                     ne10, ne13, ne31, ne32, nb32);
 
     constexpr int nwarps   = GGML_CUDA_TQ_WMMA_NWARPS;
     constexpr int nthreads = nwarps*WARP_SIZE;
@@ -182,18 +188,25 @@ static __global__ void flash_attn_ext_tq_wmma(
     const int tid  = threadIdx.y*WARP_SIZE + threadIdx.x;
     const int warp = threadIdx.y;
 
-    const int gqa_ratio   = ne02 / ne12;
-    const int ntiles_gqa  = (gqa_ratio + NC - 1) / NC;
-    const int sequence    = blockIdx.z / (ntiles_gqa*ne12);
-    const int z           = blockIdx.z - sequence*ntiles_gqa*ne12;
-    const int kv_head     = z / ntiles_gqa;
-    const int head0       = kv_head*gqa_ratio + (z - kv_head*ntiles_gqa)*NC;
-    const int ncols_valid = min(NC, (kv_head + 1)*gqa_ratio - head0);
+    // column c: query q0 + c/cpq, Q head head0 + c%cpq (cpq columns per query, qpb queries per block)
+    const int gqa_ratio  = ne02 / ne12;
+    const int cpq        = NC % gqa_ratio == 0 ? gqa_ratio : NC;
+    const int qpb        = NC / cpq;
+    const int ntiles_gqa = (gqa_ratio + cpq - 1) / cpq;
+    const int sequence   = blockIdx.z / (ntiles_gqa*ne12);
+    const int z          = blockIdx.z - sequence*ntiles_gqa*ne12;
+    const int kv_head    = z / ntiles_gqa;
+    const int head0      = kv_head*gqa_ratio + (z - kv_head*ntiles_gqa)*cpq;
+    const int nheads     = min(cpq, (kv_head + 1)*gqa_ratio - head0); // valid heads per query
+    const int q0         = blockIdx.x*qpb;
+    const int nq         = min(qpb, int(ne01.z) - q0);                // valid queries
+    const auto col_valid = [&](const int c) { return c % cpq < nheads && c / cpq < nq; };
 
-    Q += nb03*sequence + nb02*head0;
     K += nb13*sequence + int64_t(nb12)*kv_head;
     V += nb23*sequence + int64_t(nb22)*kv_head;
-    const half * maskh = (const half *) (mask + nb33*(sequence % ne33));
+    // mask row of the column this thread works on in the softmax (invalid columns: row q0)
+    const int c_sm = tid / tpc;
+    const half * maskh = (const half *) (mask + nb33*(sequence % ne33) + int64_t(nb31)*(q0 + (col_valid(c_sm) ? c_sm / cpq : 0)));
 
     if constexpr (bits_K) {
         if (tid < (1 << bits_K)) {
@@ -212,10 +225,11 @@ static __global__ void flash_attn_ext_tq_wmma(
 
     // Q (scaled; KTQ: rotated into the Hadamard domain of the K blocks), warp w loads columns w, w + nwarps, ...
     for (int j = warp; j < NC; j += nwarps) {
-        const float * Q_j = (const float *) (Q + j*nb02);
+        const bool valid = col_valid(j);
+        const float * Q_j = (const float *) (Q + nb03*sequence + nb02*(head0 + j % cpq) + int64_t(nb01)*(q0 + j / cpq));
 #pragma unroll
         for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
-            float q = j < ncols_valid ? Q_j[bi*WARP_SIZE + threadIdx.x] * scale : 0.0f;
+            float q = valid ? Q_j[bi*WARP_SIZE + threadIdx.x] * scale : 0.0f;
             if constexpr (K_tq) {
                 q = ktq_cuda_fwht_warp(q * ktq_cuda_shared_sign(threadIdx.x));
             }
@@ -256,8 +270,9 @@ static __global__ void flash_attn_ext_tq_wmma(
         __syncthreads();
 
         // online softmax per column: tpc threads per column (consecutive lanes), rows sub, sub + tpc, ...
+        // masked (-inf) logits give p = 0; a column masked so far keeps m = -FLT_MAX/2, alpha = 1 and l = 0
         {
-            const int c   = tid / tpc;
+            const int c   = c_sm;
             const int sub = tid % tpc;
             float mx = -FLT_MAX/2.0f;
             for (int r = sub; r < T; r += tpc) {
@@ -353,8 +368,8 @@ static __global__ void flash_attn_ext_tq_wmma(
     if (sinks && blockIdx.y == 0) {
         if (tid < NC) {
             float alpha = 1.0f;
-            if (tid < ncols_valid) {
-                const float sink  = ((const float *) sinks)[head0 + tid];
+            if (col_valid(tid)) {
+                const float sink  = ((const float *) sinks)[head0 + tid % cpq];
                 const float m_new = fmaxf(sink, m_s[tid]);
                 alpha    = exp2f((m_s[tid] - m_new) * LOG2E);
                 l_s[tid] = l_s[tid]*alpha + exp2f((sink - m_new) * LOG2E);
@@ -369,19 +384,22 @@ static __global__ void flash_attn_ext_tq_wmma(
         }
     }
 
+    // dst row of a column: ((sequence*ne01 + query)*ne02 + head)*gridDim.y + blockIdx.y (flash_attn_combine_results)
+    const auto dst_row = [&](const int c) -> int64_t {
+        return int64_t((sequence*int(ne01.z) + q0 + c / cpq)*ne02 + head0 + c % cpq)*gridDim.y + blockIdx.y;
+    };
+    const int c_o = tid % NC; // the column of all O elements of this thread
+    if (col_valid(c_o)) {
+        const int64_t row = dst_row(c_o);
+        const float   l   = l_s[c_o];
 #pragma unroll
-    for (int i = 0; i < n_own; ++i) {
-        const int e = tid + i*nthreads;
-        const int d = e / NC;
-        const int c = e % NC;
-        if (c < ncols_valid) {
-            const int dst_row = (sequence*ne02 + head0 + c)*gridDim.y + blockIdx.y;
-            dst[dst_row*D + d] = gridDim.y == 1 ? O[i] / l_s[c] : O[i];
+        for (int i = 0; i < n_own; ++i) {
+            const int d = (tid + i*nthreads) / NC;
+            dst[row*D + d] = gridDim.y == 1 ? (l > 0.0f ? O[i] / l : 0.0f) : O[i];
         }
     }
-    if (gridDim.y != 1 && tid < ncols_valid) {
-        const int dst_row = (sequence*ne02 + head0 + tid)*gridDim.y + blockIdx.y;
-        dst_meta[dst_row] = make_float2(m_s[tid], l_s[tid]);
+    if (gridDim.y != 1 && tid < NC && col_valid(tid)) {
+        dst_meta[dst_row(tid)] = make_float2(m_s[tid], l_s[tid]);
     }
 #else
     GGML_UNUSED_VARS(Q, K, V, mask, sinks, KV_max, dst, dst_meta, scale,
@@ -397,56 +415,90 @@ static __global__ void flash_attn_ext_tq_wmma(
 #endif
 }
 
+// launch_fattn<D, ncols1, ncols2> sets the grid (x: tiles of ncols1 queries, z: tiles of ncols2 heads per KV head
+// and sequence) and the combination of the parallel KV blocks; ncols1*ncols2 == NC matches the column layout above.
+// No conversion to f16, no stream-K; KV_max (mask scan) stays off since these batches are below 1024 queries.
 template <int D, int NC, ggml_type type_K, ggml_type type_V>
 static void ggml_cuda_flash_attn_ext_tq_wmma_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+
     float logit_softcap;
     memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
     fattn_kernel_t fattn_kernel = logit_softcap == 0.0f ?
         flash_attn_ext_tq_wmma<D, NC, type_K, type_V, false> :
         flash_attn_ext_tq_wmma<D, NC, type_K, type_V, true>;
-    constexpr int T = GGML_CUDA_TQ_WMMA_T(D, NC);
-    launch_fattn<D, 1, NC>(ctx, dst, fattn_kernel, GGML_CUDA_TQ_WMMA_NWARPS, 0, T, false, false, false);
+    constexpr int nwarps = GGML_CUDA_TQ_WMMA_NWARPS;
+    constexpr int T      = GGML_CUDA_TQ_WMMA_T(D, NC);
+
+    // decode: one query, the heads of the group (padded if G does not divide 16)
+    if constexpr (NC == 16) {
+        if (Q->ne[1] == 1) {
+            launch_fattn<D, 1, 16>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false);
+            return;
+        }
+    }
+    switch (Q->ne[2] / K->ne[2]) {
+        case  2: launch_fattn<D, NC/ 2,  2>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
+        case  4: launch_fattn<D, NC/ 4,  4>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
+        case  8: launch_fattn<D, NC/ 8,  8>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
+        case 16: launch_fattn<D, NC/16, 16>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
+        default: GGML_ABORT("fatal error");
+    }
 }
 
-// The cases: X(D, type_K, type_V) for every head size and K/V pair the kernel is compiled for.
-// ggml_cuda_flash_attn_ext tries the GQA decode kernel first; at heads 128 and 256 this kernel only gets what that one
-// does not take (GQA ratio 2, a single KQ tile). Heads 64 (gpt-oss, with attention sinks) and 512 (Gemma 4 global
-// layers, GQA 8-16) have no GQA decode kernel. f16 K next to a VTQ V: KTQ K staged as f16 (deferred K, the default).
-#define FATTN_TQ_WMMA_CASES(X)                          \
-    X( 64, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)          \
-    X( 64, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)          \
-    X( 64, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)          \
-    X( 64, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)            \
-    X( 64, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1)          \
-    X( 64, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1)          \
-    X( 64, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)            \
-    X( 64, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1)          \
-    X( 64, GGML_TYPE_F16,    GGML_TYPE_VTQ3_1)          \
-    X( 64, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1)          \
-    X(128, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)          \
-    X(128, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)          \
-    X(128, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)            \
-    X(128, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)            \
-    X(128, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)          \
-    X(256, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)          \
-    X(256, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)          \
-    X(256, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)            \
-    X(256, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)            \
-    X(256, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)          \
-    X(256, GGML_TYPE_KTQ4_1, GGML_TYPE_F16)             \
-    X(256, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)             \
-    X(256, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1)          \
-    X(256, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1)          \
-    X(512, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)          \
-    X(512, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)          \
-    X(512, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)          \
-    X(512, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1)          \
-    X(512, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1)          \
-    X(512, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0)            \
-    X(512, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1)          \
-    X(512, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1)          \
-    X(512, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)            \
-    X(512, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)
+// The cases: X(D, type_K, type_V, decode) for every head size and K/V pair the kernel is compiled for. Batches of
+// queries take all of them; decode (one query) only those with decode = true: ggml_cuda_flash_attn_ext tries the GQA
+// decode kernel first, and at heads 128 and 256 this kernel only gets what that one does not take (GQA ratio 2, a
+// single KQ tile). Heads 64 (gpt-oss, with attention sinks) and 512 (Gemma 4 global layers, GQA 8-16) have no GQA
+// decode kernel. f16 K next to a VTQ V: KTQ K staged as f16 (deferred K, the default).
+#define FATTN_TQ_WMMA_CASES(X)                                \
+    X( 64, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1, true)          \
+    X( 64, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1, true)          \
+    X( 64, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1, true)          \
+    X( 64, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0,   true)          \
+    X( 64, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1, true)          \
+    X( 64, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1, true)          \
+    X( 64, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0,   false)         \
+    X( 64, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0,   true)          \
+    X( 64, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1, true)          \
+    X( 64, GGML_TYPE_F16,    GGML_TYPE_VTQ3_1, true)          \
+    X( 64, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1, true)          \
+    X(128, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1, true)          \
+    X(128, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1, true)          \
+    X(128, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1, true)          \
+    X(128, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0,   false)         \
+    X(128, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1, false)         \
+    X(128, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1, false)         \
+    X(128, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0,   true)          \
+    X(128, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0,   true)          \
+    X(128, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1, false)         \
+    X(128, GGML_TYPE_F16,    GGML_TYPE_VTQ3_1, false)         \
+    X(128, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1, false)         \
+    X(256, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1, true)          \
+    X(256, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1, true)          \
+    X(256, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1, true)          \
+    X(256, GGML_TYPE_KTQ4_1, GGML_TYPE_F16,    true)          \
+    X(256, GGML_TYPE_KTQ2_1, GGML_TYPE_F16,    true)          \
+    X(256, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0,   false)         \
+    X(256, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1, false)         \
+    X(256, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1, false)         \
+    X(256, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0,   true)          \
+    X(256, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0,   true)          \
+    X(256, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1, true)          \
+    X(256, GGML_TYPE_F16,    GGML_TYPE_VTQ3_1, false)         \
+    X(256, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1, true)          \
+    X(512, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1, true)          \
+    X(512, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1, true)          \
+    X(512, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1, true)          \
+    X(512, GGML_TYPE_Q8_0,   GGML_TYPE_Q8_0,   true)          \
+    X(512, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ4_1, true)          \
+    X(512, GGML_TYPE_Q8_0,   GGML_TYPE_VTQ2_1, true)          \
+    X(512, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0,   true)          \
+    X(512, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0,   true)          \
+    X(512, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1, true)          \
+    X(512, GGML_TYPE_F16,    GGML_TYPE_VTQ3_1, false)         \
+    X(512, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1, true)
 
 // runs the case of the K/V pair of dst at head size D with NC columns; false if there is none
 template <int D, int NC>
@@ -454,7 +506,7 @@ bool ggml_cuda_flash_attn_ext_tq_wmma_d(ggml_backend_cuda_context & ctx, ggml_te
     const ggml_tensor * K = dst->src[1];
     const ggml_tensor * V = dst->src[2];
 
-#define FATTN_TQ_WMMA_CASE_D(D_, type_K_, type_V_)                          \
+#define FATTN_TQ_WMMA_CASE_D(D_, type_K_, type_V_, decode_)                 \
     if constexpr (D == (D_)) {                                              \
         if (K->type == (type_K_) && V->type == (type_V_)) {                 \
             ggml_cuda_flash_attn_ext_tq_wmma_case<D, NC, type_K_, type_V_>(ctx, dst); \
@@ -471,7 +523,11 @@ bool ggml_cuda_flash_attn_ext_tq_wmma_d(ggml_backend_cuda_context & ctx, ggml_te
 #define DECL_FATTN_TQ_WMMA_CASE(D, NC) \
     template GGML_FATTN_VEC_GQA_USED bool ggml_cuda_flash_attn_ext_tq_wmma_d<D, NC>(ggml_backend_cuda_context & ctx, ggml_tensor * dst)
 
+// 32 columns: small batches of queries at heads 64-256
 extern DECL_FATTN_TQ_WMMA_CASE( 64, 16);
+extern DECL_FATTN_TQ_WMMA_CASE( 64, 32);
 extern DECL_FATTN_TQ_WMMA_CASE(128, 16);
+extern DECL_FATTN_TQ_WMMA_CASE(128, 32);
 extern DECL_FATTN_TQ_WMMA_CASE(256, 16);
+extern DECL_FATTN_TQ_WMMA_CASE(256, 32);
 extern DECL_FATTN_TQ_WMMA_CASE(512, 16);
