@@ -42,13 +42,14 @@ static constexpr __device__ int ggml_cuda_fattn_vec_vtq2_get_nthreads_device() {
 
 // Warp-cooperative decode of ONE VTQ_2 block (128 samples) into shmem.
 // Each lane (0..31) decodes 4 samples (128 / 32 = 4) using the O(1)
-// `vtq_state_at<K>` formula. Output is written as fp16 into `smem_row`
+// `vtq_state_at<K, L>` formula. Output is written as fp16 into `smem_row`
 // which points at the per-warp slot (size == QK_VTQ_TRELLIS halfs).
 //
 // Template params:
 //   block_t : block_vtq2_2 / block_vtq3_2 / block_vtq4_2
 //   K       : bits-per-sample (2, 3, 4)
-template <typename block_t, int K>
+//   L       : state bits (GGML_TRELLIS_L)
+template <typename block_t, int K, int L>
 static __device__ __forceinline__ void vtq2_block_warm(
         const block_t * __restrict__ x_block,
         half          * __restrict__ smem_row) {
@@ -74,7 +75,7 @@ static __device__ __forceinline__ void vtq2_block_warm(
     #pragma unroll
     for (int s = 0; s < 4; ++s) {
         const int il = lane * 4 + s;  // 0..127
-        const uint32_t state = vtq_state_at<K>(s0, qs, il + 1);
+        const uint32_t state = vtq_state_at<K, L>(s0, qs, il + 1);
         const float val = vtq_trellis_table_storage[state] * ds;
         smem_row[il] = __float2half(val);
     }
@@ -315,12 +316,13 @@ static __global__ void flash_attn_ext_vec_vtq2_cached(
     // --- Pick block type for cooperative warm based on type_V ---
     // Phase 3A1 only instantiates VTQ3_2. Other VTQ_2 types compile in for
     // completeness but never get launched (dispatch guards via ifdef).
-    using block_t =
-        typename std::conditional<type_V == GGML_TYPE_VTQ2_2, block_vtq2_2,
-        typename std::conditional<type_V == GGML_TYPE_VTQ3_2, block_vtq3_2,
-                                                              block_vtq4_2>::type>::type;
     constexpr int K_bits = (type_V == GGML_TYPE_VTQ2_2) ? 2
                          : (type_V == GGML_TYPE_VTQ3_2) ? 3 : 4;
+    constexpr int L_bits = GGML_TRELLIS_L;
+    using block_t =
+        typename std::conditional<K_bits == 2, block_vtq2_2,
+        typename std::conditional<K_bits == 3, block_vtq3_2,
+                                               block_vtq4_2>::type>::type;
     static_assert(D == 128, "Phase 3A1 supports D=128 only");
     static_assert(QK_VTQ_TRELLIS == 128, "Phase 3A1 assumes QK_VTQ_TRELLIS == 128");
 
@@ -415,7 +417,7 @@ static __global__ void flash_attn_ext_vec_vtq2_cached(
 
             // --- Warm: warp-cooperative decode of 128 samples into smem_V_cache[warpid] ---
             const block_t * x_block = (const block_t *) (V + k*nb21);
-            vtq2_block_warm<block_t, K_bits>(x_block, smem_V_cache[threadIdx.y]);
+            vtq2_block_warm<block_t, K_bits, L_bits>(x_block, smem_V_cache[threadIdx.y]);
             __syncwarp();
 
             // --- Consume: read decoded fp16 from shmem ---

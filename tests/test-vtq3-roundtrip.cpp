@@ -177,11 +177,11 @@ static double run_vtq3(int K, const std::vector<float> & x,
     uint16_t start_state = 0;
     float    d           = 0.0f;
     std::vector<uint8_t> qs((size_t) N * K / 8, 0);
-    ggml_trellis_encode_group(x_masked.data(), K, &start_state, &d, qs.data());
+    ggml_trellis_encode_group(x_masked.data(), K, GGML_TRELLIS_L, &start_state, &d, qs.data());
 
     // Step 4: trellis decode.
     std::vector<float> y(N, 0.0f);
-    ggml_trellis_decode_group(start_state, K, d, qs.data(), y.data());
+    ggml_trellis_decode_group(start_state, K, GGML_TRELLIS_L, d, qs.data(), y.data());
 
     // Step 5: apply outliers.
     ggml_trellis_outliers_apply(out_pos.data(), outlier_val_h.data(), K_OUT, y.data());
@@ -210,10 +210,10 @@ static double run_vtq2_baseline(int K, const std::vector<float> & x) {
     uint16_t start_state = 0;
     float    d           = 0.0f;
     std::vector<uint8_t> qs((size_t) N * K / 8, 0);
-    ggml_trellis_encode_group(x.data(), K, &start_state, &d, qs.data());
+    ggml_trellis_encode_group(x.data(), K, GGML_TRELLIS_L, &start_state, &d, qs.data());
 
     std::vector<float> y(N, 0.0f);
-    ggml_trellis_decode_group(start_state, K, d, qs.data(), y.data());
+    ggml_trellis_decode_group(start_state, K, GGML_TRELLIS_L, d, qs.data(), y.data());
 
     return mse(x, y);
 }

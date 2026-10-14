@@ -708,7 +708,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ2_2) {
-        vtq_cuda_encode_set_rows<idx_t, block_vtq2_2, 2>(
+        vtq_cuda_encode_set_rows<idx_t, block_vtq2_2, 2, GGML_TRELLIS_L>(
             src0_d, src1_d, (block_vtq2_2*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -718,7 +718,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ3_2) {
-        vtq_cuda_encode_set_rows<idx_t, block_vtq3_2, 3>(
+        vtq_cuda_encode_set_rows<idx_t, block_vtq3_2, 3, GGML_TRELLIS_L>(
             src0_d, src1_d, (block_vtq3_2*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -728,7 +728,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ4_2) {
-        vtq_cuda_encode_set_rows<idx_t, block_vtq4_2, 4>(
+        vtq_cuda_encode_set_rows<idx_t, block_vtq4_2, 4, GGML_TRELLIS_L>(
             src0_d, src1_d, (block_vtq4_2*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -738,7 +738,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ2_3) {
-        vtq_cuda_encode_set_rows<idx_t, block_vtq2_3, 2, VTQ_OUTLIER_K>(
+        vtq_cuda_encode_set_rows<idx_t, block_vtq2_3, 2, GGML_TRELLIS_L, VTQ_OUTLIER_K>(
             src0_d, src1_d, (block_vtq2_3*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -748,7 +748,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ3_3) {
-        vtq_cuda_encode_set_rows<idx_t, block_vtq3_3, 3, VTQ_OUTLIER_K>(
+        vtq_cuda_encode_set_rows<idx_t, block_vtq3_3, 3, GGML_TRELLIS_L, VTQ_OUTLIER_K>(
             src0_d, src1_d, (block_vtq3_3*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -758,7 +758,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ4_3) {
-        vtq_cuda_encode_set_rows<idx_t, block_vtq4_3, 4, VTQ_OUTLIER_K>(
+        vtq_cuda_encode_set_rows<idx_t, block_vtq4_3, 4, GGML_TRELLIS_L, VTQ_OUTLIER_K>(
             src0_d, src1_d, (block_vtq4_3*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,
@@ -768,7 +768,7 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             stream
         );
     } else if (dst->type == GGML_TYPE_VTQ3_V8) {
-        vtq_cuda_encode_set_rows<idx_t, block_vtq3_v8, 3, VTQ_OUTLIER_K_V8>(
+        vtq_cuda_encode_set_rows<idx_t, block_vtq3_v8, 3, GGML_TRELLIS_L, VTQ_OUTLIER_K_V8>(
             src0_d, src1_d, (block_vtq3_v8*)dst->data,
             ne00, ne01, ne02, ne03,
             ne10, ne11, ne12, ne13,

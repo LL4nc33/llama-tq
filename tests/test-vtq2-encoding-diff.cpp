@@ -63,7 +63,7 @@ int main(int argc, char ** argv) {
         std::vector<uint8_t> qs(qs_bytes, 0);
         uint16_t start_state = 0;
         float    d           = 0.0f;
-        ggml_trellis_encode_group(x.data(), K, &start_state, &d, qs.data());
+        ggml_trellis_encode_group(x.data(), K, GGML_TRELLIS_L, &start_state, &d, qs.data());
         printf("\n=== K=%d ===  start_state=0x%04x  d=%.6f  qs_bytes=%d\n",
                K, start_state, d, qs_bytes);
         hex_dump("  qs", qs.data(), qs_bytes);
@@ -148,7 +148,7 @@ int main(int argc, char ** argv) {
     // ---------- Decode roundtrip MSE: should improve with K ----------
     auto decode_and_mse = [&](int K, uint16_t s, float d, const std::vector<uint8_t>& qs) {
         std::vector<float> y(N);
-        ggml_trellis_decode_group(s, K, d, qs.data(), y.data());
+        ggml_trellis_decode_group(s, K, GGML_TRELLIS_L, d, qs.data(), y.data());
         double mse = 0.0;
         for (int i = 0; i < N; ++i) {
             double e = (double)x[i] - (double)y[i];

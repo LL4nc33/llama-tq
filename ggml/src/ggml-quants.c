@@ -6324,7 +6324,7 @@ void quantize_row_vtq2_2_ref(const float * GGML_RESTRICT x, block_vtq2_2 * GGML_
     const int nb = k / QK_VTQ_TRELLIS;
     for (int i = 0; i < nb; i++) {
         float d;
-        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 2,
+        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 2, GGML_TRELLIS_L,
                                   &y[i].start_state, &d, y[i].qs);
         y[i].d = GGML_FP32_TO_FP16(d);
     }
@@ -6335,7 +6335,7 @@ void quantize_row_vtq3_2_ref(const float * GGML_RESTRICT x, block_vtq3_2 * GGML_
     const int nb = k / QK_VTQ_TRELLIS;
     for (int i = 0; i < nb; i++) {
         float d;
-        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 3,
+        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 3, GGML_TRELLIS_L,
                                   &y[i].start_state, &d, y[i].qs);
         y[i].d = GGML_FP32_TO_FP16(d);
     }
@@ -6346,7 +6346,7 @@ void quantize_row_vtq4_2_ref(const float * GGML_RESTRICT x, block_vtq4_2 * GGML_
     const int nb = k / QK_VTQ_TRELLIS;
     for (int i = 0; i < nb; i++) {
         float d;
-        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 4,
+        ggml_trellis_encode_group(x + i * QK_VTQ_TRELLIS, 4, GGML_TRELLIS_L,
                                   &y[i].start_state, &d, y[i].qs);
         y[i].d = GGML_FP32_TO_FP16(d);
     }
@@ -6357,7 +6357,7 @@ void dequantize_row_vtq2_2(const block_vtq2_2 * GGML_RESTRICT x, float * GGML_RE
     const int nb = k / QK_VTQ_TRELLIS;
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
-        ggml_trellis_decode_group(x[i].start_state, 2, d, x[i].qs,
+        ggml_trellis_decode_group(x[i].start_state, 2, GGML_TRELLIS_L, d, x[i].qs,
                                   y + i * QK_VTQ_TRELLIS);
     }
 }
@@ -6367,7 +6367,7 @@ void dequantize_row_vtq3_2(const block_vtq3_2 * GGML_RESTRICT x, float * GGML_RE
     const int nb = k / QK_VTQ_TRELLIS;
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
-        ggml_trellis_decode_group(x[i].start_state, 3, d, x[i].qs,
+        ggml_trellis_decode_group(x[i].start_state, 3, GGML_TRELLIS_L, d, x[i].qs,
                                   y + i * QK_VTQ_TRELLIS);
     }
 }
@@ -6377,7 +6377,7 @@ void dequantize_row_vtq4_2(const block_vtq4_2 * GGML_RESTRICT x, float * GGML_RE
     const int nb = k / QK_VTQ_TRELLIS;
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
-        ggml_trellis_decode_group(x[i].start_state, 4, d, x[i].qs,
+        ggml_trellis_decode_group(x[i].start_state, 4, GGML_TRELLIS_L, d, x[i].qs,
                                   y + i * QK_VTQ_TRELLIS);
     }
 }
@@ -6405,7 +6405,7 @@ void quantize_row_vtq2_3_ref(const float * GGML_RESTRICT x, block_vtq2_3 * GGML_
             y[i].outlier_val[j] = GGML_FP32_TO_FP16(out_val_fp32[j]);
         }
         float d;
-        ggml_trellis_encode_group(x_masked, 2, &y[i].start_state, &d, y[i].qs);
+        ggml_trellis_encode_group(x_masked, 2, GGML_TRELLIS_L, &y[i].start_state, &d, y[i].qs);
         y[i].d = GGML_FP32_TO_FP16(d);
     }
 }
@@ -6422,7 +6422,7 @@ void quantize_row_vtq3_3_ref(const float * GGML_RESTRICT x, block_vtq3_3 * GGML_
             y[i].outlier_val[j] = GGML_FP32_TO_FP16(out_val_fp32[j]);
         }
         float d;
-        ggml_trellis_encode_group(x_masked, 3, &y[i].start_state, &d, y[i].qs);
+        ggml_trellis_encode_group(x_masked, 3, GGML_TRELLIS_L, &y[i].start_state, &d, y[i].qs);
         y[i].d = GGML_FP32_TO_FP16(d);
     }
 }
@@ -6439,7 +6439,7 @@ void quantize_row_vtq4_3_ref(const float * GGML_RESTRICT x, block_vtq4_3 * GGML_
             y[i].outlier_val[j] = GGML_FP32_TO_FP16(out_val_fp32[j]);
         }
         float d;
-        ggml_trellis_encode_group(x_masked, 4, &y[i].start_state, &d, y[i].qs);
+        ggml_trellis_encode_group(x_masked, 4, GGML_TRELLIS_L, &y[i].start_state, &d, y[i].qs);
         y[i].d = GGML_FP32_TO_FP16(d);
     }
 }
@@ -6450,7 +6450,7 @@ void dequantize_row_vtq2_3(const block_vtq2_3 * GGML_RESTRICT x, float * GGML_RE
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
         float * yi = y + i * QK_VTQ_TRELLIS;
-        ggml_trellis_decode_group(x[i].start_state, 2, d, x[i].qs, yi);
+        ggml_trellis_decode_group(x[i].start_state, 2, GGML_TRELLIS_L, d, x[i].qs, yi);
         ggml_trellis_outliers_apply(x[i].outlier_pos,
                                     (const ggml_fp16_t *) x[i].outlier_val,
                                     VTQ_OUTLIER_K, yi);
@@ -6463,7 +6463,7 @@ void dequantize_row_vtq3_3(const block_vtq3_3 * GGML_RESTRICT x, float * GGML_RE
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
         float * yi = y + i * QK_VTQ_TRELLIS;
-        ggml_trellis_decode_group(x[i].start_state, 3, d, x[i].qs, yi);
+        ggml_trellis_decode_group(x[i].start_state, 3, GGML_TRELLIS_L, d, x[i].qs, yi);
         ggml_trellis_outliers_apply(x[i].outlier_pos,
                                     (const ggml_fp16_t *) x[i].outlier_val,
                                     VTQ_OUTLIER_K, yi);
@@ -6476,7 +6476,7 @@ void dequantize_row_vtq4_3(const block_vtq4_3 * GGML_RESTRICT x, float * GGML_RE
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
         float * yi = y + i * QK_VTQ_TRELLIS;
-        ggml_trellis_decode_group(x[i].start_state, 4, d, x[i].qs, yi);
+        ggml_trellis_decode_group(x[i].start_state, 4, GGML_TRELLIS_L, d, x[i].qs, yi);
         ggml_trellis_outliers_apply(x[i].outlier_pos,
                                     (const ggml_fp16_t *) x[i].outlier_val,
                                     VTQ_OUTLIER_K, yi);
@@ -6500,7 +6500,7 @@ void quantize_row_vtq3_v8_ref(const float * GGML_RESTRICT x, block_vtq3_v8 * GGM
             y[i].outlier_val[j] = GGML_FP32_TO_FP16(out_val_fp32[j]);
         }
         float d;
-        ggml_trellis_encode_group(x_masked, 3, &y[i].start_state, &d, y[i].qs);
+        ggml_trellis_encode_group(x_masked, 3, GGML_TRELLIS_L, &y[i].start_state, &d, y[i].qs);
         y[i].d = GGML_FP32_TO_FP16(d);
     }
 }
@@ -6511,7 +6511,7 @@ void dequantize_row_vtq3_v8(const block_vtq3_v8 * GGML_RESTRICT x, float * GGML_
     for (int i = 0; i < nb; i++) {
         const float d = GGML_FP16_TO_FP32(x[i].d);
         float * yi = y + i * QK_VTQ_TRELLIS;
-        ggml_trellis_decode_group(x[i].start_state, 3, d, x[i].qs, yi);
+        ggml_trellis_decode_group(x[i].start_state, 3, GGML_TRELLIS_L, d, x[i].qs, yi);
         ggml_trellis_outliers_apply(x[i].outlier_pos,
                                     (const ggml_fp16_t *) x[i].outlier_val,
                                     VTQ_OUTLIER_K_V8, yi);

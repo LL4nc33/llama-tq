@@ -1,15 +1,13 @@
-// Trellis v2 shared code for VTQ{2,3,4}_2 KV-cache quant types.
+// Trellis v2 shared code for the trellis KV-cache quant types (vtq{2,3,4}_2, vtq{2,3,4}_3, vtq3_v8).
 //
 // Bitshift trellis (QTIP arXiv:2406.11235, little-endian emit):
 //   state_i = (state_{i-1} >> K) | (bits_i << (L-K))    (mod 2^L)
 // Decoder: iterative shift register + TABLE (inverse-Gaussian CDF) LUT.
 // Encoder: full Viterbi DP over 2^L states, group-level (joint path).
 //
-// Fixed Phase-1 lockings:
-//   L = 16  (state bits)  — 64 KiB LUT
-//   G = 1 block per ggml-block (ggml block == one Trellis group of 512 samples)
-//
-// Only K varies: 2, 3, 4 → VTQ2_2, VTQ3_2, VTQ4_2 ggml types.
+// One ggml block == one trellis group of QK_GROUP samples. The state bits L are a parameter of the encoder and
+// decoder; all types use L = 16 (65536 states).
+// K (code bits per sample) varies with the type: 2, 3, 4.
 
 #pragma once
 
@@ -22,14 +20,12 @@
 extern "C" {
 #endif
 
-// state bits; overridable at build time for format experiments (start_state holds up to 16 bits)
 // scale experiment: 0 = decoded block keeps the norm of x, 1 = unbiased (projection of the decoded block onto x equals x)
 #ifndef GGML_TRELLIS_UNBIASED_SCALE
 #define GGML_TRELLIS_UNBIASED_SCALE 0
 #endif
-#ifndef GGML_TRELLIS_L
-#define GGML_TRELLIS_L        16
-#endif
+// state bits (start_state holds up to 16 bits)
+#define GGML_TRELLIS_L        16  // vtq*_2, vtq*_3, vtq3_v8
 #define GGML_TRELLIS_QK_GROUP 128  // samples per ggml-block (task #143: was 256)
 // 256 divides typical V-cache row sizes (head_dim * n_head_kv / tp):
 //   Qwen3.5-27B:  128*2 = 256     (exactly)
@@ -38,23 +34,25 @@ extern "C" {
 //   Mistral-7B:   128*8 = 1024    (divisible)
 // A value of 512 would fail for head_dim=256 models (common).
 
-// Returns pointer to lazy-initialized 2^L inverse-Gaussian-CDF LUT.
+// Returns pointer to lazy-initialized 2^GGML_TRELLIS_L inverse-Gaussian-CDF LUT.
+// The code of a state depends only on the state, so the first 2^L entries are the table for L state bits.
 // Thread-safe first init via atomic flag; subsequent calls are free.
 GGML_API const float * ggml_trellis_table(void);
 
-// Encode `QK_GROUP` float samples into `start_state` (L bits) +
+// Encode `QK_GROUP` float samples into `start_state` (L bits, L <= GGML_TRELLIS_L) +
 // `qs_bytes` packed emitted bits. Uses full Viterbi over 2^L states.
 // Returns the reconstructed group L2 norm (encoder will scale so that
 // decoded magnitude matches x's magnitude).
 //
 // Output:
-//   *out_start_state : 16-bit open-start state chosen by Viterbi
+//   *out_start_state : L-bit open-start state chosen by Viterbi
 //   *out_d           : scale such that decode * (1/sqrt(QK_GROUP)) * d
 //                      matches x. Stored as fp32; caller converts to fp16.
 //   qs[0 .. (QK_GROUP*K + 7)/8 - 1] : packed emitted bits (little-endian)
 GGML_API void ggml_trellis_encode_group(
     const float * x,       // QK_GROUP input samples
     int           K,       // code bits (2, 3, or 4)
+    int           L,       // state bits (at most GGML_TRELLIS_L)
     uint16_t    * out_start_state,
     float       * out_d,
     uint8_t     * qs);     // caller ensures capacity QK_GROUP*K/8 bytes
@@ -65,6 +63,7 @@ GGML_API void ggml_trellis_encode_group(
 GGML_API void ggml_trellis_decode_group(
     uint16_t        start_state,
     int             K,
+    int             L,
     float           d,
     const uint8_t * qs,
     float         * y);    // QK_GROUP output samples

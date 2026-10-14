@@ -59,7 +59,7 @@ static double inv_norm_cdf(double p) {
             ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1.0);
 }
 
-// --- LUT: 2^16 = 65536 entries × 4 bytes = 256 KiB ---
+// --- LUT: 2^16 = 65536 entries × 4 bytes = 256 KiB, the first 2^L entries serve L < 16 ---
 // Thread-safe lazy init: the first thread sees g_table_ready=0, fills the
 // table, then publishes the ready flag. Subsequent threads spin until ready.
 static float g_table[1u << GGML_TRELLIS_L];
@@ -115,8 +115,7 @@ static inline uint32_t read_bits_le(const uint8_t * qs, int qs_bytes, int bit_of
 
 // --- Decoder: iterative shift register ---
 void ggml_trellis_decode_group(
-    uint16_t start_state, int K, float d, const uint8_t * qs, float * y) {
-    const int L = GGML_TRELLIS_L;
+    uint16_t start_state, int K, int L, float d, const uint8_t * qs, float * y) {
     const int N = GGML_TRELLIS_QK_GROUP;
     const int qs_bytes = (N * K + 7) / 8;
     const float cb_scale = 1.0f / sqrtf((float)N);
@@ -171,12 +170,12 @@ static int get_beam_width(void) {
 
 // --- Encoder: Viterbi DP over 2^L states (optionally beam-pruned) ---
 // Memory: O(N · 2^L) for backtrack + O(2^L) for 2 DP rows.
-//   L=16, N=256: 256·65536·4 = 64 MiB backtrack. Heavy but only at quant-time.
+//   L=16, N=128: 128·65536·2 = 16 MiB backtrack (L=12: 1 MiB). Heavy but only at quant-time.
 // Beam pruning cuts CPU time proportional to S/beam_width.
 void ggml_trellis_encode_group(
-    const float * x, int K,
+    const float * x, int K, int L,
     uint16_t * out_start_state, float * out_d, uint8_t * qs) {
-    const int L = GGML_TRELLIS_L;
+    GGML_ASSERT(L > K && L <= GGML_TRELLIS_L);
     const int N = GGML_TRELLIS_QK_GROUP;
     const uint32_t S = 1u << L;
     const uint32_t Kmask = (1u << K) - 1u;

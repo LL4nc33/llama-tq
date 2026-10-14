@@ -1,12 +1,16 @@
 // Trellis v2 CUDA encoder (full Viterbi, no pruning).
 //
-// 1 CUDA block == 1 trellis block (N=QK_VTQ_TRELLIS=128 samples, S=2^16=65536 states).
+// Two kernels, chosen by the state bits L of the type (vtq_cuda_encode_set_rows):
+//   L <= 14: k_vtq_encode_trellis_smem below, DP rows in shared memory.
+//   L = 16 (vtq*_2, vtq*_3, vtq3_v8): k_vtq_encode_trellis_set_rows, DP rows in global memory, described here.
+//
+// 1 CUDA block == 1 trellis block (N=QK_VTQ_TRELLIS=128 samples, S=2^L states).
 // VTQ_ENC_THREADS=256 threads per CUDA block.
 //
 // RECEIVER-SIDE DP (Trick 6): each thread owns 256 "next" states
 // (stride-256 sharding). At every DP step, per-next we gather the 2^K
 // candidate prev states via the deterministic inverse of the bit-shift
-// trellis: prev = ((next << K) | e) & 0xFFFF for e in [0, 2^K). The min
+// trellis: prev = ((next << K) | e) & (S-1) for e in [0, 2^K). The min
 // is computed in private registers and committed to dp_next[next] with a
 // single coalesced store — no atomics. The backtrack winner (prev index
 // giving the min) is written to bt[step*S + next].
@@ -50,8 +54,6 @@
 // Was 256 prior to task #143; OOB-wrote 32-64 bytes into next-block headers,
 // corrupting all VTQ_2 / VTQ_3 PPL measurements (see blog 2026-04-25).
 #define VTQ_ENC_N QK_VTQ_TRELLIS
-#define VTQ_ENC_L GGML_TRELLIS_L
-#define VTQ_ENC_S (1u << VTQ_ENC_L)
 
 struct vtq_encode_workspace {
     float    * dp_cur;
@@ -60,7 +62,8 @@ struct vtq_encode_workspace {
     int        pool_slots;
 };
 
-const vtq_encode_workspace * vtq_get_encode_workspace(cudaStream_t stream);
+// the workspace pool for the encoder of L state bits on the current device, allocated on first use
+const vtq_encode_workspace * vtq_get_encode_workspace(int L);
 void vtq_free_encode_workspace(void);
 
 // Source and destination block of flat trellis block i (see k_vtq_encode_trellis_set_rows for the layout).
@@ -141,13 +144,13 @@ static __device__ __forceinline__ void vtq_enc_pick_outliers(float * xn, block_t
 
 // One warp: packs the emitted bits of the state path states[0..N] and stores start state and block scale. Each lane
 // assembles whole bytes of qs, so the block is written once instead of bit by bit.
-template <typename block_t, int K>
+template <typename block_t, int K, int L>
 static __device__ __forceinline__ void vtq_enc_emit(
         const uint16_t * states, const float * xn, const float norm, const float cb_scale, block_t * dst_block,
         const int lane) {
     constexpr int      N        = VTQ_ENC_N;
     constexpr uint32_t Kmask    = (1u << K) - 1u;
-    constexpr int      kshift   = VTQ_ENC_L - K;
+    constexpr int      kshift   = L - K;
     constexpr int      qs_bytes = (N * K + 7) / 8;
 
     float recon_sq = 0.0f;
@@ -193,7 +196,7 @@ static __device__ __forceinline__ void vtq_enc_emit(
 // Other threads read resolved pointers from shared memory.
 // N_OUT > 0 (vtq*_3, vtq3_v8): the N_OUT largest |x| of a block are stored in fp16 next to the trellis and zeroed
 // before the encode, as in ggml_trellis_outliers_pick on the CPU.
-template <typename block_t, typename idx_t, int K, int N_OUT>
+template <typename block_t, typename idx_t, int K, int L, int N_OUT>
 __global__ void k_vtq_encode_trellis_set_rows(
         const float * __restrict__ src0,
         const idx_t * __restrict__ src1,
@@ -224,8 +227,9 @@ __global__ void k_vtq_encode_trellis_set_rows(
         const int64_t                 wave_block_offset)
 {
     constexpr int      N      = VTQ_ENC_N;
-    constexpr uint32_t S      = VTQ_ENC_S;
+    constexpr uint32_t S      = 1u << L;
     constexpr uint32_t Kmask  = (1u << K) - 1u;
+    static_assert(L <= 16, "the backtrack stores states in 16 bits");
 
     const int     tid = threadIdx.x;
     const int64_t i   = wave_block_offset + (int64_t)blockIdx.x;
@@ -311,13 +315,13 @@ __global__ void k_vtq_encode_trellis_set_rows(
     // 3) Viterbi DP — receiver-side (atomic-free).
     //
     // For each `next`, gather the 2^K incoming edges:
-    //   prev = ((next << K) | e) & 0xFFFF  for e in [0, 2^K)
+    //   prev = ((next << K) | e) & (S-1)  for e in [0, 2^K)
     // The code/cost-delta depends only on `next` (not prev), so we compute
     // it once per next and reuse across the 2^K candidates.
     //
     // Tie-break: sender-side packed atomicMin keeps the lowest prev on ties.
     // Here prev values for fixed next are consecutive: prev = base + e where
-    // base = (next << K) & 0xFFFF, so iterating e=0..2^K-1 with strict `<`
+    // base = (next << K) & (S-1), so iterating e=0..2^K-1 with strict `<`
     // keeps e=0 (lowest prev) on ties — matches sender-side.
     //
     // Unreachable prev states carry cost = FLT_MAX from the previous step;
@@ -330,7 +334,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
 
         for (uint32_t next = tid; next < S; next += VTQ_ENC_THREADS) {
             // LUT read is coalesced across a warp (adjacent tids → adjacent next).
-            // Do NOT use __ldg: LUT is 256 KiB, 5x larger than Turing's 48 KiB RO
+            // Do NOT use __ldg: LUT is 256 KiB at L = 16, 5x larger than Turing's 48 KiB RO
             // cache per SM — goes through L2 instead (~100% hit after warmup).
             const float code = vtq_trellis_table_storage[next] * cb_scale;
             const float diff = xi - code;
@@ -400,7 +404,7 @@ __global__ void k_vtq_encode_trellis_set_rows(
     }
     __syncthreads();
     if (tid < WARP_SIZE) {
-        vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block, tid);
+        vtq_enc_emit<block_t, K, L>(s_states, s_xn, norm, cb_scale, dst_block, tid);
     }
 }
 
@@ -419,12 +423,12 @@ __global__ void k_vtq_encode_trellis_set_rows(
 #define VTQ_ENC_SMEM_THREADS 512
 #define VTQ_ENC_SMEM_MAX_S   16384 // a thread keeps S/512 codes in registers
 
-template <int K>
+template <int K, int L>
 static constexpr __host__ __device__ int vtq_enc_smem_threads() {
-    return (VTQ_ENC_S >> K) < VTQ_ENC_SMEM_THREADS ? (int) (VTQ_ENC_S >> K) : VTQ_ENC_SMEM_THREADS;
+    return (1 << (L - K)) < VTQ_ENC_SMEM_THREADS ? 1 << (L - K) : VTQ_ENC_SMEM_THREADS;
 }
 
-template <typename block_t, typename idx_t, int K, int N_OUT>
+template <typename block_t, typename idx_t, int K, int L, int N_OUT>
 __launch_bounds__(VTQ_ENC_SMEM_THREADS, 1)
 __global__ void k_vtq_encode_trellis_smem(
         const float * __restrict__ src0, const idx_t * __restrict__ src1, block_t * __restrict__ dst, const int64_t ne_total,
@@ -433,8 +437,8 @@ __global__ void k_vtq_encode_trellis_smem(
         const uint3 ne00, const uint3 ne01, const uint3 ne02, const uint3 ne11_fd, const uint3 ne12_fd,
         uint8_t * __restrict__ ws_bt) {
     constexpr int      N   = VTQ_ENC_N;
-    constexpr uint32_t S   = VTQ_ENC_S;
-    constexpr int      NT  = vtq_enc_smem_threads<K>();
+    constexpr uint32_t S   = 1u << L;
+    constexpr int      NT  = vtq_enc_smem_threads<K, L>();
     constexpr int      NE  = 1 << K;              // predecessors per butterfly
     constexpr int      NG  = S / NE;              // butterflies
     constexpr int      GPT = (NG + NT - 1) / NT;  // butterflies per thread
@@ -614,14 +618,14 @@ __global__ void k_vtq_encode_trellis_smem(
 
         // 6) emit (one warp)
         if (warp == 0) {
-            vtq_enc_emit<block_t, K>(s_states, s_xn, norm, cb_scale, dst_block, lane);
+            vtq_enc_emit<block_t, K, L>(s_states, s_xn, norm, cb_scale, dst_block, lane);
         }
         __syncthreads();
     }
 }
 
-// Host-side launcher that mirrors set_rows_cuda_pq signature.
-template <typename idx_t, typename block_t, int K, int N_OUT = 0>
+// Host-side launcher that mirrors set_rows_cuda_pq signature. L: state bits of the type.
+template <typename idx_t, typename block_t, int K, int L, int N_OUT = 0>
 static void vtq_cuda_encode_set_rows(
         const float * src0_d, const idx_t * src1_d, block_t * dst_d,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
@@ -636,7 +640,7 @@ static void vtq_cuda_encode_set_rows(
     if (ne_total == 0 || ne00 <= 0 || ne01 <= 0 || ne02 <= 0 || ne11 <= 0 || ne12 <= 0) return;
 
     GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
-    const vtq_encode_workspace * ws = vtq_get_encode_workspace(stream);
+    const vtq_encode_workspace * ws = vtq_get_encode_workspace(L);
     const int pool_slots = ws->pool_slots;
 
     const int64_t s01 = nb01 / sizeof(float);
@@ -655,35 +659,36 @@ static void vtq_cuda_encode_set_rows(
     const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
     const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
-    if constexpr (VTQ_ENC_S <= VTQ_ENC_SMEM_MAX_S) {
+    constexpr int64_t S = 1 << L;
+    if constexpr (S <= VTQ_ENC_SMEM_MAX_S) {
         // one launch, each CUDA block keeps one workspace slot (N * S/2^K bytes of backtrack) and walks over trellis blocks
-        const int64_t slot_bytes = (int64_t) VTQ_ENC_N * (VTQ_ENC_S >> K);
-        const int     nblocks    = (int) std::min<int64_t>(ne_total, (int64_t) pool_slots * (int64_t) sizeof(uint16_t) * VTQ_ENC_N * VTQ_ENC_S / slot_bytes);
-        k_vtq_encode_trellis_smem<block_t, idx_t, K, N_OUT><<<nblocks, vtq_enc_smem_threads<K>(), 0, stream>>>(
+        const int64_t slot_bytes = (int64_t) VTQ_ENC_N * (S >> K);
+        const int     nblocks    = (int) std::min<int64_t>(ne_total, (int64_t) pool_slots * (int64_t) sizeof(uint16_t) * VTQ_ENC_N * S / slot_bytes);
+        k_vtq_encode_trellis_smem<block_t, idx_t, K, L, N_OUT><<<nblocks, vtq_enc_smem_threads<K, L>(), 0, stream>>>(
             src0_d, src1_d, dst_d, ne_total, s01, s02, s03, s10, s11, s12, s1, s2, s3,
             ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd, (uint8_t *) ws->bt);
-        return;
-    }
+    } else {
+        // global-memory DP: waves of pool_slots CUDA blocks, one trellis block each
+        const int64_t num_waves = (ne_total + pool_slots - 1) / pool_slots;
+        for (int64_t w = 0; w < num_waves; w++) {
+            const int64_t wave_start = w * pool_slots;
+            const int64_t remaining  = ne_total - wave_start;
+            const int     wave_n     = (int)((remaining < pool_slots) ? remaining : pool_slots);
 
-    const int64_t num_waves = (ne_total + pool_slots - 1) / pool_slots;
-    for (int64_t w = 0; w < num_waves; w++) {
-        const int64_t wave_start = w * pool_slots;
-        const int64_t remaining  = ne_total - wave_start;
-        const int     wave_n     = (int)((remaining < pool_slots) ? remaining : pool_slots);
+            dim3 grid(wave_n, 1, 1);
+            dim3 block(VTQ_ENC_THREADS, 1, 1);
 
-        dim3 grid(wave_n, 1, 1);
-        dim3 block(VTQ_ENC_THREADS, 1, 1);
+            k_vtq_encode_trellis_set_rows<block_t, idx_t, K, L, N_OUT><<<grid, block, 0, stream>>>(
+                src0_d, src1_d, dst_d, ne_total,
+                ne10, ne11, ne12, ne13,
+                s01, s02, s03, s10, s11, s12, s1, s2, s3,
+                ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd,
+                ws->dp_cur, ws->dp_next, ws->bt,
+                pool_slots, wave_start);
 
-        k_vtq_encode_trellis_set_rows<block_t, idx_t, K, N_OUT><<<grid, block, 0, stream>>>(
-            src0_d, src1_d, dst_d, ne_total,
-            ne10, ne11, ne12, ne13,
-            s01, s02, s03, s10, s11, s12, s1, s2, s3,
-            ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd,
-            ws->dp_cur, ws->dp_next, ws->bt,
-            pool_slots, wave_start);
-
-        if (num_waves > 1) {
-            CUDA_CHECK(cudaStreamSynchronize(stream));
+            if (num_waves > 1) {
+                CUDA_CHECK(cudaStreamSynchronize(stream));
+            }
         }
     }
 }

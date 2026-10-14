@@ -5,7 +5,8 @@
 #include "ggml-common.h"
 #include "../ggml-trellis.h"  // ggml_trellis_table() host accessor
 
-// Trellis v2 CUDA decoders + dequantize kernels for VTQ{2,3,4}_2.
+// Trellis v2 CUDA decoders + dequantize kernels for the trellis types. The decoders take the state bits L as a
+// template parameter (GGML_TRELLIS_L for all types).
 // See ggml-trellis.h for the algorithmic description (shift register + LUT).
 //
 // Strategy:
@@ -22,13 +23,13 @@
 
 // QK_VTQ_TRELLIS now defined in ggml/src/ggml-common.h (task #143: halved to 128).
 // This file previously redefined it to 256, which was a silent stale value.
-#define VTQ_TRELLIS_L  GGML_TRELLIS_L
 
 // Trellis LUT: one table per device in global memory (trellis.cu), reached through a pointer in constant memory
 // that every TU holds for itself. A TU binds its pointer before its first launch on a device
 // (GGML_CUDA_INIT_TRELLIS_TABLE_IMPL). A single extern __device__ table would need relocatable device code for the
 // whole backend, which costs registers and load scheduling in every kernel (the q8_0 flash attention decode kernel
-// ran at half speed on Turing).
+// ran at half speed on Turing). The table has 2^GGML_TRELLIS_L entries; the first 2^L of them are the table for L
+// state bits, so all trellis types share it.
 static __constant__ const float * vtq_trellis_table_storage;
 
 // the device copy of ggml_trellis_table() for this device, created on first use
@@ -47,12 +48,12 @@ const float * ggml_cuda_trellis_table_device(int device);
         }                                                                                      \
     } while (0)
 
-// Decode one block: sequential shift register, 256 samples.
-template <int K>
+// Decode one block: sequential shift register, QK_VTQ_TRELLIS samples.
+template <int K, int L>
 __device__ __forceinline__
 void trellis_decode_block(uint16_t start_state, float d, const uint8_t * qs, float * y) {
+    static_assert(L > K && L <= GGML_TRELLIS_L, "bad trellis state bits");
     constexpr int N = QK_VTQ_TRELLIS;
-    constexpr int L = VTQ_TRELLIS_L;
     constexpr uint32_t Lmask = (1u << L) - 1u;
     constexpr uint32_t Kmask = (1u << K) - 1u;
     const float cb_scale = rsqrtf((float)N);
@@ -94,7 +95,7 @@ void trellis_decode_block(uint16_t start_state, float d, const uint8_t * qs, flo
 // OUTLIER_K parameterizes the outlier count: 4 for VTQ_3 family
 // (vtq2_3/vtq3_3/vtq4_3), 2 for VTQ3_V8 (TurboQuant v8). Defaults to
 // VTQ_OUTLIER_K=4 to preserve existing call sites.
-template <typename block_t, int K, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
+template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
 static __global__ void k_dequantize_trellis(const void * __restrict__ vx, dst_t * __restrict__ y,
                                              const int64_t ne, const int64_t nb) {
     const int64_t ib = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -102,7 +103,7 @@ static __global__ void k_dequantize_trellis(const void * __restrict__ vx, dst_t 
     const block_t * x = (const block_t *) vx;
 
     float decoded[QK_VTQ_TRELLIS];
-    trellis_decode_block<K>(x[ib].start_state, (float)x[ib].d, x[ib].qs, decoded);
+    trellis_decode_block<K, L>(x[ib].start_state, (float)x[ib].d, x[ib].qs, decoded);
 
     if constexpr (WITH_OUTLIERS) {
         // Overwrite OUTLIER_K outlier positions with stored fp16 values.
@@ -121,47 +122,47 @@ static __global__ void k_dequantize_trellis(const void * __restrict__ vx, dst_t 
     }
 }
 
-template <typename block_t, int K, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
+template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
 static void trellis_dequantize_row_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
     GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
     const int64_t nb = (ne + QK_VTQ_TRELLIS - 1) / QK_VTQ_TRELLIS;
     const int threads = 128;
     const int blocks = (int)((nb + threads - 1) / threads);
-    k_dequantize_trellis<block_t, K, dst_t, WITH_OUTLIERS, OUTLIER_K><<<blocks, threads, 0, stream>>>(vx, y, ne, nb);
+    k_dequantize_trellis<block_t, K, L, dst_t, WITH_OUTLIERS, OUTLIER_K><<<blocks, threads, 0, stream>>>(vx, y, ne, nb);
 }
 
 // Concrete wrappers matching convert.cu dispatcher signature
 template <typename dst_t>
 static void dequantize_row_vtq2_2_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    trellis_dequantize_row_cuda<block_vtq2_2, 2>(vx, y, ne, stream);
+    trellis_dequantize_row_cuda<block_vtq2_2, 2, GGML_TRELLIS_L, dst_t>(vx, y, ne, stream);
 }
 template <typename dst_t>
 static void dequantize_row_vtq3_2_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    trellis_dequantize_row_cuda<block_vtq3_2, 3>(vx, y, ne, stream);
+    trellis_dequantize_row_cuda<block_vtq3_2, 3, GGML_TRELLIS_L, dst_t>(vx, y, ne, stream);
 }
 template <typename dst_t>
 static void dequantize_row_vtq4_2_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    trellis_dequantize_row_cuda<block_vtq4_2, 4>(vx, y, ne, stream);
+    trellis_dequantize_row_cuda<block_vtq4_2, 4, GGML_TRELLIS_L, dst_t>(vx, y, ne, stream);
 }
 
 // VTQ_3 family: trellis decode + 4-position fp16 outlier overlay.
 template <typename dst_t>
 static void dequantize_row_vtq2_3_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    trellis_dequantize_row_cuda<block_vtq2_3, 2, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne, stream);
+    trellis_dequantize_row_cuda<block_vtq2_3, 2, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne, stream);
 }
 template <typename dst_t>
 static void dequantize_row_vtq3_3_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    trellis_dequantize_row_cuda<block_vtq3_3, 3, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne, stream);
+    trellis_dequantize_row_cuda<block_vtq3_3, 3, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne, stream);
 }
 template <typename dst_t>
 static void dequantize_row_vtq4_3_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    trellis_dequantize_row_cuda<block_vtq4_3, 4, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne, stream);
+    trellis_dequantize_row_cuda<block_vtq4_3, 4, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne, stream);
 }
 
 // VTQ3_V8 (TurboQuant v8): trellis-3bit + VTQ_OUTLIER_K_V8=2 outliers (3.625 bpw).
 template <typename dst_t>
 static void dequantize_row_vtq3_v8_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
-    trellis_dequantize_row_cuda<block_vtq3_v8, 3, dst_t, /*WITH_OUTLIERS=*/true, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, y, ne, stream);
+    trellis_dequantize_row_cuda<block_vtq3_v8, 3, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, y, ne, stream);
 }
 
 // ============================================================
@@ -176,7 +177,7 @@ static void dequantize_row_vtq3_v8_cuda(const void * vx, dst_t * y, const int64_
 // no thread parallelism within a block. That's OK for V-cache
 // dequant: thousands of blocks per layer × multiple layers gives
 // plenty of grid-level parallelism to saturate the GPU.
-template <typename block_t, int K, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
+template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
 static __global__ void k_dequantize_trellis_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
         const int64_t ne00, const int64_t ne01,
         const int64_t ne0203, const uint3 ne02_fdv,
@@ -196,7 +197,7 @@ static __global__ void k_dequantize_trellis_nc(const void * __restrict__ vx, dst
             const int64_t ib = ibx0 + ib_in_row;
 
             if (tid == 0) {
-                trellis_decode_block<K>(x[ib].start_state, (float)x[ib].d, x[ib].qs, decoded);
+                trellis_decode_block<K, L>(x[ib].start_state, (float)x[ib].d, x[ib].qs, decoded);
                 if constexpr (WITH_OUTLIERS) {
                     // Overwrite OUTLIER_K outlier positions with stored fp16 values.
                     #pragma unroll
@@ -219,7 +220,7 @@ static __global__ void k_dequantize_trellis_nc(const void * __restrict__ vx, dst
     }
 }
 
-template <typename block_t, int K, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
+template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
 static void trellis_dequantize_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
@@ -229,7 +230,7 @@ static void trellis_dequantize_nc_cuda(const void * vx, dst_t * y,
     const int64_t ne0203 = ne02*ne03;
     const uint3 ne02_fdv = init_fastdiv_values(ne02);
     const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    k_dequantize_trellis_nc<block_t, K, dst_t, WITH_OUTLIERS, OUTLIER_K><<<num_blocks, 128, 0, stream>>>(
+    k_dequantize_trellis_nc<block_t, K, L, dst_t, WITH_OUTLIERS, OUTLIER_K><<<num_blocks, 128, 0, stream>>>(
         vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
 }
 
@@ -237,19 +238,19 @@ template <typename dst_t>
 static void dequantize_block_vtq2_2_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    trellis_dequantize_nc_cuda<block_vtq2_2, 2>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    trellis_dequantize_nc_cuda<block_vtq2_2, 2, GGML_TRELLIS_L, dst_t>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
 static void dequantize_block_vtq3_2_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    trellis_dequantize_nc_cuda<block_vtq3_2, 3>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    trellis_dequantize_nc_cuda<block_vtq3_2, 3, GGML_TRELLIS_L, dst_t>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
 static void dequantize_block_vtq4_2_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    trellis_dequantize_nc_cuda<block_vtq4_2, 4>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    trellis_dequantize_nc_cuda<block_vtq4_2, 4, GGML_TRELLIS_L, dst_t>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 
 // VTQ_3 family NC variants: trellis decode + 4-position fp16 outlier overlay.
@@ -257,19 +258,19 @@ template <typename dst_t>
 static void dequantize_block_vtq2_3_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    trellis_dequantize_nc_cuda<block_vtq2_3, 2, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    trellis_dequantize_nc_cuda<block_vtq2_3, 2, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
 static void dequantize_block_vtq3_3_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    trellis_dequantize_nc_cuda<block_vtq3_3, 3, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    trellis_dequantize_nc_cuda<block_vtq3_3, 3, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
 static void dequantize_block_vtq4_3_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    trellis_dequantize_nc_cuda<block_vtq4_3, 4, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    trellis_dequantize_nc_cuda<block_vtq4_3, 4, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 
 // VTQ3_V8 (TurboQuant v8): trellis-3bit + VTQ_OUTLIER_K_V8=2 outliers (3.625 bpw).
@@ -277,7 +278,7 @@ template <typename dst_t>
 static void dequantize_block_vtq3_v8_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    trellis_dequantize_nc_cuda<block_vtq3_v8, 3, dst_t, /*WITH_OUTLIERS=*/true, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    trellis_dequantize_nc_cuda<block_vtq3_v8, 3, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 
 // ============================================================
@@ -299,11 +300,10 @@ static void dequantize_block_vtq3_v8_nc_cuda(const void * vx, dst_t * y,
 // O(N^2) when called N/ne times for a full block. Acceptable for
 // D <= 256 (Turing) but inefficient for larger heads. Ship after
 // correctness validation; optimize to shmem cache in Phase-2d.
-template <int K>
+template <int K, int L>
 __device__ __forceinline__
 float trellis_decode_element(uint16_t start_state, float d, const uint8_t * qs, int j) {
     constexpr int N = QK_VTQ_TRELLIS;
-    constexpr int L = VTQ_TRELLIS_L;
     constexpr uint32_t Lmask = (1u << L) - 1u;
     constexpr uint32_t Kmask = (1u << K) - 1u;
     const float cb_scale = rsqrtf((float)N);

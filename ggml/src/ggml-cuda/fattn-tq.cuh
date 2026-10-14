@@ -165,7 +165,7 @@ static __device__ __forceinline__ void dequantize_V_vtq4_1(const void * __restri
 //
 // The decoder is a shift register; random access to element `i0`
 // requires replaying from start_state. We use the per-element
-// variant `trellis_decode_element<K>` from trellis.cuh. This is
+// variant `trellis_decode_element<K, L>` from trellis.cuh. This is
 // O(i0) per element — fine for D<=256 heads, inefficient for larger.
 //
 // See trellis.cuh for the optimal Strategy A (warp-shmem block cache).
@@ -176,7 +176,7 @@ static __device__ __forceinline__ void dequantize_V_vtq4_1(const void * __restri
 //
 // Insight (from QTIP decoder, arXiv:2406.11235): the shift register state
 // after i updates is just an L-bit sliding window over the concatenated
-// stream `[start_state low L bits || qs bits]`. Read 16 bits from
+// stream `[start_state low L bits || qs bits]`. Read L bits from
 // position i*K — that IS state(i+1) after the post-update LUT lookup.
 //
 // Equivalence proof sketch:
@@ -187,12 +187,11 @@ static __device__ __forceinline__ void dequantize_V_vtq4_1(const void * __restri
 //
 // This makes each sample O(1) instead of O(i), eliminating the main
 // bottleneck that made VTQ_2 FA-vec TG 26x slower than f16.
-template <int K>
+template <int K, int L>
 static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8_t * qs, int i) {
     // Bit position in the combined [s0 || qs] stream where the state window
     // for sample i starts. After i shift-updates, the window is bits [i*K..i*K+L-1].
     const int stream_bit = i * K;
-    constexpr int L = VTQ_TRELLIS_L;
 
     if (stream_bit + L <= L) {
         // Trivial case, should not happen for i>=1
@@ -211,7 +210,7 @@ static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8
         return lo | (hi << from_ss);
     }
 
-    // Window fully in qs. Read 16 consecutive bits from qs starting at
+    // Window fully in qs. Read L consecutive bits from qs starting at
     // bit position (stream_bit - L).
     const int qs_bit = stream_bit - L;
     const int byte   = qs_bit >> 3;
@@ -223,7 +222,7 @@ static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8
     return (w >> shift) & ((1u << L) - 1u);
 }
 
-template <typename block_t, int K, typename T, int ne>
+template <typename block_t, int K, int L, typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_t * x = (const block_t *) vx;
     const int64_t ib = i0 / QK_VTQ_TRELLIS;
@@ -251,7 +250,7 @@ static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restric
     // Direct O(1) per-sample decode — no shift-register replay.
     #pragma unroll
     for (int l = 0; l < ne; ++l) {
-        const uint32_t state = vtq_state_at<K>(s0, qs, il + l + 1);
+        const uint32_t state = vtq_state_at<K, L>(s0, qs, il + l + 1);
         const float val = vtq_trellis_table_storage[state] * ds;
         if constexpr (std::is_same_v<T, half>) {
             ((half *) dst)[l] = __float2half(val);
@@ -263,17 +262,17 @@ static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restric
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq2_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq2_2, 2, T, ne>(vx, dst, i0);
+    dequantize_V_vtq_2<block_vtq2_2, 2, GGML_TRELLIS_L, T, ne>(vx, dst, i0);
 }
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq3_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq3_2, 3, T, ne>(vx, dst, i0);
+    dequantize_V_vtq_2<block_vtq3_2, 3, GGML_TRELLIS_L, T, ne>(vx, dst, i0);
 }
 
 template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq4_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq4_2, 4, T, ne>(vx, dst, i0);
+    dequantize_V_vtq_2<block_vtq4_2, 4, GGML_TRELLIS_L, T, ne>(vx, dst, i0);
 }
 
 // VTQ_3 family — same trellis backbone as VTQ_2 plus OUTLIER_K fp16
@@ -320,7 +319,7 @@ static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restric
     #pragma unroll
     for (int l = 0; l < ne; ++l) {
         const int pos = il + l;
-        const uint32_t state = vtq_state_at<K>(s0, qs, pos + 1);
+        const uint32_t state = vtq_state_at<K, GGML_TRELLIS_L>(s0, qs, pos + 1);
         float val = vtq_trellis_table_storage[state] * ds;
         // Outlier patch — at most one of the OUTLIER_K positions matches.
         #pragma unroll
