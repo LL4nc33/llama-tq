@@ -10153,6 +10153,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // overflow: n_tokens > K — only the last K snapshots kept.
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 32,   8, 1, 1, false, false, /*K=*/3));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64,  16, 2, 1, false, false, /*K=*/4));
+    // speculative rollback with n_rs_seq = 8 (K = 9): every ubatch takes the snapshot path, from single-token
+    // decode over the verify lengths to prompt ubatches longer than K; also with K = 1 for the same lengths
+    for (int64_t K : {1, 9}) {
+        for (int64_t n_tokens : {1, 2, 5, 8, 9, 10, 64}) {
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, n_tokens, 1, 2, false, false, K));
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 8,  64,  n_tokens, 2, 1, false, true,  K));
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, n_tokens, 1, 2, false, false, K, false, true));
+            // single sequence with the state gathered from the cache (fused into the CUDA kernel)
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, n_tokens, 1, 2, false, false, K, true,  true));
+        }
+    }
 
 #if 0
     // these tests are disabled to save execution time, sbut they can be handy for debugging
