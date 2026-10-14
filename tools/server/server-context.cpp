@@ -47,10 +47,25 @@ static uint32_t server_n_outputs_max(const common_params & params) {
         return n_batch;
     }
 
-    // speculative decoding verifies drafts and some modes (MTP, DFlash, Eagle3) read
-    // hidden states of every prompt token, so keep the full batch for all of them
-    const bool any_spec = std::any_of(params.speculative.types.begin(), params.speculative.types.end(),
+    // some speculative modes (MTP, DFlash, Eagle3) read hidden states of every prompt token, so keep the full batch
+    // for them. The n-gram modes only verify drafts: one output per drafted token plus the last sampled one, so the
+    // compute buffer of the output device does not need logits rows for a whole batch (Qwen3.6-35B: 672 -> 307 MiB).
+    const auto & spec = params.speculative;
+    const bool any_spec = std::any_of(spec.types.begin(), spec.types.end(),
             [](common_speculative_type t) { return t != COMMON_SPECULATIVE_TYPE_NONE; });
+    const bool only_ngram = std::all_of(spec.types.begin(), spec.types.end(), [](common_speculative_type t) {
+        return t == COMMON_SPECULATIVE_TYPE_NONE
+            || t == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
+            || t == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
+            || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K
+            || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V
+            || t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
+    });
+    if (any_spec && only_ngram) {
+        // a batch that asks for more rows raises the limit at runtime (llama_context::output_reserve)
+        const uint32_t n_verify = (uint32_t) std::max(spec.draft.n_max, spec.n_max) + 1;
+        return std::max<uint32_t>(1, std::min<uint32_t>(n_batch, n_verify * params.n_parallel));
+    }
     if (any_spec) {
         return n_batch;
     }
