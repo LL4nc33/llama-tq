@@ -706,9 +706,10 @@ static __device__ __forceinline__ float vtq_codebook_scaled(const int i) {
     return VTQ_CUDA_CB_4BIT[i] * PQ_CUDA_CB_SCALE;
 }
 
-// codes of elements 8*part .. 8*part+7, element e at bits*e (qs is 2-byte aligned for the 2- and 4-bit blocks)
+// codes of elements 8*part .. 8*part+7 of a KTQ or VTQ block, element e at bits*e
+// (qs follows the 2-byte d, so it is 2-byte aligned for the 2- and 4-bit blocks)
 template <int bits>
-static __device__ __forceinline__ uint32_t vtq_codes8(const uint8_t * qs, const int part) {
+static __device__ __forceinline__ uint32_t tq_codes8(const uint8_t * qs, const int part) {
     if constexpr (bits == 1) { return qs[part]; }
     if constexpr (bits == 2) { return *(const uint16_t *) (qs + 2*part); }
     if constexpr (bits == 3) { const uint8_t * p = qs + 3*part; return p[0] | p[1] << 8 | p[2] << 16; }
@@ -737,7 +738,7 @@ static __global__ void k_dequantize_vtq_nc(const void * __restrict__ vx, dst_t *
     const block_t * x = (const block_t *) vx + r23.x*s03 + r23.y*s02 + r01.y*s01 + rc.y/4;
 
     const float    d     = x->d;
-    const uint32_t codes = vtq_codes8<bits>(x->qs, rc.y % 4);
+    const uint32_t codes = tq_codes8<bits>(x->qs, rc.y % 4);
     float v[8];
 #pragma unroll
     for (int e = 0; e < 8; ++e) {
@@ -770,6 +771,103 @@ static void vtq_dequantize_nc_cuda(const void * vx, dst_t * y,
     constexpr int block_size = 256;
     const int64_t n_blocks = (n_threads + block_size - 1) / block_size;
     k_dequantize_vtq_nc<block_t, bits, dst_t><<<n_blocks, block_size, 0, stream>>>(vx, y, n_threads,
+        init_fastdiv_values(ne00/8), init_fastdiv_values(ne01), init_fastdiv_values(ne02), s01, s02, s03);
+}
+
+// --- KTQ NC dequant: the f16 copies of K for the tensor-core prompt kernels ---
+// One thread per 8 consecutive elements, 4 consecutive lanes per block. Element 8*part + i: the inverse FWHT
+// runs the stages of ktq_cuda_fwht_warp in the same order and with the same sums, steps 1, 2, 4 inside the
+// lane (over i), steps 8, 16 across the 4 lanes (over part), then the same normalization, sign and scale.
+template <typename block_t, typename dst_t>
+static __global__ void k_dequantize_ktq_nc(const void * __restrict__ vx, dst_t * __restrict__ y, const uint32_t n_threads,
+        const uint3 chunks_per_row, const uint3 ne01_fd, const uint3 ne02_fd,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    constexpr int bits = ktq_bits<block_t>::value;
+    constexpr int n_cb = 1 << bits;
+    __shared__ float cb[n_cb];
+    if (threadIdx.x < n_cb) {
+        cb[threadIdx.x] = ktq_codebook<bits>()[threadIdx.x] * PQ_CUDA_CB_SCALE;
+    }
+    __syncthreads();
+
+    // No early return: every lane must reach the shuffles. n_threads is a multiple of 4, so a thread past the
+    // end belongs to a group that is past the end as a whole; it redoes the last group and stores nothing.
+    const uint32_t g  = blockIdx.x*blockDim.x + threadIdx.x;
+    const uint32_t gc = g < n_threads ? g : n_threads - 4 + g % 4;
+    const uint2 rc   = fast_div_modulo(gc,    chunks_per_row); // row, chunk of 8 in the row
+    const uint2 r01  = fast_div_modulo(rc.x,  ne01_fd);        // i02 + ne02*i03, i01
+    const uint2 r23  = fast_div_modulo(r01.x, ne02_fd);        // i03, i02
+    const block_t * x = (const block_t *) vx + r23.x*s03 + r23.y*s02 + r01.y*s01 + rc.y/4;
+    const int part = rc.y % 4; // == lane % 4: ne00/8 and blockDim.x are multiples of 4
+
+    const float    d     = x->d;
+    const uint32_t codes = tq_codes8<bits>(x->qs, part);
+    const uint32_t signs = x->sb[part];
+    float v[8];
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        v[i] = cb[(codes >> (bits*i)) & (n_cb - 1)];
+    }
+
+    // pair (lo, hi) -> (lo + hi, lo - hi), as ktq_cuda_fwht_warp
+#pragma unroll
+    for (int s = 0; s < 3; ++s) {
+        const int step = 1 << s;
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            if ((i & step) == 0) {
+                const float lo = v[i];
+                const float hi = v[i + step];
+                v[i]        = lo + hi;
+                v[i + step] = lo - hi;
+            }
+        }
+    }
+#pragma unroll
+    for (int s = 0; s < 2; ++s) {
+        const int step = 1 << s;
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const float other = __shfl_xor_sync(0xFFFFFFFF, v[i], step, 32);
+            v[i] = (part & step) ? other - v[i] : v[i] + other;
+        }
+    }
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const int sb = (signs >> i) & 1;
+        v[i] = d < 1e-30f ? 0.0f : v[i] * 0.17677669529663689f * ((2.0f * sb - 1.0f) * d); // 1/sqrt(32)
+    }
+
+    if (g >= n_threads) {
+        return;
+    }
+    dst_t * dst = y + int64_t(g)*8; // rows are contiguous in the output
+    if constexpr (std::is_same_v<dst_t, half>) {
+        half2 h[4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            h[i] = __floats2half2_rn(v[2*i], v[2*i + 1]);
+        }
+        *(uint4 *) dst = *(const uint4 *) h;
+    } else {
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            dst[i] = ggml_cuda_cast<dst_t>(v[i]);
+        }
+    }
+}
+
+// signature matches the convert.cu NC dispatchers (dst_t deduced there)
+template <typename block_t, typename dst_t>
+static void ktq_dequantize_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    GGML_ASSERT(ne00 % QK_KTQ == 0);
+    const int64_t n_threads = ne00/8 * ne01*ne02*ne03;
+    GGML_ASSERT(n_threads <= INT32_MAX); // fastdiv needs n < 2^31
+    constexpr int block_size = 256;      // whole warps: a group of 4 lanes never straddles a warp
+    const int64_t n_blocks = (n_threads + block_size - 1) / block_size;
+    k_dequantize_ktq_nc<block_t, dst_t><<<n_blocks, block_size, 0, stream>>>(vx, y, n_threads,
         init_fastdiv_values(ne00/8), init_fastdiv_values(ne01), init_fastdiv_values(ne02), s01, s02, s03);
 }
 
