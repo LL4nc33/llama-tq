@@ -496,6 +496,13 @@ static best_fattn_kernel ggml_cuda_get_preferred_fattn_kernel(const int device, 
     float max_bias = 0.0f;
     memcpy(&max_bias, (const float *) KQV->op_params + 1, sizeof(float));
 
+    // the vector, tile and MMA kernels compile the logit softcap only for head sizes 128, 256 and 512
+    float logit_softcap = 0.0f;
+    memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
+    if (logit_softcap != 0.0f && !((K->ne[0] == 128 || K->ne[0] == 256 || K->ne[0] == 512) && K->ne[0] == V->ne[0])) {
+        return BEST_FATTN_KERNEL_NONE;
+    }
+
     // The effective batch size for the kernel can be increased by gqa_ratio.
     // The kernel versions without this optimization are also used for ALiBi, if there is no mask, or if the KV cache is not padded,
     bool gqa_opt_applies = gqa_ratio >= 2 && mask && max_bias == 0.0f && K->ne[1] % FATTN_KQ_STRIDE == 0;

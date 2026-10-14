@@ -9898,7 +9898,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                         continue;
                     }
                     for (float softcap : {0.0f, 10.0f}) {
-                        if (softcap != 0.0f && (!ktq4 || hs == 512)) {
+                        if (softcap != 0.0f && (!ktq4 || (hs != 128 && hs != 256))) { // softcap: heads 128 and 256 only
                             continue;
                         }
                         test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {gqa, 1}, 1024, nb, true, false, 0, softcap,
