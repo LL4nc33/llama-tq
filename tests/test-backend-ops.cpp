@@ -8457,12 +8457,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     // trellis V types: the CUDA Viterbi encoder against the CPU reference (small shapes, the CPU encoder is slow)
-    for (ggml_type type : {GGML_TYPE_VTQ2_2, GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2, GGML_TYPE_VTQ2_3, GGML_TYPE_VTQ3_3,
-                           GGML_TYPE_VTQ4_3, GGML_TYPE_VTQ3_V8}) {
+    for (ggml_type type : {GGML_TYPE_VTQ2_2, GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2, GGML_TYPE_VTQ2_2S, GGML_TYPE_VTQ3_2S,
+                           GGML_TYPE_VTQ4_2S, GGML_TYPE_VTQ2_3, GGML_TYPE_VTQ3_3, GGML_TYPE_VTQ4_3, GGML_TYPE_VTQ3_V8}) {
         test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 3, 2, 1 }, { 1, 1, }, 2, false));
     }
-    // more trellis blocks (1024) than the shared-memory encoder launches CUDA blocks, so each CUDA block encodes several
-    for (ggml_type type : {GGML_TYPE_VTQ2_2, GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2}) {
+    // more trellis blocks (1024) than the shared-memory encoder (12 state bits) launches CUDA blocks, so each CUDA
+    // block encodes several
+    for (ggml_type type : {GGML_TYPE_VTQ2_2S, GGML_TYPE_VTQ3_2S, GGML_TYPE_VTQ4_2S}) {
         test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 64, 16, 1 }, { 1, 1, }, 64, false));
     }
 
@@ -9826,6 +9827,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         for (ggml_type type_V : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_0, GGML_TYPE_Q4_0,
                                  GGML_TYPE_VTQ2_1, GGML_TYPE_VTQ3_1, GGML_TYPE_VTQ4_1,
                                  GGML_TYPE_VTQ2_2, GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2,
+                                 GGML_TYPE_VTQ2_2S, GGML_TYPE_VTQ3_2S, GGML_TYPE_VTQ4_2S,
                                  GGML_TYPE_VTQ2_3, GGML_TYPE_VTQ3_3, GGML_TYPE_VTQ4_3, GGML_TYPE_VTQ3_V8}) {
             if (type_K == type_V) {
                 continue; // covered above
@@ -9951,6 +9953,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (int64_t nb : {1, 32}) {
         for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
                 {GGML_TYPE_F16, GGML_TYPE_VTQ3_2}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_2},
+                {GGML_TYPE_F16, GGML_TYPE_VTQ3_2S}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_2S},
                 {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_3}, {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_V8}}) {
             test_cases.emplace_back(new test_flash_attn_ext(128, 128, 1, {4, 1}, 256, nb, true, false, 0, 0,
                         GGML_PREC_F32, kv_types.first, kv_types.second));

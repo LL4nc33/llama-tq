@@ -275,8 +275,8 @@ int main(int argc, char * argv[]) {
                 type == GGML_TYPE_KTQ2_1  || type == GGML_TYPE_VTQ2_1 ? MAX_QUANTIZATION_TOTAL_ERROR_TERNARY :
                 type == GGML_TYPE_KTQ3_1  || type == GGML_TYPE_VTQ3_1 ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS_XXS :
                 // trellis V types by index bits
-                type == GGML_TYPE_VTQ2_2  || type == GGML_TYPE_VTQ2_3 ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
-                type == GGML_TYPE_VTQ3_2  || type == GGML_TYPE_VTQ3_3 || type == GGML_TYPE_VTQ3_V8 ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
+                type == GGML_TYPE_VTQ2_2  || type == GGML_TYPE_VTQ2_2S || type == GGML_TYPE_VTQ2_3 ? MAX_QUANTIZATION_TOTAL_ERROR_2BITS :
+                type == GGML_TYPE_VTQ3_2  || type == GGML_TYPE_VTQ3_2S || type == GGML_TYPE_VTQ3_3 || type == GGML_TYPE_VTQ3_V8 ? MAX_QUANTIZATION_TOTAL_ERROR_3BITS :
                 MAX_QUANTIZATION_TOTAL_ERROR;
             failed = !(total_error < max_quantization_error);
             num_failed += failed;
@@ -295,7 +295,7 @@ int main(int argc, char * argv[]) {
                 const float vec_dot_error = dot_product_error(qfns, qfns_cpu, test_size, test_data.data(), test_data2.data());
                 const float max_allowed_error = type == GGML_TYPE_Q2_K || type == GGML_TYPE_IQ2_XS || type == GGML_TYPE_IQ2_XXS ||
                                                 type == GGML_TYPE_IQ3_XXS || type == GGML_TYPE_IQ3_S || type == GGML_TYPE_IQ2_S ||
-                                                type == GGML_TYPE_VTQ2_2
+                                                type == GGML_TYPE_VTQ2_2 || type == GGML_TYPE_VTQ2_2S
                                               ? MAX_DOT_PRODUCT_ERROR_LOWBIT
                                               : type == GGML_TYPE_Q1_0
                                               ? MAX_DOT_PRODUCT_ERROR_BINARY
