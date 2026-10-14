@@ -2805,17 +2805,13 @@ private:
                         }
 
                         // embedding requires all tokens in the batch to be output
-                        // MTP shared-ctx spec requires h_pre_norm at every prefill position so
-                        // common_speculative_process() can seed pending_h with the post-prefill
-                        // target hidden state. Force logits=1 on prefill tokens when MTP spec is active.
-                        const bool mtp_needs_h_per_token = slot.spec &&
-                            params_base.speculative.draft.ctx_dft == ctx_dft.get() &&
-                            llama_model_has_mtp(model);
+                        // (MTP does not: the target exports its nextn hidden state for every
+                        // batch token regardless of the output flag, see crop_after_nextn)
                         common_batch_add(batch,
                             cur_tok,
                             slot.prompt.tokens.pos_next(),
                             { slot.id },
-                            slot.task->need_embd() || mtp_needs_h_per_token);
+                            slot.task->need_embd());
                         slot.prompt.tokens.push_back(cur_tok);
 
                         slot.n_prompt_tokens_processed++;
@@ -3039,10 +3035,8 @@ private:
 
             // MTP hook: feed target post-decode embeddings into spec state so DRAFT_MTP
             // can pair (h_p, x_{p+1}) for next draft() call. No-op for DRAFT_SIMPLE / ngram.
-            // Skip during prompt-prefill (when slot is still in prompt processing) — only
-            // call process() during the verify/generation phase. During chunked prefill the
-            // ctx_dft has no pending_h to pair with each chunk and process()/decode would
-            // run with positions that conflict against ctx_dfts own MTP-graph advances.
+            // Runs for prompt batches too: the MTP head attends over the whole prompt in
+            // ctx_dft, and the last prompt row seeds the first draft.
             if (ret == 0) {
                 static const bool skip_process = std::getenv("FORK_MTP_SKIP_PROCESS") != nullptr;
                 static const bool prof_mtp     = std::getenv("FORK_MTP_PROFILE") != nullptr;
