@@ -180,8 +180,8 @@ static __global__ void flash_attn_ext_tq_wmma(
     const int ncols_valid = min(ncols, (kv_head + 1)*gqa_ratio - head0);
 
     Q += nb03*sequence + nb02*head0;
-    K += nb13*sequence + nb12*kv_head;
-    V += nb23*sequence + nb22*kv_head;
+    K += nb13*sequence + int64_t(nb12)*kv_head;
+    V += nb23*sequence + int64_t(nb22)*kv_head;
     const half * maskh = (const half *) (mask + nb33*(sequence % ne33));
 
     if constexpr (bits_K) {
@@ -422,12 +422,8 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     }
     const int64_t D = Q->ne[0];
 
-    // head 128 with KTQ K: from about 2k context the GQA kernel is faster (2x RTX 2060, Qwen3-4B, ktq2/3/4_1: +3-5 % at
-    // 4k, +8-14 % at 32k), without context this kernel is (0.5-4 %). Heads 256 and 512 stay here at every length.
-    if (D == 128 && GGML_TYPE_IS_KTQ(K->type) && K->ne[1] >= 2048) {
-        return false;
-    }
-
+    // ggml_cuda_flash_attn_ext tries the GQA decode kernel first; at heads 128 and 256 this kernel only gets what that
+    // one does not take (GQA ratio 2, a single KQ tile)
     // head 64 (gpt-oss, with attention sinks) has no GQA decode kernel either
     FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE( 64, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
@@ -444,10 +440,8 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)
-    // (q8_0 stays with the GQA kernel, which is faster for it)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_Q5_0,   GGML_TYPE_Q5_0)
-    // q4_0 has no GQA decode kernel, only the per-head VEC kernel
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_Q4_0,   GGML_TYPE_Q4_0)
     FATTN_TQ_WMMA_CASE(128, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
@@ -456,7 +450,7 @@ bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tens
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_KTQ2_1, GGML_TYPE_F16)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_F16,    GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(256, GGML_TYPE_F16,    GGML_TYPE_VTQ2_1)
-    // head 512 (Gemma 4 global layers, GQA 8-16) has no GQA decode kernel, so q8_0 comes here too
+    // head 512 (Gemma 4 global layers, GQA 8-16) has no GQA decode kernel
     FATTN_TQ_WMMA_CASE(512, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1)
     FATTN_TQ_WMMA_CASE(512, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1)
     FATTN_TQ_WMMA_CASE(512, GGML_TYPE_KTQ2_1, GGML_TYPE_VTQ2_1)

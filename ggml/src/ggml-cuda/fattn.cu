@@ -767,6 +767,7 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
             need_f16_K = K->type == GGML_TYPE_F32;
             need_f16_V = V->type == GGML_TYPE_F32;
             break;
+        case BEST_FATTN_KERNEL_MMA_KTQ: // converts into pool memory (fattn-mma-ktq.cu)
         case BEST_FATTN_KERNEL_NONE:
             break;
     }
@@ -781,8 +782,10 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     ggml_cuda_set_device(ctx.device);
     const best_fattn_kernel best = ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst);
     // decode with quantized K/V and grouped-query attention: one block per GQA group beats the per-head VEC
-    // kernel and the MMA kernel (which would first convert the whole cache to f16)
-    if (best != BEST_FATTN_KERNEL_NONE && (ggml_cuda_flash_attn_ext_tq_wmma(ctx, dst) || ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst))) {
+    // kernel and the MMA kernel (which would first convert the whole cache to f16). The GQA kernel is faster than the
+    // tensor-core one wherever it applies (Qwen3-4B, head 128, at 32k context: q4_0 49.1 vs 32.3 t/s, q5_0 43.7 vs
+    // 26.8; Qwen3.6-35B-A3B, head 256: +0.5-6.5 %, equal at 2k), so it goes first.
+    if (best != BEST_FATTN_KERNEL_NONE && (ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst) || ggml_cuda_flash_attn_ext_tq_wmma(ctx, dst))) {
         return;
     }
     switch (best) {

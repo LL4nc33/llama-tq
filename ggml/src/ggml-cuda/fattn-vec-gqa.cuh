@@ -260,8 +260,8 @@ static __global__ void flash_attn_ext_vec_gqa(
     const int ncols_valid = min(ncols, (kv_head + 1)*gqa_ratio - head0);
 
     Q += nb03*sequence + nb02*head0;
-    K += nb13*sequence + nb12*kv_head;
-    V += nb23*sequence + nb22*kv_head;
+    K += nb13*sequence + int64_t(nb12)*kv_head; // int64: past about a million cells nb12*kv_head overflows int32
+    V += nb23*sequence + int64_t(nb22)*kv_head;
     const half * maskh = (const half *) (mask + nb33*(sequence % ne33));
 
     // sparse: the rows of position k are indices[k], positions from n_rows on are padding
