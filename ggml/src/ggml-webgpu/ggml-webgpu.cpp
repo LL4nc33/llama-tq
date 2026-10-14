@@ -3894,6 +3894,7 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                               src2->type == GGML_TYPE_F32 && op->src[3]->type == GGML_TYPE_F32 &&
                               op->src[4]->type == GGML_TYPE_F32 && op->src[5]->type == GGML_TYPE_F32 &&
                               ggml_get_op_params_i32(op, 1) == 0 &&
+                              ggml_get_op_params_i32(op, 0) == 1 && // state snapshots (K > 1) not implemented here
                               s_v <= ctx->webgpu_global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup;
             }
             break;

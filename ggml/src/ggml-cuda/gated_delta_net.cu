@@ -54,10 +54,10 @@ gated_delta_net_cuda(const float * q,
     float *       attn_data        = dst;
     float *       state            = dst + attn_score_elems;
 
-    // input state layout (D, K, n_seqs) — seq stride is K * D = K * H * S_v * S_v.
+    // input state holds s0 only: [S_v, S_v, H, n_seqs] — seq stride is D = H * S_v * S_v.
     // output state layout (per-slot D * n_seqs) — same per-(seq,head) offset as before.
-    // with a fused gather, the live state is the cache row s_ids[sequence] (K == 1 there)
-    const int64_t state_in_offset      = (s_ids ? (int64_t) s_ids[sequence] * s_row_stride : sequence * K * H * S_v * S_v)
+    // with a fused gather, the live state is the cache row s_ids[sequence]
+    const int64_t state_in_offset      = (s_ids ? (int64_t) s_ids[sequence] * s_row_stride : sequence * H * S_v * S_v)
                                          + h_idx * S_v * S_v;
     const int64_t state_out_offset     = (sequence * H + h_idx) * S_v * S_v;
     const int64_t state_size_per_token = S_v * S_v * H * n_seqs; // per-slot stride in output
@@ -73,10 +73,6 @@ gated_delta_net_cuda(const float * q,
         const int i = r * lanes_per_col + lane_in_col;
         s_shard[r]  = curr_state[i];
     }
-
-    // slot mapping: target_slot = t - shift. When n_tokens < K only the last n_tokens slots
-    // are written; earlier slots are left untouched (caller-owned).
-    const int shift = (int) n_tokens - K;
 
     for (int t = 0; t < n_tokens; t++) {
         const float * q_t = q + iq3 * sq3 + t * sq2 + iq1 * sq1;
@@ -170,7 +166,9 @@ gated_delta_net_cuda(const float * q,
         attn_data += S_v * H;
 
         if constexpr (keep_rs_t) {
-            const int target_slot = t - shift;
+            // snapshot slot mapping: slot 0 = most recent state, slot s = s tokens back.
+            // When n_tokens < K only slots 0..n_tokens-1 are written; older slots are caller-owned.
+            const int target_slot = (int) n_tokens - 1 - t;
             if (target_slot >= 0 && target_slot < K) {
                 float * curr_state = (dst + attn_score_elems) + target_slot * state_size_per_token + state_out_offset;
 #pragma unroll
@@ -331,8 +329,8 @@ void ggml_cuda_op_gated_delta_net(ggml_backend_cuda_context & ctx, ggml_tensor *
 
     cudaStream_t stream = ctx.stream();
 
-    // state is 3D (S_v*S_v*H, K, n_seqs); K is the snapshot slot count.
-    const int K = (int) src_state->ne[1];
+    // K (snapshot slot count) is an op param; state holds s0 only [S_v, S_v, H, n_seqs].
+    const int K = ggml_get_op_params_i32(dst, 0);
     const bool keep_rs = K > 1;
 
     if (kda) {

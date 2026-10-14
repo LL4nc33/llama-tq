@@ -4460,7 +4460,7 @@ static bool ggml_cuda_try_gdn_gather_skip(ggml_backend_cuda_context & ctx, const
         if (n->op == GGML_OP_GATED_DELTA_NET && n->src[5] == cur) {
             const ggml_tensor * v = n->src[2];
             const int64_t       D = v->ne[0] * v->ne[0] * v->ne[1];
-            // one sequence and one state slot
+            // one sequence; the op reads only the initial state s0, whatever its snapshot count
             if (gr->ne[0] != D || v->ne[3] != 1 || ggml_nelements(cur) != D) {
                 return false;
             }

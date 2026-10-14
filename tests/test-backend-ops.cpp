@@ -4142,7 +4142,7 @@ struct test_gated_delta_net_grad : public test_case {
         ggml_tensor * v    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, H_v, n_seq_tokens, n_seqs);
         ggml_tensor * g    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kda ? head_size : 1, H_v, n_seq_tokens, n_seqs);
         ggml_tensor * beta = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, H_v, n_seq_tokens, n_seqs);
-        ggml_tensor * s    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_size*head_size*H_v, 1, n_seqs);
+        ggml_tensor * s    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_size, H_v, n_seqs);
         for (ggml_tensor * t : { q, k, v, g, beta }) {
             ggml_set_param(t);
         }
@@ -4152,7 +4152,7 @@ struct test_gated_delta_net_grad : public test_case {
         ggml_set_name(g, "g");
         ggml_set_name(beta, "beta");
         ggml_set_name(s, "state");
-        ggml_tensor * out = ggml_gated_delta_net(ctx, q, k, v, g, beta, s);
+        ggml_tensor * out = ggml_gated_delta_net(ctx, q, k, v, g, beta, s, /*K=*/1);
         ggml_set_name(out, "out");
         return out;
     }
@@ -4210,7 +4210,7 @@ struct test_gated_delta_net_back : public test_case {
         ggml_tensor * v    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, H_v, n_seq_tokens, n_seqs);
         ggml_tensor * g    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kda ? head_size : 1, H_v, n_seq_tokens, n_seqs);
         ggml_tensor * beta = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 1, H_v, n_seq_tokens, n_seqs);
-        ggml_tensor * s    = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_size*head_size*H_v, 1, n_seqs);
+        ggml_tensor * s    = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_size, head_size, H_v, n_seqs);
         ggml_tensor * grad = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, head_size*H_v, (n_seq_tokens + head_size)*n_seqs);
         ggml_set_name(g, "g");
         ggml_set_name(beta, "beta");
@@ -4286,14 +4286,14 @@ struct test_gated_delta_net : public test_case {
         const int64_t D     = head_size * v_repeat * head_size * head_count;
         ggml_tensor * state = nullptr;
         if (gather) {
-            GGML_ASSERT(K == 1 && n_seqs == 1);
+            GGML_ASSERT(n_seqs == 1);
             ggml_tensor * cache = ggml_new_tensor_2d(ctx, type, D, 5);
             ggml_tensor * ids   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
             ggml_set_name(cache, "state_cache");
             ggml_set_name(ids,   "state_ids");
-            state = ggml_reshape_3d(ctx, ggml_get_rows(ctx, cache, ids), D, K, n_seqs);
+            state = ggml_reshape_4d(ctx, ggml_get_rows(ctx, cache, ids), head_size, head_size, head_count * v_repeat, n_seqs);
         } else {
-            state = ggml_new_tensor_3d(ctx, type, D, K, n_seqs);
+            state = ggml_new_tensor_4d(ctx, type, head_size, head_size, head_count * v_repeat, n_seqs);
             ggml_set_name(state, "state");
         }
         ggml_set_name(g,     "g");
@@ -4301,7 +4301,7 @@ struct test_gated_delta_net : public test_case {
         // q/k are L2-normalised in qwen35/kimi-linear before delta_net
         q = ggml_l2_norm(ctx, q, 1e-6f);
         k = ggml_l2_norm(ctx, k, 1e-6f);
-        ggml_tensor * out   = ggml_gated_delta_net(ctx, q, k, v, g, beta, state);
+        ggml_tensor * out   = ggml_gated_delta_net(ctx, q, k, v, g, beta, state, K);
         if (raw) {
             ggml_tensor * dt_bias = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_count * v_repeat);
             ggml_tensor * a       = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, head_count * v_repeat);
@@ -10141,7 +10141,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64,  33, 1, 1, false, true));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, 100, 1, 1, false, true));
 
-    // K > 1: output keeps the last min(n_tokens, K) per-token snapshots in the trailing K-token region.
+    // K > 1: output keeps the last min(n_tokens, K) per-token snapshots, ordered most-recent-first
+    // (slot 0 = final state, slot s = state s tokens back).
     // exact-match cases (K == n_seq_tokens):
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 16,   2, 1, 1, false, false, /*K=*/2));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 32,   4, 1, 1, false, false, /*K=*/4));
