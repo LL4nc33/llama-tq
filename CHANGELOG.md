@@ -30,18 +30,21 @@
 - **Small verify batches read the quantized cache directly.** With a quantized K or V cache, the split-dequant path
   converted the whole cache to f16 at every verify step. Batches of 2-16 queries whose (query, head) columns fit one
   block of the tensor-core kernel (`fattn-tq-wmma.cuh`, now a template with one instance file per head size and block
-  width) now run it on the quantized cache: 16 columns always, 32 columns from 8192 cells (not KTQ K at head size
+  width) now run it on the quantized cache: 16 columns always, 32 columns from 8192 cells (not f16 K at head size
   256); larger batches keep the conversion. Qwen3-4B (GQA 4), one RTX 2060, at 32k context, t/s of the verify batch:
 
   | K / V | 2 queries | 4 queries | 5 queries | 8 queries |
   |---|---|---|---|---|
   | `q8_0` / `q8_0` | 34.6 → 57.3 | 63.5 → 99.3 | 77.3 → 91.4 | 105.6 → 122.0 |
-  | `ktq4_1` / `vtq4_1` | 45.9 → 69.6 | 80.4 → 118.3 | 97.5 → 105.0 | 129.1 → 135.7 |
+  | `ktq4_1` / `vtq4_1` | | | 76.9 → 98.9 | 104.9 → 128.0 |
+  | f16 / `vtq4_1` ¹ | 45.9 → 69.6 | 80.4 → 118.3 | 97.5 → 105.0 | 129.1 → 135.7 |
   | `q8_0` / `vtq4_1` | 33.8 → 60.7 | 55.3 → 104.7 | 74.8 → 95.1 | 103.1 → 126.7 |
 
-  At 2k context +4-11 % for 2 and 4 queries, 5-8 queries unchanged. Qwen3.6-35B-A3B (GQA 8, head 256) on two GPUs
-  at 32k: `q8_0` 2 queries 84.8 → 99.6 t/s, 4 queries 133.4 → 139.8 t/s; `ktq4_1` / `vtq4_1` 2 queries 94.5 → 103.8
-  t/s. Batches of 9 and 16 queries, decode and prefill unchanged. In `llama-server` with ngram speculation on a
+  ¹ measured as `ktq4_1` / `vtq4_1` with `llama-bench -p`, which keeps a KTQ K cache in f16 staging until the first
+  decode step; the `ktq4_1` row has the K cache quantized (`LLAMA_ARG_NO_TQ_DEFERRED_K=1`, as in a server after the
+  first token). At 2k context +4-11 % for 2 and 4 queries, 5-8 queries unchanged. Qwen3.6-35B-A3B (GQA 8, head 256)
+  on two GPUs at 32k: `q8_0` 2 queries 84.8 → 99.6 t/s, 4 queries 133.4 → 139.8 t/s; `ktq4_1` / `vtq4_1` 2 queries
+  87.0 → 101.5 t/s, 4 queries 135.8 → 141.7 t/s. Batches of 9 and 16 queries, decode and prefill unchanged. In `llama-server` with ngram speculation on a
   29k-token prompt (release of 2026-10-12 → now, [benchmarks](docs/benchmarks/README.md)): `q8_0` / `vtq4_1`
   42.9 → 79.3 t/s, `ktq4_1` / `vtq4_1` 31.6 → 74.4 t/s, `q8_0` / `q8_0` 74.8 → 78.8 t/s.
 - Flash attention with a logit softcap at head sizes other than 128, 256 and 512 is reported as unsupported on CUDA:
@@ -60,7 +63,7 @@
   64-512, GQA 2-16 and eight K/V pairs, and 17-32 columns at 8192 cells.
 - Checked on an RTX A6000 (sm_86) and an RTX 4090 (sm_89) besides the RTX 2060: every flash attention test passes;
   at 32k context the TurboQuant pairs decode 5-21 % faster and verify 4 queries 3-4.5× faster than at the start of
-  the day ([benchmarks](docs/benchmarks/README.md)).
+  the day (`q8_0` / `vtq4_1`; [benchmarks](docs/benchmarks/README.md)).
 
 ## 2026-10-13
 

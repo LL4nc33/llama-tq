@@ -58,8 +58,8 @@ Same model at 32k context on newer GPUs, start of the 2026-10-14 work (34c14bd63
 
 | KV cache | GPU | decode | verify 2 | verify 4 | verify 8 | verify 16 | `pp512` |
 |---|---|---:|---:|---:|---:|---:|---:|
-| `ktq4_1` / `vtq4_1` | RTX A6000 | 82.5 → 99.5 | 52 → 139 | 59 → 255 | 238 → 339 | 513 → 644 | 2430 → 2514 |
-| `ktq4_1` / `vtq4_1` | RTX 4090 | 141.7 → 158.3 | 107 → 202 | 132 → 404 | 416 → 556 | 836 → 1003 | 5737 → 5917 |
+| `ktq4_1` / `vtq4_1` ² | RTX A6000 | 82.5 → 99.5 | 52 → 139 | 59 → 255 | 238 → 339 | 513 → 644 | 2430 → 2514 |
+| `ktq4_1` / `vtq4_1` ² | RTX 4090 | 141.7 → 158.3 | 107 → 202 | 132 → 404 | 416 → 556 | 836 → 1003 | 5737 → 5917 |
 | `q8_0` / `vtq4_1` | RTX A6000 | 86.3 → 93.3 | 50 → 136 | 56 → 254 | 179 → 322 | 381 → 513 | 2267 → 2399 |
 | `q8_0` / `vtq4_1` | RTX 4090 | 142.0 → 149.7 | 102 → 216 | 126 → 437 | 322 → 576 | 647 → 781 | 5335 → 5581 |
 | `q8_0` / `q8_0` | RTX A6000 | 90.2 → 93.4 | 72 → 134 | 136 → 246 | 234 → 311 | 507 (=) | |
@@ -70,7 +70,9 @@ Same model at 32k context on newer GPUs, start of the 2026-10-14 work (34c14bd63
 | f16 / f16 | RTX 4090 | 113.7 (=) | | | | | 6265 → 6160 ¹ |
 
 All in t/s. Decode on an empty context is unchanged on both GPUs (within ±0.5 %). ¹ f16 code path unchanged; the two
-base runs alone spread 1.8 % (6209, 6320), the RTX A6000 and RTX 2060 show no change.
+base runs alone spread 1.8 % (6209, 6320), the RTX A6000 and RTX 2060 show no change. ² Verify and `pp512` cells:
+`llama-bench -p` keeps a KTQ K cache in f16 staging until the first decode step, so they show f16 K with `vtq4_1` V;
+the decode cells run on the quantized K.
 
 ## Speculative decoding at long context, one GPU
 
