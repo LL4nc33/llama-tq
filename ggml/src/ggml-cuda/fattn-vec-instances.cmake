@@ -5,7 +5,8 @@
 # fattn-vec.cuh, so each instance compiles in its own TU, in parallel. Every instance the dispatch references must
 # be compiled (otherwise: undefined symbol at link time), and the default build compiles nothing more.
 #
-# The GQA decode instances (template-instances/fattn-gqa-instance-*.cu) are always compiled.
+# The GQA decode instances (template-instances/fattn-gqa-instance-*.cu) and the tensor-core instances for quantized
+# caches (template-instances/fattn-tq-wmma-instance-*.cu) are always compiled.
 # GGML_CUDA_FA_ALL_QUANTS compiles every generated vec instance. The default list below follows the #else branches of
 # the dispatch TUs; it is written by scripts/check-cuda-instances.py --write, which also checks it.
 
@@ -22,6 +23,9 @@ function(ggml_cuda_fattn_vec_instances OUT_VAR DIR)
     # the GQA decode kernel for quantized caches (fattn-vec-gqa.cu), one TU per head size, block width and K type
     file(GLOB GQA_SRCS "${DIR}/fattn-gqa*.cu")
     list(APPEND SRCS ${GQA_SRCS})
+    # the tensor-core kernel for quantized caches (fattn-tq-wmma.cu), one TU per head size and block width
+    file(GLOB TQ_WMMA_SRCS "${DIR}/fattn-tq-wmma*.cu")
+    list(APPEND SRCS ${TQ_WMMA_SRCS})
     set(${OUT_VAR} ${SRCS} PARENT_SCOPE)
 endfunction()
 

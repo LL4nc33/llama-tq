@@ -86,7 +86,7 @@ static __device__ __forceinline__ float fattn_gqa_tq_centroid(const int i) {
     }
 }
 
-// element j (0..31) of a q5_0 block: 4 low bits from qs, the fifth from qh, offset by 16 (used by fattn-tq-wmma.cu)
+// element j (0..31) of a q5_0 block: 4 low bits from qs, the fifth from qh, offset by 16 (used by fattn-tq-wmma.cuh)
 static __device__ __forceinline__ float fattn_gqa_q5_0(const block_q5_0 * b, const int j) {
     const int lo = j < 16 ? b->qs[j] & 0xF : b->qs[j - 16] >> 4;
     const int hi = (b->qh[j / 8] >> (j % 8)) & 1;

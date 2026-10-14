@@ -9,7 +9,8 @@ For the default build and for GGML_CUDA_FA_ALL_QUANTS this script checks:
 - every combo the dispatch references is declared extern (no heavy implicit instantiation in a dispatch TU)
 - the compiled instance files define exactly the referenced combos, each one once
   (a referenced combo that is not compiled would be an undefined symbol at link time)
-The same holds for the TurboQuant GQA decode kernel (fattn-vec-gqa.cu, one instance per head size and block width).
+The same holds for the TurboQuant GQA decode kernel (fattn-vec-gqa.cu, one instance per head size and block width)
+and for the tensor-core kernel for quantized caches (fattn-tq-wmma.cu, one instance per head size and block width).
 
 usage: python3 scripts/check-cuda-instances.py           (exit code 1 on any problem)
        python3 scripts/check-cuda-instances.py --write   (rewrite the default list in fattn-vec-instances.cmake)
@@ -230,6 +231,36 @@ def check_gqa():
     return problems
 
 
+def check_tq_wmma():
+    """fattn-tq-wmma.cu references ggml_cuda_flash_attn_ext_tq_wmma_d<D, NC>; template-instances/fattn-tq-wmma-*.cu
+    define them. They are compiled in both modes."""
+    problems = []
+    refs = {}
+    for path in sorted(CUDA.glob("*.cu")):
+        text = strip_comments(path.read_text())
+        for m in re.finditer(r"ggml_cuda_flash_attn_ext_tq_wmma_d\s*<\s*(\d+)\s*,\s*(\d+)\s*>", text):
+            refs.setdefault((int(m.group(1)), int(m.group(2))), []).append(path.name)
+    header = strip_comments((CUDA / "fattn-tq-wmma.cuh").read_text())
+    externs = {(int(d), int(n)) for d, n in re.findall(r"\bextern\s+DECL_FATTN_TQ_WMMA_CASE\(\s*(\d+)\s*,\s*(\d+)\s*\)", header)}
+    compiled = {}
+    files = sorted(INSTANCES.glob("fattn-tq-wmma*.cu"))
+    for path in files:
+        text = strip_comments(path.read_text())
+        for d, n in re.findall(r"(?<!extern )\bDECL_FATTN_TQ_WMMA_CASE\(\s*(\d+)\s*,\s*(\d+)\s*\)", text):
+            compiled.setdefault((int(d), int(n)), []).append(path.name)
+    for key in sorted(set(refs) - externs):
+        problems.append(f"tq-wmma: D={key[0]} NC={key[1]} is referenced in {', '.join(refs[key])} but not declared extern")
+    for key, where in sorted(compiled.items()):
+        if len(where) > 1:
+            problems.append(f"tq-wmma: D={key[0]} NC={key[1]} is defined in more than one file: {', '.join(where)}")
+    for key in sorted(set(refs) - set(compiled)):
+        problems.append(f"tq-wmma: D={key[0]} NC={key[1]} is referenced in {', '.join(refs[key])} but not compiled")
+    for key in sorted(set(compiled) - set(refs)):
+        problems.append(f"tq-wmma: D={key[0]} NC={key[1]} is compiled in {', '.join(compiled[key])} but never referenced")
+    print(f"tq-wmma: {len(files)} instance files, {len(compiled)} instances compiled, {len(refs)} referenced")
+    return problems
+
+
 def main():
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     parser.add_argument("--write", action="store_true", help="rewrite the default list in fattn-vec-instances.cmake")
@@ -239,7 +270,7 @@ def main():
     if args.write:
         write_default_list(macros)
 
-    problems = check(macros, all_quants=False) + check(macros, all_quants=True) + check_gqa()
+    problems = check(macros, all_quants=False) + check(macros, all_quants=True) + check_gqa() + check_tq_wmma()
     for line in problems:
         print(line)
     print(f"{len(problems)} problem(s)")
