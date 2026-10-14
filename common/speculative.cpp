@@ -2014,7 +2014,11 @@ void common_speculative_draft(common_speculative * spec) {
 void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, uint16_t n_accepted) {
     common_speculative_impl * impl = spec->impl_last[seq_id];
 
-    GGML_ASSERT(impl);
+    // no implementation has drafted for this sequence yet (the server verifies an empty draft when n_min is 0)
+    if (impl == nullptr) {
+        GGML_ASSERT(n_accepted == 0);
+        return;
+    }
 
     // TODO: currently only the implementation that generated the draft is used to accept it
     //       however, some implementations (such as MTP) need to also "see" the accepted tokens
