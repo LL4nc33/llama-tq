@@ -65,6 +65,9 @@ bool try_dispatch_vec_vtq4_1(ggml_backend_cuda_context * ctx, ggml_tensor * dst)
 bool try_dispatch_vec_vtq2_2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq3_2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq4_2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq2_2s(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq3_2s(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_vtq4_2s(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq2_3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq3_3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq4_3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);

@@ -446,7 +446,10 @@ extern "C" {
         GGML_TYPE_VTQ4_3  = 56, // V-cache: Trellis v2 + 4 fp16 outlier positions, 5.00 bpw
         // GGML_TYPE_XKTQ2_1 = 57, removed (XQuant), id reserved
         GGML_TYPE_VTQ3_V8 = 58, // V-cache: Trellis 3-bit + 2 fp16 outliers (v8 redesign of vtq3_3, 3.625 bpw)
-        // 59..141 unused: the ternary weight types below use the ids that existing
+        GGML_TYPE_VTQ2_2S = 59, // V-cache: vtq2_2 with 12 state bits instead of 16 (fast encoder), 2.25 bpw
+        GGML_TYPE_VTQ3_2S = 60, // V-cache: vtq3_2 with 12 state bits instead of 16 (fast encoder), 3.25 bpw
+        GGML_TYPE_VTQ4_2S = 61, // V-cache: vtq4_2 with 12 state bits instead of 16 (fast encoder), 4.25 bpw
+        // 62..141 unused: the ternary weight types below use the ids that existing
         // GGUF files carry, so type_traits has empty (blck_size == 0) entries in between
         GGML_TYPE_PQ2_0   = 142, // 2-bit codes {-1,0,+1,+2} * d, group 128 (2.125 bpw)
         GGML_TYPE_PTQ1_0  = 143, // ternary base-3 packing, group 128 (1.75 bpw)
@@ -459,9 +462,13 @@ extern "C" {
         ((t) == GGML_TYPE_KTQ1_1 || (t) == GGML_TYPE_KTQ2_1 || (t) == GGML_TYPE_KTQ3_1 || (t) == GGML_TYPE_KTQ4_1)
     #define GGML_TYPE_IS_VTQ_CODEBOOK(t) \
         ((t) == GGML_TYPE_VTQ1_1 || (t) == GGML_TYPE_VTQ2_1 || (t) == GGML_TYPE_VTQ3_1 || (t) == GGML_TYPE_VTQ4_1)
+    // trellis types with 12 instead of 16 state bits
+    #define GGML_TYPE_IS_VTQ_TRELLIS_S(t) \
+        ((t) == GGML_TYPE_VTQ2_2S || (t) == GGML_TYPE_VTQ3_2S || (t) == GGML_TYPE_VTQ4_2S)
     #define GGML_TYPE_IS_VTQ_TRELLIS(t) \
         ((t) == GGML_TYPE_VTQ2_2 || (t) == GGML_TYPE_VTQ3_2 || (t) == GGML_TYPE_VTQ4_2 || \
-         (t) == GGML_TYPE_VTQ2_3 || (t) == GGML_TYPE_VTQ3_3 || (t) == GGML_TYPE_VTQ4_3 || (t) == GGML_TYPE_VTQ3_V8)
+         (t) == GGML_TYPE_VTQ2_3 || (t) == GGML_TYPE_VTQ3_3 || (t) == GGML_TYPE_VTQ4_3 || (t) == GGML_TYPE_VTQ3_V8 || \
+         GGML_TYPE_IS_VTQ_TRELLIS_S(t))
     #define GGML_TYPE_IS_VTQ(t) (GGML_TYPE_IS_VTQ_CODEBOOK(t) || GGML_TYPE_IS_VTQ_TRELLIS(t))
 
     // precision

@@ -437,6 +437,11 @@ typedef struct {
 } block_vtq4_2;
 static_assert(sizeof(block_vtq4_2) == 68, "wrong vtq4_2 block size");  // 4.25 bpw
 
+// --- VTQ{K}_2S: the VTQ{K}_2 layout with an L=12 bit trellis (start_state holds 12 bits) ---
+typedef block_vtq2_2 block_vtq2_2s;
+typedef block_vtq3_2 block_vtq3_2s;
+typedef block_vtq4_2 block_vtq4_2s;
+
 // --- VTQ{K}_3: Outlier-Channel-Split (Phase 3, Roadmap 2026-04-25) ---
 // Same trellis backbone as VTQ_2, plus K_OUT positions per block stored in fp16.
 // During dequant: trellis-decode all 128 samples, then overwrite the K_OUT

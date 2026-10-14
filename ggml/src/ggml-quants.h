@@ -47,6 +47,9 @@ GGML_API void quantize_row_vtq4_1_ref(const float * GGML_RESTRICT x, block_vtq4_
 GGML_API void quantize_row_vtq2_2_ref(const float * GGML_RESTRICT x, block_vtq2_2 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq3_2_ref(const float * GGML_RESTRICT x, block_vtq3_2 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq4_2_ref(const float * GGML_RESTRICT x, block_vtq4_2 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_vtq2_2s_ref(const float * GGML_RESTRICT x, block_vtq2_2s * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_vtq3_2s_ref(const float * GGML_RESTRICT x, block_vtq3_2s * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_vtq4_2s_ref(const float * GGML_RESTRICT x, block_vtq4_2s * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq2_3_ref(const float * GGML_RESTRICT x, block_vtq2_3 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq3_3_ref(const float * GGML_RESTRICT x, block_vtq3_3 * GGML_RESTRICT y, int64_t k);
 GGML_API void quantize_row_vtq4_3_ref(const float * GGML_RESTRICT x, block_vtq4_3 * GGML_RESTRICT y, int64_t k);
@@ -92,6 +95,9 @@ GGML_API void dequantize_row_vtq4_1(const block_vtq4_1 * GGML_RESTRICT x, float 
 GGML_API void dequantize_row_vtq2_2(const block_vtq2_2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq3_2(const block_vtq3_2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq4_2(const block_vtq4_2 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_vtq2_2s(const block_vtq2_2s * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_vtq3_2s(const block_vtq3_2s * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+GGML_API void dequantize_row_vtq4_2s(const block_vtq4_2s * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq2_3(const block_vtq2_3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq3_3(const block_vtq3_3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 GGML_API void dequantize_row_vtq4_3(const block_vtq4_3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);

@@ -275,6 +275,21 @@ static __device__ __forceinline__ void dequantize_V_vtq4_2(const void * __restri
     dequantize_V_vtq_2<block_vtq4_2, 4, GGML_TRELLIS_L, T, ne>(vx, dst, i0);
 }
 
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq2_2s(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_2<block_vtq2_2s, 2, GGML_TRELLIS_L_S, T, ne>(vx, dst, i0);
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq3_2s(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_2<block_vtq3_2s, 3, GGML_TRELLIS_L_S, T, ne>(vx, dst, i0);
+}
+
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_vtq4_2s(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    dequantize_V_vtq_2<block_vtq4_2s, 4, GGML_TRELLIS_L_S, T, ne>(vx, dst, i0);
+}
+
 // VTQ_3 family — same trellis backbone as VTQ_2 plus OUTLIER_K fp16
 // outlier samples per block. After trellis decode, positions listed in
 // outlier_pos[] are overwritten with outlier_val[] (Phase 3 Step 4b).
@@ -430,6 +445,12 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_vtq3_2<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ4_2) {
         return dequantize_V_vtq4_2<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ2_2S) {
+        return dequantize_V_vtq2_2s<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ3_2S) {
+        return dequantize_V_vtq3_2s<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_VTQ4_2S) {
+        return dequantize_V_vtq4_2s<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ2_3) {
         return dequantize_V_vtq2_3<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ3_3) {

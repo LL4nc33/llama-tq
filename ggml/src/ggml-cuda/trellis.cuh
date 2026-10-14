@@ -6,7 +6,7 @@
 #include "../ggml-trellis.h"  // ggml_trellis_table() host accessor
 
 // Trellis v2 CUDA decoders + dequantize kernels for the trellis types. The decoders take the state bits L as a
-// template parameter (GGML_TRELLIS_L for all types).
+// template parameter: GGML_TRELLIS_L for vtq*_2, vtq*_3, vtq3_v8 and GGML_TRELLIS_L_S for vtq*_2s.
 // See ggml-trellis.h for the algorithmic description (shift register + LUT).
 //
 // Strategy:
@@ -145,6 +145,20 @@ static void dequantize_row_vtq4_2_cuda(const void * vx, dst_t * y, const int64_t
     trellis_dequantize_row_cuda<block_vtq4_2, 4, GGML_TRELLIS_L, dst_t>(vx, y, ne, stream);
 }
 
+// VTQ_2S family: the VTQ_2 layout with GGML_TRELLIS_L_S state bits.
+template <typename dst_t>
+static void dequantize_row_vtq2_2s_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
+    trellis_dequantize_row_cuda<block_vtq2_2s, 2, GGML_TRELLIS_L_S, dst_t>(vx, y, ne, stream);
+}
+template <typename dst_t>
+static void dequantize_row_vtq3_2s_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
+    trellis_dequantize_row_cuda<block_vtq3_2s, 3, GGML_TRELLIS_L_S, dst_t>(vx, y, ne, stream);
+}
+template <typename dst_t>
+static void dequantize_row_vtq4_2s_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
+    trellis_dequantize_row_cuda<block_vtq4_2s, 4, GGML_TRELLIS_L_S, dst_t>(vx, y, ne, stream);
+}
+
 // VTQ_3 family: trellis decode + 4-position fp16 outlier overlay.
 template <typename dst_t>
 static void dequantize_row_vtq2_3_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
@@ -251,6 +265,26 @@ static void dequantize_block_vtq4_2_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
     trellis_dequantize_nc_cuda<block_vtq4_2, 4, GGML_TRELLIS_L, dst_t>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+}
+
+// VTQ_2S family NC variants.
+template <typename dst_t>
+static void dequantize_block_vtq2_2s_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    trellis_dequantize_nc_cuda<block_vtq2_2s, 2, GGML_TRELLIS_L_S, dst_t>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+}
+template <typename dst_t>
+static void dequantize_block_vtq3_2s_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    trellis_dequantize_nc_cuda<block_vtq3_2s, 3, GGML_TRELLIS_L_S, dst_t>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+}
+template <typename dst_t>
+static void dequantize_block_vtq4_2s_nc_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    trellis_dequantize_nc_cuda<block_vtq4_2s, 4, GGML_TRELLIS_L_S, dst_t>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 
 // VTQ_3 family NC variants: trellis decode + 4-position fp16 outlier overlay.

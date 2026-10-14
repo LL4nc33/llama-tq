@@ -1427,8 +1427,8 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
     quantize_iq4_xs(x, y, 1, k, NULL);
 }
 
-// --- VTQ_2 (Trellis v2) vec_dot: dequantize then fp32 dot product ---
-// Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2.
+// --- VTQ_2 / VTQ_2S (Trellis v2) vec_dot: dequantize then fp32 dot product ---
+// Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2 / VTQ_2S.
 
 // alloca header is platform-specific — Windows ships it in malloc.h.
 #if defined(_WIN32)
@@ -1437,38 +1437,54 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
 #  include <alloca.h>
 #endif
 
-void ggml_vec_dot_vtq2_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
-        const void * GGML_RESTRICT vx, size_t bx,
-        const void * GGML_RESTRICT vy, size_t by, int nrc) {
-    (void)bs; (void)bx; (void)by; (void)nrc;
+static void vec_dot_trellis_f32(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx,
+        const void * GGML_RESTRICT vy, ggml_to_float_t to_float) {
     float * tmp = (float *)alloca((size_t)n * sizeof(float));
-    dequantize_row_vtq2_2((const block_vtq2_2 *)vx, tmp, n);
+    to_float(vx, tmp, n);
     const float * y = (const float *)vy;
     double sum = 0.0;
     for (int i = 0; i < n; i++) sum += (double)tmp[i] * (double)y[i];
     *s = (float)sum;
+}
+
+void ggml_vec_dot_vtq2_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq2_2);
 }
 
 void ggml_vec_dot_vtq3_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    float * tmp = (float *)alloca((size_t)n * sizeof(float));
-    dequantize_row_vtq3_2((const block_vtq3_2 *)vx, tmp, n);
-    const float * y = (const float *)vy;
-    double sum = 0.0;
-    for (int i = 0; i < n; i++) sum += (double)tmp[i] * (double)y[i];
-    *s = (float)sum;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq3_2);
 }
 
 void ggml_vec_dot_vtq4_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    float * tmp = (float *)alloca((size_t)n * sizeof(float));
-    dequantize_row_vtq4_2((const block_vtq4_2 *)vx, tmp, n);
-    const float * y = (const float *)vy;
-    double sum = 0.0;
-    for (int i = 0; i < n; i++) sum += (double)tmp[i] * (double)y[i];
-    *s = (float)sum;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq4_2);
+}
+
+void ggml_vec_dot_vtq2_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq2_2s);
+}
+
+void ggml_vec_dot_vtq3_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq3_2s);
+}
+
+void ggml_vec_dot_vtq4_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq4_2s);
 }

@@ -670,6 +670,9 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_2);  \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_2);  \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_2);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_2S); \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_2S); \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_2S); \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_3);  \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_3);  \
     extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_3);  \

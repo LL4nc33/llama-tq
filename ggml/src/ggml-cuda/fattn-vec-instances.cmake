@@ -47,12 +47,16 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-f16-vtq2_1.cu
     fattn-vec-instance-f16-vtq2_2-d512.cu
     fattn-vec-instance-f16-vtq2_2.cu
+    fattn-vec-instance-f16-vtq2_2s-d512.cu
+    fattn-vec-instance-f16-vtq2_2s.cu
     fattn-vec-instance-f16-vtq2_3-d512.cu
     fattn-vec-instance-f16-vtq2_3.cu
     fattn-vec-instance-f16-vtq3_1-d512.cu
     fattn-vec-instance-f16-vtq3_1.cu
     fattn-vec-instance-f16-vtq3_2-d512.cu
     fattn-vec-instance-f16-vtq3_2.cu
+    fattn-vec-instance-f16-vtq3_2s-d512.cu
+    fattn-vec-instance-f16-vtq3_2s.cu
     fattn-vec-instance-f16-vtq3_3-d512.cu
     fattn-vec-instance-f16-vtq3_3.cu
     fattn-vec-instance-f16-vtq3_v8-d512.cu
@@ -61,6 +65,8 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-f16-vtq4_1.cu
     fattn-vec-instance-f16-vtq4_2-d512.cu
     fattn-vec-instance-f16-vtq4_2.cu
+    fattn-vec-instance-f16-vtq4_2s-d512.cu
+    fattn-vec-instance-f16-vtq4_2s.cu
     fattn-vec-instance-f16-vtq4_3-d512.cu
     fattn-vec-instance-f16-vtq4_3.cu
     fattn-vec-instance-ktq1_1-f16-d512.cu
@@ -73,16 +79,22 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq1_1-vtq2_1.cu
     fattn-vec-instance-ktq1_1-vtq2_2-d512.cu
     fattn-vec-instance-ktq1_1-vtq2_2.cu
+    fattn-vec-instance-ktq1_1-vtq2_2s-d512.cu
+    fattn-vec-instance-ktq1_1-vtq2_2s.cu
     fattn-vec-instance-ktq1_1-vtq2_3-d512.cu
     fattn-vec-instance-ktq1_1-vtq2_3.cu
     fattn-vec-instance-ktq1_1-vtq3_2-d512.cu
     fattn-vec-instance-ktq1_1-vtq3_2.cu
+    fattn-vec-instance-ktq1_1-vtq3_2s-d512.cu
+    fattn-vec-instance-ktq1_1-vtq3_2s.cu
     fattn-vec-instance-ktq1_1-vtq3_3-d512.cu
     fattn-vec-instance-ktq1_1-vtq3_3.cu
     fattn-vec-instance-ktq1_1-vtq3_v8-d512.cu
     fattn-vec-instance-ktq1_1-vtq3_v8.cu
     fattn-vec-instance-ktq1_1-vtq4_2-d512.cu
     fattn-vec-instance-ktq1_1-vtq4_2.cu
+    fattn-vec-instance-ktq1_1-vtq4_2s-d512.cu
+    fattn-vec-instance-ktq1_1-vtq4_2s.cu
     fattn-vec-instance-ktq1_1-vtq4_3-d512.cu
     fattn-vec-instance-ktq1_1-vtq4_3.cu
     fattn-vec-instance-ktq2_1-f16-d512.cu
@@ -95,16 +107,22 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq2_1-vtq2_1.cu
     fattn-vec-instance-ktq2_1-vtq2_2-d512.cu
     fattn-vec-instance-ktq2_1-vtq2_2.cu
+    fattn-vec-instance-ktq2_1-vtq2_2s-d512.cu
+    fattn-vec-instance-ktq2_1-vtq2_2s.cu
     fattn-vec-instance-ktq2_1-vtq2_3-d512.cu
     fattn-vec-instance-ktq2_1-vtq2_3.cu
     fattn-vec-instance-ktq2_1-vtq3_2-d512.cu
     fattn-vec-instance-ktq2_1-vtq3_2.cu
+    fattn-vec-instance-ktq2_1-vtq3_2s-d512.cu
+    fattn-vec-instance-ktq2_1-vtq3_2s.cu
     fattn-vec-instance-ktq2_1-vtq3_3-d512.cu
     fattn-vec-instance-ktq2_1-vtq3_3.cu
     fattn-vec-instance-ktq2_1-vtq3_v8-d512.cu
     fattn-vec-instance-ktq2_1-vtq3_v8.cu
     fattn-vec-instance-ktq2_1-vtq4_2-d512.cu
     fattn-vec-instance-ktq2_1-vtq4_2.cu
+    fattn-vec-instance-ktq2_1-vtq4_2s-d512.cu
+    fattn-vec-instance-ktq2_1-vtq4_2s.cu
     fattn-vec-instance-ktq2_1-vtq4_3-d512.cu
     fattn-vec-instance-ktq2_1-vtq4_3.cu
     fattn-vec-instance-ktq3_1-f16-d512.cu
@@ -117,18 +135,24 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq3_1-vtq2_1.cu
     fattn-vec-instance-ktq3_1-vtq2_2-d512.cu
     fattn-vec-instance-ktq3_1-vtq2_2.cu
+    fattn-vec-instance-ktq3_1-vtq2_2s-d512.cu
+    fattn-vec-instance-ktq3_1-vtq2_2s.cu
     fattn-vec-instance-ktq3_1-vtq2_3-d512.cu
     fattn-vec-instance-ktq3_1-vtq2_3.cu
     fattn-vec-instance-ktq3_1-vtq3_1-d512.cu
     fattn-vec-instance-ktq3_1-vtq3_1.cu
     fattn-vec-instance-ktq3_1-vtq3_2-d512.cu
     fattn-vec-instance-ktq3_1-vtq3_2.cu
+    fattn-vec-instance-ktq3_1-vtq3_2s-d512.cu
+    fattn-vec-instance-ktq3_1-vtq3_2s.cu
     fattn-vec-instance-ktq3_1-vtq3_3-d512.cu
     fattn-vec-instance-ktq3_1-vtq3_3.cu
     fattn-vec-instance-ktq3_1-vtq3_v8-d512.cu
     fattn-vec-instance-ktq3_1-vtq3_v8.cu
     fattn-vec-instance-ktq3_1-vtq4_2-d512.cu
     fattn-vec-instance-ktq3_1-vtq4_2.cu
+    fattn-vec-instance-ktq3_1-vtq4_2s-d512.cu
+    fattn-vec-instance-ktq3_1-vtq4_2s.cu
     fattn-vec-instance-ktq3_1-vtq4_3-d512.cu
     fattn-vec-instance-ktq3_1-vtq4_3.cu
     fattn-vec-instance-ktq4_1-f16-d512.cu
@@ -141,12 +165,16 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq4_1-vtq2_1.cu
     fattn-vec-instance-ktq4_1-vtq2_2-d512.cu
     fattn-vec-instance-ktq4_1-vtq2_2.cu
+    fattn-vec-instance-ktq4_1-vtq2_2s-d512.cu
+    fattn-vec-instance-ktq4_1-vtq2_2s.cu
     fattn-vec-instance-ktq4_1-vtq2_3-d512.cu
     fattn-vec-instance-ktq4_1-vtq2_3.cu
     fattn-vec-instance-ktq4_1-vtq3_1-d512.cu
     fattn-vec-instance-ktq4_1-vtq3_1.cu
     fattn-vec-instance-ktq4_1-vtq3_2-d512.cu
     fattn-vec-instance-ktq4_1-vtq3_2.cu
+    fattn-vec-instance-ktq4_1-vtq3_2s-d512.cu
+    fattn-vec-instance-ktq4_1-vtq3_2s.cu
     fattn-vec-instance-ktq4_1-vtq3_3-d512.cu
     fattn-vec-instance-ktq4_1-vtq3_3.cu
     fattn-vec-instance-ktq4_1-vtq3_v8-d512.cu
@@ -155,6 +183,8 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq4_1-vtq4_1.cu
     fattn-vec-instance-ktq4_1-vtq4_2-d512.cu
     fattn-vec-instance-ktq4_1-vtq4_2.cu
+    fattn-vec-instance-ktq4_1-vtq4_2s-d512.cu
+    fattn-vec-instance-ktq4_1-vtq4_2s.cu
     fattn-vec-instance-ktq4_1-vtq4_3-d512.cu
     fattn-vec-instance-ktq4_1-vtq4_3.cu
     fattn-vec-instance-q4_0-ktq1_1-d512.cu
@@ -189,12 +219,16 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-q8_0-vtq2_1.cu
     fattn-vec-instance-q8_0-vtq2_2-d512.cu
     fattn-vec-instance-q8_0-vtq2_2.cu
+    fattn-vec-instance-q8_0-vtq2_2s-d512.cu
+    fattn-vec-instance-q8_0-vtq2_2s.cu
     fattn-vec-instance-q8_0-vtq2_3-d512.cu
     fattn-vec-instance-q8_0-vtq2_3.cu
     fattn-vec-instance-q8_0-vtq3_1-d512.cu
     fattn-vec-instance-q8_0-vtq3_1.cu
     fattn-vec-instance-q8_0-vtq3_2-d512.cu
     fattn-vec-instance-q8_0-vtq3_2.cu
+    fattn-vec-instance-q8_0-vtq3_2s-d512.cu
+    fattn-vec-instance-q8_0-vtq3_2s.cu
     fattn-vec-instance-q8_0-vtq3_3-d512.cu
     fattn-vec-instance-q8_0-vtq3_3.cu
     fattn-vec-instance-q8_0-vtq3_v8-d512.cu
@@ -203,6 +237,8 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-q8_0-vtq4_1.cu
     fattn-vec-instance-q8_0-vtq4_2-d512.cu
     fattn-vec-instance-q8_0-vtq4_2.cu
+    fattn-vec-instance-q8_0-vtq4_2s-d512.cu
+    fattn-vec-instance-q8_0-vtq4_2s.cu
     fattn-vec-instance-q8_0-vtq4_3-d512.cu
     fattn-vec-instance-q8_0-vtq4_3.cu
 )

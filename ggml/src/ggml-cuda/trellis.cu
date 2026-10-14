@@ -7,10 +7,10 @@
 //       * dp_cur  : pool_slots * S   floats, and
 //         dp_next : pool_slots * S   uint64 (packed cost<<32|prev), only for S > VTQ_ENC_SMEM_MAX_S, where the DP
 //                   rows do not fit in shared memory
-//     Per slot at L = 12: 1 MiB (32 MiB with the default 32 slots);
+//     Per slot at L = 12 (vtq*_2s): 1 MiB (32 MiB with the default 32 slots);
 //     at L = 16 (vtq*_2, vtq*_3, vtq3_v8): 16.75 MiB (536 MiB).
-//     A pool is allocated when its L is first encoded on that device, so types with fewer state bits never
-//     reserve the L = 16 pool. Override via env: GGML_CUDA_VTQ_POOL_SLOTS=<1..128>.
+//     A pool is allocated when its L is first encoded on that device, so the _2s types alone never reserve the
+//     L = 16 pool. Override via env: GGML_CUDA_VTQ_POOL_SLOTS=<1..128>.
 
 #include "trellis.cuh"
 #include "trellis-encode.cuh"

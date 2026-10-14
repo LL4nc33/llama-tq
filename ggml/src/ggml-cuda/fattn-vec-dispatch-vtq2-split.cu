@@ -1,4 +1,4 @@
-// E14 split-decode Dispatcher für VTQ_2 family (VTQ2_2, VTQ3_2, VTQ4_2).
+// E14 split-decode Dispatcher für VTQ_2 family (VTQ2_2, VTQ3_2, VTQ4_2, VTQ2_2S, VTQ3_2S, VTQ4_2S).
 //
 // When enabled via FATTN_VTQ2_SPLIT_ENABLE, this helper intercepts
 // ncols=1 (decode-path) FA calls on VTQ_2 V-cache, dequantizes V once

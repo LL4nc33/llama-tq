@@ -1,12 +1,13 @@
-// Trellis v2 shared code for the trellis KV-cache quant types (vtq{2,3,4}_2, vtq{2,3,4}_3, vtq3_v8).
+// Trellis v2 shared code for the trellis KV-cache quant types (vtq{2,3,4}_2, vtq{2,3,4}_2s, vtq{2,3,4}_3, vtq3_v8).
 //
 // Bitshift trellis (QTIP arXiv:2406.11235, little-endian emit):
 //   state_i = (state_{i-1} >> K) | (bits_i << (L-K))    (mod 2^L)
 // Decoder: iterative shift register + TABLE (inverse-Gaussian CDF) LUT.
 // Encoder: full Viterbi DP over 2^L states, group-level (joint path).
 //
-// One ggml block == one trellis group of QK_GROUP samples. The state bits L are a parameter of the encoder and
-// decoder; all types use L = 16 (65536 states).
+// One ggml block == one trellis group of QK_GROUP samples. State bits L per type:
+//   L = 16 (65536 states): vtq*_2, vtq*_3, vtq3_v8
+//   L = 12 (4096 states):  vtq*_2s, same block layout as vtq*_2, 16x fewer states for the encoder to search
 // K (code bits per sample) varies with the type: 2, 3, 4.
 
 #pragma once
@@ -26,6 +27,8 @@ extern "C" {
 #endif
 // state bits (start_state holds up to 16 bits)
 #define GGML_TRELLIS_L        16  // vtq*_2, vtq*_3, vtq3_v8
+#define GGML_TRELLIS_L_S      12  // vtq*_2s
+#define GGML_TRELLIS_TYPE_L(t) (GGML_TYPE_IS_VTQ_TRELLIS_S(t) ? GGML_TRELLIS_L_S : GGML_TRELLIS_L)
 #define GGML_TRELLIS_QK_GROUP 128  // samples per ggml-block (task #143: was 256)
 // 256 divides typical V-cache row sizes (head_dim * n_head_kv / tp):
 //   Qwen3.5-27B:  128*2 = 256     (exactly)
@@ -52,7 +55,7 @@ GGML_API const float * ggml_trellis_table(void);
 GGML_API void ggml_trellis_encode_group(
     const float * x,       // QK_GROUP input samples
     int           K,       // code bits (2, 3, or 4)
-    int           L,       // state bits (at most GGML_TRELLIS_L)
+    int           L,       // state bits (GGML_TRELLIS_L or GGML_TRELLIS_L_S)
     uint16_t    * out_start_state,
     float       * out_d,
     uint8_t     * qs);     // caller ensures capacity QK_GROUP*K/8 bytes

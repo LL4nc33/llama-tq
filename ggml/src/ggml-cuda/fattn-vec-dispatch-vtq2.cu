@@ -1,5 +1,5 @@
 // Dispatch helper for the VTQ_2 family slice of ggml_cuda_flash_attn_ext_vec.
-// Covers V=VTQ2_2, VTQ3_2, VTQ4_2 (Trellis v2).
+// Covers V=VTQ2_2, VTQ3_2, VTQ4_2 (Trellis v2) and VTQ2_2S, VTQ3_2S, VTQ4_2S (the same with 12 state bits).
 //
 // Split from fattn-vec-dispatch-vtq.cu so VTQ_1 / VTQ_2 / VTQ_3 family cases
 // compile in parallel. Each TU instantiates a disjoint slice of the
@@ -40,6 +40,9 @@ bool try_dispatch_vec_vtq2(ggml_backend_cuda_context * ctx, ggml_tensor * dst) {
     if (try_dispatch_vec_vtq2_2(ctx, dst)) return true;
     if (try_dispatch_vec_vtq3_2(ctx, dst)) return true;
     if (try_dispatch_vec_vtq4_2(ctx, dst)) return true;
+    if (try_dispatch_vec_vtq2_2s(ctx, dst)) return true;
+    if (try_dispatch_vec_vtq3_2s(ctx, dst)) return true;
+    if (try_dispatch_vec_vtq4_2s(ctx, dst)) return true;
 
     GGML_UNUSED(ctx); GGML_UNUSED(dst);
     GGML_UNUSED(Q); GGML_UNUSED(K); GGML_UNUSED(V);

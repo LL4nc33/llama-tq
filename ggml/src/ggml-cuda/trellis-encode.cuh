@@ -1,7 +1,7 @@
 // Trellis v2 CUDA encoder (full Viterbi, no pruning).
 //
 // Two kernels, chosen by the state bits L of the type (vtq_cuda_encode_set_rows):
-//   L <= 14: k_vtq_encode_trellis_smem below, DP rows in shared memory.
+//   L <= 14 (vtq*_2s, L = 12): k_vtq_encode_trellis_smem below, DP rows in shared memory.
 //   L = 16 (vtq*_2, vtq*_3, vtq3_v8): k_vtq_encode_trellis_set_rows, DP rows in global memory, described here.
 //
 // 1 CUDA block == 1 trellis block (N=QK_VTQ_TRELLIS=128 samples, S=2^L states).

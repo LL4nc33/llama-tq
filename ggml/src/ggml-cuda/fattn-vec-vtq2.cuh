@@ -46,9 +46,9 @@ static constexpr __device__ int ggml_cuda_fattn_vec_vtq2_get_nthreads_device() {
 // which points at the per-warp slot (size == QK_VTQ_TRELLIS halfs).
 //
 // Template params:
-//   block_t : block_vtq2_2 / block_vtq3_2 / block_vtq4_2
+//   block_t : block_vtq2_2 / block_vtq3_2 / block_vtq4_2 (the _2s blocks are the same types)
 //   K       : bits-per-sample (2, 3, 4)
-//   L       : state bits (GGML_TRELLIS_L)
+//   L       : state bits (GGML_TRELLIS_L, GGML_TRELLIS_L_S for vtq*_2s)
 template <typename block_t, int K, int L>
 static __device__ __forceinline__ void vtq2_block_warm(
         const block_t * __restrict__ x_block,
@@ -119,8 +119,9 @@ static __global__ void flash_attn_ext_vec_vtq2_cached(
     // Phase 3A1: only KTQ2_1 × VTQ3_2, D=128, ncols=1 are real instances.
     // Every other combination is compiled to an early-out so cicc does not
     // explode on template variants we do not ship yet.
-    static_assert(type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2,
-                  "flash_attn_ext_vec_vtq2_cached: V must be VTQ_2 family");
+    static_assert(type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ4_2 ||
+                  GGML_TYPE_IS_VTQ_TRELLIS_S(type_V),
+                  "flash_attn_ext_vec_vtq2_cached: V must be VTQ_2 or VTQ_2S family");
 
     if (use_logit_softcap && !(D == 128 || D == 256 || D == 512)) {
         GGML_UNUSED_VARS(Q, K, V, mask, sinks, KV_max, dst, dst_meta, scale,
@@ -316,9 +317,9 @@ static __global__ void flash_attn_ext_vec_vtq2_cached(
     // --- Pick block type for cooperative warm based on type_V ---
     // Phase 3A1 only instantiates VTQ3_2. Other VTQ_2 types compile in for
     // completeness but never get launched (dispatch guards via ifdef).
-    constexpr int K_bits = (type_V == GGML_TYPE_VTQ2_2) ? 2
-                         : (type_V == GGML_TYPE_VTQ3_2) ? 3 : 4;
-    constexpr int L_bits = GGML_TRELLIS_L;
+    constexpr int K_bits = (type_V == GGML_TYPE_VTQ2_2 || type_V == GGML_TYPE_VTQ2_2S) ? 2
+                         : (type_V == GGML_TYPE_VTQ3_2 || type_V == GGML_TYPE_VTQ3_2S) ? 3 : 4;
+    constexpr int L_bits = GGML_TRELLIS_TYPE_L(type_V);
     using block_t =
         typename std::conditional<K_bits == 2, block_vtq2_2,
         typename std::conditional<K_bits == 3, block_vtq3_2,
