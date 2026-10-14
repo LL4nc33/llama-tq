@@ -614,7 +614,10 @@ static best_fattn_kernel ggml_cuda_get_preferred_fattn_kernel(const int device, 
         // the MMA kernel takes head size 512 (Gemma 4 global layers) only with GQA batching
         const bool d_split = K->ne[0] == V->ne[0] && (K->ne[0] == 64 || K->ne[0] == 80 || K->ne[0] == 96 ||
                              K->ne[0] == 112 || K->ne[0] == 128 || K->ne[0] == 256 || (K->ne[0] == 512 && gqa_opt_applies));
-        if (k_split && v_split && d_split && turing_mma_available(cc) && Q->ne[1] >= 8) {
+        // from 2 queries on (speculative decoding verifies a few tokens at a time): the VEC kernel reads the cache once
+        // per Q head and query, so its cost grows with the batch (Qwen3-4B ktq4_1/vtq4_1, one RTX 2060, 4 queries at 32k
+        // context: 27 t/s with VEC, 82 t/s here)
+        if (k_split && v_split && d_split && turing_mma_available(cc) && Q->ne[1] >= 2) {
             return BEST_FATTN_KERNEL_MMA_KTQ;
         }
         return BEST_FATTN_KERNEL_VEC;
