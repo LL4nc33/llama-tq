@@ -300,6 +300,15 @@ llama_context::llama_context(
 
     cparams.n_ubatch = std::min(cparams.n_batch, params.n_ubatch == 0 ? params.n_batch : params.n_ubatch);
 
+    // split_equal keeps the last (n_rs_seq + 1) tokens of a sequence in one ubatch, which needs a larger ubatch
+    if (cparams.n_rs_seq > 0 && cparams.n_ubatch <= cparams.n_rs_seq + 1) {
+        const uint32_t n_ubatch_min = cparams.n_rs_seq + 2;
+        LLAMA_LOG_WARN("%s: n_ubatch = %u is too small for n_rs_seq = %u, raising n_ubatch to %u\n",
+                __func__, cparams.n_ubatch, cparams.n_rs_seq, n_ubatch_min);
+        cparams.n_ubatch = n_ubatch_min;
+        cparams.n_batch  = std::max(cparams.n_batch, n_ubatch_min);
+    }
+
     cparams.n_outputs_max = params.n_outputs_max == 0 ? cparams.n_batch : params.n_outputs_max;
 
     cparams.op_offload = params.op_offload;
