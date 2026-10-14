@@ -2,4 +2,4 @@
 
 #include "../fattn-vec-gqa.cuh"
 
-DECL_FATTN_VEC_GQA_CASE(128, 4);
+DECL_FATTN_VEC_GQA_CASE(256, 4, GGML_TYPE_KTQ4_1);

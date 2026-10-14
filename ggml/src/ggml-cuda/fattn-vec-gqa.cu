@@ -1,7 +1,18 @@
 #include "fattn-vec-gqa.cuh"
 
-// Decode with a TurboQuant K or V cache and grouped-query attention: one block per GQA group instead of one per
+// Decode with a quantized K or V cache and grouped-query attention: one block per GQA group instead of one per
 // Q head (see fattn-vec-gqa.cuh). Returns false if the shape or the types are not covered.
+
+// the kernels are compiled in template-instances/fattn-gqa-instance-*.cu, one TU per (head size, ncols, K type)
+template <ggml_type type_K>
+static bool fattn_gqa_dispatch_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const int64_t D, const int ncols, const bool use_sparse) {
+    if (D == 128) {
+        return ncols == 4 ? ggml_cuda_flash_attn_ext_vec_gqa_d<128, 4, type_K>(ctx, dst, use_sparse) :
+                            ggml_cuda_flash_attn_ext_vec_gqa_d<128, 8, type_K>(ctx, dst, use_sparse);
+    }
+    return ncols == 4 ? ggml_cuda_flash_attn_ext_vec_gqa_d<256, 4, type_K>(ctx, dst, use_sparse) :
+                        ggml_cuda_flash_attn_ext_vec_gqa_d<256, 8, type_K>(ctx, dst, use_sparse);
+}
 
 bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * Q     = dst->src[0];
@@ -36,14 +47,19 @@ bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tens
     }
 
     // GQA groups of up to 4 Q heads fit one 4-column block, larger groups use blocks of 8.
-    // The kernels are compiled in template-instances/fattn-gqa-instance-*.cu, one TU per (head size, ncols).
     const int64_t D = Q->ne[0];
-    if (gqa_ratio <= 4) {
-        if (D == 256) return ggml_cuda_flash_attn_ext_vec_gqa_d<256, 4>(ctx, dst, use_sparse);
-        if (D == 128) return ggml_cuda_flash_attn_ext_vec_gqa_d<128, 4>(ctx, dst, use_sparse);
+    if (D != 128 && D != 256) {
         return false;
     }
-    if (D == 256) return ggml_cuda_flash_attn_ext_vec_gqa_d<256, 8>(ctx, dst, use_sparse);
-    if (D == 128) return ggml_cuda_flash_attn_ext_vec_gqa_d<128, 8>(ctx, dst, use_sparse);
-    return false;
+    const int ncols = gqa_ratio <= 4 ? 4 : 8;
+    switch (K->type) {
+        case GGML_TYPE_F16:    return fattn_gqa_dispatch_k<GGML_TYPE_F16>   (ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_Q8_0:   return fattn_gqa_dispatch_k<GGML_TYPE_Q8_0>  (ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_Q5_0:   return fattn_gqa_dispatch_k<GGML_TYPE_Q5_0>  (ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_Q4_0:   return fattn_gqa_dispatch_k<GGML_TYPE_Q4_0>  (ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_KTQ2_1: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ2_1>(ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_KTQ3_1: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ3_1>(ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_KTQ4_1: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ4_1>(ctx, dst, D, ncols, use_sparse);
+        default:               return false;
+    }
 }

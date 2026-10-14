@@ -7,7 +7,7 @@
 #include "fattn-wmma-f16.cuh"
 #include "fattn.cuh"
 
-// fattn-vec-gqa.cu: TurboQuant decode with one block per GQA group
+// fattn-vec-gqa.cu: decode with a quantized KV cache, one block per GQA group
 bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 // fattn-tq-wmma.cu: tensor-core decode for quantized KV (GGML_CUDA_TQ_WMMA=0 disables it)
 bool ggml_cuda_flash_attn_ext_tq_wmma(ggml_backend_cuda_context & ctx, ggml_tensor * dst);

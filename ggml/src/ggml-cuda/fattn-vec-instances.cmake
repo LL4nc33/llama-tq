@@ -19,7 +19,7 @@ function(ggml_cuda_fattn_vec_instances OUT_VAR DIR)
             list(APPEND SRCS "${DIR}/${NAME}")
         endforeach()
     endif()
-    # the TurboQuant GQA decode kernel (fattn-vec-gqa.cu), one TU per head size and block width
+    # the GQA decode kernel for quantized caches (fattn-vec-gqa.cu), one TU per head size, block width and K type
     file(GLOB GQA_SRCS "${DIR}/fattn-gqa*.cu")
     list(APPEND SRCS ${GQA_SRCS})
     set(${OUT_VAR} ${SRCS} PARENT_SCOPE)

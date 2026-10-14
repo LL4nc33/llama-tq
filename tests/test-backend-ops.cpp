@@ -9795,6 +9795,23 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // decode with the GQA kernel (more than 256 cells, GQA 4 and 8): every K/V pair it covers, with and without logit
+    // softcap
+    for (ggml_type type_K : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_0, GGML_TYPE_Q4_0,
+                             GGML_TYPE_KTQ2_1, GGML_TYPE_KTQ3_1, GGML_TYPE_KTQ4_1}) {
+        for (ggml_type type_V : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_0, GGML_TYPE_Q4_0,
+                                 GGML_TYPE_VTQ2_1, GGML_TYPE_VTQ3_1, GGML_TYPE_VTQ4_1}) {
+            for (int hs : {128, 256}) {
+                for (int gqa : {4, 8}) {
+                    for (float softcap : {0.0f, 10.0f}) {
+                        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {gqa, 1}, 1024, 1, true, false, 0,
+                                    softcap, GGML_PREC_F32, type_K, type_V));
+                    }
+                }
+            }
+        }
+    }
+
     // TurboQuant K/V at head 64 with attention sinks (gpt-oss: 8 KV heads, GQA 8)
     for (bool sinks : {false, true}) {
         for (int64_t nb : {1, 2, 8}) {
