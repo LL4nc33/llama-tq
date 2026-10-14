@@ -1196,6 +1196,11 @@ float * llama_context::get_embeddings_layer_inp(uint32_t lid) {
 }
 
 void llama_context::set_embeddings_nextn(bool value, bool masked) {
+    if (cparams.embeddings_nextn != value || cparams.embeddings_nextn_masked != masked) {
+        // these flags change the graph shape (crop_before_nextn / crop_after_nextn)
+        sched_need_reserve = true;
+    }
+
     cparams.embeddings_nextn        = value;
     cparams.embeddings_nextn_masked = masked;
 }
@@ -1701,9 +1706,8 @@ int llama_context::encode(const llama_batch & batch_inp) {
     auto * t_logits        = res->get_logits();
     auto * t_embd          = res->get_embd_pooled() ? res->get_embd_pooled() : res->get_embd();
     auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm() : nullptr;
-    // get_h_nextn() returns t_h_nextn when the graph populated it (DFlash2 packs its
-    // selector lattice there) and otherwise falls back to t_h_pre_norm (MTP/EAGLE3 reuse
-    // the pre-norm slot). Reading get_h_pre_norm() directly starved DFlash2 of its lattice.
+    // get_h_nextn() returns t_h_nextn as set by the graph (DFlash2 selector lattice, MTP
+    // post-norm hidden state); there is no fallback to t_h_pre_norm.
     auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_nextn() : nullptr;
     auto * t_h_eagle3_low  = cparams.embeddings_eagle3 ? res->get_h_eagle3_low()  : nullptr;
     auto * t_h_eagle3_mid  = cparams.embeddings_eagle3 ? res->get_h_eagle3_mid()  : nullptr;
@@ -2186,7 +2190,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         auto * t_logits        = res->get_logits();
         auto * t_embd          = cparams.embeddings          ? res->get_embd()        : nullptr;
         auto * t_h_pre_norm    = cparams.embeddings_pre_norm ? res->get_h_pre_norm()  : nullptr;
-        auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_nextn()     : nullptr; // DFlash2 lattice via t_h_nextn, MTP falls back to h_pre_norm
+        auto * t_h_nextn       = cparams.embeddings_nextn ? res->get_h_nextn()     : nullptr; // DFlash2 lattice / MTP post-norm hidden state
         auto * t_h_eagle3_low  = cparams.embeddings_eagle3 ? res->get_h_eagle3_low()  : nullptr;
         auto * t_h_eagle3_mid  = cparams.embeddings_eagle3 ? res->get_h_eagle3_mid()  : nullptr;
         auto * t_h_eagle3_high = cparams.embeddings_eagle3 ? res->get_h_eagle3_high() : nullptr;

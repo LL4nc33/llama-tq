@@ -678,8 +678,10 @@ struct llm_graph_params {
         }
 
         return
-            cparams.embeddings  == other.cparams.embeddings  &&
-            cparams.causal_attn == other.cparams.causal_attn &&
+            cparams.embeddings              == other.cparams.embeddings              &&
+            cparams.embeddings_nextn        == other.cparams.embeddings_nextn        &&
+            cparams.embeddings_nextn_masked == other.cparams.embeddings_nextn_masked &&
+            cparams.causal_attn             == other.cparams.causal_attn             &&
             arch  == other.arch  &&
             gtype == other.gtype &&
             cvec  == other.cvec  &&
@@ -702,7 +704,7 @@ public:
     // PR #23398: Gemma4 MTP post-output-norm hidden-state slot (LM-head input feature).
     // Distinct from t_h_pre_norm; populated by gemma4 graph builder.
     // Return t_h_nextn as-is (no h_pre_norm fallback): all nextn producers (dflash,
-    // gemma4, gemma4-assistant) set it explicitly, and the fallback made the nextn
+    // gemma4, gemma4-assistant, qwen35/qwen35moe) set it explicitly, and the fallback made the nextn
     // export path resolve to an out-of-graph tensor on injection decodes, permuting
     // the DFlash2 selector lattice. Matches upstream get_h_nextn().
     ggml_tensor * get_h_nextn()     const { return t_h_nextn; }
@@ -747,9 +749,9 @@ public:
     ggml_tensor * t_embd_pooled = nullptr;
     ggml_tensor * t_h_pre_norm  = nullptr; // [n_embd, n_outputs] hidden state before final output norm
 
-    // PR #23398: Gemma4 MTP post-output-norm hidden-state (LM-head input feature),
-    // distinct from t_h_pre_norm. Populated by gemma4 graph builder; falls back to
-    // t_h_pre_norm via get_h_nextn() when null (other models keep Eagle3 behavior).
+    // MTP / DFlash hidden-state export (llama_get_embeddings_nextn). For MTP it is the
+    // post-output-norm hidden state (LM-head input feature); every graph that serves an
+    // MTP head must set it explicitly, there is no fallback to t_h_pre_norm.
     ggml_tensor * t_h_nextn     = nullptr;
 
     // Eagle3-style draft-head taps. Populated by base-model graph builders when
@@ -872,6 +874,17 @@ struct llm_graph_context {
     virtual ~llm_graph_context() = default;
 
     void cb(ggml_tensor * cur, const char * name, int il) const;
+
+    // true when the last layer must be narrowed to the output rows before the nextn hidden state is captured
+    bool crop_before_nextn(const ggml_tensor * inp_out_ids) const {
+        return inp_out_ids != nullptr && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked);
+    }
+
+    // true when the nextn hidden state must be narrowed to the output rows after it is captured
+    // (unmasked export: one row per batch token, read back by batch position)
+    bool crop_after_nextn(const ggml_tensor * inp_out_ids) const {
+        return inp_out_ids != nullptr && cparams.embeddings_nextn && !cparams.embeddings_nextn_masked;
+    }
 
     //
     // common

@@ -192,7 +192,7 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
         }
 
-        if (il == n_transformer_layers - 1 && inp_out_ids) {
+        if (il == n_transformer_layers - 1 && crop_before_nextn(inp_out_ids)) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -248,11 +248,16 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
     }
     cur = inpL;
 
-    // Final norm
+    // Final norm. The post-norm hidden state feeds both the LM head and the MTP head (h_nextn).
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
 
-    // h_pre_norm semantically means "hidden state pre-LM-head" but for MTP head
-    // input it must be the POST-output_norm hidden state (matches upstreams t_h_nextn).
+    cb(cur, "h_nextn", -1);
+    res->t_h_nextn = cur;
+
+    if (crop_after_nextn(inp_out_ids)) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
+
     cb(cur, "h_pre_norm", -1);
     res->t_h_pre_norm = cur;
 
@@ -699,9 +704,20 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
     cb(cur, "mtp_shared_head_norm", -1);
 
-    // Post-norm hidden state — seed for the next AR draft step. Matches upstreams t_h_nextn semantics.
-    cb(cur, "h_pre_norm", -1);
-    res->t_h_pre_norm = cur;
+    // Post-norm hidden state: seeds the next AR draft step (h_nextn), and only the output rows
+    // need the LM head. The masked export reads one row per output, the unmasked one per token.
+    ggml_tensor * inp_out_ids = build_inp_out_ids();
+
+    if (crop_before_nextn(inp_out_ids)) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
+
+    cb(cur, "h_nextn", -1);
+    res->t_h_nextn = cur;
+
+    if (crop_after_nextn(inp_out_ids)) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    }
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
