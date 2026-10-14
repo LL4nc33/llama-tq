@@ -91,7 +91,7 @@ struct llm_build_delta_net_base : public llm_graph_context {
                 ggml_tensor * s,
                         int   il);
 
-    // true when speculative rollback is enabled and the batch fits in the rs cache
+    // true when speculative rollback is enabled (n_rs_seq > 0): every ubatch then writes n_rs_seq + 1 state snapshots
     bool keep_rs() const;
 
     // whether the gate activations of this ubatch can be folded into the gated delta net op: the op

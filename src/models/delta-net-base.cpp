@@ -470,10 +470,10 @@ bool llm_build_delta_net_base::gdn_raw_gates_usable(bool rollback_path) const {
 }
 
 bool llm_build_delta_net_base::keep_rs() const {
-    const int64_t n_seq_tokens = ubatch.n_seq_tokens;
-    return cparams.n_rs_seq > 0
-        && n_seq_tokens > 1
-        && (uint32_t) n_seq_tokens <= 1 + cparams.n_rs_seq;
+    // every ubatch takes the rollback path when rollback is enabled: split_equal keeps the last
+    //   (n_rs_seq + 1) tokens of a sequence in one ubatch, and a constant path keeps the graph topology
+    //   independent of the ubatch length
+    return cparams.n_rs_seq > 0;
 }
 
 ggml_tensor * llm_build_delta_net_base::build_conv_state(
@@ -486,9 +486,8 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
     const auto * mctx_cur   = inp->mctx;
     const auto   kv_head    = mctx_cur->get_head();
     const uint32_t mem_size = mctx_cur->get_size();
-    const int64_t n_seqs       = ubatch.n_seqs;
-    const int64_t n_seq_tokens = ubatch.n_seq_tokens;
-    const bool    keep         = keep_rs();
+    const int64_t n_seqs    = ubatch.n_seqs;
+    const bool    keep      = keep_rs();
 
     ggml_tensor * conv_states = build_rs(inp, conv_states_all, hparams.n_embd_r(), n_seqs);
     cb(conv_states, "conv_states", il);
@@ -515,19 +514,32 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
 
         ggml_build_forward_expand(gf, ggml_cpy(ctx0, last_conv_states, state_update_target));
     } else {
+        // [TAG_RECURRENT_ROLLBACK_SPLITS]
+        // this logic assumes that the last (n_rs_seq + 1) tokens of a sequence in a batch are inside
+        //   the same ubatch, which `split_equal()` guarantees via its n_keep_tail argument
+        // always K copies, whatever the ubatch length, so the graph topology stays the same; slot s gets the
+        //   conv window s tokens back, clamped to the incoming state when the ubatch is shorter than s
+        const int64_t K         = (int64_t) cparams.n_rs_seq + 1;
         const int64_t row_count = (conv_kernel_size - 1) * conv_channels;
-        const size_t  row_size  = row_count * ggml_element_size(conv_states_all);
-        for (int64_t t = 1; t <= n_seq_tokens; ++t) {
-            const uint32_t slot = (uint32_t)(n_seq_tokens - t);
-            ggml_tensor * src =
-                ggml_view_3d(ctx0, conv_input, conv_kernel_size - 1, conv_channels, n_seqs,
-                             conv_input->nb[1], conv_input->nb[2],
-                             t * ggml_element_size(conv_input));
-            ggml_tensor * dst =
-                ggml_view_2d(ctx0, conv_states_all, row_count, n_seqs,
-                             conv_states_all->nb[1],
-                             ((size_t) slot * mem_size + kv_head) * row_size);
-            ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
+        const size_t  row_size  = ggml_row_size(conv_states_all->type, row_count);
+
+        for (int64_t t = 1; t <= K; ++t) {
+            const int64_t s_idx  = std::max<int64_t>(0, conv_input->ne[0] - conv_states->ne[0] - K + t);
+            const int64_t s_slot = K - t;
+
+            ggml_tensor * conv_state_last =
+                ggml_view_3d(ctx0, conv_input,
+                        conv_kernel_size - 1, conv_channels, n_seqs,
+                        conv_input->nb[1], conv_input->nb[2],
+                        ggml_row_size(conv_input->type, s_idx));
+
+            ggml_tensor * conv_state_update =
+                ggml_view_2d(ctx0,
+                        conv_states_all, row_count, n_seqs,
+                        conv_states_all->nb[1],
+                        ((size_t) s_slot * mem_size + kv_head) * row_size);
+
+            ggml_build_forward_expand(gf, ggml_cpy(ctx0, conv_state_last, conv_state_update));
         }
     }
 

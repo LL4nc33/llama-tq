@@ -106,7 +106,7 @@ llama_memory_context_ptr llama_memory_hybrid_idx::init_batch(llama_batch_allocr 
             } else {
                 const bool unified = (get_mem_attn()->get_n_stream() == 1);
 
-                ubatch = balloc.split_equal(n_ubatch, !unified);
+                ubatch = balloc.split_equal(n_ubatch, !unified, 0);
             }
 
             if (ubatch.n_tokens == 0) {
