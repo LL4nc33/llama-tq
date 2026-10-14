@@ -18,7 +18,9 @@ in CPU flash attention; there are no tuned CPU kernels, and the V rotation runs 
 Accuracy first, then speed, then memory: use `f16` when the context fits, otherwise `-ctk q8_0 -ctv
 q8_0` (at the numerical noise floor of the model; speed: [benchmarks](benchmarks/README.md)). `-ctk q8_0 -ctv vtq4_1` (6.5 bpw) stays close to that and
 decodes as fast as `q8_0`; it is the choice for models that need 8-bit K such as gpt-oss. `-ctk ktq4_1 -ctv vtq4_1`
-(5 bpw) is as accurate as or more accurate than `q4_0`; use it when you need the memory. The 2-bit types still lose a lot.
+(5 bpw) is as accurate as or more accurate than `q4_0`; use it when you need the memory. The 2-bit types still lose a lot:
+on Qwen3-4B, 2-bit K no longer retrieves exact text from a long context, on Qwen3.6-35B-A3B it does ([Long-context
+retrieval](#long-context-retrieval)).
 
 ## Overview
 
@@ -199,6 +201,30 @@ flash attention off: the numerical noise floor of the model, below which no KV t
 - Mixed pairs such as `q8_0` K with `vtq{2,3,4}_1` or `q4_0` V, or `ktq4_1` K with `q8_0` V, use the GQA decode kernel
   (every pair of the listed types since 2026-10-14) and decode about as fast as `q8_0` / `q8_0`
   ([benchmarks](benchmarks/README.md)).
+
+### Long-context retrieval
+
+A copy task closer to real use than KLD: a synthetic changelog of about 29k tokens, the request to copy one section
+verbatim and summarize it, greedy decoding in `llama-server`; a prompt counts when the copy is exact. Qwen3-4B Q4_K_M
+on one RTX 2060, 36 prompts (6 documents, target sections at 10-85 % of the context); Qwen3.6-35B-A3B Q4_K_M on two,
+12 prompts (3 documents, 15-90 %); 2026-10-14:
+
+| K / V | Qwen3-4B | Qwen3.6-35B-A3B |
+|---|---:|---:|
+| f16 / f16 | 32/36 | |
+| `q8_0` / `q8_0` | 31/36 | 12/12 |
+| `q8_0` / `vtq4_1` | 32/36 | 12/12 |
+| `ktq4_1` / `vtq4_1` | 32/36 | 12/12 |
+| `q8_0` / `vtq2_1` | 31/36 | |
+| `ktq3_1` / `vtq3_1` | 9/12 | |
+| `ktq2_1` / `vtq2_1` | **0/36** | 12/12 |
+| `ktq2_1` / f16 | **0/12** | |
+
+- Up to 4 bits per K value every pair copies as well as f16 on Qwen3-4B; the prompts that fail are mostly the same
+  ones for every type (the model picks the neighbouring section's version number).
+- 2-bit K loses the retrieval completely on Qwen3-4B: the copies are fluent but wrong lines, with f16 V too, with every
+  decode kernel and in the release of 2026-10-12 as well. On Qwen3.6-35B-A3B the same pair copies every section.
+  Check your own model before relying on `ktq2_1`.
 
 Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 

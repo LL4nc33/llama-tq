@@ -89,8 +89,7 @@ With a VTQ V cache, speculation gained nothing before (every verify step convert
 CHANGELOG of 2026-10-14 for the verify batches. With `q8_0` and `q8_0` / `vtq4_1` the text with speculation is
 byte-identical to the text without. On this prompt the model picks the right version digit of the copied heading
 with only 59 % probability even with an f16 cache, so `ktq4_1` / `vtq4_1` copies the neighbouring section in both
-builds; over 12 prompts (3 documents, 4 target positions, about 29k tokens each) the exact copies were f16 12,
-`q8_0` 12, `q8_0` / `vtq4_1` 12, `ktq4_1` / `vtq4_1` 11, `q4_0` 10.
+builds; copy accuracy over many prompts: [TurboQuant, long-context retrieval](../turboquant.md#long-context-retrieval).
 
 ## Against upstream, two GPUs
 
