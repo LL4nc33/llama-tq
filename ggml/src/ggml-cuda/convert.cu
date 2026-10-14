@@ -42,6 +42,74 @@ static __global__ void dequantize_block(const void * __restrict__ vx, dst_t * __
     }
 }
 
+// Non-contiguous dequantization of the 32-element legacy types (the f16 copies of a quantized KV cache for the
+// tensor-core prompt kernels). dequantize_block above starts 256 threads per row and block, of which only ne00/2
+// work (64 for a head of 128). Here one thread decodes 8 elements of a block: for qr == 1 eight consecutive ones,
+// stored with one 16-byte f16 store, for qr == 2 four from each half of the block, stored with two 8-byte stores.
+template <int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
+static __global__ void dequantize_block_x8(const void * __restrict__ vx, dst_t * __restrict__ y, const uint32_t n_threads,
+        const uint3 chunks_per_row, const uint3 ne01_fd, const uint3 ne02_fd,
+        const int64_t s01, const int64_t s02, const int64_t s03) {
+    static_assert(qk == 32 && (qr == 1 || qr == 2), "32-element blocks of 1 or 2 values per quant index");
+    const uint32_t g = blockIdx.x*blockDim.x + threadIdx.x;
+    if (g >= n_threads) {
+        return;
+    }
+    const uint2 rc  = fast_div_modulo(g,     chunks_per_row); // row, chunk of 8 in the row
+    const uint2 r01 = fast_div_modulo(rc.x,  ne01_fd);        // i02 + ne02*i03, i01
+    const uint2 r23 = fast_div_modulo(r01.x, ne02_fd);        // i03, i02
+    const int64_t ib   = r23.x*s03 + r23.y*s02 + r01.y*s01 + rc.y/4;
+    const int     part = rc.y % 4;
+
+    float v[8];
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        float2 v2;
+        if constexpr (qr == 1) {
+            dequantize_kernel(vx, ib, 8*part + 2*i, v2); // elements 8*part + 2*i and + 1
+            v[2*i] = v2.x;
+            v[2*i + 1] = v2.y;
+        } else {
+            dequantize_kernel(vx, ib, 4*part + i, v2);   // elements 4*part + i and 4*part + i + 16
+            v[i] = v2.x;
+            v[4 + i] = v2.y;
+        }
+    }
+
+    dst_t * dst = y + (int64_t(g) - part)*8; // start of this block in the output (rows are contiguous)
+    if constexpr (std::is_same_v<dst_t, half>) {
+        half2 h[4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            h[i] = __floats2half2_rn(v[2*i], v[2*i + 1]);
+        }
+        if constexpr (qr == 1) {
+            *(uint4 *) (dst + 8*part) = *(const uint4 *) h;
+        } else {
+            *(uint2 *) (dst + 4*part)      = *(const uint2 *) h;
+            *(uint2 *) (dst + 4*part + 16) = *(const uint2 *) (h + 2);
+        }
+    } else {
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const int e = qr == 1 ? 8*part + i : 4*part + i%4 + 16*(i/4);
+            dst[e] = ggml_cuda_cast<dst_t>(v[i]);
+        }
+    }
+}
+
+template <int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
+static void dequantize_block_x8_cuda(const void * vx, dst_t * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    const int64_t n_threads = ne00/8 * ne01*ne02*ne03;
+    GGML_ASSERT(ne00 % qk == 0 && n_threads <= INT32_MAX); // fastdiv needs n < 2^31
+    constexpr int block_size = 256;
+    const int64_t n_blocks = (n_threads + block_size - 1) / block_size;
+    dequantize_block_x8<qk, qr, dequantize_kernel, dst_t><<<n_blocks, block_size, 0, stream>>>(vx, y, n_threads,
+        init_fastdiv_values(ne00/8), init_fastdiv_values(ne01), init_fastdiv_values(ne02), s01, s02, s03);
+}
+
 template <bool need_check>
 static __global__ void dequantize_block_q8_0_f16(const void * __restrict__ vx, half * __restrict__ y, const int64_t k) {
 #if __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
@@ -1059,19 +1127,19 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
         case GGML_TYPE_F32:
             return convert_unary_cuda<float>;
         case GGML_TYPE_Q4_0:
-            return dequantize_block_cuda<QK4_0, QR4_0, dequantize_q4_0>;
+            return dequantize_block_x8_cuda<QK4_0, QR4_0, dequantize_q4_0>;
         case GGML_TYPE_Q4_1:
-            return dequantize_block_cuda<QK4_1, QR4_1, dequantize_q4_1>;
+            return dequantize_block_x8_cuda<QK4_1, QR4_1, dequantize_q4_1>;
         case GGML_TYPE_Q5_0:
-            return dequantize_block_cuda<QK5_0, QR5_0, dequantize_q5_0>;
+            return dequantize_block_x8_cuda<QK5_0, QR5_0, dequantize_q5_0>;
         case GGML_TYPE_Q5_1:
-            return dequantize_block_cuda<QK5_1, QR5_1, dequantize_q5_1>;
+            return dequantize_block_x8_cuda<QK5_1, QR5_1, dequantize_q5_1>;
         case GGML_TYPE_PQ2_0:
             return dequantize_block_cuda<QK_PQ2_0, QR_PQ2_0, dequantize_pq2_0>;
         case GGML_TYPE_PTQ1_0:
             return dequantize_block_cuda<QK_PTQ1_0, QR_PTQ1_0, dequantize_ptq1_0>;
         case GGML_TYPE_Q8_0:
-            return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
+            return dequantize_block_x8_cuda<QK8_0, QR8_0, dequantize_q8_0>;
         case GGML_TYPE_KTQ1_1:
             return dequantize_block_ktq1_1_nc_cuda;
         case GGML_TYPE_KTQ2_1:
