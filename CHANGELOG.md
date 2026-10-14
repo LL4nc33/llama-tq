@@ -11,6 +11,16 @@
   input state, the snapshots reach the cache with one copy, and the batch splitter keeps the last `n_rs_seq + 1` tokens
   of a sequence in one ubatch (upstream #24086 and #25278). A context with rollback raises `n_ubatch` to at least
   `n_rs_seq + 2`. Without speculative decoding nothing changes. Measured numbers follow.
+- **New V cache types `vtq2_2s`, `vtq3_2s`, `vtq4_2s`: the trellis with 12 state bits, fast enough for decode.** Same
+  block layout and bits per value as `vtq{2,3,4}_2` (2.25 / 3.25 / 4.25 bpw, enums 59-61), but a 12-bit shift register
+  (4096 states) instead of 16 bits (65536), so the Viterbi encoder, which runs for every new token, keeps its DP in
+  shared memory.
+  Qwen3-4B decodes at ~75 t/s with them against 1-2 t/s with `vtq*_2`. KL divergence (Qwen3-4B, 40 chunks, K f16):
+  `vtq4_2s` 0.00482, `vtq3_2s` 0.01014, `vtq2_2s` 0.0286, against `vtq3_2` 0.00889 and `vtq2_2` 0.02592 (16 state
+  bits) and `vtq4_1` 0.00514, `vtq3_1` 0.01197, `vtq2_1` 0.0471 (codebook). `vtq*_2`, `vtq*_3` and `vtq3_v8` keep 16
+  state bits and their format; the state bits are now a property of the type (the compile-time override of
+  `GGML_TRELLIS_L` used for the measurements is gone). The CUDA encoder workspace is allocated per state bit count (12 bits: 1 MiB per slot),
+  so the 12-bit types alone do not reserve the 536 MiB pool of the 16-bit types.
 
 ## 2026-10-14
 
