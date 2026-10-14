@@ -695,117 +695,82 @@ static void dequantize_row_vtq4_1_cuda(const void * vx, dst_t * y, const int64_t
     vtq_dequantize_row_cuda<block_vtq4_1, VtqDecode4Bit>(vx, y, ne, stream);
 }
 
-// --- Generic VTQ NC (non-contiguous) dequant kernel ---
-// Multi-warp-per-CTA: each warp dequants one VTQ block independently.
-// threadIdx.y selects warp (= which block-in-row), threadIdx.x is the
-// tid within that block. Reduces gridDim.x by warps_per_cta → better SM
-// occupancy on small row-counts (D=128 → 4 blocks/row).
-template <typename block_t, typename Decoder, typename dst_t>
-static __global__ void k_dequantize_block_vtq_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
-        const int64_t ne00, const int64_t ne01,
-        const int64_t ne0203, const uint3 ne02_fdv,
+// --- VTQ NC (non-contiguous) dequant: the f16 copies of V for the tensor-core prompt kernels ---
+// One thread per 8 consecutive elements (a quarter of a block): one load of the 8 codes, one 16-byte store for f16.
+// The codebook sits in shared memory: lanes look up different entries, which the constant cache would serialize.
+template <int bits>
+static __device__ __forceinline__ float vtq_codebook_scaled(const int i) {
+    if constexpr (bits == 1) { return VTQ_CUDA_CB_1BIT_SCALED[i]; }
+    if constexpr (bits == 2) { return VTQ_CUDA_CB_2BIT_SCALED[i]; }
+    if constexpr (bits == 3) { return VTQ_CUDA_CB_3BIT[i] * PQ_CUDA_CB_SCALE; }
+    return VTQ_CUDA_CB_4BIT[i] * PQ_CUDA_CB_SCALE;
+}
+
+// codes of elements 8*part .. 8*part+7, element e at bits*e (qs is 2-byte aligned for the 2- and 4-bit blocks)
+template <int bits>
+static __device__ __forceinline__ uint32_t vtq_codes8(const uint8_t * qs, const int part) {
+    if constexpr (bits == 1) { return qs[part]; }
+    if constexpr (bits == 2) { return *(const uint16_t *) (qs + 2*part); }
+    if constexpr (bits == 3) { const uint8_t * p = qs + 3*part; return p[0] | p[1] << 8 | p[2] << 16; }
+    const uint16_t * p = (const uint16_t *) (qs + 4*part);
+    return p[0] | uint32_t(p[1]) << 16;
+}
+
+template <typename block_t, int bits, typename dst_t>
+static __global__ void k_dequantize_vtq_nc(const void * __restrict__ vx, dst_t * __restrict__ y, const uint32_t n_threads,
+        const uint3 chunks_per_row, const uint3 ne01_fd, const uint3 ne02_fd,
         const int64_t s01, const int64_t s02, const int64_t s03) {
-    const int warp = threadIdx.y;
-    const int tid  = threadIdx.x;
-    const int64_t ib_in_row = blockIdx.x * blockDim.y + warp;
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    if (ib_in_row >= nb_per_row) return;
-    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
-        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
-            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
-            const int64_t ibx0 = dm.x*s03 + dm.y*s02 + i01*s01;
-            const block_t * x = (const block_t *) vx;
-            const int64_t ib = ibx0 + ib_in_row;
-            const float norm = (float)x[ib].d;
-            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ;
-            if (norm < 1e-30f) {
-                if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(0.0f);
-                continue;
-            }
-            const float val = Decoder::decode(x[ib].qs, tid) * norm;
-            if (ib_in_row * QK_VTQ + tid < ne00) y[out_base + tid] = ggml_cuda_cast<dst_t>(val);
+    constexpr int n_cb = 1 << bits;
+    __shared__ float cb[n_cb];
+    if (threadIdx.x < n_cb) {
+        cb[threadIdx.x] = vtq_codebook_scaled<bits>(threadIdx.x);
+    }
+    __syncthreads();
+
+    const uint32_t g = blockIdx.x*blockDim.x + threadIdx.x;
+    if (g >= n_threads) {
+        return;
+    }
+    const uint2 rc   = fast_div_modulo(g,    chunks_per_row); // row, chunk of 8 in the row
+    const uint2 r01  = fast_div_modulo(rc.x, ne01_fd);        // i02 + ne02*i03, i01
+    const uint2 r23  = fast_div_modulo(r01.x, ne02_fd);       // i03, i02
+    const block_t * x = (const block_t *) vx + r23.x*s03 + r23.y*s02 + r01.y*s01 + rc.y/4;
+
+    const float    d     = x->d;
+    const uint32_t codes = vtq_codes8<bits>(x->qs, rc.y % 4);
+    float v[8];
+#pragma unroll
+    for (int e = 0; e < 8; ++e) {
+        v[e] = cb[(codes >> (bits*e)) & (n_cb - 1)] * d;
+    }
+
+    dst_t * dst = y + int64_t(g)*8; // rows are contiguous in the output
+    if constexpr (std::is_same_v<dst_t, half>) {
+        half2 h[4];
+#pragma unroll
+        for (int e = 0; e < 4; ++e) {
+            h[e] = __floats2half2_rn(v[2*e], v[2*e + 1]);
+        }
+        *(uint4 *) dst = *(const uint4 *) h;
+    } else {
+#pragma unroll
+        for (int e = 0; e < 8; ++e) {
+            dst[e] = ggml_cuda_cast<dst_t>(v[e]);
         }
     }
 }
 
-// --- VTQ2_1 specialized 4-outputs-per-thread kernel (NC) ---
-// Mirrors q4_0's pattern: 1 thread emits 4 elements. 8 threads × 4 elems = 32 elems = 1 VTQ block.
-// CTA layout: (blockDim.x=8, blockDim.y=warps_per_cta=4) → 1 warp = 4 VTQ blocks = 128 elems.
-// Reduces gridDim.x by 4× vs the generic kernel AND emits 4 outputs/thread (matching q4_0).
-template <typename dst_t>
-static __global__ void k_dequantize_block_vtq2_1_x4_nc(
-        const void * __restrict__ vx, dst_t * __restrict__ y,
-        const int64_t ne00, const int64_t ne01,
-        const int64_t ne0203, const uint3 ne02_fdv,
-        const int64_t s01, const int64_t s02, const int64_t s03) {
-    const int byte_idx = threadIdx.x;            // 0..7 — which byte within the qs[] array
-    const int warp     = threadIdx.y;            // 0..3 — which VTQ block within the warp
-    const int64_t ib_in_row = blockIdx.x * blockDim.y + warp;
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    if (ib_in_row >= nb_per_row) return;
-
-    for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
-        for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
-            const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
-            const int64_t ibx0 = dm.x*s03 + dm.y*s02 + i01*s01;
-            const block_vtq2_1 * x = (const block_vtq2_1 *) vx;
-            const int64_t ib = ibx0 + ib_in_row;
-            const float norm = (float)x[ib].d;
-            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ + byte_idx * 4;
-
-            if (norm < 1e-30f) {
-                #pragma unroll
-                for (int k = 0; k < 4; ++k) {
-                    if (ib_in_row * QK_VTQ + byte_idx * 4 + k < ne00) {
-                        y[out_base + k] = ggml_cuda_cast<dst_t>(0.0f);
-                    }
-                }
-                continue;
-            }
-
-            // Pre-scaled CB lookup + per-block norm fused into 4 register-resident floats.
-            const float cb0 = VTQ_CUDA_CB_2BIT_SCALED[0] * norm;
-            const float cb1 = VTQ_CUDA_CB_2BIT_SCALED[1] * norm;
-            const float cb2 = VTQ_CUDA_CB_2BIT_SCALED[2] * norm;
-            const float cb3 = VTQ_CUDA_CB_2BIT_SCALED[3] * norm;
-
-            const uint8_t b = x[ib].qs[byte_idx];
-            const int i0 = (b     ) & 0x3;
-            const int i1 = (b >> 2) & 0x3;
-            const int i2 = (b >> 4) & 0x3;
-            const int i3 = (b >> 6) & 0x3;
-
-            auto pick = [&](int i) -> float {
-                return (i == 0) ? cb0 : (i == 1) ? cb1 : (i == 2) ? cb2 : cb3;
-            };
-            const float v0 = pick(i0);
-            const float v1 = pick(i1);
-            const float v2 = pick(i2);
-            const float v3 = pick(i3);
-
-            if (ib_in_row * QK_VTQ + byte_idx * 4 + 0 < ne00) y[out_base + 0] = ggml_cuda_cast<dst_t>(v0);
-            if (ib_in_row * QK_VTQ + byte_idx * 4 + 1 < ne00) y[out_base + 1] = ggml_cuda_cast<dst_t>(v1);
-            if (ib_in_row * QK_VTQ + byte_idx * 4 + 2 < ne00) y[out_base + 2] = ggml_cuda_cast<dst_t>(v2);
-            if (ib_in_row * QK_VTQ + byte_idx * 4 + 3 < ne00) y[out_base + 3] = ggml_cuda_cast<dst_t>(v3);
-        }
-    }
-}
-
-// NC launcher (shared for all VTQ types)
-template <typename block_t, typename Decoder, typename dst_t>
+template <typename block_t, int bits, typename dst_t>
 static void vtq_dequantize_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
     GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    const int64_t ne0203 = ne02*ne03;
-    const uint3 ne02_fdv = init_fastdiv_values(ne02);
-    // 4 warps per CTA: 4× fewer launches, much better SM occupancy.
-    constexpr int warps_per_cta = 4;
-    const int64_t nb_in_x = (nb_per_row + warps_per_cta - 1) / warps_per_cta;
-    const dim3 num_blocks((int)nb_in_x, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    const dim3 block_dim(32, warps_per_cta);
-    k_dequantize_block_vtq_nc<block_t, Decoder, dst_t><<<num_blocks, block_dim, 0, stream>>>(vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
+    const int64_t n_threads = ne00/8 * ne01*ne02*ne03;
+    GGML_ASSERT(n_threads <= INT32_MAX); // fastdiv needs n < 2^31
+    constexpr int block_size = 256;
+    const int64_t n_blocks = (n_threads + block_size - 1) / block_size;
+    k_dequantize_vtq_nc<block_t, bits, dst_t><<<n_blocks, block_size, 0, stream>>>(vx, y, n_threads,
+        init_fastdiv_values(ne00/8), init_fastdiv_values(ne01), init_fastdiv_values(ne02), s01, s02, s03);
 }
 
 // Concrete NC wrappers (signature matches convert.cu dispatcher)
@@ -813,41 +778,25 @@ template <typename dst_t>
 static void dequantize_block_vtq1_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    vtq_dequantize_nc_cuda<block_vtq1_1, VtqDecode1Bit>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    vtq_dequantize_nc_cuda<block_vtq1_1, 1>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
 static void dequantize_block_vtq2_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    // Use specialized x4 kernel (4 outputs per thread) when nb_per_row >= 4,
-    // i.e. head_dim >= 128. Falls back to the generic 1-per-thread kernel for
-    // smaller head_dim (D=32, 64, 96) where the x4 layout wastes warps.
-    GGML_ASSERT(ne00 % QK_VTQ == 0);
-    const int64_t nb_per_row = ne00 / QK_VTQ;
-    if (nb_per_row >= 4) {
-        const int64_t ne0203 = ne02*ne03;
-        const uint3 ne02_fdv = init_fastdiv_values(ne02);
-        constexpr int warps_per_cta = 4;
-        const int64_t nb_in_x = (nb_per_row + warps_per_cta - 1) / warps_per_cta;
-        const dim3 num_blocks((int)nb_in_x, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-        const dim3 block_dim(8, warps_per_cta);  // 8 threads × 4 warps = 32 threads, each emits 4 elements
-        k_dequantize_block_vtq2_1_x4_nc<dst_t><<<num_blocks, block_dim, 0, stream>>>(
-            vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
-        return;
-    }
-    vtq_dequantize_nc_cuda<block_vtq2_1, VtqDecode2Bit>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    vtq_dequantize_nc_cuda<block_vtq2_1, 2>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
 static void dequantize_block_vtq3_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    vtq_dequantize_nc_cuda<block_vtq3_1, VtqDecode3Bit>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    vtq_dequantize_nc_cuda<block_vtq3_1, 3>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 template <typename dst_t>
 static void dequantize_block_vtq4_1_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
-    vtq_dequantize_nc_cuda<block_vtq4_1, VtqDecode4Bit>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
+    vtq_dequantize_nc_cuda<block_vtq4_1, 4>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
 }
 
 // --- Generic VTQ get_rows kernel ---
