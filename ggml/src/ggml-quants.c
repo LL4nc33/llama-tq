@@ -5751,9 +5751,11 @@ static inline uint32_t ktq_philox_6r(uint32_t counter, uint32_t key) {
     return lo;
 }
 
-static void tq_random_signs(uint16_t seed, float * signs, int n) {
+// RHT sign of every element as a bit (set = +1): one Philox evaluation per element
+static void kktq_sign_bits(uint16_t seed, uint8_t * sb, int n) {
+    memset(sb, 0, n / 8);
     for (int i = 0; i < n; i++) {
-        signs[i] = (ktq_philox_6r((uint32_t)i, (uint32_t)seed) & 1) ? 1.0f : -1.0f;
+        sb[i / 8] |= (uint8_t)((ktq_philox_6r((uint32_t)i, (uint32_t)seed) & 1) << (i % 8));
     }
 }
 
@@ -5934,10 +5936,8 @@ static inline void kktq_fwht32_sb_avx2(const float * GGML_RESTRICT y,
 }
 #endif // __AVX2__
 
-static void kktq_rht_forward(const float * x, float * y, int n, uint16_t seed) {
-    float signs[QK_KTQ];
-    tq_random_signs(seed, signs, n);
-    for (int i = 0; i < n; i++) y[i] = x[i] * signs[i];
+static void kktq_rht_forward_sb(const float * x, float * y, int n, const uint8_t * sb) {
+    for (int i = 0; i < n; i++) y[i] = ((sb[i / 8] >> (i % 8)) & 1) ? x[i] : -x[i];
     kktq_fwht(y, n);
 }
 
@@ -6036,7 +6036,8 @@ static void tq_quantize_block(const float * GGML_RESTRICT xi, int64_t ib, int bi
     const uint16_t seed = kktq_derive_seed(ib);
     float rotated[QK_KTQ];
     if (sb) {
-        kktq_rht_forward(x_hat, rotated, QK_KTQ, seed);
+        kktq_sign_bits(seed, sb, QK_KTQ);
+        kktq_rht_forward_sb(x_hat, rotated, QK_KTQ, sb);
     } else {
         memcpy(rotated, x_hat, sizeof(rotated));
     }
@@ -6069,9 +6070,6 @@ static void tq_quantize_block(const float * GGML_RESTRICT xi, int64_t ib, int bi
         qs[off / 8] |= (uint8_t)(best_idx[j] << (off % 8));
         if (off % 8 > 8 - bits) {
             qs[off / 8 + 1] |= (uint8_t)(best_idx[j] >> (8 - off % 8));
-        }
-        if (sb) {
-            sb[j / 8] |= (uint8_t)((ktq_philox_6r((uint32_t)j, (uint32_t)seed) & 1) << (j % 8));
         }
     }
 }
