@@ -161,66 +161,8 @@ static __device__ __forceinline__ void dequantize_V_vtq4_1(const void * __restri
 }
 
 // ============================================================
-// Phase-2c (WIP): VTQ{2,3,4}_2 (Trellis v2) V-dequant in FA-vec.
-//
-// The decoder is a shift register; random access to element `i0`
-// requires replaying from start_state. We use the per-element
-// variant `trellis_decode_element<K, L>` from trellis.cuh. This is
-// O(i0) per element — fine for D<=256 heads, inefficient for larger.
-//
-// See trellis.cuh for the optimal Strategy A (warp-shmem block cache).
-// That requires invasive fattn-vec.cuh changes (deferred to Phase-2d).
-// ============================================================
-
-// Compute state(i) directly from the bitstream — O(1) per sample.
-//
-// Insight (from QTIP decoder, arXiv:2406.11235): the shift register state
-// after i updates is just an L-bit sliding window over the concatenated
-// stream `[start_state low L bits || qs bits]`. Read L bits from
-// position i*K — that IS state(i+1) after the post-update LUT lookup.
-//
-// Equivalence proof sketch:
-//   state(1) = (s0 >> K) | (bits(0) << (L-K))
-//            = bits of s0[K..L-1] in the low positions, bits(0) in the top K
-//   Reading L bits from stream position 1*K = K:
-//            = stream[K..K+L-1] = s0[K..L-1] || qs[0..K-1] = same thing ✓
-//
-// This makes each sample O(1) instead of O(i), eliminating the main
-// bottleneck that made VTQ_2 FA-vec TG 26x slower than f16.
-template <int K, int L>
-static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8_t * qs, int i) {
-    // Bit position in the combined [s0 || qs] stream where the state window
-    // for sample i starts. After i shift-updates, the window is bits [i*K..i*K+L-1].
-    const int stream_bit = i * K;
-
-    if (stream_bit + L <= L) {
-        // Trivial case, should not happen for i>=1
-        return (uint32_t)s0 & ((1u << L) - 1u);
-    }
-
-    if (stream_bit < L) {
-        // Window straddles s0/qs boundary.
-        // High (stream_bit) bits come from qs low bits;
-        // Low (L - stream_bit) bits come from s0 shifted right by stream_bit.
-        const int from_ss = L - stream_bit;
-        uint32_t lo = ((uint32_t)s0 >> stream_bit) & ((1u << from_ss) - 1u);
-        // Read stream_bit bits from the start of qs (low side).
-        uint32_t qs_word = (uint32_t)qs[0] | ((uint32_t)qs[1] << 8) | ((uint32_t)qs[2] << 16);
-        uint32_t hi = qs_word & ((1u << stream_bit) - 1u);
-        return lo | (hi << from_ss);
-    }
-
-    // Window fully in qs. Read L consecutive bits from qs starting at
-    // bit position (stream_bit - L).
-    const int qs_bit = stream_bit - L;
-    const int byte   = qs_bit >> 3;
-    const int shift  = qs_bit & 7;
-    uint32_t b0 = qs[byte];
-    uint32_t b1 = qs[byte + 1];
-    uint32_t b2 = qs[byte + 2];
-    uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
-    return (w >> shift) & ((1u << L) - 1u);
-}
+// Trellis V types (vtq*_2, vtq*_2s, vtq*_3, vtq3_v8) in FA-vec.
+// vtq_state_at (trellis.cuh) gives the state of each sample directly from the bitstream.
 
 // The trellis V types: block, code bits K per element, state bits L, and the outliers per block (fp16 values that
 // replace the decoded ones at the listed positions: vtq*_3, vtq3_v8). K = 0: not a trellis type.

@@ -9,17 +9,11 @@
 // template parameter: GGML_TRELLIS_L for vtq*_2, vtq*_3, vtq3_v8 and GGML_TRELLIS_L_S for vtq*_2s.
 // See ggml-trellis.h for the algorithmic description (shift register + LUT).
 //
-// Strategy:
-//   Decoder is fundamentally sequential (shift register), so we use
-//   1 CUDA thread per block — no intra-block parallelism. But many blocks
-//   run in parallel across grids. A 27B model has thousands of V-cache
-//   rows active per forward pass, so GPU is saturated.
+// Every sample is a table lookup at its L-bit state, which is a window of the bitstream (vtq_state_at), so the
+// samples of a block decode independently: one thread per sample.
 //
-// LUT (65536 × fp32 = 256 KiB) stored in __constant__ memory? No — 256 KiB
-// exceeds __constant__ cap (64 KiB). We use __device__ const array in
-// global memory, cached into L2. Lookup is 1 random access per sample,
-// ~100 cycles uncached, ~30 cached. 256 samples/block × 30 cycles ≈
-// 7700 cycles/block = 3µs on a 2 GHz clock — fast enough.
+// The table (2^GGML_TRELLIS_L floats, 256 KiB) exceeds constant memory (64 KiB) and lives in global memory, where the
+// lookups hit L2.
 
 // QK_VTQ_TRELLIS now defined in ggml/src/ggml-common.h (task #143: halved to 128).
 // This file previously redefined it to 256, which was a silent stale value.
@@ -48,87 +42,87 @@ const float * ggml_cuda_trellis_table_device(int device);
         }                                                                                      \
     } while (0)
 
-// Decode one block: sequential shift register, QK_VTQ_TRELLIS samples.
+// Compute state(i) directly from the bitstream — O(1) per sample.
+//
+// Insight (from QTIP decoder, arXiv:2406.11235): the shift register state
+// after i updates is just an L-bit sliding window over the concatenated
+// stream `[start_state low L bits || qs bits]`. Read L bits from
+// position i*K — that IS state(i+1) after the post-update LUT lookup.
+//
+// Equivalence proof sketch:
+//   state(1) = (s0 >> K) | (bits(0) << (L-K))
+//            = bits of s0[K..L-1] in the low positions, bits(0) in the top K
+//   Reading L bits from stream position 1*K = K:
+//            = stream[K..K+L-1] = s0[K..L-1] || qs[0..K-1] = same thing ✓
+//
+// This makes each sample O(1) instead of O(i), so every thread of a block
+// can decode its own samples (flash attention readers, bulk dequant).
 template <int K, int L>
-__device__ __forceinline__
-void trellis_decode_block(uint16_t start_state, float d, const uint8_t * qs, float * y) {
-    static_assert(L > K && L <= GGML_TRELLIS_L, "bad trellis state bits");
-    constexpr int N = QK_VTQ_TRELLIS;
-    constexpr uint32_t Lmask = (1u << L) - 1u;
-    constexpr uint32_t Kmask = (1u << K) - 1u;
-    const float cb_scale = rsqrtf((float)N);
+static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8_t * qs, int i) {
+    // Bit position in the combined [s0 || qs] stream where the state window
+    // for sample i starts. After i shift-updates, the window is bits [i*K..i*K+L-1].
+    const int stream_bit = i * K;
 
-    if (d == 0.0f) {
-        #pragma unroll 8
-        for (int i = 0; i < N; i++) y[i] = 0.0f;
-        return;
+    if (stream_bit + L <= L) {
+        // Trivial case, should not happen for i>=1
+        return (uint32_t)s0 & ((1u << L) - 1u);
     }
 
-    uint32_t state = (uint32_t)start_state & Lmask;
-    // Pre-compute scale factor once
-    const float ds = cb_scale * d;
-
-    for (int i = 0; i < N; i++) {
-        // Read K bits at offset i*K (little-endian)
-        const int bit_off = i * K;
-        const int byte = bit_off >> 3;
-        const int shift = bit_off & 7;
-        uint32_t b0 = qs[byte];
-        uint32_t b1 = qs[byte + 1];
-        uint32_t b2 = (shift + K > 16) ? qs[byte + 2] : 0u;
-        uint32_t w = b0 | (b1 << 8) | (b2 << 16);
-        uint32_t bits = (w >> shift) & Kmask;
-
-        state = ((state >> K) | (bits << (L - K))) & Lmask;
-        // Plain load: 256 KiB LUT fits in L2 (~100% hit) but exceeds
-        // Turing's 48 KiB/SM RO cache — __ldg here causes a ~20% hit
-        // rate + L2 refill stalls. L2 is the right cache for this.
-        y[i] = vtq_trellis_table_storage[state] * ds;
+    if (stream_bit < L) {
+        // Window straddles s0/qs boundary.
+        // High (stream_bit) bits come from qs low bits;
+        // Low (L - stream_bit) bits come from s0 shifted right by stream_bit.
+        const int from_ss = L - stream_bit;
+        uint32_t lo = ((uint32_t)s0 >> stream_bit) & ((1u << from_ss) - 1u);
+        // Read stream_bit bits from the start of qs (low side).
+        uint32_t qs_word = (uint32_t)qs[0] | ((uint32_t)qs[1] << 8) | ((uint32_t)qs[2] << 16);
+        uint32_t hi = qs_word & ((1u << stream_bit) - 1u);
+        return lo | (hi << from_ss);
     }
+
+    // Window fully in qs. Read L consecutive bits from qs starting at
+    // bit position (stream_bit - L).
+    const int qs_bit = stream_bit - L;
+    const int byte   = qs_bit >> 3;
+    const int shift  = qs_bit & 7;
+    uint32_t b0 = qs[byte];
+    uint32_t b1 = qs[byte + 1];
+    uint32_t b2 = qs[byte + 2];
+    uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
+    return (w >> shift) & ((1u << L) - 1u);
 }
 
-// Generic bulk dequant kernel. One thread per block.
-// WITH_OUTLIERS=true: after Trellis decode, overwrite OUTLIER_K positions
-// with fp16 outlier values stored in block_t::outlier_pos / ::outlier_val
-// (VTQ_3 family). Single-thread per block, so no syncwarp needed here.
-//
-// OUTLIER_K parameterizes the outlier count: 4 for VTQ_3 family
-// (vtq2_3/vtq3_3/vtq4_3), 2 for VTQ3_V8 (TurboQuant v8). Defaults to
-// VTQ_OUTLIER_K=4 to preserve existing call sites.
-template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
-static __global__ void k_dequantize_trellis(const void * __restrict__ vx, dst_t * __restrict__ y,
-                                             const int64_t ne, const int64_t nb) {
-    const int64_t ib = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (ib >= nb) return;
-    const block_t * x = (const block_t *) vx;
-
-    float decoded[QK_VTQ_TRELLIS];
-    trellis_decode_block<K, L>(x[ib].start_state, (float)x[ib].d, x[ib].qs, decoded);
-
+// Sample i of trellis block b (vtq_state_at), with the outlier overlay of the vtq*_3 / vtq3_v8 types (a later k wins, as in
+// the CPU dequant). The decode expression is the one of the flash attention readers (fattn-tq.cuh).
+template <typename block_t, int K, int L, bool WITH_OUTLIERS, int OUTLIER_K>
+static __device__ __forceinline__ float trellis_sample(const block_t & b, const int i) {
+    const float d = (float) b.d;
+    float v = d == 0.0f ? 0.0f : vtq_trellis_table_storage[vtq_state_at<K, L>(b.start_state, b.qs, i + 1)] * (rsqrtf((float) QK_VTQ_TRELLIS) * d);
     if constexpr (WITH_OUTLIERS) {
-        // Overwrite OUTLIER_K outlier positions with stored fp16 values.
         #pragma unroll
         for (int k = 0; k < OUTLIER_K; k++) {
-            const int p = (int)x[ib].outlier_pos[k];
-            decoded[p] = __half2float(x[ib].outlier_val[k]);
+            if ((int) b.outlier_pos[k] == i) {
+                v = __half2float(b.outlier_val[k]);
+            }
         }
     }
+    return v;
+}
 
-    const int64_t out_base = ib * QK_VTQ_TRELLIS;
-    #pragma unroll 8
-    for (int i = 0; i < QK_VTQ_TRELLIS; i++) {
-        const int64_t out_idx = out_base + i;
-        if (out_idx < ne) y[out_idx] = ggml_cuda_cast<dst_t>(decoded[i]);
-    }
+// Bulk dequant of contiguous blocks: one CUDA block of QK_VTQ_TRELLIS threads per trellis block, one sample per thread.
+template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
+static __global__ void k_dequantize_trellis(const void * __restrict__ vx, dst_t * __restrict__ y, const int64_t ne) {
+    const int64_t i = (int64_t) blockIdx.x * QK_VTQ_TRELLIS + threadIdx.x;
+    if (i >= ne) return;
+    const block_t * x = (const block_t *) vx;
+    y[i] = ggml_cuda_cast<dst_t>(trellis_sample<block_t, K, L, WITH_OUTLIERS, OUTLIER_K>(x[blockIdx.x], threadIdx.x));
 }
 
 template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
 static void trellis_dequantize_row_cuda(const void * vx, dst_t * y, const int64_t ne, cudaStream_t stream) {
     GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
     const int64_t nb = (ne + QK_VTQ_TRELLIS - 1) / QK_VTQ_TRELLIS;
-    const int threads = 128;
-    const int blocks = (int)((nb + threads - 1) / threads);
-    k_dequantize_trellis<block_t, K, L, dst_t, WITH_OUTLIERS, OUTLIER_K><<<blocks, threads, 0, stream>>>(vx, y, ne, nb);
+    k_dequantize_trellis<block_t, K, L, dst_t, WITH_OUTLIERS, OUTLIER_K><<<(int) nb, QK_VTQ_TRELLIS, 0, stream>>>(vx, y, ne);
 }
 
 // Concrete wrappers matching convert.cu dispatcher signature
@@ -179,57 +173,23 @@ static void dequantize_row_vtq3_v8_cuda(const void * vx, dst_t * y, const int64_
     trellis_dequantize_row_cuda<block_vtq3_v8, 3, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, y, ne, stream);
 }
 
-// ============================================================
-// Non-contiguous (NC) dequant kernel for VTQ_2 — required so that
-// convert.cu's ggml_get_to_{fp16,bf16,fp32}_nc_cuda dispatch tables
-// return a valid kernel for VTQ_2 types. Without this, FA falls
-// back to cuBLAS + CPU dequant path (observed 24x slowdown).
-//
-// One CUDA block per trellis block (512 samples). Thread 0 decodes
-// the entire block into shared memory, then all 128 threads write
-// strided output. Shift-register decode is inherently sequential so
-// no thread parallelism within a block. That's OK for V-cache
-// dequant: thousands of blocks per layer × multiple layers gives
-// plenty of grid-level parallelism to saturate the GPU.
+// Non-contiguous bulk dequant (convert.cu ggml_get_to_{fp16,bf16,fp32}_nc_cuda; flash attention converts a quantized
+// V to f16 with it for batches): one CUDA block per trellis block of a row, one sample per thread.
 template <typename block_t, int K, int L, typename dst_t, bool WITH_OUTLIERS = false, int OUTLIER_K = VTQ_OUTLIER_K>
 static __global__ void k_dequantize_trellis_nc(const void * __restrict__ vx, dst_t * __restrict__ y,
         const int64_t ne00, const int64_t ne01,
         const int64_t ne0203, const uint3 ne02_fdv,
         const int64_t s01, const int64_t s02, const int64_t s03) {
     const int64_t ib_in_row = blockIdx.x;
-    const int tid = threadIdx.x;
-    const int64_t nb_per_row = ne00 / QK_VTQ_TRELLIS;
-    if (ib_in_row >= nb_per_row) return;
-
-    __shared__ float decoded[QK_VTQ_TRELLIS];
+    const int i = threadIdx.x;
+    const block_t * x = (const block_t *) vx;
 
     for (int64_t i01 = blockIdx.y; i01 < ne01; i01 += gridDim.y) {
         for (int64_t i0203 = blockIdx.z; i0203 < ne0203; i0203 += gridDim.z) {
             const uint2 dm = fast_div_modulo((uint32_t)i0203, ne02_fdv);
-            const int64_t ibx0 = dm.x*s03 + dm.y*s02 + i01*s01;
-            const block_t * x = (const block_t *) vx;
-            const int64_t ib = ibx0 + ib_in_row;
-
-            if (tid == 0) {
-                trellis_decode_block<K, L>(x[ib].start_state, (float)x[ib].d, x[ib].qs, decoded);
-                if constexpr (WITH_OUTLIERS) {
-                    // Overwrite OUTLIER_K outlier positions with stored fp16 values.
-                    #pragma unroll
-                    for (int k = 0; k < OUTLIER_K; k++) {
-                        const int p = (int)x[ib].outlier_pos[k];
-                        decoded[p] = __half2float(x[ib].outlier_val[k]);
-                    }
-                }
-            }
-            __syncthreads();
-
-            const int64_t out_base = (i0203*ne01 + i01)*ne00 + ib_in_row * QK_VTQ_TRELLIS;
-            for (int i = tid; i < QK_VTQ_TRELLIS; i += blockDim.x) {
-                if (ib_in_row * QK_VTQ_TRELLIS + i < ne00) {
-                    y[out_base + i] = ggml_cuda_cast<dst_t>(decoded[i]);
-                }
-            }
-            __syncthreads();
+            const int64_t ib = dm.x*s03 + dm.y*s02 + i01*s01 + ib_in_row;
+            y[(i0203*ne01 + i01)*ne00 + ib_in_row*QK_VTQ_TRELLIS + i] =
+                ggml_cuda_cast<dst_t>(trellis_sample<block_t, K, L, WITH_OUTLIERS, OUTLIER_K>(x[ib], i));
         }
     }
 }
@@ -244,7 +204,7 @@ static void trellis_dequantize_nc_cuda(const void * vx, dst_t * y,
     const int64_t ne0203 = ne02*ne03;
     const uint3 ne02_fdv = init_fastdiv_values(ne02);
     const dim3 num_blocks((int)nb_per_row, (int)std::min(ne01, (int64_t)65535), (int)std::min(ne0203, (int64_t)65535));
-    k_dequantize_trellis_nc<block_t, K, L, dst_t, WITH_OUTLIERS, OUTLIER_K><<<num_blocks, 128, 0, stream>>>(
+    k_dequantize_trellis_nc<block_t, K, L, dst_t, WITH_OUTLIERS, OUTLIER_K><<<num_blocks, QK_VTQ_TRELLIS, 0, stream>>>(
         vx, y, ne00, ne01, ne0203, ne02_fdv, s01, s02, s03);
 }
 
@@ -313,52 +273,6 @@ static void dequantize_block_vtq3_v8_nc_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
         const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
     trellis_dequantize_nc_cuda<block_vtq3_v8, 3, GGML_TRELLIS_L, dst_t, /*WITH_OUTLIERS=*/true, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, y, ne00, ne01, ne02, ne03, s01, s02, s03, stream);
-}
-
-// ============================================================
-// Per-element decoder variant for FA-vec V-dequant path (Phase-2c WIP).
-//
-// The FA-vec kernel calls `dequantize_V_t(vx, dst, i0)` per-row with
-// `ne` consecutive elements. VTQ_2 is a shift-register; random access
-// to element `i0` requires replaying the shift register from
-// `start_state` up to index `i0+ne-1`. Cost per call: O(i0+ne).
-//
-// For typical D=128 attention heads, `ne` is 2-4 and `i0` is thread-
-// indexed across [0, D). Average replay depth is D/2 ≈ 64 iterations
-// per thread per call. Compared to the CPU-FA fallback this is still
-// a massive win, but see trellis.cuh Strategy A note: the optimal
-// path is a warp-collaborative shmem block cache, which requires
-// invasive changes to fattn-vec.cuh (out of scope for Phase-2c).
-//
-// NOTE: this decoder replays from start_state on every call and is
-// O(N^2) when called N/ne times for a full block. Acceptable for
-// D <= 256 (Turing) but inefficient for larger heads. Ship after
-// correctness validation; optimize to shmem cache in Phase-2d.
-template <int K, int L>
-__device__ __forceinline__
-float trellis_decode_element(uint16_t start_state, float d, const uint8_t * qs, int j) {
-    constexpr int N = QK_VTQ_TRELLIS;
-    constexpr uint32_t Lmask = (1u << L) - 1u;
-    constexpr uint32_t Kmask = (1u << K) - 1u;
-    const float cb_scale = rsqrtf((float)N);
-
-    if (d == 0.0f) return 0.0f;
-
-    uint32_t state = (uint32_t)start_state & Lmask;
-    // Replay shift register for indices 0..j (state after j-th bit extract).
-    #pragma unroll 1
-    for (int i = 0; i <= j; i++) {
-        const int bit_off = i * K;
-        const int byte   = bit_off >> 3;
-        const int shift  = bit_off & 7;
-        uint32_t b0 = qs[byte];
-        uint32_t b1 = qs[byte + 1];
-        uint32_t b2 = (shift + K > 16) ? qs[byte + 2] : 0u;
-        uint32_t w  = b0 | (b1 << 8) | (b2 << 16);
-        uint32_t bits = (w >> shift) & Kmask;
-        state = ((state >> K) | (bits << (L - K))) & Lmask;
-    }
-    return vtq_trellis_table_storage[state] * (cb_scale * d);
 }
 
 // No forward decl — init is done inside convert.cu via the macro.
