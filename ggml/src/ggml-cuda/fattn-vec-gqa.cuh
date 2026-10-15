@@ -19,8 +19,9 @@
 // together: log2(ncols) exchange steps that halve the number of values per lane, then plain shuffles for the rest.
 // Each lane reads only a few bytes per row, so the kernel is bound by instruction latency, not by DRAM bandwidth.
 //
-// Supported: one query (ne01 == 1), no ALiBi, no sinks; K f16, q8_0, q5_0, q4_0 or ktq2/3/4_1; V f16, q8_0, q5_0, q4_0
-// or vtq2/3/4_1 (fattn_gqa_load reads these types).
+// Supported: one query (ne01 == 1), no ALiBi, no sinks; K f16, q8_0, q5_0, q4_0 or ktq2/3/4_1; V f16, q8_0, q5_0, q4_0,
+// vtq2/3/4_1 or a trellis type (vtq*_2, vtq*_2s, vtq*_3, vtq3_v8; with K f16, q8_0 or ktq2/3/4_1). fattn_gqa_load reads
+// these types.
 //
 // use_sparse: only the K/V rows of the index list built from the mask are visited (sparse attention, the query sees
 // at most n_kv_max cells); KV_max then holds the list of each sequence, followed by the number of live entries.
@@ -114,7 +115,7 @@ static __device__ __forceinline__ float fattn_gqa_sel2(const float4 cb, const in
 //   q8_0 V: the EPL consecutive elements from t*EPL, one block, so one scale per row
 //   f16: element pairs, lane t owns 2t and 2t+1 of every 64 elements
 //   q4_0, q5_0: one 2-byte load holds elements 2s, 2s+1, 2s+16, 2s+17 of a block (s = t % 8, the block t/8 of each 128)
-//   codebook types: groups of 4, lane t owns 4t .. 4t+3 of every 128 elements
+//   codebook and trellis types: groups of 4, lane t owns 4t .. 4t+3 of every 128 elements (trellis: of every block)
 template <ggml_type type, bool as_V, int EPL>
 static constexpr __device__ int fattn_gqa_group() {
     return type == GGML_TYPE_Q8_0 ? (as_V ? EPL : 1) : type == GGML_TYPE_F16 ? 2 : 4;
@@ -130,10 +131,62 @@ static __device__ __forceinline__ int fattn_gqa_idx(const int t, const int e) {
     }
 }
 
+// Elements 4t .. 4t+3 of a trellis block (fattn-tq.cuh), from the table tbl. The state of element i is the L-bit window
+// at bit (i+1)*K of the stream [start_state (L bits) | qs] (vtq_state_at), so the 4 states lie in 3K+L consecutive
+// stream bits: one load of W aligned bytes holds them (W from the worst case: the bits start just below the end of an
+// aligned word). Windows that start in start_state (lanes 0 and 1) put its L bits below the first qs bytes.
+template <ggml_type type>
+static __device__ __forceinline__ void fattn_gqa_load_trellis(
+        const void * __restrict__ blk, const int t, const float * __restrict__ tbl, float * __restrict__ v) {
+    using tr      = vtq_trellis<type>;
+    using block_t = typename tr::block;
+    constexpr int      K     = tr::K;
+    constexpr int      L     = tr::L;
+    constexpr uint32_t Lmask = (1u << L) - 1u;
+    constexpr int      A     = sizeof(block_t) % 4 == 0 ? 4 : 2;                      // alignment of qs (vtq3_v8: 2)
+    constexpr int      W     = (8*A - 1 + 3*K + L + 8*A - 1) / (8*A) * A;             // 8 or 6 bytes
+    static_assert(W <= 8 && QK_VTQ_TRELLIS*K/8 % A == 0, "the window bytes must fit 64 bits and the qs bytes");
+    const block_t * b = (const block_t *) blk;
+
+    const int q0 = (4*t + 1)*K - L; // qs bit where the window of element 4t starts (negative: in start_state)
+    const int q1 = (4*t + 4)*K;     // qs bit where the window of element 4t+3 ends
+    const int B  = max((q1 + 8*A - 1)/(8*A)*A - W, 0);
+    uint64_t w = 0;
+    ggml_cuda_memcpy_1<W, A>(&w, b->qs + B);
+    int shift = q0 - 8*B;
+    if (q0 < 0) { // then B == 0
+        w      = (w << L) | (b->start_state & Lmask);
+        shift += L;
+    }
+    const uint32_t s  = uint32_t(w >> shift);
+    const float    ds = vtq_trellis_ds(__half2float(b->d));
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        v[i] = tbl[(s >> (K*i)) & Lmask] * ds;
+    }
+
+    // outliers: the value of position outlier_pos[k] is outlier_val[k] (a later k wins, as in the CPU dequant)
+    if constexpr (tr::n_out > 0) {
+        uint8_t pos[tr::n_out];
+        half    val[tr::n_out];
+        ggml_cuda_memcpy_1<tr::n_out, A < tr::n_out ? A : tr::n_out>(pos, b->outlier_pos);
+        ggml_cuda_memcpy_1<2*tr::n_out, A>(val, b->outlier_val);
+#pragma unroll
+        for (int k = 0; k < tr::n_out; ++k) {
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                if (pos[k] == 4*t + i) {
+                    v[i] = __half2float(val[k]);
+                }
+            }
+        }
+    }
+}
+
 // Reads the EPL elements lane t owns of a K or V row (see fattn_gqa_idx), scaled by their block scale: once per
 // element, so that the dot products and the V accumulation take one FMA per element and column. The quantized blocks
 // put a 2-byte scale first and are an even number of bytes long, so 2-byte loads are aligned. Codebook types: cb holds
-// the 3- and 4-bit codebook (shared memory), cb2 the 2-bit one.
+// the 3- and 4-bit codebook (shared memory), cb2 the 2-bit one. Trellis types: cb is the table.
 template <ggml_type type, bool as_V, int EPL>
 static __device__ __forceinline__ void fattn_gqa_load(
         const char * __restrict__ row, const int t, const float * __restrict__ cb, const float4 cb2,
@@ -180,6 +233,8 @@ static __device__ __forceinline__ void fattn_gqa_load(
             for (int i = 0; i < 4; ++i) {
                 vg[i] = d * float(c[i] - offset);
             }
+        } else if constexpr (vtq_trellis<type>::K > 0) {
+            fattn_gqa_load_trellis<type>((const typename vtq_trellis<type>::block *) row + gi, t, cb, vg);
         } else {
             constexpr int bits = fattn_gqa_tq<type>::bits;
             static_assert(bits >= 2 && bits <= 4, "no reader for this type");
@@ -285,6 +340,21 @@ static __global__ void flash_attn_ext_vec_gqa(
             cb_V[tid] = fattn_gqa_tq_centroid<type_V>(tid);
         }
     }
+    // trellis V: the table (2^L floats) goes to shared memory if it fits next to the rest within the 48 KB of static
+    // shared memory of a block (12 state bits: 16 KB, a gather there costs a few bank conflicts instead of one L1 or L2
+    // transaction per lane); the 256 KB of 16 state bits stay in global memory (L2)
+    constexpr int  tbl_V_n      = vtq_trellis<type_V>::K > 0 ? 1 << vtq_trellis<type_V>::L : 0;
+    constexpr bool tbl_V_shared = tbl_V_n > 0 && (tbl_V_n + nthreads*ncols + nwarps*D)*sizeof(float) <= 48*1024;
+    __shared__ __align__(16) float tbl_V[tbl_V_shared ? tbl_V_n : 1];
+    const float * cb_V_rd = cb_V; // what fattn_gqa_load reads for V
+    if constexpr (tbl_V_shared) {
+        for (int i = tid; i < tbl_V_n/4; i += nthreads) {
+            ((float4 *) tbl_V)[i] = ((const float4 *) vtq_trellis_table_storage)[i];
+        }
+        cb_V_rd = tbl_V;
+    } else if constexpr (tbl_V_n > 0) {
+        cb_V_rd = vtq_trellis_table_storage;
+    }
     float4 cb2_K = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     float4 cb2_V = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     if constexpr (fattn_gqa_tq<type_K>::bits == 2) {
@@ -324,7 +394,7 @@ static __global__ void flash_attn_ext_vec_gqa(
             }
         }
     }
-    __syncthreads(); // codebooks written, Q_tmp no longer needed
+    __syncthreads(); // codebooks and table written, Q_tmp no longer needed
 
     float VKQ[ncols][EPL] = {{0.0f}};
     float KQ_max[ncols];
@@ -408,7 +478,7 @@ static __global__ void flash_attn_ext_vec_gqa(
             const int k = threadIdx.y*WARP_SIZE + k0;
             const int row_V = use_sparse ? __shfl_sync(0xFFFFFFFF, row_own, k0, WARP_SIZE) : k_VKQ_0 + k;
             float v[EPL];
-            fattn_gqa_load<type_V, true, EPL>(V + int64_t(row_V)*nb21, threadIdx.x, cb_V, cb2_V, v);
+            fattn_gqa_load<type_V, true, EPL>(V + int64_t(row_V)*nb21, threadIdx.x, cb_V_rd, cb2_V, v);
             const float4 * w4 = (const float4 *) (KQ + k*ncols); // softmax weights of row k, all columns
 #pragma unroll
             for (int j4 = 0; j4 < ncols/4; ++j4) {
@@ -512,16 +582,28 @@ static void ggml_cuda_flash_attn_ext_vec_gqa_case(ggml_backend_cuda_context & ct
 
     fattn_kernel_t fattn_kernel = fattn_gqa_kernel<D, ncols, type_K, type_V>(logit_softcap != 0.0f, use_sparse);
     constexpr int nwarps = 128 / WARP_SIZE;
+    if constexpr (GGML_TYPE_IS_VTQ_TRELLIS(type_V)) {
+        GGML_CUDA_INIT_TRELLIS_TABLE_IMPL(); // the trellis V reader takes the table through this TU's pointer
+    }
     launch_fattn<D, 1, ncols>(ctx, dst, fattn_kernel, nwarps, 0, 128, false, false, false, WARP_SIZE, use_sparse);
 }
 
 // The supported (K type, V type) pairs for one head size D, block width ncols and K type: every V type of the list
 // below. Each (D, ncols, K type) is compiled in its own TU (template-instances/fattn-gqa-instance-*.cu) so that they
 // build in parallel; the dispatcher in fattn-vec-gqa.cu only references them. Returns false if V is not covered.
-// f16 K with f16 V stays with the MMA kernel (decode at 32k reads the cache at ~90 % of the bandwidth there).
+// f16 K with f16 V stays with the MMA kernel (decode at 32k reads the cache at ~90 % of the bandwidth there). Trellis V
+// only next to the K types the VEC kernel pairs it with by default (no q5_0 or q4_0 K, see fattn-vec-dispatch-vtq*.cu).
+template <ggml_type type_K, ggml_type type_V>
+static constexpr bool fattn_gqa_pair() {
+    if constexpr (GGML_TYPE_IS_VTQ_TRELLIS(type_V)) {
+        return type_K != GGML_TYPE_Q5_0 && type_K != GGML_TYPE_Q4_0;
+    }
+    return !(type_K == GGML_TYPE_F16 && type_V == GGML_TYPE_F16);
+}
+
 #define FATTN_VEC_GQA_CASE_V(type_V_)                                                               \
     if (V->type == (type_V_)) {                                                                     \
-        if constexpr (!(type_K == GGML_TYPE_F16 && (type_V_) == GGML_TYPE_F16)) {                   \
+        if constexpr (fattn_gqa_pair<type_K, type_V_>()) {                                          \
             ggml_cuda_flash_attn_ext_vec_gqa_case<D, ncols, type_K, type_V_>(ctx, dst, use_sparse); \
             return true;                                                                            \
         }                                                                                           \
@@ -539,6 +621,16 @@ bool ggml_cuda_flash_attn_ext_vec_gqa_d(ggml_backend_cuda_context & ctx, ggml_te
     FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ2_1)
     FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ3_1)
     FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ4_1)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ2_2)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ3_2)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ4_2)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ2_2S)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ3_2S)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ4_2S)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ2_3)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ3_3)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ4_3)
+    FATTN_VEC_GQA_CASE_V(GGML_TYPE_VTQ3_V8)
 
     return false;
 }
