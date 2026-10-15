@@ -7,6 +7,11 @@
 //      drafts exactly what a reference built from scratch drafts: every token x_p paired with the
 //      target hidden state h_{p-1} at position p, the first draft seeded with h of the last accepted token
 //   3. a second request with the same prompt drafts exactly the same as the first one (no state leaks)
+//   4. with two sequences in one batch, the nextn rows are in batch order even when the ubatch split reorders the
+//      tokens (split_equal takes the same number of tokens from each sequence)
+//   5. two sequences sharing one speculative state, with their prompts and verify tokens in the same target batches
+//      (mirrored into the draft context once per batch) and drafted in the same draft batches, draft exactly what each
+//      sequence drafts alone; for a unified KV cache and for one stream per sequence
 
 #include "common.h"
 #include "speculative.h"
@@ -95,12 +100,14 @@ static gguf_context_ptr make_gguf() {
     return ret;
 }
 
-static llama_context * make_ctx(llama_model * model, bool mtp, bool embeddings, uint32_t n_rs_seq) {
+static llama_context * make_ctx(llama_model * model, bool mtp, bool embeddings, uint32_t n_rs_seq,
+        uint32_t n_seq = 1, bool kv_unified = false) {
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx           = N_CTX;
+    cparams.n_ctx           = kv_unified ? N_CTX : N_CTX * n_seq;
     cparams.n_batch         = 64;
     cparams.n_ubatch        = 64;
-    cparams.n_seq_max       = 1;
+    cparams.n_seq_max       = n_seq;
+    cparams.kv_unified      = kv_unified;
     cparams.n_threads       = 4;
     cparams.n_threads_batch = 4;
     cparams.embeddings      = embeddings;
@@ -221,6 +228,139 @@ static request_result run_request(common_speculative * spec, llama_context * ctx
     }
 
     res.ok = true;
+    return res;
+}
+
+struct seq_request {
+    llama_tokens     prompt;
+    std::vector<int> schedule;      // number of accepted draft tokens per round
+    int              round_start;   // round in which the prompt joins the target batch, -1: never
+};
+
+// several requests as the server runs them over one speculative state: per round, one draft call drafts for all
+// generating sequences, then one target batch holds their verify tokens followed by the prompts that start in this
+// round. the batch is mirrored into the draft context once, after trimming each sequence from its first position
+static std::vector<request_result> run_requests(common_speculative * spec, llama_context * ctx_tgt, llama_context * ctx_dft,
+        const std::vector<seq_request> & reqs) {
+    const int n_req = (int) reqs.size();
+
+    std::vector<request_result> res(n_req);
+
+    auto * mem_tgt = llama_get_memory(ctx_tgt);
+    auto * mem_dft = llama_get_memory(ctx_dft);
+
+    llama_memory_clear(mem_tgt, true);
+    llama_memory_clear(mem_dft, true);
+
+    std::vector<int>          n_round(n_req, -1); // completed verify rounds, -1: prompt not processed yet
+    std::vector<llama_tokens> drafts(n_req);
+
+    for (int round = 0; ; ++round) {
+        bool any_drafting = false;
+        for (llama_seq_id s = 0; s < n_req; ++s) {
+            drafts[s].clear();
+            if (n_round[s] < 0 || n_round[s] > (int) reqs[s].schedule.size()) {
+                continue;
+            }
+            auto & dp = common_speculative_get_draft_params(spec, s);
+            dp.drafting = true;
+            dp.n_max    = 3;
+            dp.n_past   = (llama_pos) res[s].tokens.size();
+            dp.id_last  = res[s].id_last;
+            dp.prompt   = &res[s].tokens;
+            dp.result   = &drafts[s];
+            any_drafting = true;
+        }
+        if (any_drafting) {
+            common_speculative_draft(spec);
+        }
+
+        llama_batch batch = llama_batch_init(64, 0, 1);
+        std::vector<int32_t> i_batch(n_req, -1); // batch index of id_last (verify) or of the last prompt token
+
+        for (llama_seq_id s = 0; s < n_req; ++s) {
+            if (n_round[s] < 0 || n_round[s] > (int) reqs[s].schedule.size()) {
+                continue;
+            }
+            res[s].drafts.push_back(drafts[s]);
+            if (n_round[s] == (int) reqs[s].schedule.size()) {
+                // final round: keep the draft, done
+                res[s].draft_last = drafts[s];
+                res[s].ok = true;
+                n_round[s]++;
+                continue;
+            }
+            const llama_pos p0 = (llama_pos) res[s].tokens.size();
+            i_batch[s] = batch.n_tokens;
+            common_batch_add(batch, res[s].id_last, p0, { s }, true);
+            for (size_t i = 0; i < drafts[s].size(); ++i) {
+                common_batch_add(batch, drafts[s][i], p0 + 1 + (llama_pos) i, { s }, true);
+            }
+        }
+        for (llama_seq_id s = 0; s < n_req; ++s) {
+            if (reqs[s].round_start != round) {
+                continue;
+            }
+            for (size_t i = 0; i < reqs[s].prompt.size(); ++i) {
+                common_batch_add(batch, reqs[s].prompt[i], (llama_pos) i, { s }, i + 1 == reqs[s].prompt.size());
+            }
+            i_batch[s] = batch.n_tokens - 1;
+        }
+
+        if (batch.n_tokens == 0) {
+            llama_batch_free(batch);
+            break;
+        }
+
+        if (llama_decode(ctx_tgt, batch) != 0) {
+            fprintf(stderr, "target decode failed\n");
+            llama_batch_free(batch);
+            return res;
+        }
+        for (llama_seq_id s = 0; s < n_req; ++s) {
+            for (int32_t k = 0; k < batch.n_tokens; ++k) {
+                if (batch.seq_id[k][0] == s) {
+                    llama_memory_seq_rm(mem_dft, s, batch.pos[k], -1);
+                    break;
+                }
+            }
+        }
+        common_speculative_process(spec, batch);
+
+        for (llama_seq_id s = 0; s < n_req; ++s) {
+            if (i_batch[s] < 0) {
+                continue;
+            }
+            if (n_round[s] < 0) {
+                // prompt processed
+                common_speculative_begin(spec, s, reqs[s].prompt);
+                res[s].tokens  = reqs[s].prompt;
+                res[s].id_last = argmax(llama_get_logits_ith(ctx_tgt, i_batch[s]));
+                n_round[s] = 0;
+                continue;
+            }
+
+            const int n_acc = std::min<int>(reqs[s].schedule[n_round[s]], (int) drafts[s].size());
+            const llama_token id_next = argmax(llama_get_logits_ith(ctx_tgt, i_batch[s] + n_acc));
+
+            common_speculative_accept(spec, s, (uint16_t) n_acc);
+
+            res[s].tokens.push_back(res[s].id_last);
+            res[s].tokens.insert(res[s].tokens.end(), drafts[s].begin(), drafts[s].begin() + n_acc);
+            res[s].id_last = id_next;
+
+            if (!llama_memory_seq_rm(mem_tgt, s, (llama_pos) res[s].tokens.size(), -1)) {
+                fprintf(stderr, "target rollback failed\n");
+                llama_batch_free(batch);
+                return res;
+            }
+            llama_memory_seq_rm(mem_dft, s, (llama_pos) res[s].tokens.size(), -1);
+            n_round[s]++;
+        }
+
+        llama_batch_free(batch);
+    }
+
     return res;
 }
 
@@ -406,6 +546,125 @@ int main(void) {
         const bool pass = r2.drafts == r1.drafts && r2.tokens == r1.tokens && r2.logits_dft_last == r1.logits_dft_last;
         printf("check 3 (second identical request drafts the same): %s\n", pass ? "OK" : "FAIL");
         ok &= pass;
+    }
+
+    // two sequences: seq 0 with a longer prompt than seq 1, so that a batch holding both prompts is split unevenly
+    llama_tokens prompt1;
+    {
+        std::mt19937 gen(5678);
+        std::uniform_int_distribution<int> dis(0, N_VOCAB - 1);
+        for (int i = 0; i < 9; ++i) {
+            prompt1.push_back(dis(gen));
+        }
+    }
+    const std::vector<seq_request> reqs = {
+        { prompt,  schedule,                0 },
+        { prompt1, { 2, 0, 3, 1, 1, 3, 0 }, 0 },
+    };
+
+    for (const bool kv_unified : { false, true }) {
+        const char * kv_name = kv_unified ? "unified KV" : "KV stream per sequence";
+
+        llama_context_ptr ctx2_tgt(make_ctx(model.get(), false, false, 4, 2, kv_unified));
+        llama_context_ptr ctx2_dft(make_ctx(model.get(), true,  false, 0, 2, kv_unified));
+        if (!ctx2_tgt || !ctx2_dft) {
+            fprintf(stderr, "failed to create the two-sequence contexts\n");
+            return 1;
+        }
+
+        // also enables the nextn export of ctx2_tgt
+        common_params_speculative sparams2 = sparams;
+        sparams2.draft.ctx_tgt = ctx2_tgt.get();
+        sparams2.draft.ctx_dft = ctx2_dft.get();
+        common_speculative_ptr spec2(common_speculative_init(sparams2, 2));
+        if (!spec2) {
+            fprintf(stderr, "failed to init two-sequence speculative decoding\n");
+            return 1;
+        }
+
+        // check 4: decode both prompts in one batch, compare the nextn rows with each prompt decoded alone
+        {
+            std::vector<std::vector<float>> H_ref(reqs.size());
+            for (size_t s = 0; s < reqs.size(); ++s) {
+                const auto & p = reqs[s].prompt;
+                llama_memory_clear(llama_get_memory(ref_tgt.get()), true);
+                llama_batch batch = llama_batch_init((int32_t) p.size(), 0, 1);
+                for (size_t i = 0; i < p.size(); ++i) {
+                    common_batch_add(batch, p[i], (llama_pos) i, { 0 }, true);
+                }
+                if (llama_decode(ref_tgt.get(), batch) != 0) {
+                    fprintf(stderr, "reference target decode failed\n");
+                    return 1;
+                }
+                llama_batch_free(batch);
+                H_ref[s].resize(p.size() * N_EMBD);
+                for (size_t i = 0; i < p.size(); ++i) {
+                    memcpy(H_ref[s].data() + i * N_EMBD, llama_get_embeddings_ith(ref_tgt.get(), (int32_t) i), N_EMBD * sizeof(float));
+                }
+            }
+
+            llama_memory_clear(llama_get_memory(ctx2_tgt.get()), true);
+            llama_batch batch = llama_batch_init(64, 0, 1);
+            for (llama_seq_id s = 0; s < (llama_seq_id) reqs.size(); ++s) {
+                const auto & p = reqs[s].prompt;
+                for (size_t i = 0; i < p.size(); ++i) {
+                    common_batch_add(batch, p[i], (llama_pos) i, { s }, i + 1 == p.size());
+                }
+            }
+            if (llama_decode(ctx2_tgt.get(), batch) != 0) {
+                fprintf(stderr, "two-prompt decode failed\n");
+                return 1;
+            }
+            llama_batch_free(batch);
+
+            double worst = 0.0;
+            int32_t k = 0;
+            for (size_t s = 0; s < reqs.size(); ++s) {
+                for (size_t i = 0; i < reqs[s].prompt.size(); ++i, ++k) {
+                    const float * h = llama_get_embeddings_nextn_ith(ctx2_tgt.get(), k);
+                    if (h == nullptr) {
+                        fprintf(stderr, "check 4: no nextn row for batch token %d\n", k);
+                        return 1;
+                    }
+                    worst = std::max(worst, nmse(H_ref[s].data() + i * N_EMBD, h, N_EMBD));
+                }
+            }
+            const bool pass = worst < 1e-6;
+            printf("check 4 (nextn rows of a two-sequence batch in batch order, %s): worst nmse = %.3e %s\n",
+                    kv_name, worst, pass ? "OK" : "FAIL");
+            ok &= pass;
+        }
+
+        // check 5: both sequences together (prompts in the same batch, and seq 1 joining while seq 0 generates)
+        // draft the same as each sequence alone
+        {
+            std::vector<request_result> alone(reqs.size());
+            for (size_t s = 0; s < reqs.size(); ++s) {
+                std::vector<seq_request> reqs_alone = reqs;
+                for (size_t o = 0; o < reqs.size(); ++o) {
+                    reqs_alone[o].round_start = o == s ? 0 : -1;
+                }
+                alone[s] = run_requests(spec2.get(), ctx2_tgt.get(), ctx2_dft.get(), reqs_alone)[s];
+                if (!alone[s].ok) {
+                    fprintf(stderr, "check 5: sequence %zu alone did not finish\n", s);
+                    return 1;
+                }
+            }
+
+            for (const int round_start_1 : { 0, 2 }) {
+                std::vector<seq_request> reqs_tog = reqs;
+                reqs_tog[1].round_start = round_start_1;
+                const auto tog = run_requests(spec2.get(), ctx2_tgt.get(), ctx2_dft.get(), reqs_tog);
+
+                bool pass = true;
+                for (size_t s = 0; s < reqs.size(); ++s) {
+                    pass &= tog[s].ok && tog[s].drafts == alone[s].drafts && tog[s].tokens == alone[s].tokens;
+                }
+                printf("check 5 (two sequences drafted together match each alone, %s, seq 1 joins in round %d): %s\n",
+                        kv_name, round_start_1, pass ? "OK" : "FAIL");
+                ok &= pass;
+            }
+        }
     }
 
     printf("%s\n", ok ? "PASS" : "FAIL");
