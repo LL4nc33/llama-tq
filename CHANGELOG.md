@@ -8,9 +8,10 @@
   same path. Flash attention rotates Q once per query like the K blocks and dots it with the decoded samples; since the
   dequantized row has the stored outlier values at the 4 outlier positions, the readers subtract q·x at those positions
   (x computed from the samples a lane already decoded) and add q·value. Decode uses the GQA kernel (GQA ratio 3 and
-  more, longer than one KQ tile) or the vector kernel at head sizes 128 and 256 next to V f16, `vtq{2,3,4}_1` and
-  `vtq{2,3,4}_2s`; other V types and head 512 convert K and V to f16 every step, verify and prompt batches convert K to
-  f16 for the tensor-core kernel. `GET_ROWS` and the f16/f32 conversions dequantize them as well.
+  more, longer than one KQ tile) at head sizes 128 and 256 next to V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` and
+  `vtq{2,3,4}_2s`, otherwise the vector kernel, which also takes `vtq1_1` V and head size 512 (Gemma 4 global layers);
+  other V types convert K and V to f16 every step, verify and prompt batches convert K to f16 for the tensor-core
+  kernel. `GET_ROWS` and the f16/f32 conversions dequantize them as well.
 
 ## 2026-10-15
 
