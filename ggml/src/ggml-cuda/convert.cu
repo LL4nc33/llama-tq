@@ -870,6 +870,12 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_vtq4_3_cuda<half>;
         case GGML_TYPE_VTQ3_V8:
             return dequantize_row_vtq3_v8_cuda<half>;
+        case GGML_TYPE_KTQ2_3S:
+            return dequantize_row_ktq_trellis_cuda<2, block_ktq2_3s, half>;
+        case GGML_TYPE_KTQ3_3S:
+            return dequantize_row_ktq_trellis_cuda<3, block_ktq3_3s, half>;
+        case GGML_TYPE_KTQ4_3S:
+            return dequantize_row_ktq_trellis_cuda<4, block_ktq4_3s, half>;
         default:
             return nullptr;
     }
@@ -958,6 +964,12 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
             return ktq_dequantize_nc_cuda<block_ktq3_1>;
         case GGML_TYPE_KTQ4_1:
             return ktq_dequantize_nc_cuda<block_ktq4_1>;
+        case GGML_TYPE_KTQ2_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<2, block_ktq2_3s>;
+        case GGML_TYPE_KTQ3_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<3, block_ktq3_3s>;
+        case GGML_TYPE_KTQ4_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<4, block_ktq4_3s>;
         case GGML_TYPE_VTQ1_1:
             return dequantize_block_vtq1_1_nc_cuda;
         case GGML_TYPE_VTQ2_1:
@@ -1019,6 +1031,12 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
             return ktq_dequantize_nc_cuda<block_ktq3_1>;
         case GGML_TYPE_KTQ4_1:
             return ktq_dequantize_nc_cuda<block_ktq4_1>;
+        case GGML_TYPE_KTQ2_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<2, block_ktq2_3s>;
+        case GGML_TYPE_KTQ3_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<3, block_ktq3_3s>;
+        case GGML_TYPE_KTQ4_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<4, block_ktq4_3s>;
         case GGML_TYPE_VTQ1_1:
             return dequantize_block_vtq1_1_nc_cuda;
         case GGML_TYPE_VTQ2_1:
@@ -1078,6 +1096,12 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
             return ktq_dequantize_nc_cuda<block_ktq3_1>;
         case GGML_TYPE_KTQ4_1:
             return ktq_dequantize_nc_cuda<block_ktq4_1>;
+        case GGML_TYPE_KTQ2_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<2, block_ktq2_3s>;
+        case GGML_TYPE_KTQ3_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<3, block_ktq3_3s>;
+        case GGML_TYPE_KTQ4_3S:
+            return dequantize_block_ktq_trellis_nc_cuda<4, block_ktq4_3s>;
         case GGML_TYPE_VTQ1_1:
             return dequantize_block_vtq1_1_nc_cuda;
         case GGML_TYPE_VTQ2_1:

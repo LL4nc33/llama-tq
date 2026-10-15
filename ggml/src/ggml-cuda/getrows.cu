@@ -2,6 +2,7 @@
 #include "dequantize.cuh"
 #include "convert.cuh"
 #include "turboquant.cuh"
+#include "trellis.cuh"
 
 template<int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
 static __global__ void k_get_rows(
@@ -280,6 +281,18 @@ static void ggml_cuda_get_rows_switch_src0_type(
             break;
         case GGML_TYPE_KTQ4_1:
             get_rows_cuda_ktq<block_ktq4_1>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_KTQ2_3S:
+            get_rows_cuda_ktq_trellis<2, block_ktq2_3s>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_KTQ3_3S:
+            get_rows_cuda_ktq_trellis<3, block_ktq3_3s>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_KTQ4_3S:
+            get_rows_cuda_ktq_trellis<4, block_ktq4_3s>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
         case GGML_TYPE_VTQ1_1:

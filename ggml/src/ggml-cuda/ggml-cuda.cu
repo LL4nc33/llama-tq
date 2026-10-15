@@ -5584,6 +5584,9 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_KTQ2_1:
                     case GGML_TYPE_KTQ3_1:
                     case GGML_TYPE_KTQ4_1:
+                    case GGML_TYPE_KTQ2_3S:
+                    case GGML_TYPE_KTQ3_3S:
+                    case GGML_TYPE_KTQ4_3S:
                         return true;
                     default:
                         return false;
