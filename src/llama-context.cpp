@@ -2306,9 +2306,26 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 ggml_backend_t backend_h = ggml_backend_sched_get_tensor_backend(sched.get(), t_h_nextn);
                 if (backend_h != nullptr) {
                     const uint32_t n_embd = hparams.n_embd_out();
-                    float * embd_nextn_out = embd_nextn.data + offset*n_embd;
                     GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_nextn.size);
-                    ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_rows*n_embd*sizeof(float));
+                    if (masked) {
+                        float * embd_nextn_out = embd_nextn.data + offset*n_embd;
+                        ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_rows*n_embd*sizeof(float));
+                    } else {
+                        // a ubatch split of several sequences can reorder the tokens (e.g. split_equal takes the same
+                        // number of tokens from each sequence), so put every row at its batch index, one copy per run
+                        // of consecutive batch indices
+                        const auto & tok_ids = balloc->get_tok_ids();
+                        int64_t i0 = 0;
+                        for (int64_t i = 1; i <= n_rows; ++i) {
+                            if (i < n_rows && tok_ids[offset + i] == tok_ids[offset + i - 1] + 1) {
+                                continue;
+                            }
+                            float * embd_nextn_out = embd_nextn.data + (int64_t) tok_ids[offset + i0]*n_embd;
+                            ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out,
+                                    i0*n_embd*sizeof(float), (i - i0)*n_embd*sizeof(float));
+                            i0 = i;
+                        }
+                    }
                 }
             }
         }
