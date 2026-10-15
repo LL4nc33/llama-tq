@@ -137,7 +137,7 @@ llama-server \
 **gemma-4 gotchas (learned the hard way):**
 - KV cache: `q8_0/q8_0`, or `q8_0/vtq4_1` for more context; accuracy per type and model in
   [turboquant.md](../turboquant.md#accuracy). Older notes here recommended `ktq2_1`/`vtq2_3` with SWA overrides
-  against `<unused49>` output; `vtq2_3` is a trellis type with a slow encoder (decode at 1-3 t/s until 2026-10-14).
+  against `<unused49>` output; `vtq2_3` is a trellis type with a slow encoder (decode about 3 times slower than `vtq2_1`).
 - Vision needs the `gemma4uv` mmproj. The matching `gemma4uv`/`gemma4ua`
   projector support is in the source tree (§3.2), so a
   source build has it; only an older *prebuilt release* may lack it. Image

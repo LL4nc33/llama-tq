@@ -39,10 +39,10 @@ The suffix tells the method:
 | Suffix | Method | Types | Decode |
 |---|---|---|---|
 | `_1` | Hadamard rotation + codebook | `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1` | full speed |
-| `_2` | trellis | `vtq{2,3,4}_2` | slow (1-3 t/s until 2026-10-14, new encoder not re-measured) |
+| `_2` | trellis | `vtq{2,3,4}_2` | ~3× slower than `_1` (Qwen3-4B, RTX 2060: 20-27 t/s; 1-3 t/s until 2026-10-14) |
 | `_2s` | trellis with 12 state bits ("s" = fast) | `vtq{2,3,4}_2s` | fast (Qwen3-4B: ~75 t/s) |
-| `_3` | trellis + 4 fp16 outliers per block | `vtq{2,3,4}_3` | slow (1-3 t/s until 2026-10-14, new encoder not re-measured) |
-| `_v8` | trellis 3-bit + 2 fp16 outliers (added in TurboQuant v8) | `vtq3_v8` | slow (1-3 t/s until 2026-10-14, new encoder not re-measured) |
+| `_3` | trellis + 4 fp16 outliers per block | `vtq{2,3,4}_3` | same encoder as `_2`, not measured separately |
+| `_v8` | trellis 3-bit + 2 fp16 outliers (added in TurboQuant v8) | `vtq3_v8` | same encoder as `_2`, not measured separately |
 
 Reference: PolarQuant (Han et al., arXiv:2502.02617, ICLR 2026) and TurboQuant (Zandieh et al., arXiv:2504.19874).
 
@@ -136,9 +136,11 @@ The 16-bit trellis is more accurate per bit than the codebook types, but its Vit
 for every 128 values and runs for every new token. With the global-memory encoder used until 2026-10-14 that took 13.7 ms
 per layer on an RTX 2060, so decode reached 1-3 t/s (2026-10-12; Qwen3-4B with `vtq3_2`: 1.0 t/s on an RTX 2060, 2.5 t/s on
 an RTX 5080; `vtq3_1`: 97 t/s on the RTX 2060). Since 2026-10-15 the 16-bit types use the shared-memory encoder of
-`vtq*_2s` (16 times its work per block); not re-measured yet. Deferred staging (the
-default for these types) only moves the prompt's encoding to one pass after the prompt; the perplexity run with V
-quantized in prefill took more than an hour, the codebook types take minutes. The types are also not covered by the GQA
+`vtq*_2s` (16 times its work per block): Qwen3-4B Q4_K_M on an RTX 2060 with `q8_0` K decodes at 26.6 / 27.0 / 19.9
+t/s with `vtq2_2` / `vtq3_2` / `vtq4_2` (`vtq3_2s` 78, `vtq3_1` 89), and a 40-chunk perplexity run with V quantized in
+prefill takes 3-6 minutes instead of about two hours. Each layer still encodes only one block per KV head per token, so
+a decode step keeps a few SMs busy. Deferred staging (the default for these types) only moves the prompt's encoding to
+one pass after the prompt. The types are also not covered by the GQA
 and tensor-core decode kernels. The April 2026
 finding that `vtq2_2` / `vtq3_2` / `vtq4_2` give bit-identical perplexity was an artifact of that staging (V stayed f16
 during prefill). Prefer `vtq*_2s` or `vtq*_1` for speed.
@@ -149,14 +151,16 @@ against f16 KV):
 
 | V | bpw | 12 state bits (`vtq*_2s`) | 16 state bits (`vtq*_2`) | codebook (`vtq*_1`, bpw) |
 |---|---:|---:|---:|---:|
-| 4-bit | 4.25 | 0.00482 | | 0.00514 (4.5) |
-| 3-bit | 3.25 | 0.01014 | 0.00889 | 0.01197 (4.0) |
-| 2-bit | 2.25 | 0.0286 | 0.02592 | 0.0471 (2.5) |
+| 4-bit | 4.25 | 0.00482 | 0.00469 | 0.00514 (4.5) |
+| 3-bit | 3.25 | 0.01014 | 0.00943 | 0.01197 (4.0) |
+| 2-bit | 2.25 | 0.0286 | 0.02602 | 0.0471 (2.5) |
 
-The 12-bit register costs 10-14 % KLD against 16 bits and is still 6-39 % below the codebook type with the same index
+The 16-bit column was measured on 2026-10-15 with the shared-memory encoder; the global-memory encoder gave 0.00889 and
+0.02592 for 3 and 2 bits. Both runs have the same median KLD; the mean moves with single outlier chunks, which land on
+different chunks for every encoder variant. The 12-bit register costs 3-10 % KLD against 16 bits and is still 6-39 % below the codebook type with the same index
 bits, at fewer bits per value. Its encoder searches 4096 instead of 65536 states and keeps the DP rows in shared memory,
-so it runs for every new token without stalling decode: Qwen3-4B decodes at ~75 t/s with `vtq*_2s` against 1-2 t/s with
-`vtq*_2` and the global-memory encoder of that time. Like `vtq*_2` they are not covered by the GQA and tensor-core decode kernels.
+so it runs for every new token without stalling decode: Qwen3-4B decodes at ~75 t/s with `vtq*_2s` against 20-27 t/s with
+`vtq*_2` (1-2 t/s with the global-memory encoder until 2026-10-14). Like `vtq*_2` they are not covered by the GQA and tensor-core decode kernels.
 
 ### V-cache v3 — Trellis + Outlier-Channel-Split (`vtq*_3`)
 
@@ -252,7 +256,7 @@ Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the
 history below only.
 
-The v2/v3 trellis V types with 16 state bits (`vtq*_2`, `vtq*_3`, `vtq3_v8`) give correct output but their encoder runs for every new token over 16 times the states of `vtq*_2s` (see How It Works); with the global-memory encoder used until 2026-10-14 they decoded at 1-3 t/s, the shared-memory encoder is not re-measured yet. For speed use `vtq*_2s` (12 state bits) or the v1 codebook types `vtq*_1`. A trellis block spans 128 values of one head; on models with smaller heads (gpt-oss:
+The v2/v3 trellis V types with 16 state bits (`vtq*_2`, `vtq*_3`, `vtq3_v8`) give correct output but their encoder runs for every new token over 16 times the states of `vtq*_2s` (see How It Works); they decode about 3 times slower than `vtq*_2s` (Qwen3-4B on an RTX 2060: 20-27 t/s; 1-3 t/s with the global-memory encoder until 2026-10-14). For speed use `vtq*_2s` (12 state bits) or the v1 codebook types `vtq*_1`. A trellis block spans 128 values of one head; on models with smaller heads (gpt-oss:
 64) those layers use the codebook type with the same bits instead, and the log says so.
 
 ## Memory Savings

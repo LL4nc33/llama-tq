@@ -156,8 +156,8 @@ llama_kv_cache::llama_kv_cache(
     if (is_vtq2_type_v && !GGML_TYPE_IS_VTQ_TRELLIS_S(type_v)) {
         // staging covers the prompt only: every decoded token still runs the Viterbi encoder (fast enough for the
         // 12 state bits of vtq*_2s)
-        LLAMA_LOG_WARN("%s: V cache type %s is a trellis type: its encoder runs for every new token, decode reaches only "
-                       "1-3 t/s; vtq*_2s (12 state bits) and the codebook types vtq*_1 decode much faster\n", __func__, ggml_type_name(type_v));
+        LLAMA_LOG_WARN("%s: V cache type %s is a trellis type: its encoder runs for every new token, decode is about 3 times "
+                       "slower than with vtq*_2s (12 state bits) or the codebook types vtq*_1\n", __func__, ggml_type_name(type_v));
     }
 
     // create a context for each buffer type

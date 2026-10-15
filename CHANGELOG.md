@@ -2,6 +2,18 @@
 
 ## 2026-10-15
 
+- **The 16-state-bit trellis V types decode 15-20 times faster.** `vtq{2,3,4}_2`, `vtq{2,3,4}_3` and `vtq3_v8` now
+  use the shared-memory Viterbi encoder of `vtq*_2s`: the DP values stay in registers with one shared exchange row per
+  step, the codes for the 65536 states are read from the table per step instead of being held in registers, and the
+  backtrack loads only the bytes it can reach. The global-memory kernel, its host-side waves with a stream sync per
+  wave and its 536 MiB pool are gone; the workspace is one 2 MiB backtrack slot per SM (at least 32 MiB, 60 MiB on an
+  RTX 2060), `GGML_CUDA_VTQ_POOL_SLOTS` now counts slots. The encoder is bit-identical to the CPU encoder (the old GPU
+  kernel fused one multiply-add and could pick a different path on rare near-ties); the stored format is unchanged.
+  Qwen3-4B Q4_K_M on an RTX 2060, `q8_0` K, decode tg32: `vtq2_2` 26.6, `vtq3_2` 27.0, `vtq4_2` 19.9 t/s (before: 1-2;
+  `vtq3_2s` 78, `vtq3_1` 89). KL divergence (40 chunks, K f16) `vtq2_2` 0.02602, `vtq3_2` 0.00943, `vtq4_2` 0.00469
+  (old encoder 0.02592 / 0.00889 / not measured; same median, the mean moves with single outlier chunks), and the
+  40-chunk run takes 3-6 minutes instead of about two hours. Each layer still encodes one block per KV head per token,
+  so decode keeps only a few SMs busy.
 - **MTP speculative decoding on Qwen3.5/3.6 drafts from the right hidden state again.** Since the DFlash2 lattice fix
   the qwen35 and qwen35moe graphs no longer exported the hidden state the MTP head reads (`t_h_nextn`), so the head
   drafted from whatever the buffer held, and the getters for the nextn and eagle3 hidden states returned the host
