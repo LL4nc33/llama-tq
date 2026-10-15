@@ -83,9 +83,11 @@ static __global__ void flash_attn_ext_vec(
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
     // KTQ dots Q in the Hadamard domain with one lane per element of a 32-block, so it needs whole warps
     // (D/4 = 16 threads at D=64 would take the q8_1 branch, which gets no Q_q8 here)
+    // (the trellis K types likewise: a lane decodes the elements 32*c + lane of every 128-element block)
     constexpr bool K_is_ktq   = GGML_TYPE_IS_KTQ(type_K);
+    constexpr bool K_trellis  = GGML_TYPE_IS_KTQ_TRELLIS(type_K);
     constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb :
-                                K_is_ktq ? WARP_SIZE : nthreads_KQ_q;
+                                K_is_ktq || K_trellis ? WARP_SIZE : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
 
     static_assert(WARP_SIZE % nthreads_KQ == 0, "bad nthreads_K");
@@ -105,7 +107,7 @@ static __global__ void flash_attn_ext_vec(
     constexpr int V_cols_per_iter   = WARP_SIZE / nthreads_V;
 
     constexpr vec_dot_KQ_t vec_dot_KQ = get_vec_dot_KQ<type_K, D, nthreads_KQ>();
-    constexpr bool Q_tq = GGML_TYPE_IS_KTQ(type_K);
+    constexpr bool Q_tq = K_is_ktq || K_trellis;
     constexpr bool Q_q8_1 = !Q_tq && type_K != GGML_TYPE_F16 && type_K != GGML_TYPE_BF16;
 #ifdef V_DOT2_F32_F16_AVAILABLE
     constexpr dequantize_V_t dequantize_V = get_dequantize_V<type_V, half,  V_rows_per_thread>();
@@ -161,6 +163,8 @@ static __global__ void flash_attn_ext_vec(
     // TQ v7: Q as f32 in registers for Hadamard-domain dot product.
     // Thread t holds Q_f32[j][bi] = Q value at position bi*32 + t (scaled).
     float Q_f32[ncols][D/WARP_SIZE];
+    // trellis K: the unrotated query and the query times sign/sqrt(128) per element, for the outlier terms
+    __shared__ float2 Q_o[K_trellis ? ncols : 1][K_trellis ? D : 1];
     if constexpr (Q_tq) {
 #pragma unroll
         for (int j = 0; j < ncols; ++j) {
@@ -176,7 +180,21 @@ static __global__ void flash_attn_ext_vec(
                     Q_f32[j][bi] = Q_j[bi * WARP_SIZE + threadIdx.x] * scale;
                 }
             }
-            if constexpr (nthreads_KQ == WARP_SIZE) {
+            if constexpr (K_trellis) {
+                if (threadIdx.y == 0) {
+#pragma unroll
+                    for (int bi = 0; bi < D/WARP_SIZE; ++bi) {
+                        const int   i = bi*WARP_SIZE + threadIdx.x;
+                        const float q = Q_f32[j][bi];
+                        Q_o[j][i] = make_float2(q, ktq_trellis_sign_pos(i % QK_VTQ_TRELLIS) ? q*KTQ_TRELLIS_FWHT_SCALE :
+                                                                                               -q*KTQ_TRELLIS_FWHT_SCALE);
+                    }
+                }
+#pragma unroll
+                for (int ib = 0; ib < D/QK_VTQ_TRELLIS; ++ib) {
+                    ktq_trellis_rotate_q(Q_f32[j] + ib*(QK_VTQ_TRELLIS/WARP_SIZE));
+                }
+            } else if constexpr (nthreads_KQ == WARP_SIZE) {
                 // all KTQ blocks share one RHT sign pattern: rotate Q into the Hadamard domain once
                 // (signs, then the 32-point FWHT across the warp) instead of once per K block
                 const float sign = ktq_cuda_shared_sign(threadIdx.x);
@@ -185,6 +203,9 @@ static __global__ void flash_attn_ext_vec(
                     Q_f32[j][bi] = ktq_cuda_fwht_warp(Q_f32[j][bi] * sign);
                 }
             }
+        }
+        if constexpr (K_trellis) {
+            __syncthreads(); // Q_o written
         }
     } else if constexpr (Q_q8_1) {
 #pragma unroll
@@ -312,7 +333,7 @@ static __global__ void flash_attn_ext_vec(
                 float sum;
                 if constexpr (Q_tq) {
                     // TQ v7: pass Q as f32 via Q_v parameter; vec_dot returns warp-reduced result
-                    sum = vec_dot_KQ(K + i_KQ*nb11, Q_f32[j], nullptr, nullptr);
+                    sum = vec_dot_KQ(K + i_KQ*nb11, Q_f32[j], nullptr, K_trellis ? Q_o[j] : nullptr);
                 } else {
                     sum = vec_dot_KQ(K + i_KQ*nb11, Q_reg[j], Q_i32[j], Q_ds[j]);
                 }
@@ -591,8 +612,8 @@ void ggml_cuda_flash_attn_ext_vec_case_impl(ggml_backend_cuda_context & ctx, ggm
     const bool need_f16_K = type_K == GGML_TYPE_F16;
     const bool need_f16_V = type_V == GGML_TYPE_F16;
     constexpr size_t nbytes_shared = 0;
-    if constexpr (GGML_TYPE_IS_VTQ_TRELLIS(type_V)) {
-        GGML_CUDA_INIT_TRELLIS_TABLE_IMPL(); // the trellis V decoder reads the LUT through this TU's pointer
+    if constexpr (GGML_TYPE_IS_VTQ_TRELLIS(type_V) || GGML_TYPE_IS_KTQ_TRELLIS(type_K)) {
+        GGML_CUDA_INIT_TRELLIS_TABLE_IMPL(); // the trellis decoders read the LUT through this TU's pointer
     }
     launch_fattn<D, cols_per_block, 1>(ctx, dst, fattn_kernel, nwarps, nbytes_shared, D, need_f16_K, need_f16_V, false);
 }
@@ -730,3 +751,20 @@ EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ1_1)
 EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ2_1)
 EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ3_1)
 EXTERN_DECL_FATTN_VEC_CASES(512, GGML_TYPE_KTQ4_1)
+
+// trellis K types: head sizes 128 and 256 (multiples of the 128-value block), next to these V types
+#define EXTERN_DECL_FATTN_VEC_CASES_KTQ_TRELLIS(D, type_K)    \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_F16);     \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_1);  \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ2_2S); \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ3_2S); \
+    extern DECL_FATTN_VEC_CASE(D, type_K, GGML_TYPE_VTQ4_2S); \
+
+EXTERN_DECL_FATTN_VEC_CASES_KTQ_TRELLIS(128, GGML_TYPE_KTQ2_3S)
+EXTERN_DECL_FATTN_VEC_CASES_KTQ_TRELLIS(128, GGML_TYPE_KTQ3_3S)
+EXTERN_DECL_FATTN_VEC_CASES_KTQ_TRELLIS(128, GGML_TYPE_KTQ4_3S)
+EXTERN_DECL_FATTN_VEC_CASES_KTQ_TRELLIS(256, GGML_TYPE_KTQ2_3S)
+EXTERN_DECL_FATTN_VEC_CASES_KTQ_TRELLIS(256, GGML_TYPE_KTQ3_3S)
+EXTERN_DECL_FATTN_VEC_CASES_KTQ_TRELLIS(256, GGML_TYPE_KTQ4_3S)

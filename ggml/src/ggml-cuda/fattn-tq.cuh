@@ -277,6 +277,98 @@ static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restric
 }
 
 // ============================================================
+// Trellis K types (ktq*_3s): the vtq*_3 block with 12 state bits, the remainder after the outliers rotated with the KTQ
+// signs and a 128-point FWHT before coding (see ggml-quants.c). Q·K needs no inverse transform: with Q rotated the same
+// way, q·(R^T t) = q_rot·t over the decoded samples t. The CPU dequant then overwrites the inverse-rotated value x_p at
+// each outlier position p with the stored value, so
+//   Q·K = q_rot·t - Σ_p q_p x_p + Σ_p q_p val_p,   x_p = sign(p)/sqrt(128) Σ_m H(p, m) t_m   (H(p, m) = ±1)
+// and the readers add the outlier terms per block from the decoded samples a lane holds.
+// ============================================================
+
+template <ggml_type type> struct ktq_trellis { static constexpr int K = 0, L = 0, n_out = 0; }; // K = 0: not a trellis K type
+template <> struct ktq_trellis<GGML_TYPE_KTQ2_3S> { using block = block_ktq2_3s; static constexpr int K = 2, L = GGML_TRELLIS_L_S, n_out = VTQ_OUTLIER_K; };
+template <> struct ktq_trellis<GGML_TYPE_KTQ3_3S> { using block = block_ktq3_3s; static constexpr int K = 3, L = GGML_TRELLIS_L_S, n_out = VTQ_OUTLIER_K; };
+template <> struct ktq_trellis<GGML_TYPE_KTQ4_3S> { using block = block_ktq4_3s; static constexpr int K = 4, L = GGML_TRELLIS_L_S, n_out = VTQ_OUTLIER_K; };
+static_assert(VTQ_OUTLIER_K == 4, "the readers load the outlier positions as one 32-bit word");
+
+// Q of one 128-value block, lane t holding q[c] = element 32*c + t (c < 4), rotated in place like the K blocks: the
+// KTQ signs, the warp FWHT over the low 5 bits of the element index, two butterfly stages across c for the high 2.
+static __device__ __forceinline__ void ktq_trellis_rotate_q(float * q) {
+#pragma unroll
+    for (int c = 0; c < 4; ++c) {
+        q[c] = ktq_cuda_fwht_warp_sums(ktq_trellis_sign_pos(32*c + threadIdx.x) ? q[c] : -q[c]);
+    }
+    const float a0 = q[0] + q[1];
+    const float a1 = q[0] - q[1];
+    const float a2 = q[2] + q[3];
+    const float a3 = q[2] - q[3];
+    q[0] = (a0 + a2) * KTQ_TRELLIS_FWHT_SCALE;
+    q[1] = (a1 + a3) * KTQ_TRELLIS_FWHT_SCALE;
+    q[2] = (a0 - a2) * KTQ_TRELLIS_FWHT_SCALE;
+    q[3] = (a1 - a3) * KTQ_TRELLIS_FWHT_SCALE;
+}
+
+// The lane's share of Σ_m H(p_k, m) t_m for the 4 outlier positions p_k (the bytes of pos4): t[e] is the decoded
+// sample m_e = (lane << LSH) | (e << ESH) of the block (e < 4), so the sign of H(p, m_e) is the parity of p & lane << LSH
+// flipped by the bits of p at ESH (e odd) and ESH + 1 (e >= 2).
+template <int LSH, int ESH>
+static __device__ __forceinline__ void ktq_trellis_outlier_sums(const uint32_t pos4, const float * t, float * sums) {
+#pragma unroll
+    for (int k = 0; k < VTQ_OUTLIER_K; ++k) {
+        const uint32_t p  = (pos4 >> (8*k)) & 0xFF;
+        const uint32_t h  = __popc(p & (threadIdx.x << LSH)) & 1;
+        const uint32_t b0 = (p >> ESH) & 1;
+        const uint32_t b1 = (p >> (ESH + 1)) & 1;
+        sums[k] = (h ? -t[0] : t[0]) + ((h ^ b0) ? -t[1] : t[1]) + ((h ^ b1) ? -t[2] : t[2]) + ((h ^ b0 ^ b1) ? -t[3] : t[3]);
+    }
+}
+
+// K·Q of a trellis K row in the VEC kernel (whole warps): lane t decodes the samples 32*c + t of every block (c < 4).
+// Q_v: the rotated query, lane t holding element 32*bi + t in Q_v[bi]. Q_ds_v: per element of the row the query and
+// the query times sign/sqrt(128) (float2, shared memory). The result is per lane; the caller reduces it.
+template <ggml_type type_K, int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_ktq_trellis(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+    static_assert(nthreads == WARP_SIZE, "trellis K needs whole warps");
+    static_assert(D % QK_VTQ_TRELLIS == 0, "head size must be a multiple of the trellis block");
+    GGML_UNUSED(Q_q8);
+    using tr      = ktq_trellis<type_K>;
+    using block_t = typename tr::block;
+    const block_t * K_b   = (const block_t *) K_c;
+    const float   * Q_rot = (const float *) Q_v;
+    const float2  * Q_o   = (const float2 *) Q_ds_v;
+    const int lane = threadIdx.x;
+
+    float accum = 0.0f;
+#pragma unroll
+    for (int ib = 0; ib < D/QK_VTQ_TRELLIS; ++ib) {
+        const block_t & b  = K_b[ib];
+        const float     ds = vtq_trellis_ds(__half2float(b.d));
+        float t[4];
+#pragma unroll
+        for (int c = 0; c < 4; ++c) {
+            t[c] = vtq_trellis_table_storage[vtq_state_at<tr::K, tr::L>(b.start_state, b.qs, 32*c + lane + 1)] * ds;
+            accum += t[c] * Q_rot[4*ib + c];
+        }
+        uint32_t pos4;
+        half     val[VTQ_OUTLIER_K];
+        ggml_cuda_memcpy_1<4>(&pos4, b.outlier_pos);
+        ggml_cuda_memcpy_1<2*VTQ_OUTLIER_K, 4>(val, b.outlier_val);
+        float sums[VTQ_OUTLIER_K];
+        ktq_trellis_outlier_sums<0, 5>(pos4, t, sums);
+#pragma unroll
+        for (int k = 0; k < VTQ_OUTLIER_K; ++k) {
+            const float2 q = Q_o[QK_VTQ_TRELLIS*ib + ((pos4 >> (8*k)) & 0xFF)];
+            accum -= q.y * sums[k];
+            if (lane == 0) {
+                accum += q.x * __half2float(val[k]);
+            }
+        }
+    }
+    return accum;
+}
+
+// ============================================================
 // Constexpr type-dispatchers — pick a vec-dot / V-dequant function
 // pointer based on the runtime ggml_type. Kept in this header (not
 // in fattn-common.cuh) because the TQ branches reference symbols
@@ -307,6 +399,8 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_ktq<block_ktq3_1, D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_KTQ4_1) {
         return vec_dot_fattn_vec_KQ_ktq<block_ktq4_1, D, nthreads>;
+    } else if constexpr (ktq_trellis<type_K>::K > 0) {
+        return vec_dot_fattn_vec_KQ_ktq_trellis<type_K, D, nthreads>;
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;

@@ -125,6 +125,13 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq2_1-vtq4_2s.cu
     fattn-vec-instance-ktq2_1-vtq4_3-d512.cu
     fattn-vec-instance-ktq2_1-vtq4_3.cu
+    fattn-vec-instance-ktq2_3s-f16.cu
+    fattn-vec-instance-ktq2_3s-vtq2_1.cu
+    fattn-vec-instance-ktq2_3s-vtq2_2s.cu
+    fattn-vec-instance-ktq2_3s-vtq3_1.cu
+    fattn-vec-instance-ktq2_3s-vtq3_2s.cu
+    fattn-vec-instance-ktq2_3s-vtq4_1.cu
+    fattn-vec-instance-ktq2_3s-vtq4_2s.cu
     fattn-vec-instance-ktq3_1-f16-d512.cu
     fattn-vec-instance-ktq3_1-f16.cu
     fattn-vec-instance-ktq3_1-ktq3_1-d512.cu
@@ -155,6 +162,13 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq3_1-vtq4_2s.cu
     fattn-vec-instance-ktq3_1-vtq4_3-d512.cu
     fattn-vec-instance-ktq3_1-vtq4_3.cu
+    fattn-vec-instance-ktq3_3s-f16.cu
+    fattn-vec-instance-ktq3_3s-vtq2_1.cu
+    fattn-vec-instance-ktq3_3s-vtq2_2s.cu
+    fattn-vec-instance-ktq3_3s-vtq3_1.cu
+    fattn-vec-instance-ktq3_3s-vtq3_2s.cu
+    fattn-vec-instance-ktq3_3s-vtq4_1.cu
+    fattn-vec-instance-ktq3_3s-vtq4_2s.cu
     fattn-vec-instance-ktq4_1-f16-d512.cu
     fattn-vec-instance-ktq4_1-f16.cu
     fattn-vec-instance-ktq4_1-ktq4_1-d512.cu
@@ -187,6 +201,13 @@ set(GGML_CUDA_FATTN_VEC_DEFAULT_INSTANCES
     fattn-vec-instance-ktq4_1-vtq4_2s.cu
     fattn-vec-instance-ktq4_1-vtq4_3-d512.cu
     fattn-vec-instance-ktq4_1-vtq4_3.cu
+    fattn-vec-instance-ktq4_3s-f16.cu
+    fattn-vec-instance-ktq4_3s-vtq2_1.cu
+    fattn-vec-instance-ktq4_3s-vtq2_2s.cu
+    fattn-vec-instance-ktq4_3s-vtq3_1.cu
+    fattn-vec-instance-ktq4_3s-vtq3_2s.cu
+    fattn-vec-instance-ktq4_3s-vtq4_1.cu
+    fattn-vec-instance-ktq4_3s-vtq4_2s.cu
     fattn-vec-instance-q4_0-ktq1_1-d512.cu
     fattn-vec-instance-q4_0-ktq1_1.cu
     fattn-vec-instance-q4_0-ktq2_1-d512.cu

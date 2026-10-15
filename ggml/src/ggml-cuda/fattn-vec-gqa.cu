@@ -60,6 +60,9 @@ bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tens
         case GGML_TYPE_KTQ2_1: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ2_1>(ctx, dst, D, ncols, use_sparse);
         case GGML_TYPE_KTQ3_1: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ3_1>(ctx, dst, D, ncols, use_sparse);
         case GGML_TYPE_KTQ4_1: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ4_1>(ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_KTQ2_3S: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ2_3S>(ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_KTQ3_3S: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ3_3S>(ctx, dst, D, ncols, use_sparse);
+        case GGML_TYPE_KTQ4_3S: return fattn_gqa_dispatch_k<GGML_TYPE_KTQ4_3S>(ctx, dst, D, ncols, use_sparse);
         default:               return false;
     }
 }

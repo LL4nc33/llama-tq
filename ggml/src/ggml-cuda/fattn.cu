@@ -418,6 +418,7 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
     // returns true (the matching K/V type families are disjoint).
     if (try_dispatch_vec_f16(&ctx, dst)) return;
     if (try_dispatch_vec_ktq(&ctx, dst)) return;
+    if (try_dispatch_vec_ktq_trellis(&ctx, dst)) return;
     if (try_dispatch_vec_vtq1(&ctx, dst)) return;
     // E14 split-decode: intercepts VTQ_2 family at ncols=1 (decode) and runs
     // bulk dequant + F16 FA. Only active when FATTN_VTQ2_SPLIT_ENABLE is
@@ -433,8 +434,8 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
 // context only report a match, so their case lists are the one list of what the vec kernel covers
 static bool ggml_cuda_fattn_vec_available(const ggml_tensor * dst) {
     ggml_tensor * t = const_cast<ggml_tensor *>(dst);
-    return try_dispatch_vec_f16(nullptr, t) || try_dispatch_vec_ktq(nullptr, t) || try_dispatch_vec_vtq1(nullptr, t) ||
-           try_dispatch_vec_vtq2(nullptr, t) || try_dispatch_vec_vtq3(nullptr, t);
+    return try_dispatch_vec_f16(nullptr, t) || try_dispatch_vec_ktq(nullptr, t) || try_dispatch_vec_ktq_trellis(nullptr, t) ||
+           try_dispatch_vec_vtq1(nullptr, t) || try_dispatch_vec_vtq2(nullptr, t) || try_dispatch_vec_vtq3(nullptr, t);
 }
 
 
@@ -470,7 +471,7 @@ static bool ggml_cuda_fattn_kv_type_supported(ggml_type type, bool is_v) {
         case GGML_TYPE_BF16:
             return true;
         default:
-            return GGML_TYPE_IS_KTQ(type) || GGML_TYPE_IS_VTQ(type);
+            return GGML_TYPE_IS_KTQ(type) || GGML_TYPE_IS_KTQ_TRELLIS(type) || GGML_TYPE_IS_VTQ(type);
     }
 }
 
@@ -595,7 +596,7 @@ static best_fattn_kernel ggml_cuda_get_preferred_fattn_kernel(const int device, 
 
     // TurboQuant/VTQ types only have VEC kernel support (no MMA/TILE/WMMA):
     // For TQ/VTQ, allow head sizes up to 512 (needed for Gemma4 global attention layers)
-    const bool is_tq_k = GGML_TYPE_IS_KTQ(K->type);
+    const bool is_tq_k = GGML_TYPE_IS_KTQ(K->type) || GGML_TYPE_IS_KTQ_TRELLIS(K->type);
     const bool is_tq_v = GGML_TYPE_IS_KTQ(V->type);
     const bool can_use_vector_kernel_tq = Q->ne[0] <= 512 && Q->ne[0] % 64 == 0 && K->ne[1] % FATTN_KQ_STRIDE == 0;
     if (is_tq_k || is_tq_v || is_vtq_v) {

@@ -49,11 +49,27 @@
     FATTN_VEC_CASES_ALL_D_RET(type_K, type_V)              \
     FATTN_VEC_CASE_RET(512, type_K, type_V)
 
+// the trellis K types: head sizes that are multiples of their 128-value block
+#define FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, type_V) \
+    FATTN_VEC_CASE_RET(128, type_K, type_V)             \
+    FATTN_VEC_CASE_RET(256, type_K, type_V)
+
+// ... next to the V types they have instances for (fattn-vec.cuh)
+#define FATTN_VEC_CASES_KTQ_TRELLIS_V_RET(type_K)                       \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_F16)              \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ2_1)           \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ3_1)           \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ4_1)           \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ2_2S)          \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ3_2S)          \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ4_2S)
+
 // Helpers — implemented in fattn-vec-dispatch-*.cu TUs.
 // Each returns true iff a matching (D, type_K, type_V) exists; it launches the kernel unless ctx is nullptr, so the
 // same list answers whether the vec kernel covers a pair (ggml_cuda_fattn_vec_available) and runs it.
 bool try_dispatch_vec_f16(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_ktq(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
+bool try_dispatch_vec_ktq_trellis(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq1(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq2(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
 bool try_dispatch_vec_vtq3(ggml_backend_cuda_context * ctx, ggml_tensor * dst);
