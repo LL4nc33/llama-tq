@@ -1427,8 +1427,9 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
     quantize_iq4_xs(x, y, 1, k, NULL);
 }
 
-// --- VTQ_2 / VTQ_2S (Trellis v2) vec_dot: dequantize then fp32 dot product ---
-// Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2 / VTQ_2S.
+// --- VTQ_2 / VTQ_2S / KTQ_2S (Trellis v2) vec_dot: dequantize then fp32 dot product ---
+// Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2 / VTQ_2S, and for every Q.K with a KTQ_2S
+// K-cache (the dequantization undoes the rotation of the block).
 
 // alloca header is platform-specific — Windows ships it in malloc.h.
 #if defined(_WIN32)
@@ -1487,4 +1488,25 @@ void ggml_vec_dot_vtq4_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
     vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq4_2s);
+}
+
+void ggml_vec_dot_ktq2_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq2_2s);
+}
+
+void ggml_vec_dot_ktq3_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq3_2s);
+}
+
+void ggml_vec_dot_ktq4_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
+        const void * GGML_RESTRICT vx, size_t bx,
+        const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    (void)bs; (void)bx; (void)by; (void)nrc;
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq4_2s);
 }

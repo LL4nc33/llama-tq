@@ -1040,6 +1040,30 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_vtq4_2s,
         .from_float_ref           = (ggml_from_float_t) quantize_row_vtq4_2s_ref,
     },
+    [GGML_TYPE_KTQ2_2S] = {
+        .type_name                = "ktq2_2s",
+        .blck_size                = QK_VTQ_TRELLIS,
+        .type_size                = sizeof(block_ktq2_2s),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_ktq2_2s,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_ktq2_2s_ref,
+    },
+    [GGML_TYPE_KTQ3_2S] = {
+        .type_name                = "ktq3_2s",
+        .blck_size                = QK_VTQ_TRELLIS,
+        .type_size                = sizeof(block_ktq3_2s),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_ktq3_2s,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_ktq3_2s_ref,
+    },
+    [GGML_TYPE_KTQ4_2S] = {
+        .type_name                = "ktq4_2s",
+        .blck_size                = QK_VTQ_TRELLIS,
+        .type_size                = sizeof(block_ktq4_2s),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_ktq4_2s,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_ktq4_2s_ref,
+    },
     [GGML_TYPE_VTQ2_3] = {
         .type_name                = "vtq2_3",
         .blck_size                = QK_VTQ_TRELLIS,
@@ -8647,6 +8671,9 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_VTQ2_2S: quantize_row_vtq2_2s_ref(src + start, (block_vtq2_2s *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_VTQ3_2S: quantize_row_vtq3_2s_ref(src + start, (block_vtq3_2s *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_VTQ4_2S: quantize_row_vtq4_2s_ref(src + start, (block_vtq4_2s *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_KTQ2_2S: quantize_row_ktq2_2s_ref(src + start, (block_ktq2_2s *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_KTQ3_2S: quantize_row_ktq3_2s_ref(src + start, (block_ktq3_2s *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
+        case GGML_TYPE_KTQ4_2S: quantize_row_ktq4_2s_ref(src + start, (block_ktq4_2s *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_VTQ2_3:  quantize_row_vtq2_3_ref(src + start, (block_vtq2_3 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_VTQ3_3:  quantize_row_vtq3_3_ref(src + start, (block_vtq3_3 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
         case GGML_TYPE_VTQ4_3:  quantize_row_vtq4_3_ref(src + start, (block_vtq4_3 *) ((char *) dst + start_row * row_size), n); result = nrows * row_size; break;
