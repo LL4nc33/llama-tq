@@ -222,6 +222,26 @@ static __device__ __forceinline__ uint32_t vtq_state_at(uint16_t s0, const uint8
     return (w >> shift) & ((1u << L) - 1u);
 }
 
+// The trellis V types: block, code bits K per element, state bits L, and the outliers per block (fp16 values that
+// replace the decoded ones at the listed positions: vtq*_3, vtq3_v8). K = 0: not a trellis type.
+template <ggml_type type> struct vtq_trellis { static constexpr int K = 0, L = 0, n_out = 0; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ2_2>  { using block = block_vtq2_2;  static constexpr int K = 2, L = GGML_TRELLIS_L,   n_out = 0; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ3_2>  { using block = block_vtq3_2;  static constexpr int K = 3, L = GGML_TRELLIS_L,   n_out = 0; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ4_2>  { using block = block_vtq4_2;  static constexpr int K = 4, L = GGML_TRELLIS_L,   n_out = 0; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ2_2S> { using block = block_vtq2_2s; static constexpr int K = 2, L = GGML_TRELLIS_L_S, n_out = 0; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ3_2S> { using block = block_vtq3_2s; static constexpr int K = 3, L = GGML_TRELLIS_L_S, n_out = 0; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ4_2S> { using block = block_vtq4_2s; static constexpr int K = 4, L = GGML_TRELLIS_L_S, n_out = 0; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ2_3>  { using block = block_vtq2_3;  static constexpr int K = 2, L = GGML_TRELLIS_L,   n_out = VTQ_OUTLIER_K; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ3_3>  { using block = block_vtq3_3;  static constexpr int K = 3, L = GGML_TRELLIS_L,   n_out = VTQ_OUTLIER_K; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ4_3>  { using block = block_vtq4_3;  static constexpr int K = 4, L = GGML_TRELLIS_L,   n_out = VTQ_OUTLIER_K; };
+template <> struct vtq_trellis<GGML_TYPE_VTQ3_V8> { using block = block_vtq3_v8; static constexpr int K = 3, L = GGML_TRELLIS_L,   n_out = VTQ_OUTLIER_K_V8; };
+
+// Factor of the table values of a trellis block with scale d: element i is table[state_i] * vtq_trellis_ds(d). Every
+// flash attention reader of the trellis types computes it here, so that they decode the same values.
+static __device__ __forceinline__ float vtq_trellis_ds(const float d) {
+    return rsqrtf((float) QK_VTQ_TRELLIS) * d;
+}
+
 template <typename block_t, int K, int L, typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_t * x = (const block_t *) vx;
@@ -231,9 +251,7 @@ static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restric
     const uint16_t s0 = x[ib].start_state;
     const uint8_t * qs = x[ib].qs;
 
-    constexpr int N = QK_VTQ_TRELLIS;
-    const float cb_scale = rsqrtf((float)N);
-    const float ds = cb_scale * d;
+    const float ds = vtq_trellis_ds(d);
 
     if (d == 0.0f) {
         #pragma unroll
@@ -260,43 +278,12 @@ static __device__ __forceinline__ void dequantize_V_vtq_2(const void * __restric
     }
 }
 
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq2_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq2_2, 2, GGML_TRELLIS_L, T, ne>(vx, dst, i0);
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq3_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq3_2, 3, GGML_TRELLIS_L, T, ne>(vx, dst, i0);
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq4_2(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq4_2, 4, GGML_TRELLIS_L, T, ne>(vx, dst, i0);
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq2_2s(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq2_2s, 2, GGML_TRELLIS_L_S, T, ne>(vx, dst, i0);
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq3_2s(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq3_2s, 3, GGML_TRELLIS_L_S, T, ne>(vx, dst, i0);
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq4_2s(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_2<block_vtq4_2s, 4, GGML_TRELLIS_L_S, T, ne>(vx, dst, i0);
-}
-
 // VTQ_3 family — same trellis backbone as VTQ_2 plus OUTLIER_K fp16
 // outlier samples per block. After trellis decode, positions listed in
 // outlier_pos[] are overwritten with outlier_val[] (Phase 3 Step 4b).
 //
-// OUTLIER_K parameterizes outlier count: defaults to VTQ_OUTLIER_K=4 for
-// vtq{2,3,4}_3; VTQ3_V8 (TurboQuant v8) uses VTQ_OUTLIER_K_V8=2.
-template <typename block_t, int K, typename T, int ne, int OUTLIER_K = VTQ_OUTLIER_K>
+// OUTLIER_K is the outlier count: VTQ_OUTLIER_K=4 for vtq{2,3,4}_3, VTQ_OUTLIER_K_V8=2 for VTQ3_V8 (vtq_trellis).
+template <typename block_t, int K, int L, typename T, int ne, int OUTLIER_K>
 static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_t * x = (const block_t *) vx;
     const int64_t ib = i0 / QK_VTQ_TRELLIS;
@@ -305,9 +292,7 @@ static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restric
     const uint16_t s0 = x[ib].start_state;
     const uint8_t * qs = x[ib].qs;
 
-    constexpr int N = QK_VTQ_TRELLIS;
-    const float cb_scale = rsqrtf((float)N);
-    const float ds = cb_scale * d;
+    const float ds = vtq_trellis_ds(d);
 
     // Load outlier sidecar once into registers for cheap per-sample compare.
     // Static array of size OUTLIER_K — compiler hoists into registers.
@@ -334,7 +319,7 @@ static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restric
     #pragma unroll
     for (int l = 0; l < ne; ++l) {
         const int pos = il + l;
-        const uint32_t state = vtq_state_at<K, GGML_TRELLIS_L>(s0, qs, pos + 1);
+        const uint32_t state = vtq_state_at<K, L>(s0, qs, pos + 1);
         float val = vtq_trellis_table_storage[state] * ds;
         // Outlier patch — at most one of the OUTLIER_K positions matches.
         #pragma unroll
@@ -347,27 +332,6 @@ static __device__ __forceinline__ void dequantize_V_vtq_3(const void * __restric
             ((float *) dst)[l] = val;
         }
     }
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq2_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_3<block_vtq2_3, 2, T, ne>(vx, dst, i0);
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq3_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_3<block_vtq3_3, 3, T, ne>(vx, dst, i0);
-}
-
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq4_3(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_3<block_vtq4_3, 4, T, ne>(vx, dst, i0);
-}
-
-// VTQ3_V8 (TurboQuant v8): trellis-3bit + 2 outliers (3.625 bpw, 58 B/block).
-template <typename T, int ne>
-static __device__ __forceinline__ void dequantize_V_vtq3_v8(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
-    dequantize_V_vtq_3<block_vtq3_v8, 3, T, ne, /*OUTLIER_K=*/VTQ_OUTLIER_K_V8>(vx, dst, i0);
 }
 
 // ============================================================
@@ -439,26 +403,12 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_vtq3_1<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_VTQ4_1) {
         return dequantize_V_vtq4_1<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ2_2) {
-        return dequantize_V_vtq2_2<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ3_2) {
-        return dequantize_V_vtq3_2<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ4_2) {
-        return dequantize_V_vtq4_2<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ2_2S) {
-        return dequantize_V_vtq2_2s<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ3_2S) {
-        return dequantize_V_vtq3_2s<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ4_2S) {
-        return dequantize_V_vtq4_2s<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ2_3) {
-        return dequantize_V_vtq2_3<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ3_3) {
-        return dequantize_V_vtq3_3<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ4_3) {
-        return dequantize_V_vtq4_3<T, ne>;
-    } else if constexpr (type_V == GGML_TYPE_VTQ3_V8) {
-        return dequantize_V_vtq3_v8<T, ne>;
+    } else if constexpr (vtq_trellis<type_V>::n_out > 0) {
+        using tr = vtq_trellis<type_V>;
+        return dequantize_V_vtq_3<typename tr::block, tr::K, tr::L, T, ne, tr::n_out>;
+    } else if constexpr (vtq_trellis<type_V>::K > 0) {
+        using tr = vtq_trellis<type_V>;
+        return dequantize_V_vtq_2<typename tr::block, tr::K, tr::L, T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
