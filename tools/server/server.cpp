@@ -90,20 +90,6 @@ int main(int argc, char ** argv) {
         params.n_batch = params.n_ubatch;
     }
 
-    // MTP drafting keeps one draft state per server slot over a shared draft context, which only works with one slot
-    bool spec_mtp = false;
-    for (const auto t : params.speculative.types) {
-        spec_mtp = spec_mtp || t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
-    }
-    if (spec_mtp && params.n_parallel < 0) {
-        LOG_INF("%s: n_parallel is set to auto, using n_parallel = 1 for MTP speculative decoding\n", __func__);
-        params.n_parallel = 1;
-    }
-    if (spec_mtp && params.n_parallel > 1) {
-        LOG_ERR("%s: MTP speculative decoding supports a single slot only (-np 1), got -np %d\n", __func__, params.n_parallel);
-        return 1;
-    }
-
     if (params.n_parallel < 0) {
         LOG_INF("%s: n_parallel is set to auto, using n_parallel = 4 and kv_unified = true\n", __func__);
 
