@@ -9,6 +9,7 @@
 #include "llama.h"
 #include "log.h"
 
+#include <algorithm>
 #include <atomic>
 #include <clocale>
 #include <exception>
@@ -79,6 +80,15 @@ int main(int argc, char ** argv) {
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
+    }
+
+    // MTP drafting reads the target hidden states after every batch, which drains the multi-GPU pipeline;
+    // larger batches mean fewer drains (35B on 2 GPUs, 29k prompt: prefill -16 % at 2048, -6 % at 8192)
+    const bool spec_mtp = std::find(params.speculative.types.begin(), params.speculative.types.end(),
+                                    COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
+    if (spec_mtp && !params.n_batch_set && params.n_batch < 8192) {
+        LOG_INF("%s: MTP speculative decoding, using n_batch = 8192 (set -b to override)\n", __func__);
+        params.n_batch = 8192;
     }
 
     // validate batch size for embeddings

@@ -1296,7 +1296,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"-b", "--batch-size"}, "N",
         string_format("logical maximum batch size (default: %d)", params.n_batch),
         [](common_params & params, int value) {
-            params.n_batch = value;
+            params.n_batch     = value;
+            params.n_batch_set = true;
         }
     ).set_env("LLAMA_ARG_BATCH"));
     add_opt(common_arg(
