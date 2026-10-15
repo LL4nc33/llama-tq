@@ -69,7 +69,7 @@ Pick a tier by passing two cache-type flags. `-fa on` is required.
 ./build/bin/llama-server -m model.gguf -fa on -ngl 99 -ctk ktq4_1 -ctv vtq4_1 --tq-protect-layers 4
 ```
 
-`--cache-type-k` accepts the stock quants (`f16`, `q8_0`, `q5_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1`. `--cache-type-v` accepts the stock quants plus `vtq{1,2,3,4}_1` (v1), `vtq{2,3,4}_2` and `vtq{2,3,4}_2s` (v2 Trellis), `vtq{2,3,4}_3` (v3 Trellis + outlier-split) and `vtq3_v8`; a `ktq*_1` type given as V is stored as f16 with a warning. The short aliases `ktq1`-`ktq4` and `vtq1`-`vtq4` map to the `*_1` types (`vtq2` and `vtq3` pointed to the trellis types `vtq2_2` / `vtq3_v8` until 2026-10-12).
+`--cache-type-k` accepts the stock quants (`f16`, `q8_0`, `q5_0`, `q4_0`, …) plus `ktq{1,2,3,4}_1` (and the experimental CPU-only `ktq{2,3,4}_3s`). `--cache-type-v` accepts the stock quants plus `vtq{1,2,3,4}_1` (v1), `vtq{2,3,4}_2` and `vtq{2,3,4}_2s` (v2 Trellis), `vtq{2,3,4}_3` (v3 Trellis + outlier-split) and `vtq3_v8`; a `ktq*_1` type given as V is stored as f16 with a warning. The short aliases `ktq1`-`ktq4` and `vtq1`-`vtq4` map to the `*_1` types (`vtq2` and `vtq3` pointed to the trellis types `vtq2_2` / `vtq3_v8` until 2026-10-12).
 
 Related options:
 
@@ -96,22 +96,46 @@ RHT (shared sign pattern + FWHT) + Lloyd-Max codebook. Block stores normalizatio
 | `ktq3_1` | 43 | 3 | 4.5 | 18 B | balanced |
 | `ktq4_1` | 44 | 4 | 5.5 | 22 B | with `vtq4_1` V more accurate than `q4_0`/`q4_0` on Qwen3-4B (see Accuracy) |
 
-### K-cache — trellis KTQ (`ktq*_2s`, experimental, CPU only)
+### K-cache — trellis KTQ (`ktq*_3s`, experimental, CPU only)
 
-Research types to find out whether trellis coding beats the codebook for K. A block of 128 K values is rotated with the
-KTQ transform over the whole block (shared sign pattern + 128-point FWHT, so the one trellis scale sees the energy of all
-128 values) and then coded like `vtq*_2s` (12 state bits, Viterbi encoder). The sign pattern is not stored: layout and
-bpw equal `vtq*_2s`. Dequantization decodes and undoes the rotation; Q·K dots the query with that row.
+Research types to find out whether trellis coding beats the codebook for K. Of a block of 128 K values the 4 largest
+are stored in fp16 (as in `vtq*_3`); the rest is rotated with the KTQ transform over the whole block (shared sign pattern
++ 128-point FWHT, so the one trellis scale sees the energy of all 128 values) and coded like `vtq*_2s` (12 state bits,
+Viterbi encoder). The sign pattern is not stored: layout and bpw equal `vtq*_3`. Dequantization decodes, undoes the
+rotation and restores the outliers; Q·K dots the query with that row.
 
 | Type   | enum | Index bits | bpw | Block |
 |--------|:---:|:---:|:---:|:---:|
-| `ktq2_2s` | 62 | 2 | 2.25 | 36 B |
-| `ktq3_2s` | 63 | 3 | 3.25 | 52 B |
-| `ktq4_2s` | 64 | 4 | 4.25 | 68 B |
+| `ktq2_3s` | 62 | 2 | 3.0 | 48 B |
+| `ktq3_3s` | 63 | 3 | 4.0 | 64 B |
+| `ktq4_3s` | 64 | 4 | 5.0 | 80 B |
 
-Only the CPU backend implements them (the scheduler keeps their ops on the CPU); the CPU Viterbi encoder needs ~12 ms
-per 3-bit block, so they are for measurements, not for serving. Heads that are not a multiple of 128 fall back to
-`ktq*_1`. Measure with `scripts/kld-kv-types-cpu.sh` (no f16 staging, K quantized for the whole run).
+Why the outliers: in real K one or two channels carry most of the energy of every token (Qwen3-0.6B: the largest
+channel holds 27-87 % of ||k||², in up to 99 % of the tokens the same channel). Rotated, such a block is a near-binary
+±c pattern. The codebook types fit it well with their per-32 scale search; a trellis, whose reconstruction values follow
+a fixed Gaussian table, only reaches its Gaussian error rate, relative to the whole ||k||². The first version without
+outliers (`ktq*_2s`, 2.25/3.25/4.25 bpw) therefore lost to `ktq*_1` on real models (Qwen3-4B KLD: 4.54 / 0.256 / 0.036 vs
+`ktq2_1` 0.326, `ktq3_1` 0.073, `ktq4_1` 0.024) although it won on synthetic Gaussian data. Without the outliers the
+remainder is near-Gaussian after the rotation, where the trellis beats the codebook per bit.
+
+KL divergence against f16 K (V f16, CPU, `scripts/kld-kv-types-cpu.sh`, wikitext-2, 2 × 512 tokens), Qwen3-0.6B (a model
+whose K is very sensitive to quantization):
+
+| K type | bpw | Mean KLD | Same top p |
+|---|:---:|:---:|:---:|
+| `q8_0`    | 8.5 | 0.0041 | 97.1 % |
+| `ktq2_1`  | 3.5 | 4.38   | 15.1 % |
+| `ktq3_1`  | 4.5 | 0.759  | 64.9 % |
+| `ktq4_1`  | 5.5 | 0.317  | 75.5 % |
+| `ktq2_3s` | 3.0 | 0.227  | 79.6 % |
+| `ktq3_3s` | 4.0 | 0.050  | 89.0 % |
+| `ktq4_3s` | 5.0 | 0.016  | 95.1 % |
+
+Offline on the same model's K/Q rows (softmax KL per head), the same 2-outlier split around the codebook (`ktq3_1` +
+2 outliers, 4.875 bpw: 0.043) stays behind the trellis with 2 outliers (3.625 bpw: 0.029): the gain is not only the
+outliers. Only the CPU backend implements these types (the scheduler keeps their ops on the CPU); the CPU Viterbi
+encoder needs ~12 ms per 3-bit block, so they are for measurements, not for serving. Heads that are not a multiple of 128
+fall back to `ktq*_1`.
 
 ### V-cache v1 — VTQ codebook (`vtq*_1`)
 
@@ -459,10 +483,10 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 | `ggml/src/ggml-cuda/trellis-encode.cuh`    | CUDA trellis encoder (full Viterbi over butterflies): DP rows in shared memory for L <= 14, in registers with a shared exchange buffer for L = 16. |
 | `ggml/src/ggml-cuda/trellis.cu`            | Trellis code table per device and encoder backtrack pool per device and L (L = 12: 32 MiB, L = 16: 2 MiB per SM). |
 | `ggml/src/ggml-cuda/convert.cu`            | CUDA dequant dispatch (contiguous + NC) for KTQ + all VTQ families. |
-| `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ (incl. the experimental `ktq*_2s`); shared `PQ_CODEBOOK_*` constants. |
+| `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ (incl. the experimental `ktq*_3s`); shared `PQ_CODEBOOK_*` constants. |
 | `src/llama-kv-cache.cpp`                   | Per-layer cache types (layer and sink protection, trellis head-size fallback), deferred K/V staging, V rotation. |
 | `tools/perplexity/perplexity.cpp`          | Turns deferred staging off unless `--tq-deferred-k`/`--tq-deferred-v` is given. |
-| `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_2s`, `vtq{2,3,4}_3`, `vtq3_v8`. |
+| `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `ktq{2,3,4}_3s`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_2s`, `vtq{2,3,4}_3`, `vtq3_v8`. |
 | `docs/benchmarks/history/LIVE_NUMBERS.md` | Historical TG/PPL/HellaSwag snapshot. |
 
 ## Tried and discarded
