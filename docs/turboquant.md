@@ -140,8 +140,8 @@ an RTX 5080; `vtq3_1`: 97 t/s on the RTX 2060). Since 2026-10-15 the 16-bit type
 t/s with `vtq2_2` / `vtq3_2` / `vtq4_2` (`vtq3_2s` 78, `vtq3_1` 89), and a 40-chunk perplexity run with V quantized in
 prefill takes 3-6 minutes instead of about two hours. Each layer still encodes only one block per KV head per token, so
 a decode step keeps a few SMs busy. Deferred staging (the default for these types) only moves the prompt's encoding to
-one pass after the prompt. The types are also not covered by the GQA
-and tensor-core decode kernels. The April 2026
+one pass after the prompt. The speeds above were measured with the VEC kernel; since 2026-10-15 decode reads the trellis
+types with the GQA decode kernel (coverage in [Decode kernels](#decode-kernels-2026-10-04)), not re-measured yet. The April 2026
 finding that `vtq2_2` / `vtq3_2` / `vtq4_2` give bit-identical perplexity was an artifact of that staging (V stayed f16
 during prefill). Prefer `vtq*_2s` or `vtq*_1` for speed.
 
@@ -160,7 +160,7 @@ The 16-bit column was measured on 2026-10-15 with the shared-memory encoder; the
 different chunks for every encoder variant. The 12-bit register costs 3-10 % KLD against 16 bits and is still 6-39 % below the codebook type with the same index
 bits, at fewer bits per value. Its encoder searches 4096 instead of 65536 states and keeps the DP rows in shared memory,
 so it runs for every new token without stalling decode: Qwen3-4B decodes at ~75 t/s with `vtq*_2s` against 20-27 t/s with
-`vtq*_2` (1-2 t/s with the global-memory encoder until 2026-10-14). Like `vtq*_2` they are not covered by the GQA and tensor-core decode kernels.
+`vtq*_2` (1-2 t/s with the global-memory encoder until 2026-10-14). Decode kernels as for `vtq*_2`.
 
 ### V-cache v3 — Trellis + Outlier-Channel-Split (`vtq*_3`)
 
@@ -172,9 +172,8 @@ Same Viterbi backbone as v2, plus 4 fp16 outliers per block (largest absolute V 
 | `vtq3_3` | 55 | 3 | 4.0 | 64 B |
 | `vtq4_3` | 56 | 4 | 5.0 | 80 B |
 
-`vtq3_v8` (enum 58, 3.625 bpw) is a trellis 3-bit variant with two fp16 outliers per block. Like the v2 types these are
-not covered by the GQA and tensor-core decode kernels, and their April 2026 perplexity numbers were taken with V staged in f16 during
-prefill; not re-measured. Before 2026-10-12 the CUDA encoder did not store the outliers of `vtq*_3` / `vtq3_v8`, so
+`vtq3_v8` (enum 58, 3.625 bpw) is a trellis 3-bit variant with two fp16 outliers per block. Decode kernels as for the v2
+types; their April 2026 perplexity numbers were taken with V staged in f16 during prefill; not re-measured. Before 2026-10-12 the CUDA encoder did not store the outliers of `vtq*_3` / `vtq3_v8`, so
 earlier CUDA results for these types are without them.
 
 ### Reserved / dormant
@@ -325,7 +324,7 @@ Decode (one query token per sequence) has two dedicated CUDA kernels for quantiz
 | Kernel | Source | How it works | Covers |
 |---|---|---|---|
 | Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group); attention sinks (gpt-oss) are supported. Also takes speculative-decoding verify batches of 2-16 queries: the columns are (query, head) pairs, one block of 16, or of 32 from 8192 cells (half the tile rows; not f16 K at D=256), each column with its own mask row. | GQA ratio 2-16. Same-bit pairs `ktq{2,3,4}_1` × `vtq{2,3,4}_1`, `q4_0` and `q5_0` at D=64/128/256/512 (at 128/256 only what the GQA kernel does not take: GQA ratio 2, a single KQ tile; the GQA kernel goes first since 2026-10-14); `q8_0` and `q8_0` K with `vtq{2,4}_1` V at D=64/512; f16 K with `vtq{2,3,4}_1` V at D=64, with `vtq{2,4}_1` V at D=256/512; `ktq{2,4}_1` K with f16 V at D=256 |
-| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4-column blocks for GQA ratio 3-4, 8-column blocks above 4), one warp per K/V row, the column dot products reduced together. Each lane reads several elements per load (2-byte loads for the 4-bit codes and `q4_0`/`q5_0`), the block scale is applied once per element, 2-bit codebooks sit in registers and 3/4-bit codebooks in shared memory; the scores are stored row by row so that the V loop reads the weights of all columns with one load. Supports the sparse index lists of Qwen3.8-Flash-Next. | GQA ratio ≥ 3, no sinks; contexts of a single KQ tile go to the generic vector kernel. Every pair of K f16, `q8_0`, `q5_0`, `q4_0`, `ktq{2,3,4}_1` and V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` at D=128/256 (since 2026-10-14; tried before the tensor-core decode kernel), except f16 / f16 (tensor-core MMA kernel). Not `ktq1_1`/`vtq1_1` |
+| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4-column blocks for GQA ratio 3-4, 8-column blocks above 4), one warp per K/V row, the column dot products reduced together. Each lane reads several elements per load (2-byte loads for the 4-bit codes and `q4_0`/`q5_0`), the block scale is applied once per element, 2-bit codebooks sit in registers and 3/4-bit codebooks in shared memory; the scores are stored row by row so that the V loop reads the weights of all columns with one load. Supports the sparse index lists of Qwen3.8-Flash-Next. | GQA ratio ≥ 3, no sinks; contexts of a single KQ tile go to the generic vector kernel. Every pair of K f16, `q8_0`, `q5_0`, `q4_0`, `ktq{2,3,4}_1` and V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` at D=128/256 (since 2026-10-14; tried before the tensor-core decode kernel), except f16 / f16 (tensor-core MMA kernel). Since 2026-10-15 also the trellis V types (`vtq*_2`, `vtq*_2s`, `vtq*_3`, `vtq3_v8`) next to K f16, `q8_0` and `ktq{2,3,4}_1`: each V block is decoded once per GQA group, the 12-state-bit table (16 KB) is copied to shared memory, the 16-bit one (256 KB) is read through L2. Not `ktq1_1`/`vtq1_1`; the trellis types not in the tensor-core decode kernel (verify batches convert V to f16, GQA ratio 1-2 and single-tile contexts use the vector kernel) |
 
 Kernel-only microbenchmark of the attention op at 16k context (one RTX 2060, `test-backend-ops perf`, 2026-10-04,
 before the encoder change; end-to-end speeds are on the [benchmarks](benchmarks/README.md) page):
