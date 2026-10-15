@@ -561,6 +561,15 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "vtq4_2s") {
         return GGML_TYPE_VTQ4_2S;
     }
+    if (s == "ktq2_2s") {
+        return GGML_TYPE_KTQ2_2S;
+    }
+    if (s == "ktq3_2s") {
+        return GGML_TYPE_KTQ3_2S;
+    }
+    if (s == "ktq4_2s") {
+        return GGML_TYPE_KTQ4_2S;
+    }
     if (s == "vtq2_3") {
         return GGML_TYPE_VTQ2_3;
     }

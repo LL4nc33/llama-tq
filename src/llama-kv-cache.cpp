@@ -135,7 +135,7 @@ llama_kv_cache::llama_kv_cache(
     // keeps prefill attention in f16 and bulk-converts once at prefill→decode.
     // Users can still pass --tq-deferred-k explicitly for clarity; it's a no-op
     // when already auto-enabled.
-    const bool is_tq_type_k = GGML_TYPE_IS_KTQ(type_k);
+    const bool is_tq_type_k = GGML_TYPE_IS_KTQ(type_k) || GGML_TYPE_IS_KTQ_TRELLIS(type_k);
     // Opt-out (--no-tq-deferred-k): user accepts per-token KTQ quantization
     // noise during prefill to save the f16 staging buffer (~n_embd_k_gqa *
     // kv_size * 2 bytes per layer). Required for fitting full ctx on small-VRAM
@@ -324,7 +324,7 @@ llama_kv_cache::llama_kv_cache(
             }
         }
         if (tq_protect_layers > 0) {
-            const bool is_tq_k = GGML_TYPE_IS_KTQ(type_k);
+            const bool is_tq_k = GGML_TYPE_IS_KTQ(type_k) || GGML_TYPE_IS_KTQ_TRELLIS(type_k);
             const bool is_tq_v = GGML_TYPE_IS_KTQ(type_v);
             const bool is_vtq_v = GGML_TYPE_IS_VTQ(type_v);
 
@@ -362,6 +362,19 @@ llama_kv_cache::llama_kv_cache(
                 ggml_type_name(eff_type_v));
         }
 
+        // the same for the trellis K types, whose rotation spans the block
+        if (GGML_TYPE_IS_KTQ_TRELLIS(eff_type_k) && hparams.n_embd_head_k(il) % ggml_blck_size(eff_type_k) != 0) {
+            const ggml_type trellis_type = eff_type_k;
+            switch (trellis_type) {
+                case GGML_TYPE_KTQ2_2S: eff_type_k = GGML_TYPE_KTQ2_1; break;
+                case GGML_TYPE_KTQ3_2S: eff_type_k = GGML_TYPE_KTQ3_1; break;
+                default:                eff_type_k = GGML_TYPE_KTQ4_1; break;
+            }
+            LLAMA_LOG_WARN("%s: layer %3d: head size %u is not a multiple of the %s block (%d), using %s\n", __func__, il,
+                hparams.n_embd_head_k(il), ggml_type_name(trellis_type), (int) ggml_blck_size(trellis_type),
+                ggml_type_name(eff_type_k));
+        }
+
         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, eff_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, eff_type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
 
@@ -373,7 +386,7 @@ llama_kv_cache::llama_kv_cache(
         std::vector<ggml_tensor *> k_staging_stream;
 
         if (use_deferred_k && has_k) {
-            const bool layer_uses_tq = GGML_TYPE_IS_KTQ(eff_type_k);
+            const bool layer_uses_tq = GGML_TYPE_IS_KTQ(eff_type_k) || GGML_TYPE_IS_KTQ_TRELLIS(eff_type_k);
             if (layer_uses_tq) {
                 k_staging = ggml_new_tensor_3d(ctx, GGML_TYPE_F16, n_embd_k_gqa, kv_size, n_stream);
                 ggml_format_name(k_staging, "%scache_k_staging_l%d", this->name_tag.c_str(), il);
@@ -513,12 +526,12 @@ llama_kv_cache::llama_kv_cache(
             LLAMA_LOG_WARN("%s: attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)\n", __func__);
         }
 
-        // KTQ blocks carry their own randomized Hadamard transform: an additional rotation in the graph makes them
+        // KTQ blocks (also ktq*_2s) carry their own randomized Hadamard transform: an additional rotation in the graph makes them
         // worse (Qwen3-4B, K quantized in prefill: KLD vs f16 0.60 -> 1.97 for ktq2_1, 0.030 -> 0.057 for ktq4_1)
         attn_rot_k =
             !attn_rot_disable &&
             n_embd_head_k_all > 0 &&
-            ggml_is_quantized(type_k) && !GGML_TYPE_IS_KTQ(type_k) &&
+            ggml_is_quantized(type_k) && !GGML_TYPE_IS_KTQ(type_k) && !GGML_TYPE_IS_KTQ_TRELLIS(type_k) &&
             hparams.n_embd_head_k() % 64 == 0;
 
         attn_rot_v =
