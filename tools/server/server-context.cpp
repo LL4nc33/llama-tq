@@ -47,21 +47,23 @@ static uint32_t server_n_outputs_max(const common_params & params) {
         return n_batch;
     }
 
-    // some speculative modes (MTP, DFlash, Eagle3) read hidden states of every prompt token, so keep the full batch
-    // for them. The n-gram modes only verify drafts: one output per drafted token plus the last sampled one, so the
-    // compute buffer of the output device does not need logits rows for a whole batch (Qwen3.6-35B: 672 -> 307 MiB).
+    // DFlash and Eagle3 read hidden states of output rows, so keep the full batch for them. The n-gram modes and MTP
+    // only verify drafts: one output per drafted token plus the last sampled one (MTP takes the target's nextn hidden
+    // state of every batch token regardless of the output flags), so the compute buffer of the output device does not
+    // need logits rows for a whole batch (Qwen3.6-35B: 672 -> 307 MiB).
     const auto & spec = params.speculative;
     const bool any_spec = std::any_of(spec.types.begin(), spec.types.end(),
             [](common_speculative_type t) { return t != COMMON_SPECULATIVE_TYPE_NONE; });
-    const bool only_ngram = std::all_of(spec.types.begin(), spec.types.end(), [](common_speculative_type t) {
+    const bool only_verify = std::all_of(spec.types.begin(), spec.types.end(), [](common_speculative_type t) {
         return t == COMMON_SPECULATIVE_TYPE_NONE
+            || t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
             || t == COMMON_SPECULATIVE_TYPE_NGRAM_CACHE
             || t == COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE
             || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K
             || t == COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V
             || t == COMMON_SPECULATIVE_TYPE_NGRAM_MOD;
     });
-    if (any_spec && only_ngram) {
+    if (any_spec && only_verify) {
         // a batch that asks for more rows raises the limit at runtime (llama_context::output_reserve)
         const uint32_t n_verify = (uint32_t) std::max(spec.draft.n_max, spec.n_max) + 1;
         return std::max<uint32_t>(1, std::min<uint32_t>(n_batch, n_verify * params.n_parallel));
@@ -748,13 +750,16 @@ private:
                 auto params_dft = params_base;
                 params_dft.n_parallel       = 1;
                 params_dft.n_ctx            = params_spec.n_ctx == 0 ? llama_n_ctx_seq(ctx) : params_spec.n_ctx;
-                params_dft.n_batch          = llama_n_ctx_seq(ctx);
                 params_dft.cache_type_k     = params_spec.cache_type_k;
                 params_dft.cache_type_v     = params_spec.cache_type_v;
 
                 params_base.speculative.model_dft = model;  // SAME model
                 params_base.speculative.cparams_dft = common_context_params_to_llama(params_dft);
                 params_base.speculative.cparams_dft.n_seq_max = params_base.n_parallel;
+                // the draft context mirrors target batches (same n_batch), has no recurrent layers to roll back, and
+                // each draft step reads one output row per sequence, so its LM head is reserved for those rows only
+                params_base.speculative.cparams_dft.n_rs_seq      = 0;
+                params_base.speculative.cparams_dft.n_outputs_max = params_base.n_parallel;
                 params_base.speculative.cparams_dft.ctx_type  = LLAMA_CONTEXT_TYPE_MTP;
                 params_base.speculative.cparams_dft.ctx_other = ctx;
 
