@@ -615,6 +615,9 @@ private:
     llama_model_ptr   model_dft;
     llama_context_ptr ctx_dft;
 
+    // speculative state shared by all slots (MTP), the slots point to it but do not own it
+    common_speculative_ptr spec_shared;
+
     bool add_bos_token = true;
 
     int32_t n_ctx; // total context for all clients / slots
@@ -650,9 +653,12 @@ private:
 
         // Clear any sampling context
         for (server_slot & slot : slots) {
-            common_speculative_free(slot.spec);
+            if (slot.spec != spec_shared.get()) {
+                common_speculative_free(slot.spec);
+            }
             slot.spec = nullptr;
         }
+        spec_shared.reset();
 
         llama_batch_free(batch);
     }
@@ -749,7 +755,8 @@ private:
 
                 auto params_dft = params_base;
                 params_dft.n_parallel       = 1;
-                params_dft.n_ctx            = params_spec.n_ctx == 0 ? llama_n_ctx_seq(ctx) : params_spec.n_ctx;
+                // the draft context holds a sequence per slot, laid out like the target (unified or one stream per slot)
+                params_dft.n_ctx            = params_spec.n_ctx == 0 ? llama_n_ctx(ctx) : params_spec.n_ctx;
                 params_dft.cache_type_k     = params_spec.cache_type_k;
                 params_dft.cache_type_v     = params_spec.cache_type_v;
 
@@ -902,6 +909,19 @@ private:
             SRV_WRN("%s", "speculative decoding not supported by this context\n");
         }
 
+        // MTP keeps the draft state of every sequence in the one draft context, so all slots share one speculative
+        // state: each target batch is mirrored into the draft context once, and the slots draft together
+        const auto & spec_types = params_base.speculative.types;
+        const bool spec_mtp = can_spec &&
+            std::find(spec_types.begin(), spec_types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != spec_types.end();
+        if (spec_mtp) {
+            try {
+                spec_shared.reset(common_speculative_init(params_base.speculative, params_base.n_parallel));
+            } catch (const std::exception & e) {
+                SRV_ERR("failed to initialize speculative decoding context: %s\n", e.what());
+            }
+        }
+
         // initialize slots
         for (int i = 0; i < params_base.n_parallel; i++) {
             server_slot slot;
@@ -915,11 +935,15 @@ private:
 
             // try speculative decoding
             if (can_spec) {
-                try {
-                    slot.spec = common_speculative_init(params_base.speculative, params_base.n_parallel);
-                } catch (const std::exception & e) {
-                    SLT_ERR(slot, "failed to initialize speculative decoding context: %s\n", e.what());
-                    slot.spec = nullptr;
+                if (spec_mtp) {
+                    slot.spec = spec_shared.get();
+                } else {
+                    try {
+                        slot.spec = common_speculative_init(params_base.speculative, params_base.n_parallel);
+                    } catch (const std::exception & e) {
+                        SLT_ERR(slot, "failed to initialize speculative decoding context: %s\n", e.what());
+                        slot.spec = nullptr;
+                    }
                 }
                 if (slot.spec) {
                     // Phase 41b: spec init succeeds even with mmproj — draft-loop checks
@@ -2299,6 +2323,13 @@ private:
         };
 
         // first, add sampled tokens from any ongoing sequences
+        //
+        // all drafts are generated before the batch is filled: with one draft state for all slots (MTP), a single
+        // draft call drafts for every slot in the same draft batches
+        std::vector<server_slot *> generating;
+        std::vector<int>           n_draft_max_slot(slots.size(), 0);
+        std::vector<llama_tokens>  drafts(slots.size());
+
         for (auto & slot : slots) {
             if (slot.state != SLOT_STATE_GENERATING) {
                 continue;
@@ -2311,9 +2342,7 @@ private:
                 continue;
             }
 
-            // generate draft tokens in speculative decoding mode
-            // TODO: rework to have a single draft llama_context shared across all slots [TAG_SERVER_SPEC_REWORK]
-            //       perform the speculative drafting for all sequences at the same time in a single batch
+            // configure the speculative drafting
             const int n_draft_max = slot.get_n_draft_max();
             if (n_draft_max > 0) {
                 // Phase 41b: skip draft only when THIS request contains actual vision/audio
@@ -2328,37 +2357,56 @@ private:
 
                 // Wire fork's per-slot pattern to upstream's per-seq_id draft_params API:
                 // configure draft_params, call draft(), read result.
-                llama_tokens draft;
-                {
-                    auto & dp = common_speculative_get_draft_params(slot.spec, slot.id);
-                    dp.drafting = true;
-                    dp.n_max    = std::min<int32_t>(params_spec.n_max, n_draft_max);
-                    dp.n_past   = slot.prompt.tokens.pos_next();
-                    dp.id_last  = slot.sampled;
-                    dp.prompt   = &cached_text_tokens;
-                    dp.result   = &draft;
-                    // Save ckpt before draft for hybrid models ONLY if recurrent rollback
-                    // via seq_rm is unavailable (cparams.n_rs_seq == 0). With n_rs_seq > 0
-                    // (set by need_n_rs_seq() for DRAFT_MTP), seq_rm covers the rollback
-                    // in-place — saving a ckpt would just be wasted D2H copy bandwidth.
-                    // This single skip saves ~5-15 ms per draft iteration on 35B models.
-                    if (llama_model_is_hybrid(model) && llama_n_rs_seq(ctx) == 0) {
-                        slot.spec_ckpt.update_pos(slot.prompt.n_tokens(), 0, slot.prompt.tokens.pos_next() - 1);
-                        slot.spec_ckpt.update_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
-                        if (ctx_dft) {
-                            slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
-                        }
+                auto & dp = common_speculative_get_draft_params(slot.spec, slot.id);
+                dp.drafting = true;
+                dp.n_max    = std::min<int32_t>(params_spec.n_max, n_draft_max);
+                dp.n_past   = slot.prompt.tokens.pos_next();
+                dp.id_last  = slot.sampled;
+                dp.prompt   = &cached_text_tokens;
+                dp.result   = &drafts[slot.id];
+                // Save ckpt before draft for hybrid models ONLY if recurrent rollback
+                // via seq_rm is unavailable (cparams.n_rs_seq == 0). With n_rs_seq > 0
+                // (set by need_n_rs_seq() for DRAFT_MTP), seq_rm covers the rollback
+                // in-place — saving a ckpt would just be wasted D2H copy bandwidth.
+                // This single skip saves ~5-15 ms per draft iteration on 35B models.
+                if (llama_model_is_hybrid(model) && llama_n_rs_seq(ctx) == 0) {
+                    slot.spec_ckpt.update_pos(slot.prompt.n_tokens(), 0, slot.prompt.tokens.pos_next() - 1);
+                    slot.spec_ckpt.update_tgt(ctx, slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
+                    if (ctx_dft) {
+                        slot.spec_ckpt.update_dft(ctx_dft.get(), slot.id, (LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE));
                     }
-                    // No full clear of ctx_dft before draft():
-                    //   - process() already wrote the verified history up to (n_past - 1) and
-                    //     trimmed any stale draft tail via precise seq_rm. Wiping ctx_dft KV
-                    //     here would force the MTP block to draft with empty attention KV →
-                    //     garbage low-confidence predictions → low acceptance.
-                    //   - The defensive seq_rm(-1,-1) that used to live here was a worst-case
-                    //     guard against M-RoPE position aggregation inflating seq_pos_max.
-                    //     With cparams.n_rs_seq > 0 the rollback path is handled by accept().
-                    common_speculative_draft(slot.spec);
                 }
+
+                n_draft_max_slot[slot.id] = n_draft_max;
+            }
+
+            generating.push_back(&slot);
+        }
+
+        // generate the drafts
+        // No full clear of ctx_dft before draft():
+        //   - process() already wrote the verified history up to (n_past - 1) and
+        //     trimmed any stale draft tail via precise seq_rm. Wiping ctx_dft KV
+        //     here would force the MTP block to draft with empty attention KV →
+        //     garbage low-confidence predictions → low acceptance.
+        //   - The defensive seq_rm(-1,-1) that used to live here was a worst-case
+        //     guard against M-RoPE position aggregation inflating seq_pos_max.
+        //     With cparams.n_rs_seq > 0 the rollback path is handled by accept().
+        // A draft state shared by all slots drafts for all of them in its first call; the later calls with the same
+        // state find no sequence left to draft for and return right away.
+        for (server_slot * slot : generating) {
+            if (n_draft_max_slot[slot->id] > 0) {
+                common_speculative_draft(slot->spec);
+            }
+        }
+
+        // add the sampled (and drafted) tokens to the batch
+        for (server_slot * slot_gen : generating) {
+            server_slot & slot = *slot_gen;
+
+            const int n_draft_max = n_draft_max_slot[slot.id];
+            if (n_draft_max > 0) {
+                llama_tokens & draft = drafts[slot.id];
 
                 if (draft.size() > (size_t) n_draft_max) {
                     SLT_WRN(slot, "draft size %d exceeds max %d, truncating\n", (int) draft.size(), n_draft_max);
@@ -3042,38 +3090,57 @@ private:
             // can pair (h_p, x_{p+1}) for next draft() call. No-op for DRAFT_SIMPLE / ngram.
             // Runs for prompt batches too: the MTP head attends over the whole prompt in
             // ctx_dft, and the last prompt row seeds the first draft.
-            if (ret == 0) {
-                static const bool skip_process = std::getenv("FORK_MTP_SKIP_PROCESS") != nullptr;
-                static const bool prof_mtp     = std::getenv("FORK_MTP_PROFILE") != nullptr;
-                for (server_slot & sl : slots) {
-                    if (!sl.is_processing() || !sl.spec) continue;
-                    if (skip_process) continue;
-                    const int64_t t_proc_start = prof_mtp ? ggml_time_us() : 0;
-                    // Trim ctx_dft's draft-tail KV back to the continuation point before
-                    // re-injecting this batch. Any self-syncing drafter that feeds ctx_dft
-                    // via common_speculative_process() (MTP's h_pre_norm pairing, or DFlash's
-                    // target-layer feature injection through batch_inject) requires this: the
-                    // injection llama_decode(ctx_dft, ...) writes at the target positions
-                    // batch_view.pos[...], so seq_pos_max must equal p0 - 1 or balloc->init
-                    // rejects the batch ("failed to initialize batch" -> the sequence
-                    // positions must remain consecutive). Without the trim, stale draft-block
-                    // positions from the previous draft() (injected at n_past + i) still sit
-                    // at positions >= p0, breaking continuity. Upstream does the same trim
-                    // unconditionally for any ctx_dft (seq_rm to ckpt.pos_max + 1); here it
-                    // must fire for DFlash too, not only shared-ctx MTP.
-                    if ((shared_ctx_mode || dflash_type_in_types) && batch_view.n_tokens > 0) {
-                        const llama_pos p0 = batch_view.pos[0];
-                        llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, p0, -1);
-                    }
-                    common_speculative_process(sl.spec, batch_view);
-                    if (prof_mtp) {
-                        static int64_t prof_total = 0, prof_n = 0;
-                        prof_total += ggml_time_us() - t_proc_start;
-                        prof_n += 1;
-                        if (prof_n % 20 == 0) {
-                            SRV_WRN("MTP process profile (avg over %lld calls): %.2fms\n",
-                                (long long)prof_n, prof_total/1000.0/prof_n);
+            static const bool skip_process = std::getenv("FORK_MTP_SKIP_PROCESS") != nullptr;
+            static const bool prof_mtp     = std::getenv("FORK_MTP_PROFILE") != nullptr;
+            if (ret == 0 && !skip_process) {
+                const int64_t t_proc_start = prof_mtp ? ggml_time_us() : 0;
+                // Trim ctx_dft's draft-tail KV back to the continuation point before
+                // re-injecting this batch. Any self-syncing drafter that feeds ctx_dft
+                // via common_speculative_process() (MTP's h_pre_norm pairing, or DFlash's
+                // target-layer feature injection through batch_inject) requires this: the
+                // injection llama_decode(ctx_dft, ...) writes at the target positions
+                // batch_view.pos[...], so seq_pos_max must equal p0 - 1 or balloc->init
+                // rejects the batch ("failed to initialize batch" -> the sequence
+                // positions must remain consecutive). Without the trim, stale draft-block
+                // positions from the previous draft() (injected at n_past + i) still sit
+                // at positions >= p0, breaking continuity. Upstream does the same trim
+                // unconditionally for any ctx_dft (seq_rm to ckpt.pos_max + 1); here it
+                // must fire for DFlash too, not only shared-ctx MTP.
+                if (spec_shared) {
+                    // one state for all slots: mirror the batch once, after trimming every sequence of the batch
+                    // from its own first position
+                    if (shared_ctx_mode) {
+                        std::vector<llama_pos> p0(slots.size(), -1);
+                        for (int32_t k = 0; k < batch_view.n_tokens; ++k) {
+                            const llama_seq_id sid = batch_view.seq_id[k][0];
+                            if (p0[sid] < 0) {
+                                p0[sid] = batch_view.pos[k];
+                            }
                         }
+                        for (llama_seq_id sid = 0; sid < (llama_seq_id) p0.size(); ++sid) {
+                            if (p0[sid] >= 0) {
+                                llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sid, p0[sid], -1);
+                            }
+                        }
+                    }
+                    common_speculative_process(spec_shared.get(), batch_view);
+                } else {
+                    for (server_slot & sl : slots) {
+                        if (!sl.is_processing() || !sl.spec) continue;
+                        if ((shared_ctx_mode || dflash_type_in_types) && batch_view.n_tokens > 0) {
+                            const llama_pos p0 = batch_view.pos[0];
+                            llama_memory_seq_rm(llama_get_memory(ctx_dft.get()), sl.id, p0, -1);
+                        }
+                        common_speculative_process(sl.spec, batch_view);
+                    }
+                }
+                if (prof_mtp) {
+                    static int64_t prof_total = 0, prof_n = 0;
+                    prof_total += ggml_time_us() - t_proc_start;
+                    prof_n += 1;
+                    if (prof_n % 20 == 0) {
+                        SRV_WRN("MTP process profile (avg over %lld calls): %.2fms\n",
+                            (long long)prof_n, prof_total/1000.0/prof_n);
                     }
                 }
             }
