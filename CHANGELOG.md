@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-16
+
+- **The trellis K types `ktq{2,3,4}_3s` run on CUDA.** They were CPU-only. The K cache write uses the shared-memory
+  Viterbi encoder of `vtq*_2s` with the rotation after the outlier pick (KTQ signs and a 128-point FWHT across 128
+  threads, with the operands and stage order of the CPU encoder); the deferred K conversion after the prompt takes the
+  same path. Flash attention rotates Q once per query like the K blocks and dots it with the decoded samples; since the
+  dequantized row has the stored outlier values at the 4 outlier positions, the readers subtract q·x at those positions
+  (x computed from the samples a lane already decoded) and add q·value. Decode uses the GQA kernel (GQA ratio 3 and
+  more, longer than one KQ tile) or the vector kernel at head sizes 128 and 256 next to V f16, `vtq{2,3,4}_1` and
+  `vtq{2,3,4}_2s`; other V types and head 512 convert K and V to f16 every step, verify and prompt batches convert K to
+  f16 for the tensor-core kernel. `GET_ROWS` and the f16/f32 conversions dequantize them as well.
+
 ## 2026-10-15
 
 - **Trellis V types decode at long context 3-5 times faster.** `vtq*_2`, `vtq*_2s`, `vtq*_3` and `vtq3_v8` only ran
