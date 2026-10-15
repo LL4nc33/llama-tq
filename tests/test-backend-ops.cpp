@@ -8466,6 +8466,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type : {GGML_TYPE_VTQ2_2S, GGML_TYPE_VTQ3_2S, GGML_TYPE_VTQ4_2S}) {
         test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 64, 16, 1 }, { 1, 1, }, 64, false));
     }
+    // 16 state bits: the encoder launches one CUDA block per SM at 2 bits, so 128 trellis blocks are several per CUDA
+    // block on GPUs with fewer SMs. At 3/4 bits it launches 2/4 CUDA blocks per SM; with GGML_CUDA_VTQ_POOL_SLOTS=1 it
+    // launches 2/4, so the 16 trellis blocks are several per CUDA block too.
+    test_cases.emplace_back(new test_set_rows(GGML_TYPE_VTQ2_2, GGML_TYPE_I64, { 128, 16, 8, 1 }, { 1, 1, }, 16, false));
+    for (ggml_type type : {GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2, GGML_TYPE_VTQ3_V8}) {
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 4, 4, 1 }, { 1, 1, }, 4, false));
+    }
 
     for (int mode : { GGML_ROPE_TYPE_NORMAL, GGML_ROPE_TYPE_NEOX, GGML_ROPE_TYPE_MROPE, GGML_ROPE_TYPE_VISION }) {
         for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
