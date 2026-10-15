@@ -2,6 +2,21 @@
 
 ## 2026-10-15
 
+- **MTP speculative decoding on Qwen3.5/3.6 drafts from the right hidden state again.** Since the DFlash2 lattice fix
+  the qwen35 and qwen35moe graphs no longer exported the hidden state the MTP head reads (`t_h_nextn`), so the head
+  drafted from whatever the buffer held, and the getters for the nextn and eagle3 hidden states returned the host
+  buffer without waiting for the device copies, so a draft read rows the GPU had not finished writing. The graphs now
+  export the post-norm hidden state for every batch token, the getters synchronize like the logits getters, a request
+  no longer pairs its first token with the hidden state of the previous request, and the server no longer asks for
+  logits of every prompt token. The MTP draft context now takes the target batch size instead of the context size and
+  reserves one output row per sequence, and the target reserves verify outputs as with the n-gram modes, so MTP fits
+  at 40k context with `q8_0` and at 32k with `ktq2_1` / `vtq2_1` on two 12 GB GPUs (draft compute buffer 649 → 290
+  MiB). Qwen3.6-35B-A3B on two RTX 2060, `q8_0`, short prompt, draft max 1: acceptance 34 % → 86 % (upstream: 86 %),
+  decode 71 → 93 t/s (79.5 without speculation); 29k-token prompt at 40k context: acceptance 97 %, decode 85.4 t/s
+  with draft max 1 and 92.6 t/s with draft max 3 (70.5 without speculation, upstream MTP 74.6). Two identical requests
+  now draft identically. MTP still costs ~16 % prompt speed (1649 → 1390 t/s), because the draft context processes
+  every prompt batch after the target. MTP runs with one server slot: an automatic `-np` picks one, a larger `-np` is
+  refused at startup (several slots replayed every batch into the shared draft context).
 - **Speculative decoding on hybrid models keeps one graph shape.** With n-gram (or MTP/draft) speculative decoding on
   models with Gated DeltaNet layers (Qwen3.5/3.6), the recurrent layers built a different graph for single-token
   decode, for each verify length and for prompt ubatches. Every change made the scheduler re-reserve the compute graph
