@@ -140,8 +140,12 @@ an RTX 5080; `vtq3_1`: 97 t/s on the RTX 2060). Since 2026-10-15 the 16-bit type
 t/s with `vtq2_2` / `vtq3_2` / `vtq4_2` (`vtq3_2s` 78, `vtq3_1` 89), and a 40-chunk perplexity run with V quantized in
 prefill takes 3-6 minutes instead of about two hours. Each layer still encodes only one block per KV head per token, so
 a decode step keeps a few SMs busy. Deferred staging (the default for these types) only moves the prompt's encoding to
-one pass after the prompt. The speeds above were measured with the VEC kernel; since 2026-10-15 decode reads the trellis
-types with the GQA decode kernel (coverage in [Decode kernels](#decode-kernels-2026-10-04)), not re-measured yet. The April 2026
+one pass after the prompt. Since 2026-10-15 decode reads the trellis types with the GQA decode kernel (coverage in
+[Decode kernels](#decode-kernels-2026-10-04)) instead of the VEC kernel, which decoded every V block once per Q head;
+Qwen3-4B on two RTX 2060, `q8_0` K, decode at 0 / 8k / 32k context: `vtq3_2` 26.3 / 20.7 / 12.7 t/s (VEC: 26.5 / 12.1 /
+4.3), `vtq3_2s` 78.0 / 62.5 / 39.2 (VEC: 77.7 / 24.4 / 7.3), `vtq3_1` 88.5 / 72.5 / 45.4. The prompt side stays slow
+for the 16-bit types: their encoder runs over every prompt token once the prompt is done (a 7k-token prompt on Qwen3-4B:
+69 s against 5 s with `vtq3_2s` and 2 s with `vtq3_1`), and a follow-up prompt on a filled cache reaches ~90 t/s. The April 2026
 finding that `vtq2_2` / `vtq3_2` / `vtq4_2` give bit-identical perplexity was an artifact of that staging (V stayed f16
 during prefill). Prefer `vtq*_2s` or `vtq*_1` for speed.
 

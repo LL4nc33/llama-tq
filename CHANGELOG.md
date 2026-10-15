@@ -2,6 +2,15 @@
 
 ## 2026-10-15
 
+- **Trellis V types decode at long context 3-5 times faster.** `vtq*_2`, `vtq*_2s`, `vtq*_3` and `vtq3_v8` only ran
+  through the vector flash-attention kernel, which decoded every V block once per Q head of a GQA group with three byte
+  loads per value. The GQA decode kernel now reads them next to K f16, `q8_0` and `ktq{2,3,4}_1` at head sizes 128 and
+  256: each block once per group, one aligned load for the four state windows of a lane, the 12-state-bit table (16 KB)
+  in shared memory and the 16-bit one through L2; decoded values are unchanged. Qwen3-4B on two RTX 2060, `q8_0` K,
+  decode at 8k / 32k context: `vtq3_2s` 24.4 → 62.5 / 7.3 → 39.2 t/s, `vtq2_2s` 24.7 → 61.8 / 7.6 → 38.9, `vtq3_2` 12.1
+  → 20.7 / 4.3 → 12.7 (`vtq3_1` 72.5 / 45.4, unchanged). Speculative verify batches, GQA ratio 1-2 and single-tile
+  contexts keep the previous paths. The trellis V readers of flash attention share one type table
+  (`vtq_trellis<type>`) and one scale expression.
 - **The 16-state-bit trellis V types decode 15-20 times faster.** `vtq{2,3,4}_2`, `vtq{2,3,4}_3` and `vtq3_v8` now
   use the shared-memory Viterbi encoder of `vtq*_2s`: the DP values stay in registers with one shared exchange row per
   step, the codes for the 65536 states are read from the table per step instead of being held in registers, and the
