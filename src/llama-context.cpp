@@ -4136,10 +4136,14 @@ float * llama_get_embeddings_pre_norm(llama_context * ctx) {
 }
 
 float * llama_get_embeddings_nextn(llama_context * ctx) {
+    ctx->synchronize();
+
     return ctx->get_embeddings_nextn();
 }
 
 float * llama_get_embeddings_nextn_ith(llama_context * ctx, int32_t i) {
+    ctx->synchronize();
+
     return ctx->get_embeddings_nextn_ith(i);
 }
 
@@ -4152,14 +4156,20 @@ void llama_set_embeddings_eagle3(llama_context * ctx, bool value) {
 }
 
 float * llama_get_embeddings_eagle3_low_ith(llama_context * ctx, int32_t i) {
+    ctx->synchronize();
+
     return ctx->get_embeddings_eagle3_low_ith(i);
 }
 
 float * llama_get_embeddings_eagle3_mid_ith(llama_context * ctx, int32_t i) {
+    ctx->synchronize();
+
     return ctx->get_embeddings_eagle3_mid_ith(i);
 }
 
 float * llama_get_embeddings_eagle3_high_ith(llama_context * ctx, int32_t i) {
+    ctx->synchronize();
+
     return ctx->get_embeddings_eagle3_high_ith(i);
 }
 
@@ -4174,6 +4184,8 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
 }
 
 float * llama_get_embeddings_pre_norm_raw_ith(llama_context * ctx, int32_t i) {
+    ctx->synchronize();
+
     return ctx->get_embeddings_pre_norm_raw_ith(i);
 }
 
