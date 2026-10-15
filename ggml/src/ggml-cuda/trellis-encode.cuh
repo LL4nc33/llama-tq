@@ -1,40 +1,14 @@
-// Trellis v2 CUDA encoder (full Viterbi, no pruning).
+// Trellis v2 CUDA encoder (full Viterbi, no pruning): k_vtq_encode_trellis_smem, one launch per SET_ROWS.
 //
-// Two kernels, chosen by the state bits L of the type (vtq_cuda_encode_set_rows):
-//   L <= 14 (vtq*_2s, L = 12): k_vtq_encode_trellis_smem below, DP rows in shared memory.
-//   L = 16 (vtq*_2, vtq*_3, vtq3_v8): k_vtq_encode_trellis_set_rows, DP rows in global memory, described here.
-//
-// 1 CUDA block == 1 trellis block (N=QK_VTQ_TRELLIS=128 samples, S=2^L states).
-// VTQ_ENC_THREADS=256 threads per CUDA block.
-//
-// RECEIVER-SIDE DP (Trick 6): each thread owns 256 "next" states
-// (stride-256 sharding). At every DP step, per-next we gather the 2^K
-// candidate prev states via the deterministic inverse of the bit-shift
-// trellis: prev = ((next << K) | e) & (S-1) for e in [0, 2^K). The min
-// is computed in private registers and committed to dp_next[next] with a
-// single coalesced store — no atomics. The backtrack winner (prev index
-// giving the min) is written to bt[step*S + next].
-//
-// Why this is faster than sender-side atomicMin:
-//   * No serialization: 2^K edges into the same `next` collapse to a
-//     register-level loop rather than 2^K contending atomicMin ops.
-//   * Coalesced writes to dp_next (adjacent tids write adjacent next).
-//   * Coalesced LUT reads: vtq_trellis_table_storage[next] reads 256
-//     consecutive floats per warp.
-//   * Tie-break matches sender-side packed atomicMin: we iterate e
-//     ascending with strict `<`, and prev = (next<<K)|e → e=0 gives the
-//     lowest prev, which is kept on ties (lowest prev wins).
-//
-// Workspace (dp_cur, dp_next, backtrack) lives in a global-memory pool owned
-// by trellis.cu. Pool has `pool_slots` slots; host launches the kernel in
-// waves of `pool_slots` CUDA blocks with cudaStreamSynchronize between waves
-// so slots can be re-used. dp_next is allocated with uint64 stride (2*S
-// floats per slot) — receiver-side only uses the first S floats of each slot;
-// the tail remains reserved to preserve ABI with the host-side pool.
-//
-// This kernel folds the `k_set_rows_pq` per-block indexing into thread 0
-// (computing src_block + dst_block pointers once per CUDA block), so that
-// the same call signature can replace the PQ path from set-rows.cu.
+// 1 trellis block = N = QK_VTQ_TRELLIS = 128 samples, S = 2^L states (L = 12 for vtq*_2s, L = 16 for vtq*_2, vtq*_3 and
+// vtq3_v8). The DP runs over butterflies (see the kernel), NG = S / 2^K values per step. Where they live depends on L:
+//   L <= 14: both DP rows in shared memory, the codes of a thread's predecessor states in registers.
+//   L = 16:  a DP row is 16-64 KiB, two of them do not fit, and a thread would need 128 codes. A thread keeps the DP
+//            values of its own butterflies in registers and passes them to the others through a shared exchange
+//            buffer of up to 32 KiB; it keeps the codes of a quarter of its butterflies in registers and reads the
+//            rest from the code table (L2) at every step.
+// The backtrack (one byte per step and butterfly) goes to the CUDA block's slot of a global workspace (trellis.cu).
+// A CUDA block walks over trellis blocks in a grid-stride loop and keeps its slot, so no host synchronization is needed.
 
 #pragma once
 
@@ -46,27 +20,22 @@
 #include <cstdint>
 #include <cfloat>
 
-#ifndef VTQ_ENC_THREADS
-#define VTQ_ENC_THREADS 256
-#endif
-
 // Must match QK_VTQ_TRELLIS (128) — block qs[] is sized for that many samples.
 // Was 256 prior to task #143; OOB-wrote 32-64 bytes into next-block headers,
 // corrupting all VTQ_2 / VTQ_3 PPL measurements (see blog 2026-04-25).
 #define VTQ_ENC_N QK_VTQ_TRELLIS
 
 struct vtq_encode_workspace {
-    float    * dp_cur;
-    float    * dp_next;
-    uint16_t * bt;
-    int        pool_slots;
+    uint8_t * bt;    // backtrack slots
+    int64_t   bytes;
 };
 
-// the workspace pool for the encoder of L state bits on the current device, allocated on first use
+// the backtrack pool for the encoder of L state bits on the current device, allocated on first use
 const vtq_encode_workspace * vtq_get_encode_workspace(int L);
-void vtq_free_encode_workspace(void);
 
-// Source and destination block of flat trellis block i (see k_vtq_encode_trellis_set_rows for the layout).
+// Source and destination block of flat trellis block i = ((i03*ne02 + i02)*ne01 + i01)*(ne00/N) + i00/N: the samples
+// src0[i03, i02, i01, i00 .. i00+N) go to block i00/N of row src1[i12, i11, i01] of dst[i03, i02], with i11 = i02 % ne11
+// and i12 = i03 % ne12.
 template <typename block_t, typename idx_t>
 static __device__ __forceinline__ void vtq_enc_block_ptrs(
         const int64_t i, const float * __restrict__ src0, const idx_t * __restrict__ src1, block_t * __restrict__ dst,
@@ -187,229 +156,7 @@ static __device__ __forceinline__ void vtq_enc_emit(
     }
 }
 
-// One CUDA block == one flat trellis-block index.
-//   i runs [0 .. ne_total-1], ne_total = (ne00*ne01*ne02*ne03)/qk.
-// Per-block, thread 0 decodes (i00, i01, i02, i03) and computes:
-//   - src_block = src0 + i01*s01 + i02*s02 + i03*s03 + i00   (float *)
-//   - dst_block = dst + ((dst_row*s1 + i02*s2 + i03*s3) / sizeof(block_t))
-//                       + (i00 / qk)
-// Other threads read resolved pointers from shared memory.
-// N_OUT > 0 (vtq*_3, vtq3_v8): the N_OUT largest |x| of a block are stored in fp16 next to the trellis and zeroed
-// before the encode, as in ggml_trellis_outliers_pick on the CPU.
-template <typename block_t, typename idx_t, int K, int L, int N_OUT>
-__global__ void k_vtq_encode_trellis_set_rows(
-        const float * __restrict__ src0,
-        const idx_t * __restrict__ src1,
-        block_t     * __restrict__ dst,
-        const int64_t ne_total,
-        const int64_t ne10,
-        const int64_t ne11,
-        const int64_t ne12,
-        const int64_t ne13,
-        const int64_t s01,
-        const int64_t s02,
-        const int64_t s03,
-        const int64_t s10,
-        const int64_t s11,
-        const int64_t s12,
-        const int64_t s1,
-        const int64_t s2,
-        const int64_t s3,
-        const uint3   ne00,
-        const uint3   ne01,
-        const uint3   ne02,
-        const uint3   ne11_fd,
-        const uint3   ne12_fd,
-        float       * __restrict__ ws_dp_cur,
-        float       * __restrict__ ws_dp_next,
-        uint16_t    * __restrict__ ws_bt,
-        const int                     pool_slots,
-        const int64_t                 wave_block_offset)
-{
-    constexpr int      N      = VTQ_ENC_N;
-    constexpr uint32_t S      = 1u << L;
-    constexpr uint32_t Kmask  = (1u << K) - 1u;
-    static_assert(L <= 16, "the backtrack stores states in 16 bits");
-
-    const int     tid = threadIdx.x;
-    const int64_t i   = wave_block_offset + (int64_t)blockIdx.x;
-    if (i >= ne_total) return;
-
-    __shared__ const float * s_src_block;
-    __shared__ block_t     * s_dst_block;
-
-    if (tid == 0) {
-        vtq_enc_block_ptrs(i, src0, src1, dst, s01, s02, s03, s10, s11, s12, s1, s2, s3, ne00, ne01, ne02, ne11_fd, ne12_fd,
-            &s_src_block, &s_dst_block);
-        (void) ne10; (void) ne11; (void) ne12; (void) ne13;
-    }
-    __syncthreads();
-
-    const float * x_row     = s_src_block;
-    block_t     * dst_block = s_dst_block;
-
-    const int slot = (int)(blockIdx.x % (uint32_t)pool_slots);
-    float    * dp_cur  = ws_dp_cur  + (int64_t)slot * (int64_t)S;
-    // dp_next is sized for uint64_t per state; advance by 2*S floats per slot.
-    float    * dp_next = ws_dp_next + (int64_t)slot * (int64_t)(2u * S);
-    uint16_t * bt_base = ws_bt      + (int64_t)slot * (int64_t)N * (int64_t)S;
-
-    __shared__ float    s_xn[VTQ_ENC_N];
-    __shared__ float    s_partial[VTQ_ENC_THREADS];
-    __shared__ uint32_t s_partial_u[VTQ_ENC_THREADS];
-    __shared__ float    s_norm;
-    __shared__ float    s_inv_norm;
-    __shared__ uint32_t s_best_state;
-
-    // 1) Load x, pick the outliers, compute the norm of the rest
-    for (int j = tid; j < N; j += VTQ_ENC_THREADS) {
-        s_xn[j] = x_row[j];
-    }
-    if constexpr (N_OUT > 0) {
-        __syncthreads();
-        if (tid == 0) {
-            vtq_enc_pick_outliers<block_t, N_OUT>(s_xn, dst_block);
-        }
-        __syncthreads();
-    }
-    float local_sq = 0.0f;
-    for (int j = tid; j < N; j += VTQ_ENC_THREADS) {
-        const float v = s_xn[j];
-        local_sq += v * v;
-    }
-    s_partial[tid] = local_sq;
-    __syncthreads();
-    for (int off = VTQ_ENC_THREADS >> 1; off > 0; off >>= 1) {
-        if (tid < off) s_partial[tid] += s_partial[tid + off];
-        __syncthreads();
-    }
-    if (tid == 0) {
-        float nv = sqrtf(s_partial[0]);
-        s_norm     = nv;
-        s_inv_norm = (nv > 1e-30f) ? (1.0f / nv) : 0.0f;
-    }
-    __syncthreads();
-
-    const float norm = s_norm;
-
-    if (norm <= 1e-30f) {
-        if (tid == 0) {
-            dst_block->start_state = 0;
-            dst_block->d           = __float2half(0.0f);
-        }
-        const int qs_bytes = (N * K + 7) / 8;
-        for (int b = tid; b < qs_bytes; b += VTQ_ENC_THREADS) dst_block->qs[b] = 0;
-        return;
-    }
-
-    const float inv_norm = s_inv_norm;
-    for (int j = tid; j < N; j += VTQ_ENC_THREADS) s_xn[j] *= inv_norm;
-    __syncthreads();
-
-    const float cb_scale = rsqrtf((float)N);
-
-    // 2) dp_cur = 0 (all states reachable at step 0 with cost 0)
-    for (uint32_t s = tid; s < S; s += VTQ_ENC_THREADS) dp_cur[s] = 0.0f;
-    __syncthreads();
-
-    // 3) Viterbi DP — receiver-side (atomic-free).
-    //
-    // For each `next`, gather the 2^K incoming edges:
-    //   prev = ((next << K) | e) & (S-1)  for e in [0, 2^K)
-    // The code/cost-delta depends only on `next` (not prev), so we compute
-    // it once per next and reuse across the 2^K candidates.
-    //
-    // Tie-break: sender-side packed atomicMin keeps the lowest prev on ties.
-    // Here prev values for fixed next are consecutive: prev = base + e where
-    // base = (next << K) & (S-1), so iterating e=0..2^K-1 with strict `<`
-    // keeps e=0 (lowest prev) on ties — matches sender-side.
-    //
-    // Unreachable prev states carry cost = FLT_MAX from the previous step;
-    // FLT_MAX + d2 saturates to +inf in IEEE fp32 and naturally loses the
-    // comparison against any finite cost — no explicit skip needed.
-    for (int step = 0; step < N; step++) {
-        uint16_t * bt_i = bt_base + (int64_t)step * (int64_t)S;
-
-        const float xi = s_xn[step];
-
-        for (uint32_t next = tid; next < S; next += VTQ_ENC_THREADS) {
-            // LUT read is coalesced across a warp (adjacent tids → adjacent next).
-            // Do NOT use __ldg: LUT is 256 KiB at L = 16, 5x larger than Turing's 48 KiB RO
-            // cache per SM — goes through L2 instead (~100% hit after warmup).
-            const float code = vtq_trellis_table_storage[next] * cb_scale;
-            const float diff = xi - code;
-            const float d2   = diff * diff;
-
-            const uint32_t base = (next << K) & (S - 1u);
-
-            float    best_cost = FLT_MAX;
-            uint32_t best_prev = 0;
-            #pragma unroll
-            for (uint32_t e = 0; e <= Kmask; e++) {
-                const uint32_t prev = base | e;
-                const float    pc   = dp_cur[prev];
-                const float    cost = pc + d2;
-                if (cost < best_cost) {
-                    best_cost = cost;
-                    best_prev = prev;
-                }
-            }
-
-            // Coalesced writes: adjacent tids → adjacent next.
-            dp_next[next] = best_cost;
-            bt_i[next]    = (uint16_t)(best_prev & (S - 1u));
-        }
-        __syncthreads();
-
-        // Ping-pong swap: next step reads from what we just wrote.
-        // Per-slot strides differ (dp_cur: S floats, dp_next: 2*S floats)
-        // but both point into slots that are individually large enough for
-        // S floats — swapping the pointers is safe for the DP payload.
-        float * tmp = dp_cur;
-        dp_cur  = dp_next;
-        dp_next = tmp;
-    }
-
-    // 4) argmin
-    float    local_best = FLT_MAX;
-    uint32_t local_arg  = 0;
-    for (uint32_t s = tid; s < S; s += VTQ_ENC_THREADS) {
-        float c = dp_cur[s];
-        if (c < local_best) { local_best = c; local_arg = s; }
-    }
-    s_partial[tid]   = local_best;
-    s_partial_u[tid] = local_arg;
-    __syncthreads();
-    for (int off = VTQ_ENC_THREADS >> 1; off > 0; off >>= 1) {
-        if (tid < off) {
-            float a = s_partial[tid], b = s_partial[tid + off];
-            if (b < a) {
-                s_partial[tid]   = b;
-                s_partial_u[tid] = s_partial_u[tid + off];
-            }
-        }
-        __syncthreads();
-    }
-    if (tid == 0) s_best_state = s_partial_u[0];
-    __syncthreads();
-
-    // 5) Backtrack + emit (thread 0)
-    __shared__ uint16_t s_states[VTQ_ENC_N + 1];
-    if (tid == 0) {
-        s_states[N] = (uint16_t)(s_best_state & (S - 1u));
-        for (int step = N - 1; step >= 0; step--) {
-            uint16_t * bt_i = bt_base + (int64_t)step * (int64_t)S;
-            s_states[step] = bt_i[s_states[step + 1]];
-        }
-    }
-    __syncthreads();
-    if (tid < WARP_SIZE) {
-        vtq_enc_emit<block_t, K, L>(s_states, s_xn, norm, cb_scale, dst_block, tid);
-    }
-}
-
-
-// Shared-memory Viterbi for state spaces up to L = 14 (S <= 16384 states).
+// Viterbi over butterflies.
 //
 // The shift-register trellis decomposes into butterflies: the 2^K states g<<K | e (e < 2^K) are exactly the
 // predecessors of the 2^K states g | b<<(L-K) (b < 2^K), for every g < 2^(L-K). The cost of an edge depends only on
@@ -417,15 +164,44 @@ __global__ void k_vtq_encode_trellis_set_rows(
 // butterfly instead of one per state: m_i[g], the cost of the cheapest predecessor of butterfly g at time i. A state t
 // costs m_i[t & (NG-1)] + (x_i - code_t)^2 at time i+1, and m_{i+1}[g] is the min of that over the states (g<<K) | e.
 // Per step and butterfly: 2^K additions, one min, one stored index e (ties keep the lowest e), one stored value.
-// Both m rows live in shared memory; the backtrack (one byte per step and butterfly) goes to the block's slot of the
-// global workspace. A CUDA block walks over trellis blocks in a grid-stride loop and keeps its slot, so all trellis
-// blocks are encoded by one launch without host synchronization.
 #define VTQ_ENC_SMEM_THREADS 512
-#define VTQ_ENC_SMEM_MAX_S   16384 // a thread keeps S/512 codes in registers
+#define VTQ_ENC_SMEM_MAX_S   16384 // up to here both DP rows fit in shared memory and a thread keeps all its S/512 codes
+#define VTQ_ENC_CODE_REGS    32    // codes a thread keeps in registers, more spill at L = 16
+#define VTQ_ENC_XCH_MAX      8192  // L = 16: DP values per exchange round (32 KiB)
 
 template <int K, int L>
 static constexpr __host__ __device__ int vtq_enc_smem_threads() {
     return (1 << (L - K)) < VTQ_ENC_SMEM_THREADS ? 1 << (L - K) : VTQ_ENC_SMEM_THREADS;
+}
+
+// L = 16 backtrack: d steps below a known state at time hi, the walk can only reach the 2^(d*K) butterflies from
+// (g << d*K) & (NG-1) on, g the butterfly of the known state, so a chunk loads only these windows of the backtrack rows.
+template <int K, int L>
+static constexpr __host__ __device__ int vtq_enc_win_bytes(const int d) {
+    return d*K < L - K ? 1 << (d*K) : 1 << (L - K);
+}
+
+// steps per chunk: as many windows as fit in buf_bytes
+template <int K, int L>
+static constexpr __host__ __device__ int vtq_enc_win_steps(const int buf_bytes) {
+    int d   = 0;
+    int sum = 0;
+    while (d < VTQ_ENC_N && sum + vtq_enc_win_bytes<K, L>(d) <= buf_bytes) {
+        sum += vtq_enc_win_bytes<K, L>(d);
+        d++;
+    }
+    return d;
+}
+
+// offset of window d in a chunk of D steps: the deeper (larger) windows come first, so the windows of 16 bytes or more
+// stay 16-byte aligned
+template <int K, int L>
+static constexpr __host__ __device__ int vtq_enc_win_offset(const int d, const int D) {
+    int off = 0;
+    for (int j = d + 1; j < D; j++) {
+        off += vtq_enc_win_bytes<K, L>(j);
+    }
+    return off;
 }
 
 template <typename block_t, typename idx_t, int K, int L, int N_OUT>
@@ -442,11 +218,19 @@ __global__ void k_vtq_encode_trellis_smem(
     constexpr int      NE  = 1 << K;              // predecessors per butterfly
     constexpr int      NG  = S / NE;              // butterflies
     constexpr int      GPT = (NG + NT - 1) / NT;  // butterflies per thread
-    static_assert(S <= VTQ_ENC_SMEM_MAX_S, "the shared-memory encoder takes at most VTQ_ENC_SMEM_MAX_S states");
-    constexpr int BT_CHUNK = 2*NG*sizeof(float) <= 16384 ? 16384 : 8192; // bytes for the backtrack chunks, within 48 KiB
-    static_assert(NE % 4 == 0, "predecessor costs are read as float4");
+    static_assert(L <= 16, "s_states holds states in 16 bits");
+    static_assert(NE % 4 == 0, "predecessor costs and codes are read as float4");
 
-    __shared__ float4   s_m4[2][NG/4];
+    // L <= 14: two DP rows of NG values in s_m4, the backtrack chunks in s_bt4. L = 16: s_bt4 holds one exchange round
+    // of XCH values and, after the DP, the backtrack chunks.
+    constexpr bool SMEM_DP  = S <= VTQ_ENC_SMEM_MAX_S;
+    constexpr int  XCH      = NG < VTQ_ENC_XCH_MAX ? NG : VTQ_ENC_XCH_MAX;
+    constexpr int  BT_CHUNK = !SMEM_DP ? XCH*sizeof(float) : 2*NG*sizeof(float) <= 16384 ? 16384 : 8192; // within 48 KiB
+    // the codes of the predecessor states of a thread's first CK butterflies stay in registers
+    constexpr int  CK       = GPT*NE <= VTQ_ENC_CODE_REGS ? GPT : VTQ_ENC_CODE_REGS / NE;
+    static_assert(!SMEM_DP || CK == GPT, "with the DP rows in shared memory a thread keeps all its codes");
+
+    __shared__ float4   s_m4[2][SMEM_DP ? NG/4 : 1]; // unused at L = 16
     __shared__ uint4    s_bt4[BT_CHUNK / sizeof(uint4)];
     __shared__ float    s_xn[N];
     __shared__ float    s_red[NT/WARP_SIZE];
@@ -463,9 +247,9 @@ __global__ void k_vtq_encode_trellis_smem(
     const float cb_scale = rsqrtf((float) N);
 
     // the codes of the predecessor states (g << K) | e of a thread's butterflies, the same at every step
-    float code[GPT][NE];
+    float code[CK][NE];
     #pragma unroll
-    for (int k = 0; k < GPT; k++) {
+    for (int k = 0; k < CK; k++) {
         const int g = tid + k*NT;
         #pragma unroll
         for (int e = 0; e < NE; e++) {
@@ -521,51 +305,134 @@ __global__ void k_vtq_encode_trellis_smem(
         }
 
         // 2) open start: at time 0 every state costs 0, so every butterfly's best predecessor costs 0 (e = 0)
-        float * m0 = (float *) s_m4[0];
-        for (int g = tid; g < NG; g += NT) {
-            m0[g]  = 0.0f;
-            bt[g]  = 0;
-        }
-        __syncthreads();
-
         // 3) forward DP: m_step from m_{step-1} and x_{step-1}; the last pass (step == N) only looks for the cheapest
         // state at time N (lowest state wins ties)
         float    best   = FLT_MAX;
         uint32_t best_s = 0;
-        for (int step = 1; step <= N; step++) {
-            const float * m_cur  = (const float *) s_m4[(step - 1) & 1];
-            float       * m_next = (float *) s_m4[step & 1];
-            const float xi = s_xn[step - 1];
-            #pragma unroll
-            for (int k = 0; k < GPT; k++) {
-                const int g = tid + k*NT;
-                if (g >= NG) {
-                    break;
-                }
-                const float4 * mp = (const float4 *) (m_cur + ((g << K) & (NG - 1)));
-                float   gbest   = FLT_MAX;
-                uint8_t gbest_e = 0;
+        if constexpr (SMEM_DP) {
+            float * m0 = (float *) s_m4[0];
+            for (int g = tid; g < NG; g += NT) {
+                m0[g]  = 0.0f;
+                bt[g]  = 0;
+            }
+            __syncthreads();
+
+            for (int step = 1; step <= N; step++) {
+                const float * m_cur  = (const float *) s_m4[(step - 1) & 1];
+                float       * m_next = (float *) s_m4[step & 1];
+                const float xi = s_xn[step - 1];
                 #pragma unroll
-                for (int e4 = 0; e4 < NE/4; e4++) {
-                    const float4 pm = mp[e4];
-                    const float  pc[4] = { pm.x, pm.y, pm.z, pm.w };
+                for (int k = 0; k < GPT; k++) {
+                    const int g = tid + k*NT;
+                    if (g >= NG) {
+                        break;
+                    }
+                    const float4 * mp = (const float4 *) (m_cur + ((g << K) & (NG - 1)));
+                    float   gbest   = FLT_MAX;
+                    uint8_t gbest_e = 0;
                     #pragma unroll
-                    for (int j = 0; j < 4; j++) {
-                        const float diff = xi - code[k][4*e4 + j];
-                        const float c    = pc[j] + diff*diff;
-                        if (c < gbest) { gbest = c; gbest_e = 4*e4 + j; }
+                    for (int e4 = 0; e4 < NE/4; e4++) {
+                        const float4 pm = mp[e4];
+                        const float  pc[4] = { pm.x, pm.y, pm.z, pm.w };
+                        #pragma unroll
+                        for (int j = 0; j < 4; j++) {
+                            const float diff = xi - code[k][4*e4 + j];
+                            const float c    = pc[j] + diff*diff;
+                            if (c < gbest) { gbest = c; gbest_e = 4*e4 + j; }
+                        }
+                    }
+                    if (step < N) {
+                        m_next[g]         = gbest;
+                        bt[step * NG + g] = gbest_e;
+                    } else if (gbest < best) {
+                        best   = gbest;
+                        best_s = (g << K) | gbest_e;
                     }
                 }
                 if (step < N) {
-                    m_next[g]         = gbest;
-                    bt[step * NG + g] = gbest_e;
-                } else if (gbest < best) {
-                    best   = gbest;
-                    best_s = (g << K) | gbest_e;
+                    __syncthreads();
                 }
             }
-            if (step < N) {
-                __syncthreads();
+        } else {
+            // A thread owns the butterflies g = tid + k*NT and keeps m[g] in registers. Per step it writes them to the
+            // exchange buffer, in NR rounds of XCH values, and in the round that holds the predecessors of a butterfly
+            // computes its new value. With NT << K <= XCH that round depends on k only.
+            constexpr int NR = NG / XCH;
+            static_assert(NG % NT == 0 && NG % XCH == 0 && XCH % NT == 0, "butterflies split evenly over threads and rounds");
+            static_assert(NR == 1 || (NT << K) <= XCH, "the round of a butterfly is the same for all threads");
+            float * s_x = (float *) s_bt4;
+
+            float m[GPT];
+            #pragma unroll
+            for (int k = 0; k < GPT; k++) {
+                m[k]           = 0.0f;
+                bt[tid + k*NT] = 0;
+            }
+
+            for (int step = 1; step <= N; step++) {
+                float m_new[GPT];
+                #pragma unroll
+                for (int r = 0; r < NR; r++) {
+                    #pragma unroll
+                    for (int k = r*(XCH/NT); k < (r + 1)*(XCH/NT); k++) {
+                        s_x[tid + k*NT - r*XCH] = m[k];
+                    }
+                    __syncthreads();
+                    const float xi = s_xn[step - 1];
+                    #pragma unroll
+                    for (int k = 0; k < GPT; k++) {
+                        if ((((k*NT) << K) & (NG - 1)) / XCH != r) {
+                            continue;
+                        }
+                        const int      g  = tid + k*NT;
+                        const float4 * mp = (const float4 *) (s_x + ((g << K) & (NG - 1)) - r*XCH);
+                        const float4 * cp = (const float4 *) (vtq_trellis_table_storage + (g << K));
+                        float   gbest   = FLT_MAX;
+                        uint8_t gbest_e = 0;
+                        #pragma unroll
+                        for (int e4 = 0; e4 < NE/4; e4++) {
+                            const float4 pm = mp[e4];
+                            const float  pc[4] = { pm.x, pm.y, pm.z, pm.w };
+                            float cd[4];
+                            if (k < CK) {
+                                #pragma unroll
+                                for (int j = 0; j < 4; j++) {
+                                    cd[j] = code[k < CK ? k : 0][4*e4 + j];
+                                }
+                            } else {
+                                // __fmul_rn: the product must not be fused into the subtraction below, as it is not for
+                                // the codes in registers
+                                const float4 t = __ldg(cp + e4);
+                                cd[0] = __fmul_rn(t.x, cb_scale);
+                                cd[1] = __fmul_rn(t.y, cb_scale);
+                                cd[2] = __fmul_rn(t.z, cb_scale);
+                                cd[3] = __fmul_rn(t.w, cb_scale);
+                            }
+                            #pragma unroll
+                            for (int j = 0; j < 4; j++) {
+                                const float diff = xi - cd[j];
+                                const float c    = pc[j] + diff*diff;
+                                if (c < gbest) { gbest = c; gbest_e = 4*e4 + j; }
+                            }
+                        }
+                        if (step < N) {
+                            m_new[k]          = gbest;
+                            bt[step * NG + g] = gbest_e;
+                        } else if (gbest < best) {
+                            best   = gbest;
+                            best_s = (g << K) | gbest_e;
+                        }
+                    }
+                    if (step < N || r < NR - 1) { // after the last pass the barriers of steps 4 and 5 suffice
+                        __syncthreads();
+                    }
+                }
+                if (step < N) {
+                    #pragma unroll
+                    for (int k = 0; k < GPT; k++) {
+                        m[k] = m_new[k];
+                    }
+                }
             }
         }
 
@@ -595,22 +462,63 @@ __global__ void k_vtq_encode_trellis_smem(
             st = best_s;
             s_states[N] = (uint16_t) st;
         }
-        constexpr int ROWS = (int) (sizeof(s_bt4) / NG); // steps per chunk
-        static_assert(ROWS * NG % sizeof(uint4) == 0, "backtrack chunks are copied as uint4");
-        const uint8_t * s_bt = (const uint8_t *) s_bt4;
-        for (int hi = N; hi > 0; hi -= ROWS) {
-            const int lo = hi > ROWS ? hi - ROWS : 0;
-            const uint4 * src = (const uint4 *) (bt + lo * NG);
-            __syncthreads(); // the previous chunk has been read
-            for (int j = tid; j < (hi - lo) * NG / (int) sizeof(uint4); j += NT) {
-                s_bt4[j] = src[j];
+        if constexpr (SMEM_DP) {
+            // whole rows of the backtrack
+            constexpr int ROWS = BT_CHUNK / NG; // steps per chunk
+            static_assert(ROWS * NG % sizeof(uint4) == 0, "backtrack chunks are copied as uint4");
+            const uint8_t * s_bt = (const uint8_t *) s_bt4;
+            for (int hi = N; hi > 0; hi -= ROWS) {
+                const int lo = hi > ROWS ? hi - ROWS : 0;
+                const uint4 * src = (const uint4 *) (bt + lo * NG);
+                __syncthreads(); // the previous chunk has been read
+                for (int j = tid; j < (hi - lo) * NG / (int) sizeof(uint4); j += NT) {
+                    s_bt4[j] = src[j];
+                }
+                __syncthreads();
+                if (tid == 0) {
+                    for (int step = hi - 1; step >= lo; step--) {
+                        const uint32_t g = st & (NG - 1);
+                        st = (g << K) | s_bt[(step - lo) * NG + g];
+                        s_states[step] = (uint16_t) st;
+                    }
+                }
             }
-            __syncthreads();
-            if (tid == 0) {
-                for (int step = hi - 1; step >= lo; step--) {
-                    const uint32_t g = st & (NG - 1);
-                    st = (g << K) | s_bt[(step - lo) * NG + g];
-                    s_states[step] = (uint16_t) st;
+        } else {
+            // only the windows of the rows the walk can reach (vtq_enc_win_bytes): with whole rows a 2-bit block would
+            // copy 2 MiB in 64 chunks, with windows 350 KiB in 16
+            constexpr int D = vtq_enc_win_steps<K, L>(BT_CHUNK); // steps per chunk
+            uint8_t * s_win = (uint8_t *) s_bt4;
+            for (int hi = N; hi > 0; hi -= D) {
+                const int lo = hi > D ? hi - D : 0;
+                __syncthreads(); // s_states[hi] is known, the previous chunk has been read
+                const uint32_t g0 = s_states[hi] & (NG - 1);
+                #pragma unroll
+                for (int d = 0; d < D; d++) {
+                    if (hi - 1 - d < lo) {
+                        break;
+                    }
+                    const int       w   = vtq_enc_win_bytes<K, L>(d);
+                    const int       off = vtq_enc_win_offset<K, L>(d, D);
+                    const uint8_t * src = bt + (hi - 1 - d) * NG + ((g0 << (d*K)) & (NG - 1));
+                    if (w >= (int) sizeof(uint4)) {
+                        for (int j = tid; j < w / (int) sizeof(uint4); j += NT) {
+                            ((uint4 *) (s_win + off))[j] = ((const uint4 *) src)[j];
+                        }
+                    } else if (tid < w) {
+                        s_win[off + tid] = src[tid];
+                    }
+                }
+                __syncthreads();
+                if (tid == 0) {
+                    #pragma unroll
+                    for (int d = 0; d < D; d++) {
+                        if (hi - 1 - d < lo) {
+                            break;
+                        }
+                        const uint32_t g = st & (NG - 1);
+                        st = (g << K) | s_win[vtq_enc_win_offset<K, L>(d, D) + g - ((g0 << (d*K)) & (NG - 1))];
+                        s_states[hi - 1 - d] = (uint16_t) st;
+                    }
                 }
             }
         }
@@ -635,13 +543,14 @@ static void vtq_cuda_encode_set_rows(
         const size_t nb1, const size_t nb2, const size_t nb3,
         cudaStream_t stream)
 {
+    GGML_UNUSED(ne10);
+    GGML_UNUSED(ne13);
     GGML_ASSERT(ne00 % VTQ_ENC_N == 0);
     const int64_t ne_total = (ne00 * ne01 * ne02 * ne03) / VTQ_ENC_N;
     if (ne_total == 0 || ne00 <= 0 || ne01 <= 0 || ne02 <= 0 || ne11 <= 0 || ne12 <= 0) return;
 
     GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
     const vtq_encode_workspace * ws = vtq_get_encode_workspace(L);
-    const int pool_slots = ws->pool_slots;
 
     const int64_t s01 = nb01 / sizeof(float);
     const int64_t s02 = nb02 / sizeof(float);
@@ -659,36 +568,10 @@ static void vtq_cuda_encode_set_rows(
     const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
     const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
 
-    constexpr int64_t S = 1 << L;
-    if constexpr (S <= VTQ_ENC_SMEM_MAX_S) {
-        // one launch, each CUDA block keeps one workspace slot (N * S/2^K bytes of backtrack) and walks over trellis blocks
-        const int64_t slot_bytes = (int64_t) VTQ_ENC_N * (S >> K);
-        const int     nblocks    = (int) std::min<int64_t>(ne_total, (int64_t) pool_slots * (int64_t) sizeof(uint16_t) * VTQ_ENC_N * S / slot_bytes);
-        k_vtq_encode_trellis_smem<block_t, idx_t, K, L, N_OUT><<<nblocks, vtq_enc_smem_threads<K, L>(), 0, stream>>>(
-            src0_d, src1_d, dst_d, ne_total, s01, s02, s03, s10, s11, s12, s1, s2, s3,
-            ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd, (uint8_t *) ws->bt);
-    } else {
-        // global-memory DP: waves of pool_slots CUDA blocks, one trellis block each
-        const int64_t num_waves = (ne_total + pool_slots - 1) / pool_slots;
-        for (int64_t w = 0; w < num_waves; w++) {
-            const int64_t wave_start = w * pool_slots;
-            const int64_t remaining  = ne_total - wave_start;
-            const int     wave_n     = (int)((remaining < pool_slots) ? remaining : pool_slots);
-
-            dim3 grid(wave_n, 1, 1);
-            dim3 block(VTQ_ENC_THREADS, 1, 1);
-
-            k_vtq_encode_trellis_set_rows<block_t, idx_t, K, L, N_OUT><<<grid, block, 0, stream>>>(
-                src0_d, src1_d, dst_d, ne_total,
-                ne10, ne11, ne12, ne13,
-                s01, s02, s03, s10, s11, s12, s1, s2, s3,
-                ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd,
-                ws->dp_cur, ws->dp_next, ws->bt,
-                pool_slots, wave_start);
-
-            if (num_waves > 1) {
-                CUDA_CHECK(cudaStreamSynchronize(stream));
-            }
-        }
-    }
+    // one launch, each CUDA block keeps one slot (N * S/2^K bytes of backtrack) and walks over trellis blocks
+    const int64_t slot_bytes = (int64_t) VTQ_ENC_N * ((1 << L) >> K);
+    const int     nblocks    = (int) std::min<int64_t>(ne_total, ws->bytes / slot_bytes);
+    k_vtq_encode_trellis_smem<block_t, idx_t, K, L, N_OUT><<<nblocks, vtq_enc_smem_threads<K, L>(), 0, stream>>>(
+        src0_d, src1_d, dst_d, ne_total, s01, s02, s03, s10, s11, s12, s1, s2, s3,
+        ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd, ws->bt);
 }
