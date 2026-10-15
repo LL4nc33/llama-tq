@@ -9966,6 +9966,28 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                         GGML_PREC_F32, kv_types.first, kv_types.second));
         }
     }
+    // trellis V decode with the GQA kernel (more than 256 cells, GQA 4 and 8): the 12-state-bit types at heads 128 and
+    // 256 (two trellis blocks per row) with the table in shared memory; the 16-state-bit table from global memory, the
+    // outliers of vtq3_3 (4-byte aligned blocks) and vtq3_v8 (2-byte aligned) at head 128 and one KV head, as the CPU
+    // encoder of 16 state bits is slow
+    for (int hs : {128, 256}) {
+        for (int gqa : {4, 8}) {
+            for (ggml_type type_V : {GGML_TYPE_VTQ2_2S, GGML_TYPE_VTQ3_2S, GGML_TYPE_VTQ4_2S}) {
+                test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {gqa, 1}, 512, 1, true, false, 0, 0,
+                            GGML_PREC_F32, GGML_TYPE_Q8_0, type_V));
+            }
+        }
+    }
+    for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
+            {GGML_TYPE_F16, GGML_TYPE_VTQ3_2S}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_2S}}) {
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 2, {4, 1}, 512, 1, true, false, 0, 10.0f,
+                    GGML_PREC_F32, kv_types.first, kv_types.second));
+    }
+    for (auto [gqa, type_V] : std::vector<std::pair<int, ggml_type>>{
+            {4, GGML_TYPE_VTQ3_2}, {8, GGML_TYPE_VTQ3_3}, {8, GGML_TYPE_VTQ3_V8}}) {
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 1, {gqa, 1}, 512, 1, true, false, 0, 0,
+                    GGML_PREC_F32, GGML_TYPE_Q8_0, type_V));
+    }
 
     // TurboQuant K/V with sparse attention (qwen4exp: head 256, 2 KV heads, GQA 12, n_kv_max cells per query)
     for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
