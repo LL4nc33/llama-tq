@@ -96,6 +96,23 @@ RHT (shared sign pattern + FWHT) + Lloyd-Max codebook. Block stores normalizatio
 | `ktq3_1` | 43 | 3 | 4.5 | 18 B | balanced |
 | `ktq4_1` | 44 | 4 | 5.5 | 22 B | with `vtq4_1` V more accurate than `q4_0`/`q4_0` on Qwen3-4B (see Accuracy) |
 
+### K-cache — trellis KTQ (`ktq*_2s`, experimental, CPU only)
+
+Research types to find out whether trellis coding beats the codebook for K. A block of 128 K values is rotated with the
+KTQ transform over the whole block (shared sign pattern + 128-point FWHT, so the one trellis scale sees the energy of all
+128 values) and then coded like `vtq*_2s` (12 state bits, Viterbi encoder). The sign pattern is not stored: layout and
+bpw equal `vtq*_2s`. Dequantization decodes and undoes the rotation; Q·K dots the query with that row.
+
+| Type   | enum | Index bits | bpw | Block |
+|--------|:---:|:---:|:---:|:---:|
+| `ktq2_2s` | 62 | 2 | 2.25 | 36 B |
+| `ktq3_2s` | 63 | 3 | 3.25 | 52 B |
+| `ktq4_2s` | 64 | 4 | 4.25 | 68 B |
+
+Only the CPU backend implements them (the scheduler keeps their ops on the CPU); the CPU Viterbi encoder needs ~12 ms
+per 3-bit block, so they are for measurements, not for serving. Heads that are not a multiple of 128 fall back to
+`ktq*_1`. Measure with `scripts/kld-kv-types-cpu.sh` (no f16 staging, K quantized for the whole run).
+
 ### V-cache v1 — VTQ codebook (`vtq*_1`)
 
 Pre-rotated via `self_v_rot` at graph level; FA dequant is `codebook[idx] * scale` only. No FWHT, no sign bits inside FA.
@@ -442,7 +459,7 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 | `ggml/src/ggml-cuda/trellis-encode.cuh`    | CUDA trellis encoder (full Viterbi over butterflies): DP rows in shared memory for L <= 14, in registers with a shared exchange buffer for L = 16. |
 | `ggml/src/ggml-cuda/trellis.cu`            | Trellis code table per device and encoder backtrack pool per device and L (L = 12: 32 MiB, L = 16: 2 MiB per SM). |
 | `ggml/src/ggml-cuda/convert.cu`            | CUDA dequant dispatch (contiguous + NC) for KTQ + all VTQ families. |
-| `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ; shared `PQ_CODEBOOK_*` constants. |
+| `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ (incl. the experimental `ktq*_2s`); shared `PQ_CODEBOOK_*` constants. |
 | `src/llama-kv-cache.cpp`                   | Per-layer cache types (layer and sink protection, trellis head-size fallback), deferred K/V staging, V rotation. |
 | `tools/perplexity/perplexity.cpp`          | Turns deferred staging off unless `--tq-deferred-k`/`--tq-deferred-v` is given. |
 | `common/arg.cpp`                           | CLI: `--cache-type-k`, `--cache-type-v` parser; accepts `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1`, `vtq{2,3,4}_2`, `vtq{2,3,4}_2s`, `vtq{2,3,4}_3`, `vtq3_v8`. |
