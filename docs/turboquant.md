@@ -39,10 +39,10 @@ The suffix tells the method:
 | Suffix | Method | Types | Decode |
 |---|---|---|---|
 | `_1` | Hadamard rotation + codebook | `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1` | full speed |
-| `_2` | trellis | `vtq{2,3,4}_2` | 1-3 t/s |
+| `_2` | trellis | `vtq{2,3,4}_2` | slow (1-3 t/s until 2026-10-14, new encoder not re-measured) |
 | `_2s` | trellis with 12 state bits ("s" = fast) | `vtq{2,3,4}_2s` | fast (Qwen3-4B: ~75 t/s) |
-| `_3` | trellis + 4 fp16 outliers per block | `vtq{2,3,4}_3` | 1-3 t/s |
-| `_v8` | trellis 3-bit + 2 fp16 outliers (added in TurboQuant v8) | `vtq3_v8` | 1-3 t/s |
+| `_3` | trellis + 4 fp16 outliers per block | `vtq{2,3,4}_3` | slow (1-3 t/s until 2026-10-14, new encoder not re-measured) |
+| `_v8` | trellis 3-bit + 2 fp16 outliers (added in TurboQuant v8) | `vtq3_v8` | slow (1-3 t/s until 2026-10-14, new encoder not re-measured) |
 
 Reference: PolarQuant (Han et al., arXiv:2502.02617, ICLR 2026) and TurboQuant (Zandieh et al., arXiv:2504.19874).
 
@@ -132,10 +132,11 @@ against f16 KV; a separate run from the table under Accuracy, which uses 40 chun
 | `vtq2_2` (trellis) | 2.25 | 0.033 |
 | `vtq3_1` | 4.0 | 0.019 |
 
-The 16-bit trellis is more accurate per bit than the codebook types, but it is not usable for interactive decode: its Viterbi
-encoder searches all 65536 states for every 128 values and runs for every new token, 13.7 ms per layer on an RTX 2060,
-so decode reaches 1-3 t/s (2026-10-12; Qwen3-4B with `vtq3_2`: 1.0 t/s on an RTX 2060, 2.5 t/s on an RTX 5080; `vtq3_1`: 97 t/s on
-the RTX 2060). Deferred staging (the
+The 16-bit trellis is more accurate per bit than the codebook types, but its Viterbi encoder searches all 65536 states
+for every 128 values and runs for every new token. With the global-memory encoder used until 2026-10-14 that took 13.7 ms
+per layer on an RTX 2060, so decode reached 1-3 t/s (2026-10-12; Qwen3-4B with `vtq3_2`: 1.0 t/s on an RTX 2060, 2.5 t/s on
+an RTX 5080; `vtq3_1`: 97 t/s on the RTX 2060). Since 2026-10-15 the 16-bit types use the shared-memory encoder of
+`vtq*_2s` (16 times its work per block); not re-measured yet. Deferred staging (the
 default for these types) only moves the prompt's encoding to one pass after the prompt; the perplexity run with V
 quantized in prefill took more than an hour, the codebook types take minutes. The types are also not covered by the GQA
 and tensor-core decode kernels. The April 2026
@@ -155,7 +156,7 @@ against f16 KV):
 The 12-bit register costs 10-14 % KLD against 16 bits and is still 6-39 % below the codebook type with the same index
 bits, at fewer bits per value. Its encoder searches 4096 instead of 65536 states and keeps the DP rows in shared memory,
 so it runs for every new token without stalling decode: Qwen3-4B decodes at ~75 t/s with `vtq*_2s` against 1-2 t/s with
-`vtq*_2`. Like `vtq*_2` they are not covered by the GQA and tensor-core decode kernels.
+`vtq*_2` and the global-memory encoder of that time. Like `vtq*_2` they are not covered by the GQA and tensor-core decode kernels.
 
 ### V-cache v3 — Trellis + Outlier-Channel-Split (`vtq*_3`)
 
@@ -251,7 +252,7 @@ Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the
 history below only.
 
-The v2/v3 trellis V types with 16 state bits (`vtq*_2`, `vtq*_3`, `vtq3_v8`) give correct output but decode at 1-3 t/s, because their encoder runs for every new token (see How It Works); use `vtq*_2s` (12 state bits) or the v1 codebook types `vtq*_1`. A trellis block spans 128 values of one head; on models with smaller heads (gpt-oss:
+The v2/v3 trellis V types with 16 state bits (`vtq*_2`, `vtq*_3`, `vtq3_v8`) give correct output but their encoder runs for every new token over 16 times the states of `vtq*_2s` (see How It Works); with the global-memory encoder used until 2026-10-14 they decoded at 1-3 t/s, the shared-memory encoder is not re-measured yet. For speed use `vtq*_2s` (12 state bits) or the v1 codebook types `vtq*_1`. A trellis block spans 128 values of one head; on models with smaller heads (gpt-oss:
 64) those layers use the codebook type with the same bits instead, and the log says so.
 
 ## Memory Savings
@@ -353,8 +354,12 @@ The rotation works on blocks of 64 values and is applied only when the V head si
 
 Group-level Viterbi trellis with shared state and shared scale, 16-bit shift register (L = 16, 65536 states; `vtq*_2s`: L = 12, 4096 states), open-start state stored in 16 bits, inverse-Gaussian CDF code table (state s maps to the same code for every L, so the 12-bit types use the first 4096 entries of the 16-bit table). Block layout: `[d:fp16] [start_state:u16] [packed indices: K · group_size / 8 bytes]`.
 
-The CUDA encoder has two kernels: for L <= 14 a shared-memory Viterbi over butterflies (the 2^K predecessors of a group of
-2^K states share their best predecessor, so the DP keeps one value per butterfly), for L = 16 the global-memory kernel.
+The CUDA encoder is a shared-memory Viterbi over butterflies (the 2^K predecessors of a group of 2^K states share their
+best predecessor, so the DP keeps one value per butterfly, 2^(L-K) per step). For L <= 14 both DP rows sit in shared
+memory and each thread keeps its codes in registers. For L = 16 a row is 16-64 KiB: each thread keeps the DP values of
+its butterflies in registers and exchanges them through a 32 KiB shared buffer (two rounds at 2 bits), keeps a quarter
+of its codes in registers and reads the rest from L2 at every step, and the backtrack walk loads only the bytes it can
+reach. The backtrack pool holds one 2 MiB slot per SM at L = 16 (32 MiB at L = 12).
 
 The Viterbi path optimizes globally over the block, adapting implicitly to the running model's V-distribution — every V-element leverages local statistics at the same average bpw.
 
@@ -427,8 +432,8 @@ All scaled by `1/√32`. CPU constants: `PQ_CODEBOOK_*BIT`. CUDA constants: `PQ_
 | `ggml/src/ggml-cuda/fattn-vec-gqa.{cu,cuh}` | GQA decode kernel. |
 | `ggml/src/ggml-cuda/fattn-mma-ktq.{cu,cuh}` | MMA-KTQ tensor-core split-dequant path (CC ≥ 7.5). |
 | `ggml/src/ggml-cuda/set-rows.cu`           | KV cache write: `k_set_rows_pq`, `k_set_rows_pq_warp`, trellis encoder instances. |
-| `ggml/src/ggml-cuda/trellis-encode.cuh`    | CUDA trellis encoder (full Viterbi): shared-memory kernel for L <= 14, global-memory kernel for L = 16. |
-| `ggml/src/ggml-cuda/trellis.cu`            | Trellis code table per device and encoder workspace per device and L (L = 12: 1 MiB per slot, L = 16: 16.75 MiB). |
+| `ggml/src/ggml-cuda/trellis-encode.cuh`    | CUDA trellis encoder (full Viterbi over butterflies): DP rows in shared memory for L <= 14, in registers with a shared exchange buffer for L = 16. |
+| `ggml/src/ggml-cuda/trellis.cu`            | Trellis code table per device and encoder backtrack pool per device and L (L = 12: 32 MiB, L = 16: 2 MiB per SM). |
 | `ggml/src/ggml-cuda/convert.cu`            | CUDA dequant dispatch (contiguous + NC) for KTQ + all VTQ families. |
 | `ggml/src/ggml-quants.c`                   | CPU quantize/dequantize for KTQ + VTQ; shared `PQ_CODEBOOK_*` constants. |
 | `src/llama-kv-cache.cpp`                   | Per-layer cache types (layer and sink protection, trellis head-size fallback), deferred K/V staging, V rotation. |
