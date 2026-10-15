@@ -21,7 +21,8 @@
 //
 // Supported: one query (ne01 == 1), no ALiBi, no sinks; K f16, q8_0, q5_0, q4_0, ktq2/3/4_1 or ktq2/3/4_3s; V f16, q8_0,
 // q5_0, q4_0, vtq2/3/4_1 or a trellis type (vtq*_2, vtq*_2s, vtq*_3, vtq3_v8; with K f16, q8_0 or ktq2/3/4_1). The
-// trellis K types pair with V f16, vtq2/3/4_1 and vtq2/3/4_2s (fattn_gqa_pair). fattn_gqa_load reads these types.
+// trellis K types pair with V f16, q8_0, q5_0, q4_0, vtq2/3/4_1 and vtq2/3/4_2s (fattn_gqa_pair). fattn_gqa_load reads
+// these types.
 //
 // use_sparse: only the K/V rows of the index list built from the mask are visited (sparse attention, the query sees
 // at most n_kv_max cells); KV_max then holds the list of each sequence, followed by the number of live entries.
@@ -682,11 +683,13 @@ static void ggml_cuda_flash_attn_ext_vec_gqa_case(ggml_backend_cuda_context & ct
 // build in parallel; the dispatcher in fattn-vec-gqa.cu only references them. Returns false if V is not covered.
 // f16 K with f16 V stays with the MMA kernel (decode at 32k reads the cache at ~90 % of the bandwidth there). Trellis V
 // only next to the K types the VEC kernel pairs it with by default (no q5_0 or q4_0 K, see fattn-vec-dispatch-vtq*.cu).
-// Trellis K with the V types of its VEC instances (fattn-vec-dispatch-ktq-trellis.cu).
+// Trellis K with the V types of its VEC instances (fattn-vec-dispatch-ktq-trellis.cu) that this kernel reads (no vtq1_1,
+// as for every K type).
 template <ggml_type type_K, ggml_type type_V>
 static constexpr bool fattn_gqa_pair() {
     if constexpr (GGML_TYPE_IS_KTQ_TRELLIS(type_K)) {
-        return type_V == GGML_TYPE_F16 || (GGML_TYPE_IS_VTQ_CODEBOOK(type_V) && type_V != GGML_TYPE_VTQ1_1) ||
+        return type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_Q8_0 || type_V == GGML_TYPE_Q5_0 ||
+               type_V == GGML_TYPE_Q4_0 || (GGML_TYPE_IS_VTQ_CODEBOOK(type_V) && type_V != GGML_TYPE_VTQ1_1) ||
                GGML_TYPE_IS_VTQ_TRELLIS_S(type_V);
     }
     if constexpr (GGML_TYPE_IS_VTQ_TRELLIS(type_V)) {

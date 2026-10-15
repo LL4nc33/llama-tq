@@ -24,10 +24,12 @@ TYPES_VTQ = [
 TYPES_VEC_K = TYPES_KV + TYPES_KTQ
 TYPES_VEC_V = TYPES_KV + TYPES_KTQ + TYPES_VTQ
 
-# Trellis K cache types: K only, head sizes 128 and 256 (multiples of the 128-value block), next to a few V types.
+# Trellis K cache types: K only, head sizes that are multiples of the 128-value block (128 and 256, plus 512 in a file
+# of its own like the other TurboQuant pairs), next to the V types they are combined with.
 TYPES_KTQ_TRELLIS = ["GGML_TYPE_KTQ2_3S", "GGML_TYPE_KTQ3_3S", "GGML_TYPE_KTQ4_3S"]
 TYPES_KTQ_TRELLIS_V = [
-    "GGML_TYPE_F16", "GGML_TYPE_VTQ2_1", "GGML_TYPE_VTQ3_1", "GGML_TYPE_VTQ4_1",
+    "GGML_TYPE_F16", "GGML_TYPE_Q8_0", "GGML_TYPE_Q5_0", "GGML_TYPE_Q4_0",
+    "GGML_TYPE_VTQ1_1", "GGML_TYPE_VTQ2_1", "GGML_TYPE_VTQ3_1", "GGML_TYPE_VTQ4_1",
     "GGML_TYPE_VTQ2_2S", "GGML_TYPE_VTQ3_2S", "GGML_TYPE_VTQ4_2S",
 ]
 
@@ -131,8 +133,11 @@ for type_k in TYPES_VEC_K:
 
 for type_k in TYPES_KTQ_TRELLIS:
     for type_v in TYPES_KTQ_TRELLIS_V:
-        with open(f"fattn-vec-instance-{get_short_name(type_k)}-{get_short_name(type_v)}.cu", "w") as f:
+        name = f"fattn-vec-instance-{get_short_name(type_k)}-{get_short_name(type_v)}"
+        with open(f"{name}.cu", "w") as f:
             f.write(SOURCE_FATTN_VEC_TRELLIS_K.format(type_k=type_k, type_v=type_v))
+        with open(f"{name}-d512.cu", "w") as f:
+            f.write(SOURCE_FATTN_VEC_D512.format(type_k=type_k, type_v=type_v))
 
 # GQA decode kernel for quantized caches (fattn-vec-gqa.cuh): one TU per head size, block width and K type
 TYPES_GQA_K = ["GGML_TYPE_F16", "GGML_TYPE_Q8_0", "GGML_TYPE_Q5_0", "GGML_TYPE_Q4_0"] + TYPES_KTQ[1:] + TYPES_KTQ_TRELLIS

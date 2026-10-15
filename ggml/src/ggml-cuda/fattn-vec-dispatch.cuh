@@ -49,14 +49,19 @@
     FATTN_VEC_CASES_ALL_D_RET(type_K, type_V)              \
     FATTN_VEC_CASE_RET(512, type_K, type_V)
 
-// the trellis K types: head sizes that are multiples of their 128-value block
+// the trellis K types: head sizes that are multiples of their 128-value block (512: Gemma 4 global attention)
 #define FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, type_V) \
     FATTN_VEC_CASE_RET(128, type_K, type_V)             \
-    FATTN_VEC_CASE_RET(256, type_K, type_V)
+    FATTN_VEC_CASE_RET(256, type_K, type_V)             \
+    FATTN_VEC_CASE_RET(512, type_K, type_V)
 
 // ... next to the V types they have instances for (fattn-vec.cuh)
 #define FATTN_VEC_CASES_KTQ_TRELLIS_V_RET(type_K)                       \
     FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_F16)              \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_Q8_0)             \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_Q5_0)             \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_Q4_0)             \
+    FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ1_1)           \
     FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ2_1)           \
     FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ3_1)           \
     FATTN_VEC_CASES_KTQ_TRELLIS_RET(type_K, GGML_TYPE_VTQ4_1)           \
