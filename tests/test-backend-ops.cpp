@@ -8418,6 +8418,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_get_rows(type, n, 64, 16, 4, 1, true));
         }
     }
+    // trellis K types: trellis decode, inverse 128-point rotation, outliers (fewer rows, the CPU encoder is slow)
+    for (ggml_type type : {GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ4_3S}) {
+        for (int n : {128, 256}) {
+            test_cases.emplace_back(new test_get_rows(type, n, 16, 8, 1, 1, false));
+            test_cases.emplace_back(new test_get_rows(type, n, 16, 8, 2, 1, true));
+        }
+    }
 
     test_cases.emplace_back(new test_get_rows_back(GGML_TYPE_F32, 1, 8, 2, 1, false));
     for (ggml_type type : all_types) {
@@ -8464,6 +8471,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // more trellis blocks (1024) than the shared-memory encoder (12 state bits) launches CUDA blocks, so each CUDA
     // block encodes several
     for (ggml_type type : {GGML_TYPE_VTQ2_2S, GGML_TYPE_VTQ3_2S, GGML_TYPE_VTQ4_2S}) {
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 64, 16, 1 }, { 1, 1, }, 64, false));
+    }
+    // trellis K types: outlier pick, 128-point rotation, the 12-state-bit encoder; two blocks per row and, with 1024
+    // blocks, several per CUDA block
+    for (ggml_type type : {GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ4_3S}) {
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 3, 2, 1 }, { 1, 1, }, 2, false));
+        test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I32, { 256, 5, 1, 2 }, { 2, 1, }, 3, false));
         test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 64, 16, 1 }, { 1, 1, }, 64, false));
     }
     // 16 state bits: the encoder launches one CUDA block per SM at 2 bits, so 128 trellis blocks are several per CUDA
@@ -9987,6 +10001,58 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             {4, GGML_TYPE_VTQ3_2}, {8, GGML_TYPE_VTQ3_3}, {8, GGML_TYPE_VTQ3_V8}}) {
         test_cases.emplace_back(new test_flash_attn_ext(128, 128, 1, {gqa, 1}, 512, 1, true, false, 0, 0,
                     GGML_PREC_F32, GGML_TYPE_Q8_0, type_V));
+    }
+
+    // trellis K types (ktq*_3s), heads 128 and 256 (one and two blocks per row), 2 KV heads:
+    // - decode with the VEC kernel (GQA 1, or a single KQ tile): V with a VEC instance, and q8_0 V without one (K and V
+    //   converted to f16)
+    for (ggml_type type_K : {GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ4_3S}) {
+        for (int hs : {128, 256}) {
+            for (ggml_type type_V : {GGML_TYPE_F16, GGML_TYPE_VTQ3_1, GGML_TYPE_VTQ3_2S, GGML_TYPE_Q8_0}) {
+                test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {1, 1}, 256, 1, true, false, 0, 0,
+                            GGML_PREC_F32, type_K, type_V));
+            }
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {4, 1}, 256, 1, true, false, 0, 0,
+                        GGML_PREC_F32, type_K, GGML_TYPE_F16));
+        }
+    }
+    // - decode with the GQA kernel (more than 256 cells, GQA 4 and 8), the 12-state-bit table shared with a vtq*_2s V,
+    //   logit softcap, a longer cache
+    for (ggml_type type_K : {GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ4_3S}) {
+        for (int hs : {128, 256}) {
+            for (int gqa : {4, 8}) {
+                test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {gqa, 1}, 512, 1, true, false, 0, 0,
+                            GGML_PREC_F32, type_K, GGML_TYPE_F16));
+            }
+        }
+    }
+    for (int hs : {128, 256}) {
+        for (ggml_type type_V : {GGML_TYPE_VTQ2_1, GGML_TYPE_VTQ4_1, GGML_TYPE_VTQ2_2S, GGML_TYPE_VTQ4_2S, GGML_TYPE_Q8_0}) {
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {8, 1}, 512, 1, true, false, 0, 0,
+                        GGML_PREC_F32, GGML_TYPE_KTQ3_3S, type_V));
+        }
+        test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {4, 1}, 512, 1, true, false, 0, 10.0f,
+                    GGML_PREC_F32, GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ3_2S));
+    }
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 1, {6, 1}, 2048, 1, true, false, 0, 0,
+                GGML_PREC_F32, GGML_TYPE_KTQ4_3S, GGML_TYPE_VTQ4_1));
+    // - small batches (speculative verify, causal) and prompt batches: K converted to f16 for the MMA kernel
+    for (ggml_type type_K : {GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ4_3S}) {
+        for (int hs : {128, 256}) {
+            for (int64_t nb : {3, 32}) {
+                test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 2, {4, 1}, 256, nb, true, false, 0, 0,
+                            GGML_PREC_F32, type_K, GGML_TYPE_F16, {0, 1, 2, 3}, 0, nb < 32));
+            }
+        }
+    }
+    for (int64_t nb : {2, 16}) {
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 2, {4, 1}, 256, nb, true, false, 0, 0,
+                    GGML_PREC_F32, GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ3_2S, {0, 1, 2, 3}, 0, true));
+    }
+    // - head 512 (Gemma 4 global layers): no VEC instance, K and V converted to f16
+    for (int64_t nb : {1, 2}) {
+        test_cases.emplace_back(new test_flash_attn_ext(512, 512, 1, {8, 1}, 256, nb, true, false, 0, 0,
+                    GGML_PREC_F32, GGML_TYPE_KTQ3_3S, GGML_TYPE_F16));
     }
 
     // TurboQuant K/V with sparse attention (qwen4exp: head 256, 2 KV heads, GQA 12, n_kv_max cells per query)
