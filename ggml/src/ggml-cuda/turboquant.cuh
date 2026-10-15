@@ -262,7 +262,8 @@ static __device__ __forceinline__ int pq_nearest_scaled(float val, const float *
 // lane t in the "high" half takes (other − val) so that after one stage the
 // pair (a, b) becomes (a+b, a−b) as required by the Hadamard recursion.
 // ============================================================
-static __device__ __forceinline__ float ktq_cuda_fwht_warp(float val) {
+// The butterflies without the final scaling (the sums of the unnormalized H), shared with the 128-point transform.
+static __device__ __forceinline__ float ktq_cuda_fwht_warp_sums(float val) {
     // 4-arg form (mask, val, step, width) for HIP/ROCm portability — HIP's
     // __shfl_xor_sync macro requires the width argument; nvcc accepts both.
     for (int step = 1; step < 32; step <<= 1) {
@@ -271,7 +272,39 @@ static __device__ __forceinline__ float ktq_cuda_fwht_warp(float val) {
         float diff = other - val;   // (other - val) so high-half lanes get (a - b) after the swap
         val = (threadIdx.x & step) ? diff : sum;
     }
-    return val * 0.17677669529663689f; // 1/sqrt(32) — normalizes so H_n · H_n = I
+    return val;
+}
+
+static __device__ __forceinline__ float ktq_cuda_fwht_warp(float val) {
+    return ktq_cuda_fwht_warp_sums(val) * 0.17677669529663689f; // 1/sqrt(32) — normalizes so H_n · H_n = I
+}
+
+// ============================================================
+// 128-point FWHT of the trellis K types (ktq*_3s): the rotation spans a whole trellis block.
+// ============================================================
+#define KTQ_TRELLIS_FWHT_SCALE 0.08838834764831845f // 1/sqrt(QK_VTQ_TRELLIS), as 1.0f/sqrtf(128.0f) on the CPU
+static_assert(QK_VTQ_TRELLIS == 128, "the trellis K rotation is a 128-point transform");
+
+// Unscaled 128-point FWHT across the first 128 threads of a 1-D block, element i in thread i: the stages 1-16 inside
+// the warp, 32 and 64 through buf (128 floats). Every thread of the block must call it (barriers); threads from 128 on
+// pass any value and get it back unchanged. Each butterfly adds and subtracts the same operands in the same stage order
+// as kktq_fwht on the CPU, so the result is bit-identical before the scaling.
+static __device__ __forceinline__ float ktq_cuda_fwht128_sums(float val, float * buf, const int i) {
+    constexpr int N = QK_VTQ_TRELLIS;
+    val = ktq_cuda_fwht_warp_sums(val);
+#pragma unroll
+    for (int step = 32; step < N; step <<= 1) { // the warp stages covered 32 elements
+        if (i < N) {
+            buf[i] = val;
+        }
+        __syncthreads();
+        if (i < N) {
+            const float other = buf[i ^ step];
+            val = (i & step) ? other - val : val + other;
+        }
+        __syncthreads();
+    }
+    return val;
 }
 
 // ============================================================

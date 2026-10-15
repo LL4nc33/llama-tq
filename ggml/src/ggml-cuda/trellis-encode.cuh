@@ -9,6 +9,7 @@
 //            rest from the code table (L2) at every step.
 // The backtrack (one byte per step and butterfly) goes to the CUDA block's slot of a global workspace (trellis.cu).
 // A CUDA block walks over trellis blocks in a grid-stride loop and keeps its slot, so no host synchronization is needed.
+// The trellis K types (ktq*_3s, ROT) rotate the block after the outlier pick (KTQ signs, 128-point FWHT) and encode that.
 
 #pragma once
 
@@ -16,6 +17,7 @@
 #include "ggml-common.h"
 #include "../ggml-trellis.h"
 #include "trellis.cuh"
+#include "turboquant.cuh"
 
 #include <cstdint>
 #include <cfloat>
@@ -204,7 +206,7 @@ static constexpr __host__ __device__ int vtq_enc_win_offset(const int d, const i
     return off;
 }
 
-template <typename block_t, typename idx_t, int K, int L, int N_OUT>
+template <typename block_t, typename idx_t, int K, int L, int N_OUT, bool ROT>
 __launch_bounds__(VTQ_ENC_SMEM_THREADS, 1)
 __global__ void k_vtq_encode_trellis_smem(
         const float * __restrict__ src0, const idx_t * __restrict__ src1, block_t * __restrict__ dst, const int64_t ne_total,
@@ -220,6 +222,7 @@ __global__ void k_vtq_encode_trellis_smem(
     constexpr int      GPT = (NG + NT - 1) / NT;  // butterflies per thread
     static_assert(L <= 16, "s_states holds states in 16 bits");
     static_assert(NE % 4 == 0, "predecessor costs and codes are read as float4");
+    static_assert(!ROT || NT >= N, "the rotation takes one thread per sample");
 
     // L <= 14: two DP rows of NG values in s_m4, the backtrack chunks in s_bt4. L = 16: s_bt4 holds one exchange round
     // of XCH values and, after the DP, the backtrack chunks.
@@ -257,6 +260,9 @@ __global__ void k_vtq_encode_trellis_smem(
         }
     }
 
+    // ROT: the KTQ sign of the sample this thread rotates (the same pattern in every block, see kktq_derive_seed)
+    const bool rot_pos = !ROT || tid >= N || (ktq_cuda_philox_6r((uint32_t) tid, ktq_cuda_derive_seed(0)) & 1);
+
     for (int64_t i = blockIdx.x; i < ne_total; i += gridDim.x) {
         if (tid == 0) {
             vtq_enc_block_ptrs(i, src0, src1, dst, s01, s02, s03, s10, s11, s12, s1, s2, s3, ne00, ne01, ne02, ne11_fd, ne12_fd,
@@ -276,6 +282,18 @@ __global__ void k_vtq_encode_trellis_smem(
             }
         }
         __syncthreads();
+        if constexpr (ROT) {
+            // the remainder with the KTQ signs, then the 128-point FWHT and its scale, as kktq_rht_forward_sb
+            float r = 0.0f;
+            if (tid < N) {
+                r = rot_pos ? s_xn[tid] : -s_xn[tid];
+            }
+            r = ktq_cuda_fwht128_sums(r, s_xn, tid);
+            if (tid < N) {
+                s_xn[tid] = r * KTQ_TRELLIS_FWHT_SCALE;
+            }
+            __syncthreads();
+        }
         if (warp == 0) {
             float sq = 0.0f;
             for (int j = lane; j < N; j += WARP_SIZE) {
@@ -532,8 +550,8 @@ __global__ void k_vtq_encode_trellis_smem(
     }
 }
 
-// Host-side launcher that mirrors set_rows_cuda_pq signature. L: state bits of the type.
-template <typename idx_t, typename block_t, int K, int L, int N_OUT = 0>
+// Host-side launcher that mirrors set_rows_cuda_pq signature. L: state bits of the type, ROT: rotate (ktq*_3s).
+template <typename idx_t, typename block_t, int K, int L, int N_OUT = 0, bool ROT = false>
 static void vtq_cuda_encode_set_rows(
         const float * src0_d, const idx_t * src1_d, block_t * dst_d,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
@@ -571,7 +589,7 @@ static void vtq_cuda_encode_set_rows(
     // one launch, each CUDA block keeps one slot (N * S/2^K bytes of backtrack) and walks over trellis blocks
     const int64_t slot_bytes = (int64_t) VTQ_ENC_N * ((1 << L) >> K);
     const int     nblocks    = (int) std::min<int64_t>(ne_total, ws->bytes / slot_bytes);
-    k_vtq_encode_trellis_smem<block_t, idx_t, K, L, N_OUT><<<nblocks, vtq_enc_smem_threads<K, L>(), 0, stream>>>(
+    k_vtq_encode_trellis_smem<block_t, idx_t, K, L, N_OUT, ROT><<<nblocks, vtq_enc_smem_threads<K, L>(), 0, stream>>>(
         src0_d, src1_d, dst_d, ne_total, s01, s02, s03, s10, s11, s12, s1, s2, s3,
         ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd, ws->bt);
 }
