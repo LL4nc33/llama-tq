@@ -449,9 +449,9 @@ extern "C" {
         GGML_TYPE_VTQ2_2S = 59, // V-cache: vtq2_2 with 12 state bits instead of 16 (fast encoder), 2.25 bpw
         GGML_TYPE_VTQ3_2S = 60, // V-cache: vtq3_2 with 12 state bits instead of 16 (fast encoder), 3.25 bpw
         GGML_TYPE_VTQ4_2S = 61, // V-cache: vtq4_2 with 12 state bits instead of 16 (fast encoder), 4.25 bpw
-        GGML_TYPE_KTQ2_2S = 62, // K-cache, experimental (CPU only): 128-value KTQ rotation + vtq2_2s trellis, 2.25 bpw
-        GGML_TYPE_KTQ3_2S = 63, // K-cache, experimental (CPU only): 128-value KTQ rotation + vtq3_2s trellis, 3.25 bpw
-        GGML_TYPE_KTQ4_2S = 64, // K-cache, experimental (CPU only): 128-value KTQ rotation + vtq4_2s trellis, 4.25 bpw
+        GGML_TYPE_KTQ2_3S = 62, // K-cache, experimental (CPU only): 4 fp16 outliers + KTQ rotation + 12-bit trellis, 3.0 bpw
+        GGML_TYPE_KTQ3_3S = 63, // K-cache, experimental (CPU only): 4 fp16 outliers + KTQ rotation + 12-bit trellis, 4.0 bpw
+        GGML_TYPE_KTQ4_3S = 64, // K-cache, experimental (CPU only): 4 fp16 outliers + KTQ rotation + 12-bit trellis, 5.0 bpw
         // 65..141 unused: the ternary weight types below use the ids that existing
         // GGUF files carry, so type_traits has empty (blck_size == 0) entries in between
         GGML_TYPE_PQ2_0   = 142, // 2-bit codes {-1,0,+1,+2} * d, group 128 (2.125 bpw)
@@ -465,7 +465,7 @@ extern "C" {
         ((t) == GGML_TYPE_KTQ1_1 || (t) == GGML_TYPE_KTQ2_1 || (t) == GGML_TYPE_KTQ3_1 || (t) == GGML_TYPE_KTQ4_1)
     // experimental trellis K types: the rotation of KTQ, but no CUDA support, so kept out of GGML_TYPE_IS_KTQ
     #define GGML_TYPE_IS_KTQ_TRELLIS(t) \
-        ((t) == GGML_TYPE_KTQ2_2S || (t) == GGML_TYPE_KTQ3_2S || (t) == GGML_TYPE_KTQ4_2S)
+        ((t) == GGML_TYPE_KTQ2_3S || (t) == GGML_TYPE_KTQ3_3S || (t) == GGML_TYPE_KTQ4_3S)
     #define GGML_TYPE_IS_VTQ_CODEBOOK(t) \
         ((t) == GGML_TYPE_VTQ1_1 || (t) == GGML_TYPE_VTQ2_1 || (t) == GGML_TYPE_VTQ3_1 || (t) == GGML_TYPE_VTQ4_1)
     // trellis types with 12 instead of 16 state bits

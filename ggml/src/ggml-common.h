@@ -442,14 +442,6 @@ typedef block_vtq2_2 block_vtq2_2s;
 typedef block_vtq3_2 block_vtq3_2s;
 typedef block_vtq4_2 block_vtq4_2s;
 
-// --- KTQ{K}_2S (experimental K-cache types): the vtq{K}_2s block of a K row rotated before coding ---
-// The 128 values of a block go through one randomized Hadamard transform with the fixed KTQ sign pattern (the seed of
-// block 0, see kktq_derive_seed) and are then trellis-coded like vtq{K}_2s. The sign pattern is the same in every block,
-// so the block stores no sign bits: same layout and bpw as vtq{K}_2s.
-typedef block_vtq2_2 block_ktq2_2s;
-typedef block_vtq3_2 block_ktq3_2s;
-typedef block_vtq4_2 block_ktq4_2s;
-
 // --- VTQ{K}_3: Outlier-Channel-Split (Phase 3, Roadmap 2026-04-25) ---
 // Same trellis backbone as VTQ_2, plus K_OUT positions per block stored in fp16.
 // During dequant: trellis-decode all 128 samples, then overwrite the K_OUT
@@ -492,6 +484,15 @@ typedef struct {
     ggml_half outlier_val[VTQ_OUTLIER_K];        // 8 B
 } block_vtq4_3;
 static_assert(sizeof(block_vtq4_3) == 80, "wrong vtq4_3 block size");  // 5.00 bpw
+
+// --- KTQ{K}_3S (experimental K-cache types): the vtq{K}_3 block of a K row, rotated before trellis coding ---
+// The VTQ_OUTLIER_K largest |values| of the 128 (in K mostly one or two channels that carry most of the energy of
+// every token) are stored in fp16; the rest goes through one randomized Hadamard transform with the fixed KTQ sign
+// pattern (the seed of block 0, see kktq_derive_seed) and is coded with the 12-state-bit trellis of vtq{K}_2s. The
+// sign pattern is the same in every block, so the block stores no sign bits: same layout and bpw as vtq{K}_3.
+typedef block_vtq2_3 block_ktq2_3s;
+typedef block_vtq3_3 block_ktq3_3s;
+typedef block_vtq4_3 block_ktq4_3s;
 
 // --- VTQ3_V8: TurboQuant v8 redesign of vtq3_3 with 2 outliers instead of 4 ---
 // Same trellis backbone as

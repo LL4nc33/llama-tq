@@ -6445,25 +6445,37 @@ void dequantize_row_vtq4_2s(const block_vtq4_2s * GGML_RESTRICT x, float * GGML_
     }
 }
 
-// --- KTQ{K}_2S (experimental): the KTQ rotation over the whole 128-value block, then the vtq{K}_2s trellis ---
-// The trellis has one scale per block, so the rotation spans the block (a 128-point FWHT instead of four 32-point ones):
-// it spreads outlier channels over all 128 values instead of leaving four sub-blocks with different energies.
-// All blocks share the sign pattern of KTQ (kktq_derive_seed), so it is computed per row instead of stored.
+// --- KTQ{K}_3S (experimental): VTQ_OUTLIER_K fp16 outliers, the KTQ rotation of the rest, the 12-state-bit trellis ---
+// In real K rows one or two channels carry most of the energy of every token (Qwen3-0.6B: the largest channel 27-87 %
+// of ||k||^2, the same channel in up to 99 % of the tokens). Rotated, such a block is a near-binary +-c pattern that a
+// trellis with its fixed Gaussian code table can only reach at its Gaussian error rate, which then scales with the
+// whole ||k||^2. The outliers are therefore stored exactly, and only the remainder, whose rotation is near-Gaussian,
+// goes through the trellis. The rotation spans the block (a 128-point FWHT), because the trellis has one scale per
+// block. All blocks share the sign pattern of KTQ (kktq_derive_seed), so it is computed per row instead of stored.
 
-static void ktq_trellis_quantize_block(const float * GGML_RESTRICT x, const uint8_t * sb, int bits,
-                                       ggml_half * d, uint16_t * start_state, uint8_t * qs) {
+static void ktq_trellis_quantize_block(const float * GGML_RESTRICT x, const uint8_t * sb, int bits, ggml_half * d,
+                                       uint16_t * start_state, uint8_t * qs, uint8_t * outlier_pos,
+                                       ggml_half * outlier_val) {
+    float rest[QK_VTQ_TRELLIS];
+    float val[VTQ_OUTLIER_K];
+    ggml_trellis_outliers_pick(x, VTQ_OUTLIER_K, outlier_pos, val, rest);
+    for (int j = 0; j < VTQ_OUTLIER_K; j++) {
+        outlier_val[j] = GGML_FP32_TO_FP16(val[j]);
+    }
     float rotated[QK_VTQ_TRELLIS];
-    kktq_rht_forward_sb(x, rotated, QK_VTQ_TRELLIS, sb);
+    kktq_rht_forward_sb(rest, rotated, QK_VTQ_TRELLIS, sb);
     float scale;
     ggml_trellis_encode_group(rotated, bits, GGML_TRELLIS_L_S, start_state, &scale, qs);
     *d = GGML_FP32_TO_FP16(scale);
 }
 
-static void ktq_trellis_dequantize_block(ggml_half d, uint16_t start_state, const uint8_t * qs, const uint8_t * sb,
-                                         int bits, float * GGML_RESTRICT y) {
+static void ktq_trellis_dequantize_block(ggml_half d, uint16_t start_state, const uint8_t * qs,
+                                         const uint8_t * outlier_pos, const ggml_half * outlier_val,
+                                         const uint8_t * sb, int bits, float * GGML_RESTRICT y) {
     float rotated[QK_VTQ_TRELLIS];
     ggml_trellis_decode_group(start_state, bits, GGML_TRELLIS_L_S, GGML_FP16_TO_FP32(d), qs, rotated);
     kktq_rht_inverse_sb(rotated, y, QK_VTQ_TRELLIS, sb);
+    ggml_trellis_outliers_apply(outlier_pos, (const ggml_fp16_t *) outlier_val, VTQ_OUTLIER_K, y);
 }
 
 #define KTQ_TRELLIS_ROW_IMPL(name, bits)                                                                       \
@@ -6472,7 +6484,8 @@ void quantize_row_##name##_ref(const float * GGML_RESTRICT x, block_##name * GGM
     uint8_t sb[QK_VTQ_TRELLIS / 8];                                                                            \
     kktq_sign_bits(kktq_derive_seed(0), sb, QK_VTQ_TRELLIS);                                                   \
     for (int64_t i = 0; i < k / QK_VTQ_TRELLIS; i++) {                                                         \
-        ktq_trellis_quantize_block(x + i * QK_VTQ_TRELLIS, sb, bits, &y[i].d, &y[i].start_state, y[i].qs);     \
+        ktq_trellis_quantize_block(x + i * QK_VTQ_TRELLIS, sb, bits, &y[i].d, &y[i].start_state, y[i].qs,      \
+                                   y[i].outlier_pos, y[i].outlier_val);                                        \
     }                                                                                                          \
 }                                                                                                              \
 void dequantize_row_##name(const block_##name * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {        \
@@ -6480,13 +6493,14 @@ void dequantize_row_##name(const block_##name * GGML_RESTRICT x, float * GGML_RE
     uint8_t sb[QK_VTQ_TRELLIS / 8];                                                                            \
     kktq_sign_bits(kktq_derive_seed(0), sb, QK_VTQ_TRELLIS);                                                   \
     for (int64_t i = 0; i < k / QK_VTQ_TRELLIS; i++) {                                                         \
-        ktq_trellis_dequantize_block(x[i].d, x[i].start_state, x[i].qs, sb, bits, y + i * QK_VTQ_TRELLIS);     \
+        ktq_trellis_dequantize_block(x[i].d, x[i].start_state, x[i].qs, x[i].outlier_pos, x[i].outlier_val,    \
+                                     sb, bits, y + i * QK_VTQ_TRELLIS);                                        \
     }                                                                                                          \
 }
 
-KTQ_TRELLIS_ROW_IMPL(ktq2_2s, 2)
-KTQ_TRELLIS_ROW_IMPL(ktq3_2s, 3)
-KTQ_TRELLIS_ROW_IMPL(ktq4_2s, 4)
+KTQ_TRELLIS_ROW_IMPL(ktq2_3s, 2)
+KTQ_TRELLIS_ROW_IMPL(ktq3_3s, 3)
+KTQ_TRELLIS_ROW_IMPL(ktq4_3s, 4)
 
 #undef KTQ_TRELLIS_ROW_IMPL
 

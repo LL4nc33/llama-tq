@@ -366,8 +366,8 @@ llama_kv_cache::llama_kv_cache(
         if (GGML_TYPE_IS_KTQ_TRELLIS(eff_type_k) && hparams.n_embd_head_k(il) % ggml_blck_size(eff_type_k) != 0) {
             const ggml_type trellis_type = eff_type_k;
             switch (trellis_type) {
-                case GGML_TYPE_KTQ2_2S: eff_type_k = GGML_TYPE_KTQ2_1; break;
-                case GGML_TYPE_KTQ3_2S: eff_type_k = GGML_TYPE_KTQ3_1; break;
+                case GGML_TYPE_KTQ2_3S: eff_type_k = GGML_TYPE_KTQ2_1; break;
+                case GGML_TYPE_KTQ3_3S: eff_type_k = GGML_TYPE_KTQ3_1; break;
                 default:                eff_type_k = GGML_TYPE_KTQ4_1; break;
             }
             LLAMA_LOG_WARN("%s: layer %3d: head size %u is not a multiple of the %s block (%d), using %s\n", __func__, il,
@@ -526,7 +526,7 @@ llama_kv_cache::llama_kv_cache(
             LLAMA_LOG_WARN("%s: attention rotation force disabled (LLAMA_ATTN_ROT_DISABLE)\n", __func__);
         }
 
-        // KTQ blocks (also ktq*_2s) carry their own randomized Hadamard transform: an additional rotation in the graph makes them
+        // KTQ blocks (also ktq*_3s) carry their own randomized Hadamard transform: an additional rotation in the graph makes them
         // worse (Qwen3-4B, K quantized in prefill: KLD vs f16 0.60 -> 1.97 for ktq2_1, 0.030 -> 0.057 for ktq4_1)
         attn_rot_k =
             !attn_rot_disable &&

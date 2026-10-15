@@ -8,7 +8,7 @@
 #   THREADS  CPU threads [all cores]
 #   CHUNKS   chunks of CTX tokens [20]
 #   CTX      context per chunk [512]
-#   K_TYPES  K types to score, V stays f16 [q8_0 q4_0 ktq2_1 ktq3_1 ktq4_1 ktq2_2s ktq3_2s ktq4_2s]
+#   K_TYPES  K types to score, V stays f16 [q8_0 q4_0 ktq2_1 ktq3_1 ktq4_1 ktq2_3s ktq3_3s ktq4_3s]
 #   V_TYPES  V types to score, K stays f16, for reference [empty = skip], e.g. "vtq2_1 vtq3_1 vtq2_2s vtq3_2s vtq4_2s"
 #
 # Every run quantizes the cache for the whole evaluation (--no-tq-deferred-k/-v: no f16 staging). The base logits
@@ -29,7 +29,7 @@ BIN=${BIN:-build/bin}
 THREADS=${THREADS:-$(nproc)}
 CHUNKS=${CHUNKS:-20}
 CTX=${CTX:-512}
-K_TYPES=${K_TYPES:-"q8_0 q4_0 ktq2_1 ktq3_1 ktq4_1 ktq2_2s ktq3_2s ktq4_2s"}
+K_TYPES=${K_TYPES:-"q8_0 q4_0 ktq2_1 ktq3_1 ktq4_1 ktq2_3s ktq3_3s ktq4_3s"}
 V_TYPES=${V_TYPES:-}
 
 mkdir -p "$OUT"

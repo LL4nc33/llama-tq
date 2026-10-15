@@ -1,11 +1,13 @@
-// Round-trip test for the experimental trellis K-cache types ktq{2,3,4}_2s.
+// Round-trip test for the experimental trellis K-cache types ktq{2,3,4}_3s.
 //
-// A ktq*_2s block is the vtq*_2s trellis applied to the block after the KTQ rotation (a 128-point randomized Hadamard
-// transform with the fixed KTQ sign pattern); dequantization decodes the trellis and undoes the rotation.
+// A ktq*_3s block keeps its 4 largest values in fp16 and codes the rest with the 12-state-bit trellis after the KTQ
+// rotation (a 128-point randomized Hadamard transform with the fixed KTQ sign pattern); dequantization decodes the
+// trellis, undoes the rotation and puts the outliers back.
 //
-// What this test verifies on K-like rows (Gaussian channels, a per-channel offset and a few outlier channels):
+// What this test verifies on K-like rows (Gaussian channels with offsets, one channel with most of the energy of
+// every row as in real K, one weaker outlier channel):
 //   * dequantize(quantize(x)) reconstructs x (a wrong inverse rotation would give a relative error near 2)
-//   * the rotation pays off on outlier channels: lower error than vtq*_2s, which codes the same block unrotated
+//   * lower error than the codebook type ktq*_1 with the same index bits, at fewer bits per value
 //   * the CPU Q.K path (vec_dot) equals the dot product with the dequantized row
 //   * an all-zero row decodes to zeros
 
@@ -21,7 +23,8 @@
 static constexpr int N_ROWS   = 32;
 static constexpr int ROW_SIZE = 256;  // two blocks: head_dim 256, or two heads of 128
 
-// rows of a K cache: channel j has offset mu_j and scale sigma_j; channels 7 and 77 are outliers
+// rows of a K cache: channel j has offset mu_j and scale sigma_j; channel 7 (and 7 + 128) carries most of the energy
+// (Qwen3-0.6B: the largest channel holds 27-87 % of ||k||^2), channel 77 is a weaker outlier
 static std::vector<float> make_k_rows(std::mt19937 & rng) {
     std::normal_distribution<float> gauss(0.0f, 1.0f);
     std::vector<float> mu(ROW_SIZE), sigma(ROW_SIZE);
@@ -29,10 +32,12 @@ static std::vector<float> make_k_rows(std::mt19937 & rng) {
         mu[j]    = 0.5f * gauss(rng);
         sigma[j] = 0.5f + std::fabs(gauss(rng));
     }
-    for (int j : {7, 77, 7 + 128}) {
-        mu[j]    = 12.0f;
+    for (int j : {7, 7 + 128}) {
+        mu[j]    = 40.0f;
         sigma[j] = 4.0f;
     }
+    mu[77]    = 8.0f;
+    sigma[77] = 3.0f;
     std::vector<float> x((size_t) N_ROWS * ROW_SIZE);
     for (int r = 0; r < N_ROWS; r++) {
         for (int j = 0; j < ROW_SIZE; j++) {
@@ -70,15 +75,14 @@ int main() {
 
     struct type_case {
         ggml_type ktq;      // trellis K type
-        ggml_type vtq;      // same trellis without the rotation
-        ggml_type ktq_cb;   // codebook K type with the same index bits (printed for reference)
+        ggml_type ktq_cb;   // codebook K type with the same index bits
         double    max_err;  // relative squared error bound on the K-like rows
     };
-    // bounds: about 2x the measured errors (0.067 / 0.016 / 0.0043)
+    // bounds: about 2x the measured errors (0.0076 / 0.0019 / 0.00051)
     const type_case cases[] = {
-        { GGML_TYPE_KTQ2_2S, GGML_TYPE_VTQ2_2S, GGML_TYPE_KTQ2_1, 0.14  },
-        { GGML_TYPE_KTQ3_2S, GGML_TYPE_VTQ3_2S, GGML_TYPE_KTQ3_1, 0.036 },
-        { GGML_TYPE_KTQ4_2S, GGML_TYPE_VTQ4_2S, GGML_TYPE_KTQ4_1, 0.010 },
+        { GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ2_1, 0.015 },
+        { GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ3_1, 0.004 },
+        { GGML_TYPE_KTQ4_3S, GGML_TYPE_KTQ4_1, 0.001 },
     };
 
     std::mt19937 rng(1234);
@@ -93,7 +97,6 @@ int main() {
         std::vector<uint8_t> q;
         const std::vector<float> y_ktq = round_trip(c.ktq, x, &q);
         const double err_ktq = rel_err(x, y_ktq);
-        const double err_vtq = rel_err(x, round_trip(c.vtq, x));
         const double err_cb  = rel_err(x, round_trip(c.ktq_cb, x));
 
         // vec_dot of every row against one query vector vs the dot product with the dequantized row
@@ -121,11 +124,11 @@ int main() {
             zero_ok = zero_ok && v == 0.0f;
         }
 
-        const bool ok = err_ktq < c.max_err && err_ktq < err_vtq && max_dot_diff < 1e-5 && zero_ok;
+        const bool ok = err_ktq < c.max_err && err_ktq < err_cb && max_dot_diff < 1e-5 && zero_ok;
         n_failed += !ok;
-        printf("%-8s rel. sq. error %.5f (bound %.3f, unrotated %s %.5f, codebook %s %.5f), vec_dot rel. diff %.1e, "
-               "zero row %s: %s\n", ggml_type_name(c.ktq), err_ktq, c.max_err, ggml_type_name(c.vtq), err_vtq,
-               ggml_type_name(c.ktq_cb), err_cb, max_dot_diff, zero_ok ? "ok" : "FAILED", ok ? "ok" : "FAILED");
+        printf("%-8s rel. sq. error %.5f (bound %.4f, codebook %s %.5f), vec_dot rel. diff %.1e, zero row %s: %s\n",
+               ggml_type_name(c.ktq), err_ktq, c.max_err, ggml_type_name(c.ktq_cb), err_cb, max_dot_diff,
+               zero_ok ? "ok" : "FAILED", ok ? "ok" : "FAILED");
     }
 
     printf("%d tests failed\n", n_failed);
