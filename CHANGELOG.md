@@ -14,9 +14,13 @@
   MiB). Qwen3.6-35B-A3B on two RTX 2060, `q8_0`, short prompt, draft max 1: acceptance 34 % → 86 % (upstream: 86 %),
   decode 71 → 93 t/s (79.5 without speculation); 29k-token prompt at 40k context: acceptance 97 %, decode 85.4 t/s
   with draft max 1 and 92.6 t/s with draft max 3 (70.5 without speculation, upstream MTP 74.6). Two identical requests
-  now draft identically. MTP still costs ~16 % prompt speed (1649 → 1390 t/s), because the draft context processes
-  every prompt batch after the target. MTP runs with one server slot: an automatic `-np` picks one, a larger `-np` is
-  refused at startup (several slots replayed every batch into the shared draft context).
+  now draft identically. The draft context reads the target hidden states after every prompt batch, which drains the
+  two-GPU pipeline, so with MTP the server now defaults to `-b 8192` unless `-b` is given: the prompt cost drops from
+  16 % to ~6 % (no speculation 1649 t/s, MTP with 2048-token batches 1390 t/s, with 8192 1550 t/s). MTP also runs with
+  several server slots: all slots share one draft state over the draft context, and the hidden-state rows of a batch
+  that holds several sequences keep batch order. With two concurrent requests acceptance stays at 80 % (draft max 3),
+  but their combined decode (104 t/s) is ~5 % below two requests without speculation (109 t/s); MTP pays off while one
+  request is active.
 - **Speculative decoding on hybrid models keeps one graph shape.** With n-gram (or MTP/draft) speculative decoding on
   models with Gated DeltaNet layers (Qwen3.5/3.6), the recurrent layers built a different graph for single-token
   decode, for each verify length and for prompt ubatches. Every change made the scheduler re-reserve the compute graph
