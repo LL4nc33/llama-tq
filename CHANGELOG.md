@@ -11,6 +11,11 @@
   → 20.7 / 4.3 → 12.7 (`vtq3_1` 72.5 / 45.4, unchanged). Speculative verify batches, GQA ratio 1-2 and single-tile
   contexts keep the previous paths. The trellis V readers of flash attention share one type table
   (`vtq_trellis<type>`) and one scale expression.
+- **Prompts on a trellis V cache read it faster.** Batches convert the quantized V cache to f16 first; that kernel
+  decoded a whole trellis block serially in one thread. Every thread now decodes its own sample with the expression of
+  the flash-attention readers (same values, generated text unchanged). Qwen3-4B on two RTX 2060, `q8_0` K, `vtq3_2s`:
+  480-token follow-up prompt at 7k / 22k context 877 → 915 / 511 → 554 t/s, 22k first prompt 1261 → 1340 t/s. The
+  16-state-bit types stay bound by their encoder (`vtq3_2` 84 → 85 t/s).
 - **The 16-state-bit trellis V types decode 15-20 times faster.** `vtq{2,3,4}_2`, `vtq{2,3,4}_3` and `vtq3_v8` now
   use the shared-memory Viterbi encoder of `vtq*_2s`: the DP values stay in registers with one shared exchange row per
   step, the codes for the 65536 states are read from the table per step instead of being held in registers, and the
