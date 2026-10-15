@@ -435,7 +435,7 @@ llama_context::llama_context(
     // with deferred staging (the default for KTQ K) prefill reads the f16 staging buffer and needs no copy of K;
     // sliding-window layers only span the window
     if (!hparams.vocab_only) {
-        const bool qk = GGML_TYPE_IS_KTQ(params.type_k) && params.tq_no_deferred_k;
+        const bool qk = (GGML_TYPE_IS_KTQ(params.type_k) || GGML_TYPE_IS_KTQ_TRELLIS(params.type_k)) && params.tq_no_deferred_k;
         const bool qv = GGML_TYPE_IS_KTQ(params.type_v) || GGML_TYPE_IS_VTQ(params.type_v);
         for (uint32_t il = 0; il < hparams.n_layer && (qk || qv); ++il) {
             size_t n_kv = cparams.n_ctx_seq;
@@ -3958,7 +3958,10 @@ llama_context * llama_init_from_model(
         }
     }
 
-    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && ggml_is_quantized(params.type_k)) {
+    // the trellis K types fall back to the codebook type per layer where the head is not a multiple of their block
+    // (llama_kv_cache), so the check does not apply to them
+    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && ggml_is_quantized(params.type_k) &&
+            !GGML_TYPE_IS_KTQ_TRELLIS(params.type_k)) {
         const uint32_t blck_size = ggml_blck_size(params.type_k);
         for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {
             if (model->hparams.n_embd_head_k(il) % blck_size != 0) {
