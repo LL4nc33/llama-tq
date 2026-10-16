@@ -12,9 +12,16 @@
   `vtq{2,3,4}_2s`, otherwise the vector kernel, which also takes `vtq1_1` V and head size 512 (Gemma 4 global layers);
   other V types convert K and V to f16 every step, verify and prompt batches convert K to f16 for the tensor-core
   kernel. `GET_ROWS` and the f16/f32 conversions dequantize them as well.
+  Qwen3-4B on two RTX 2060, KLD against f16 over 40 chunks: `ktq3_3s` K 0.0188 with `q8_0` V (`ktq3_1` 0.0715),
+  0.0215 with `q4_0` V (0.0715), 0.253 with `vtq1_1` V (0.365); `ktq4_3s`/`q8_0` 0.0072. Decode with `q8_0` V at 8k
+  context 29.2 → 54.5 t/s against the f16 conversion every step.
 - **The GQA decode kernel takes head size 512** (Gemma 4 global layers) for the pairs with a trellis K or V, which
   the vector kernel decoded once per Q head: blocks of 4 columns there (a GQA group of 8 takes two), sm_75 ptxas 232-255
   registers and no spills. The other pairs at head 512 keep the tensor-core decode kernel.
+  Gemma 4 26B-A4B IQ2_XXS on two RTX 2060, decode at 8k / 32k context: `ktq3_3s`/`vtq3_2s` 24.0 → 39.2 / 10.2 → 32.6
+  t/s, `ktq3_1`/`vtq3_2s` 36.6 → 54.2 / 16.9 → 47.8, `ktq3_3s`/`q8_0` 31.0 → 46.2 / 14.3 → 37.6 (`ktq3_1`/`vtq3_1`
+  66.7 / 54.2, unchanged). Gemma 4 26B-A4B Q4_K_M copies 36 sections from a 29k-token prompt as often verbatim as
+  through the vector kernel: 28-31 of 36 on either kernel across four trellis K/V pairs, f16 30.
 
 ## 2026-10-15
 
