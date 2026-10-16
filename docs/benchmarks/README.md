@@ -74,6 +74,28 @@ base runs alone spread 1.8 % (6209, 6320), the RTX A6000 and RTX 2060 show no ch
 `llama-bench -p` keeps a KTQ K cache in f16 staging until the first decode step, so they show f16 K with `vtq4_1` V;
 the decode cells run on the quantized K.
 
+## Trellis and codebook types, two GPUs
+
+Since 2026-10-16 the short names `ktq2`-`ktq4` and `vtq2`-`vtq4` select the trellis types (`ktq*_3s`, `vtq*_2s`); the
+codebook types `ktq*_1` / `vtq*_1` keep their full names. Qwen3-4B-Instruct-2507 Q4_K_M on two RTX 2060, builds and
+types alternated A,B,B,A, 2026-10-16. Decode: `llama-bench -fa 1 -t 4 -n 64 -r 2`. First prompt and follow-up:
+`llama-server -c 40960`, a prompt of 7k / 22k tokens, then the same prompt plus about 480 tokens on the cached prefix
+(the generated text is identical across repetitions of a type):
+
+| KV cache | bpw | decode empty / 8k / 32k | first prompt 7k / 22k | follow-up at 7k / 22k |
+|---|---:|---:|---:|---:|
+| `q8_0` / `q8_0` | 8.5 | 90 / 72 / 44 t/s | | |
+| `ktq4_1` / `vtq4_1` | 5.0 | 89 / 72 / 46 t/s | 2.7 s / 12.0 s | 1490 / 742 t/s |
+| `ktq4` / `vtq4` (`ktq4_3s` / `vtq4_2s`) | 4.6 | 59 / 47 / 27 t/s | 11.8 s / 28.4 s | 501 / 355 t/s |
+| `ktq3_1` / `vtq3_1` | 4.25 | 89 / 72 / 44 t/s | 2.6 s / 11.9 s | 1503 / 751 t/s |
+| `ktq3` / `vtq3` (`ktq3_3s` / `vtq3_2s`) | 3.6 | 63 / 49 / 27 t/s | 9.1 s / 23.8 s | 626 / 415 t/s |
+
+The prompt itself is computed equally fast (about 3300 t/s at 7k); the trellis types then spend the extra time in the
+Viterbi encoder, which converts the f16-staged K and V of the prompt and encodes every later token. Accuracy of these
+pairs: [turboquant.md](../turboquant.md#accuracy).
+Gemma 4 26B-A4B IQ2_XXS (head size 512 on the global layers), same GPUs, decode empty / 8k / 32k: `ktq3` / `vtq3`
+50 / 39 / 33 t/s, `ktq3_1` / `vtq3_1` 79 / 67 / 54 t/s.
+
 ## Speculative decoding at long context, one GPU
 
 `llama-server` with ngram speculation (`--spec-type ngram-cache --draft-max 8 --draft-min 4`), Qwen3-4B-Instruct-2507

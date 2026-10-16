@@ -2,6 +2,13 @@
 
 ## 2026-10-16
 
+- **The short KV cache names select the trellis types.** `ktq2`, `ktq3`, `ktq4` are now `ktq{2,3,4}_3s` and `vtq2`,
+  `vtq3`, `vtq4` are `vtq{2,3,4}_2s`, the most accurate type of each bit width; `ktq1` / `vtq1` stay `ktq1_1` /
+  `vtq1_1`, and the codebook types keep their full names (`ktq4_1`, …). Qwen3-4B, KLD against f16: `ktq4`/`vtq4` 0.0087
+  (`ktq4_1`/`vtq4_1` 0.025), `ktq3`/`vtq3` 0.025 (0.084), `ktq2`/`vtq2` 0.095 (0.40); exact copies of 36 sections from
+  a 28k-token prompt: `ktq2`/`vtq2` 26/36 (`ktq2_1`/`vtq2_1` 0/36), `ktq2`/`q8_0` 30/36, f16 32/36. On two RTX 2060 the
+  trellis pairs decode 30-40 % slower (`ktq3`/`vtq3` 63 / 49 / 27 t/s at empty / 8k / 32k context against 89 / 72 / 44)
+  and the first 7k-token prompt takes 9.1 s instead of 2.6 s.
 - **The trellis K types `ktq{2,3,4}_3s` run on CUDA.** They were CPU-only. The K cache write uses the shared-memory
   Viterbi encoder of `vtq*_2s` with the rotation after the outlier pick (KTQ signs and a 128-point FWHT across 128
   threads, with the operands and stage order of the CPU encoder); the deferred K conversion after the prompt takes the

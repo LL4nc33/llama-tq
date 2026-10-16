@@ -30,8 +30,8 @@ llama-server -m model.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0
 # compact and still accurate: 8-bit K, 4-bit TurboQuant V (6.5 bpw)
 llama-server -m model.gguf -ngl 99 -fa on -ctk q8_0 -ctv vtq4_1
 
-# most context: 5 bpw, at q4_0 accuracy
-llama-server -m model.gguf -ngl 99 -fa on -ctk ktq4_1 -ctv vtq4_1
+# more context: 4 bits per value (4.6 bpw), more accurate than q4_0; ktq2/vtq2 down to 2.6 bpw
+llama-server -m model.gguf -ngl 99 -fa on -ctk ktq4 -ctv vtq4
 
 # LoRA fine-tuning directly on the quantized GGUF
 llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
@@ -44,9 +44,9 @@ llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
 NVIDIA GPUs with 12 to 32 GB. It is developed on 2× RTX 2060 12 GB without P2P; speed was also measured on RTX 30, 40
 and 50 cards, fine-tuning on the RTX 2060, RTX 5090 and RTX PRO 6000. The fork adds:
 
-- **TurboQuant KV cache:** `ktq*` (K) and `vtq*` (V) cache types from 1.5 to 5.5 bits per value
-  ([types](docs/turboquant.md#available-types)) with their own decode kernels, to fit more context into the same VRAM
-  ([which type to pick](docs/turboquant.md#recommendation))
+- **TurboQuant KV cache:** `ktq1`-`ktq4` (K) and `vtq1`-`vtq4` (V), named by their bits per value, with their own
+  decode kernels, to fit more context into the same VRAM ([types](docs/turboquant.md#available-types),
+  [which type to pick](docs/turboquant.md#recommendation))
 - **Fine-tuning on quantized models:** LoRA directly on k-quant, IQ, MXFP4 and ternary GGUFs, including MoE experts and
   models that do not fit into VRAM; flash attention backward on CPU and CUDA
 - **Tensor split without P2P:** `-sm tensor` reduces through pinned host memory on GPUs without peer access (builds
@@ -63,8 +63,9 @@ Limitations:
 - Kernels are tuned on Turing (RTX 20); on newer GPUs they run and are measured, but are not tuned.
 - Upstream fixes are cherry-picked rather than merged continuously, so the fork lags behind upstream.
 - Prefill on Gemma 4 is 1-2 % slower than upstream ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
-- The trellis V types (`vtq*_2`, `vtq*_3`) are accurate but decode slowly; use the `*_1` types
-  ([turboquant.md](docs/turboquant.md)).
+- The TurboQuant short names `ktq2`-`ktq4` / `vtq2`-`vtq4` are trellis types: more accurate per bit, but they decode
+  30-40 % slower and take 3.5-4 times as long for the first prompt as the codebook types `ktq*_1` / `vtq*_1`
+  ([benchmarks](docs/benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 
 ## Supported GPUs
 
