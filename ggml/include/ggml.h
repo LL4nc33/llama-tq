@@ -449,9 +449,9 @@ extern "C" {
         GGML_TYPE_VTQ2_2S = 59, // V-cache: vtq2_2 with 12 state bits instead of 16 (fast encoder), 2.25 bpw
         GGML_TYPE_VTQ3_2S = 60, // V-cache: vtq3_2 with 12 state bits instead of 16 (fast encoder), 3.25 bpw
         GGML_TYPE_VTQ4_2S = 61, // V-cache: vtq4_2 with 12 state bits instead of 16 (fast encoder), 4.25 bpw
-        GGML_TYPE_KTQ2_3S = 62, // K-cache, experimental: 4 fp16 outliers + KTQ rotation + 12-bit trellis, 3.0 bpw
-        GGML_TYPE_KTQ3_3S = 63, // K-cache, experimental: 4 fp16 outliers + KTQ rotation + 12-bit trellis, 4.0 bpw
-        GGML_TYPE_KTQ4_3S = 64, // K-cache, experimental: 4 fp16 outliers + KTQ rotation + 12-bit trellis, 5.0 bpw
+        GGML_TYPE_KTQ2_3S = 62, // K-cache: 4 fp16 outliers + KTQ rotation + 12-bit trellis, 3.0 bpw
+        GGML_TYPE_KTQ3_3S = 63, // K-cache: 4 fp16 outliers + KTQ rotation + 12-bit trellis, 4.0 bpw
+        GGML_TYPE_KTQ4_3S = 64, // K-cache: 4 fp16 outliers + KTQ rotation + 12-bit trellis, 5.0 bpw
         // 65..141 unused: the ternary weight types below use the ids that existing
         // GGUF files carry, so type_traits has empty (blck_size == 0) entries in between
         GGML_TYPE_PQ2_0   = 142, // 2-bit codes {-1,0,+1,+2} * d, group 128 (2.125 bpw)

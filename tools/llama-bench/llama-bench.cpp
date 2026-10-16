@@ -493,31 +493,30 @@ static ggml_type ggml_type_from_name(const std::string & s) {
     if (s == "iq4_nl") {
         return GGML_TYPE_IQ4_NL;
     }
-    // TurboQuant v8 short aliases — map to existing v7 enums.
-    // Full v7 names (e.g. "ktq2_1", "vtq2_2") still resolve via the explicit cases below.
+    // Short names: the most accurate type per bit width, as in common/arg.cpp. The full names resolve below.
     if (s == "ktq1") {
         return GGML_TYPE_KTQ1_1;
     }
     if (s == "ktq2") {
-        return GGML_TYPE_KTQ2_1;
+        return GGML_TYPE_KTQ2_3S;
     }
     if (s == "ktq3") {
-        return GGML_TYPE_KTQ3_1;
+        return GGML_TYPE_KTQ3_3S;
     }
     if (s == "ktq4") {
-        return GGML_TYPE_KTQ4_1;
+        return GGML_TYPE_KTQ4_3S;
     }
     if (s == "vtq1") {
         return GGML_TYPE_VTQ1_1;
     }
     if (s == "vtq2") {
-        return GGML_TYPE_VTQ2_1;
+        return GGML_TYPE_VTQ2_2S;
     }
     if (s == "vtq3") {
-        return GGML_TYPE_VTQ3_1;
+        return GGML_TYPE_VTQ3_2S;
     }
     if (s == "vtq4") {
-        return GGML_TYPE_VTQ4_1;
+        return GGML_TYPE_VTQ4_2S;
     }
     if (s == "ktq1_1") {
         return GGML_TYPE_KTQ1_1;

@@ -416,16 +416,16 @@ const std::vector<ggml_type> kv_cache_types = {
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
-    // TurboQuant v8 short aliases — map to existing v7 enums.
-    // Full v7 names (e.g. "ktq2_1", "vtq2_2") still resolve via the loop below.
+    // Short names: the most accurate type per bit width (trellis K with outliers, 12-state-bit trellis V); 1 bit has
+    // only the codebook types. The full names (e.g. "ktq3_1", "vtq3_2s") resolve via the loop below.
     if (s == "ktq1") { return GGML_TYPE_KTQ1_1; }
-    if (s == "ktq2") { return GGML_TYPE_KTQ2_1; }
-    if (s == "ktq3") { return GGML_TYPE_KTQ3_1; }
-    if (s == "ktq4") { return GGML_TYPE_KTQ4_1; }
+    if (s == "ktq2") { return GGML_TYPE_KTQ2_3S; }
+    if (s == "ktq3") { return GGML_TYPE_KTQ3_3S; }
+    if (s == "ktq4") { return GGML_TYPE_KTQ4_3S; }
     if (s == "vtq1") { return GGML_TYPE_VTQ1_1; }
-    if (s == "vtq2") { return GGML_TYPE_VTQ2_1; }  // codebook types: the L16 trellis types (vtq*_2, vtq*_3, vtq3_v8) decode at 1-3 t/s
-    if (s == "vtq3") { return GGML_TYPE_VTQ3_1; }
-    if (s == "vtq4") { return GGML_TYPE_VTQ4_1; }
+    if (s == "vtq2") { return GGML_TYPE_VTQ2_2S; }
+    if (s == "vtq3") { return GGML_TYPE_VTQ3_2S; }
+    if (s == "vtq4") { return GGML_TYPE_VTQ4_2S; }
 
     for (const auto & type : kv_cache_types) {
         if (ggml_type_name(type) == s) {
@@ -2052,6 +2052,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format(
             "KV cache data type for K\n"
             "allowed values: %s\n"
+            "TurboQuant: ktq2, ktq3, ktq4 = ktq*_3s (trellis + 4 outliers, most accurate), ktq1 = ktq1_1;\n"
+            "ktq*_1 = Hadamard rotation + codebook (faster decode and first prompt)\n"
             "(default: %s)",
             get_all_kv_cache_types().c_str(),
             ggml_type_name(params.cache_type_k)
@@ -2065,8 +2067,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         string_format(
             "KV cache data type for V\n"
             "allowed values: %s\n"
-            "TurboQuant: *_1 = Hadamard rotation + codebook (fast); vtq*_2s = trellis, 12 state bits (fast, lower error than *_1);\n"
-            "vtq*_2, vtq*_3, vtq3_v8 = trellis, 16 state bits (decode 1-3 t/s)\n"
+            "TurboQuant: vtq2, vtq3, vtq4 = vtq*_2s (trellis, 12 state bits, lower error than *_1), vtq1 = vtq1_1;\n"
+            "vtq*_1 = Hadamard rotation + codebook (faster decode and first prompt);\n"
+            "vtq*_2, vtq*_3, vtq3_v8 = trellis, 16 state bits (slow first prompt)\n"
             "(default: %s)",
             get_all_kv_cache_types().c_str(),
             ggml_type_name(params.cache_type_v)
