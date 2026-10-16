@@ -19,13 +19,25 @@
 // together: log2(ncols) exchange steps that halve the number of values per lane, then plain shuffles for the rest.
 // Each lane reads only a few bytes per row, so the kernel is bound by instruction latency, not by DRAM bandwidth.
 //
+// Head sizes 128, 256 and 512. Q and the V accumulators of the ncols columns stay in registers, 2*ncols*D/32 floats per
+// lane: at head size 512, 8 columns would need 256 registers for those alone (at most 255), so a block there has 4
+// columns (fattn_gqa_ncols_max; a GQA group of 8 takes two blocks).
+//
 // Supported: one query (ne01 == 1), no ALiBi, no sinks; K f16, q8_0, q5_0, q4_0, ktq2/3/4_1 or ktq2/3/4_3s; V f16, q8_0,
 // q5_0, q4_0, vtq2/3/4_1 or a trellis type (vtq*_2, vtq*_2s, vtq*_3, vtq3_v8; with K f16, q8_0 or ktq2/3/4_1). The
 // trellis K types pair with V f16, q8_0, q5_0, q4_0, vtq2/3/4_1 and vtq2/3/4_2s (fattn_gqa_pair). fattn_gqa_load reads
 // these types.
 //
+// Head size 512 (Gemma 4 global layers) only for pairs with a trellis K or V (fattn_gqa_pair): the other pairs decode
+// with the tensor-core kernel there (fattn-tq-wmma.cuh), which this kernel would displace.
+//
 // use_sparse: only the K/V rows of the index list built from the mask are visited (sparse attention, the query sees
 // at most n_kv_max cells); KV_max then holds the list of each sequence, followed by the number of live entries.
+
+// widest block of a head size (see above)
+static constexpr __host__ __device__ int fattn_gqa_ncols_max(const int D) {
+    return D <= 256 ? 8 : 4;
+}
 
 // After fattn_gqa_reduce_cols<ncols>, lane l holds the full sum of this column:
 template <int ncols>
@@ -193,7 +205,7 @@ template <ggml_type type, bool as_V, int EPL>
 static __device__ __forceinline__ void fattn_gqa_load(
         const char * __restrict__ row, const int t, const float * __restrict__ cb, const float4 cb2,
         float * __restrict__ v) {
-    static_assert(EPL == 4 || EPL == 8, "4 or 8 elements per lane");
+    static_assert(EPL == 4 || EPL == 8 || EPL == 16, "4, 8 or 16 elements per lane");
     constexpr int g = fattn_gqa_group<type, as_V, EPL>();
 #pragma unroll
     for (int gi = 0; gi < EPL/g; ++gi) {
@@ -346,8 +358,8 @@ static __global__ void flash_attn_ext_vec_gqa(
     constexpr int EPL      = D / WARP_SIZE; // elements per lane of every K and V row, see fattn_gqa_idx
     constexpr bool K_tq    = GGML_TYPE_IS_KTQ(type_K);
     constexpr bool K_trellis = ktq_trellis<type_K>::K > 0;
-    static_assert(D == 128 || D == 256, "head size 128 or 256");
-    static_assert(ncols == 4 || ncols == 8, "4 or 8 columns");
+    static_assert(D == 128 || D == 256 || D == 512, "head size 128, 256 or 512");
+    static_assert((ncols == 4 || ncols == 8) && ncols <= fattn_gqa_ncols_max(D), "4 or 8 columns");
 
 
     const int gqa_ratio  = ne02 / ne12;
@@ -679,14 +691,18 @@ static void ggml_cuda_flash_attn_ext_vec_gqa_case(ggml_backend_cuda_context & ct
 }
 
 // The supported (K type, V type) pairs for one head size D, block width ncols and K type: every V type of the list
-// below. Each (D, ncols, K type) is compiled in its own TU (template-instances/fattn-gqa-instance-*.cu) so that they
-// build in parallel; the dispatcher in fattn-vec-gqa.cu only references them. Returns false if V is not covered.
+// below that fattn_gqa_pair accepts. Each (D, ncols, K type) is compiled in its own TU
+// (template-instances/fattn-gqa-instance-*.cu) so that they build in parallel; the dispatcher in fattn-vec-gqa.cu only
+// references them. Returns false if V is not covered.
 // f16 K with f16 V stays with the MMA kernel (decode at 32k reads the cache at ~90 % of the bandwidth there). Trellis V
 // only next to the K types the VEC kernel pairs it with by default (no q5_0 or q4_0 K, see fattn-vec-dispatch-vtq*.cu).
 // Trellis K with the V types of its VEC instances (fattn-vec-dispatch-ktq-trellis.cu) that this kernel reads (no vtq1_1,
-// as for every K type).
-template <ggml_type type_K, ggml_type type_V>
+// as for every K type). Head size 512: only the pairs with a trellis side (see the top of this file).
+template <int D, ggml_type type_K, ggml_type type_V>
 static constexpr bool fattn_gqa_pair() {
+    if constexpr (D == 512 && !GGML_TYPE_IS_KTQ_TRELLIS(type_K) && !GGML_TYPE_IS_VTQ_TRELLIS(type_V)) {
+        return false;
+    }
     if constexpr (GGML_TYPE_IS_KTQ_TRELLIS(type_K)) {
         return type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_Q8_0 || type_V == GGML_TYPE_Q5_0 ||
                type_V == GGML_TYPE_Q4_0 || (GGML_TYPE_IS_VTQ_CODEBOOK(type_V) && type_V != GGML_TYPE_VTQ1_1) ||
@@ -700,7 +716,7 @@ static constexpr bool fattn_gqa_pair() {
 
 #define FATTN_VEC_GQA_CASE_V(type_V_)                                                               \
     if (V->type == (type_V_)) {                                                                     \
-        if constexpr (fattn_gqa_pair<type_K, type_V_>()) {                                          \
+        if constexpr (fattn_gqa_pair<D, type_K, type_V_>()) {                                       \
             ggml_cuda_flash_attn_ext_vec_gqa_case<D, ncols, type_K, type_V_>(ctx, dst, use_sparse); \
             return true;                                                                            \
         }                                                                                           \
@@ -759,3 +775,4 @@ DECL_FATTN_VEC_GQA_CASES_K(256, 4);
 DECL_FATTN_VEC_GQA_CASES_K(128, 4);
 DECL_FATTN_VEC_GQA_CASES_K(256, 8);
 DECL_FATTN_VEC_GQA_CASES_K(128, 8);
+DECL_FATTN_VEC_GQA_CASES_K(512, 4); // K types without a trellis V pair (q5_0, q4_0) compile to an empty case

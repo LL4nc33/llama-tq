@@ -140,9 +140,10 @@ for type_k in TYPES_KTQ_TRELLIS:
             f.write(SOURCE_FATTN_VEC_D512.format(type_k=type_k, type_v=type_v))
 
 # GQA decode kernel for quantized caches (fattn-vec-gqa.cuh): one TU per head size, block width and K type
+# (head size 512: 4 columns only, see fattn_gqa_ncols_max)
 TYPES_GQA_K = ["GGML_TYPE_F16", "GGML_TYPE_Q8_0", "GGML_TYPE_Q5_0", "GGML_TYPE_Q4_0"] + TYPES_KTQ[1:] + TYPES_KTQ_TRELLIS
-for head_size in [128, 256]:
-    for ncols in [4, 8]:
+for head_size, ncols_list in [(128, [4, 8]), (256, [4, 8]), (512, [4])]:
+    for ncols in ncols_list:
         for type_k in TYPES_GQA_K:
             with open(f"fattn-gqa-instance-d{head_size}-ncols{ncols}-{get_short_name(type_k)}.cu", "w") as f:
                 f.write(SOURCE_FATTN_VEC_GQA.format(head_size=head_size, ncols=ncols, type_k=type_k))

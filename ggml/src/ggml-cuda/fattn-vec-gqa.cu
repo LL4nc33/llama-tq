@@ -6,12 +6,14 @@
 // the kernels are compiled in template-instances/fattn-gqa-instance-*.cu, one TU per (head size, ncols, K type)
 template <ggml_type type_K>
 static bool fattn_gqa_dispatch_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const int64_t D, const int ncols, const bool use_sparse) {
-    if (D == 128) {
-        return ncols == 4 ? ggml_cuda_flash_attn_ext_vec_gqa_d<128, 4, type_K>(ctx, dst, use_sparse) :
-                            ggml_cuda_flash_attn_ext_vec_gqa_d<128, 8, type_K>(ctx, dst, use_sparse);
+    switch (D) {
+        case 128: return ncols == 4 ? ggml_cuda_flash_attn_ext_vec_gqa_d<128, 4, type_K>(ctx, dst, use_sparse) :
+                                      ggml_cuda_flash_attn_ext_vec_gqa_d<128, 8, type_K>(ctx, dst, use_sparse);
+        case 256: return ncols == 4 ? ggml_cuda_flash_attn_ext_vec_gqa_d<256, 4, type_K>(ctx, dst, use_sparse) :
+                                      ggml_cuda_flash_attn_ext_vec_gqa_d<256, 8, type_K>(ctx, dst, use_sparse);
+        case 512: return ggml_cuda_flash_attn_ext_vec_gqa_d<512, 4, type_K>(ctx, dst, use_sparse);
+        default:  return false;
     }
-    return ncols == 4 ? ggml_cuda_flash_attn_ext_vec_gqa_d<256, 4, type_K>(ctx, dst, use_sparse) :
-                        ggml_cuda_flash_attn_ext_vec_gqa_d<256, 8, type_K>(ctx, dst, use_sparse);
 }
 
 bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -46,12 +48,10 @@ bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tens
         return false;
     }
 
-    // GQA groups of up to 4 Q heads fit one 4-column block, larger groups use blocks of 8.
+    // GQA groups of up to 4 Q heads fit one 4-column block, larger groups use blocks of 8 where the head size allows
+    // them (fattn_gqa_ncols_max), else several blocks of 4.
     const int64_t D = Q->ne[0];
-    if (D != 128 && D != 256) {
-        return false;
-    }
-    const int ncols = gqa_ratio <= 4 ? 4 : 8;
+    const int ncols = gqa_ratio <= 4 ? 4 : fattn_gqa_ncols_max(D);
     switch (K->type) {
         case GGML_TYPE_F16:    return fattn_gqa_dispatch_k<GGML_TYPE_F16>   (ctx, dst, D, ncols, use_sparse);
         case GGML_TYPE_Q8_0:   return fattn_gqa_dispatch_k<GGML_TYPE_Q8_0>  (ctx, dst, D, ncols, use_sparse);
