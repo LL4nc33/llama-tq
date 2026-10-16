@@ -40,6 +40,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 #include <unordered_map>
 
@@ -10074,8 +10075,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_flash_attn_ext(128, 128, 2, {4, 1}, 256, nb, true, false, 0, 0,
                     GGML_PREC_F32, GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ3_2S, {0, 1, 2, 3}, 0, true));
     }
-    // - head 512 (Gemma 4 global layers): decode in the VEC kernel with every V type it pairs with (the K types in turn,
-    //   one and two KQ tiles, 2 KV heads at GQA 2, logit softcap), small batches with K and V converted to f16
+    // - head 512 (Gemma 4 global layers): decode with every V type the VEC kernel pairs with (the K types in turn, one KQ
+    //   tile: the VEC kernel, two: the GQA kernel; 2 KV heads at GQA 2, logit softcap), small batches with K and V
+    //   converted to f16
     for (int64_t nb : {1, 2}) {
         test_cases.emplace_back(new test_flash_attn_ext(512, 512, 1, {8, 1}, 256, nb, true, false, 0, 0,
                     GGML_PREC_F32, GGML_TYPE_KTQ3_3S, GGML_TYPE_F16));
@@ -10096,6 +10098,34 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     test_cases.emplace_back(new test_flash_attn_ext(512, 512, 1, {8, 1}, 256, 1, true, false, 0, 10.0f,
                 GGML_PREC_F32, GGML_TYPE_KTQ4_3S, GGML_TYPE_VTQ3_2S));
+
+    // GQA decode kernel at head 512 (4-column blocks): 2 KV heads, 3 KQ tiles, GQA 8 (two blocks per group), 4 (one) and
+    // 6 (the second block with 2 columns); the pairs with a trellis K or V. Every trellis K with f16, q8_0, vtq3_1 and
+    // vtq3_2s V at GQA 8, the other V readers (16 elements per lane) at GQA 4 and 6; trellis V next to the other K
+    // types; logit softcap; sparse attention. ktq3_1/vtq3_1 and q8_0/q8_0 stay with the tensor-core kernel. The
+    // 16-state-bit V types are left to heads 128/256 (same reader): their CPU encoder takes over 20 minutes per case
+    // here.
+    for (ggml_type type_K : {GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ4_3S}) {
+        for (ggml_type type_V : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_1, GGML_TYPE_VTQ3_2S}) {
+            test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, 768, 1, true, false, 0, 0,
+                        GGML_PREC_F32, type_K, type_V));
+        }
+    }
+    for (auto [gqa, type_K, type_V] : std::vector<std::tuple<int, ggml_type, ggml_type>>{
+            {6, GGML_TYPE_KTQ2_3S, GGML_TYPE_Q4_0},    {4, GGML_TYPE_KTQ4_3S, GGML_TYPE_Q5_0},
+            {4, GGML_TYPE_KTQ2_3S, GGML_TYPE_VTQ2_1},  {6, GGML_TYPE_KTQ4_3S, GGML_TYPE_VTQ4_1},
+            {6, GGML_TYPE_KTQ2_3S, GGML_TYPE_VTQ2_2S}, {4, GGML_TYPE_KTQ4_3S, GGML_TYPE_VTQ4_2S},
+            {8, GGML_TYPE_Q8_0,    GGML_TYPE_VTQ3_2S}, {8, GGML_TYPE_KTQ3_1,  GGML_TYPE_VTQ3_2S},
+            {6, GGML_TYPE_F16,     GGML_TYPE_VTQ3_2S}, {4, GGML_TYPE_KTQ2_1,  GGML_TYPE_VTQ2_2S},
+            {6, GGML_TYPE_KTQ4_1,  GGML_TYPE_VTQ4_2S},
+            {8, GGML_TYPE_KTQ3_1,  GGML_TYPE_VTQ3_1},  {8, GGML_TYPE_Q8_0,    GGML_TYPE_Q8_0}}) {
+        test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {gqa, 1}, 768, 1, true, false, 0, 0,
+                    GGML_PREC_F32, type_K, type_V));
+    }
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, 768, 1, true, false, 0, 10.0f,
+                GGML_PREC_F32, GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ3_2S));
+    test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, 1536, 1, true, false, 0, 0,
+                GGML_PREC_F32, GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ3_2S, {0, 1, 2, 3}, 512));
 
     // TurboQuant K/V with sparse attention (qwen4exp: head 256, 2 KV heads, GQA 12, n_kv_max cells per query)
     for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
