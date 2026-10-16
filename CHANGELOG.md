@@ -12,6 +12,9 @@
   `vtq{2,3,4}_2s`, otherwise the vector kernel, which also takes `vtq1_1` V and head size 512 (Gemma 4 global layers);
   other V types convert K and V to f16 every step, verify and prompt batches convert K to f16 for the tensor-core
   kernel. `GET_ROWS` and the f16/f32 conversions dequantize them as well.
+- **The GQA decode kernel takes head size 512** (Gemma 4 global layers) for the pairs with a trellis K or V, which
+  the vector kernel decoded once per Q head: blocks of 4 columns there (a GQA group of 8 takes two), sm_75 ptxas 232-255
+  registers and no spills. The other pairs at head 512 keep the tensor-core decode kernel.
 
 ## 2026-10-15
 
