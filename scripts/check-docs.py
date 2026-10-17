@@ -19,7 +19,7 @@ from urllib.parse import unquote
 DOCS = ["README.md", "ROADMAP.md", "CHANGELOG.md", "SECURITY.md",
         "docs/turboquant.md", "docs/finetune.md", "docs/models.md", "docs/tensor-split.md",
         "docs/speculative.md", "docs/claude-code.md", "docs/vulkan.md", "docs/docker.md",
-        "docs/calibrating-ktq.md", "docs/benchmarks/README.md"] + sorted(glob.glob("docs/history/*.md")) \
+        "docs/calibrating-ktq.md", "docs/benchmarks/README.md", "scripts/eval/README.md"] + sorted(glob.glob("docs/history/*.md")) \
        + sorted(glob.glob("docs/benchmarks/history/*.md"))
 
 # pages that may repeat numbers from other pages

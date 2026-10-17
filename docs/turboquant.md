@@ -376,6 +376,8 @@ on one RTX 2060, 36 prompts (6 documents, target sections at 10-85 % of the cont
   29-31/36 (four runs on different builds and decode kernels, the release tree included), `ktq4` / `vtq4` 30/36,
   `ktq3` / `q8_0` 29-31/36; the failed prompts are the same few for every type.
 
+Reproduce: [scripts/eval](../scripts/eval/README.md#long-context-retrieval).
+
 Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 
 Older perplexity tables (until 2026-10-09) were not all taken with the cache quantized in prefill; they are kept in the

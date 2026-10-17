@@ -102,6 +102,8 @@ At 32k context the codebook pairs and `q4_0` decode 16-46 % faster than f16 (`q8
 flash-attention case it reached on all three GPUs and on a TITAN RTX (Turing), and the KL divergence of every pair
 matched the two RTX 2060 within its error ([turboquant.md](../turboquant.md#accuracy)).
 
+Reproduce: [scripts/eval](../../scripts/eval/README.md#release-check-on-newer-gpus).
+
 ## Trellis and codebook types, two GPUs
 
 Since 2026-10-16 the short names `ktq2`-`ktq4` and `vtq2`-`vtq4` select the trellis types (`ktq*_3s`, `vtq*_2s`); the
@@ -124,6 +126,8 @@ Viterbi encoder, which converts the f16-staged K and V of the prompt and encodes
 pairs: [turboquant.md](../turboquant.md#accuracy).
 Gemma 4 26B-A4B IQ2_XXS (head size 512 on the global layers), same GPUs, decode empty / 8k / 32k: `ktq3` / `vtq3`
 50 / 39 / 33 t/s, `ktq3_1` / `vtq3_1` 79 / 67 / 54 t/s.
+
+Reproduce: [scripts/eval](../../scripts/eval/README.md#trellis-and-codebook-types-two-gpus).
 
 ## Speculative decoding at long context, one GPU
 
@@ -149,6 +153,8 @@ exact: decode with speculation off → on `q8_0` / `q8_0` 47.8 → 79.2 t/s (64 
 `ktq4_1` / `vtq4_1` 46.9 → 75.3, `ktq3` / `vtq3` 8.8 → 9.5. The trellis pair spends most of a request in the encoder
 over the prompt (49 s per request against 19 s), which speculation does not shorten.
 
+Reproduce: [scripts/eval](../../scripts/eval/README.md#speculative-decoding-at-long-context-one-gpu).
+
 ## Speculative decoding, two GPUs
 
 Qwen3.6-35B-A3B Q4_K_M on two RTX 2060, `llama-server`, `q8_0` KV unless noted. MTP (`--spec-type draft-mtp`, setup in
@@ -170,6 +176,8 @@ n-gram speculation on the same model (`--spec-type ngram-cache --draft-max 8`, 2
 processing of the second and later requests 950 → 1560 t/s with `q8_0` and 1282 → 1539 t/s with `ktq2_1` / `vtq2_1`
 after the hybrid-model fix, decode 80.4 → 82.9 t/s, same text; wall time of a request 35.6 → 23.4 s (23.0 s without
 speculation).
+
+Reproduce: [scripts/eval](../../scripts/eval/README.md#speculative-decoding-two-gpus).
 
 ## Against upstream, two GPUs
 
@@ -210,6 +218,8 @@ change stays within noise there.
 KTQ K is staged in f16 during prefill and converted at the first decode step (about 0.1 s after a 16k prompt on one
 RTX 2060). `llama-bench` runs that conversion before it times a generation test; before 2026-10-13 it was counted in
 the decode numbers.
+
+Reproduce: [scripts/eval](../../scripts/eval/README.md#against-upstream-two-gpus).
 
 ## Accuracy and fine-tuning
 
