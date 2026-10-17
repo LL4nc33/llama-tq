@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-17
+
+- **Release check of the tree of 2026-10-16.** One CUDA 12.8 build for sm_75/80/86/89/120a, tested on two RTX 2060
+  and on one TITAN RTX, RTX A40, RTX 4090 and RTX 5090 (cloud): `test-backend-ops` passed every TurboQuant `SET_ROWS`,
+  `GET_ROWS` and flash-attention case it ran (0 failures; the large flash-attention groups ran until their time
+  limit because of the slow CPU reference for the trellis types). The KL divergence of every K/V pair on Qwen3-4B
+  matches across the four GPU generations within ±6 %, the 36-prompt retrieval test gives the earlier counts
+  (`ktq4` / `vtq4` 32/36, `ktq3` / `vtq3` 30/36, `q8_0` / `vtq3` 33/36, f16 32/36), and on the RTX 2060 decode,
+  prefill and the comparison with upstream are within 2 % of the earlier runs (RTX 4090 at 32k context within 2 % of
+  2026-10-14; RTX 5090 on an empty context 6-9 % faster with `q8_0` and `ktq2_1` / `vtq2_1` than on 2026-10-10). New tables:
+  [release check on newer GPUs](docs/benchmarks/README.md#release-check-on-newer-gpus), more mixed pairs in
+  [TurboQuant accuracy](docs/turboquant.md#accuracy).
+
 ## 2026-10-16
 
 - **The short KV cache names select the trellis types.** `ktq2`, `ktq3`, `ktq4` are now `ktq{2,3,4}_3s` and `vtq2`,

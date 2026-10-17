@@ -1,25 +1,27 @@
 # Benchmarks
 
-Decode, prefill and speculative decoding speed per GPU and KV type (2026-10-09 to 2026-10-14, the date is given per
+Decode, prefill and speculative decoding speed per GPU and KV type (2026-10-09 to 2026-10-16, the date is given per
 table). Accuracy,
 fine-tuning and per-model setups each have their own page (links at the end), so every number lives in one place. Older logs are in [history/](history/); their numbers
 are not comparable with these.
 
 ## Decode speed, one GPU
 
-Qwen3-4B-Instruct-2507 Q4_K_M, `llama-bench -fa 1 -n 128`, empty context (RTX 2060 row 2026-10-12, the other rows
-2026-10-10 unless marked):
+Qwen3-4B-Instruct-2507 Q4_K_M, `llama-bench -fa 1 -n 128`, empty context (RTX 2060 row 2026-10-12, RTX 5090, RTX 4090
+and RTX A40 2026-10-16 on the release tree, the other rows 2026-10-10 unless marked):
 
 | GPU | f16 KV | `q8_0` KV | `ktq2_1` / `vtq2_1` KV |
 |---|---:|---:|---:|
-| RTX 5090 | 338 t/s | 281 t/s | 293 t/s |
-| RTX 4090 | 252 t/s | | 217 t/s ¹ |
+| RTX 5090 | 332 t/s | 298 t/s | 320 t/s |
+| RTX 4090 | 261 t/s | 244 t/s | 239 t/s |
+| RTX A40 | 175 t/s | 164 t/s | 159 t/s |
 | RTX 3090 | 203 t/s | | 176 t/s ¹ |
 | RTX 3060 | 103 t/s | | 96 t/s ¹ |
 | RTX 4060 Ti | 95 t/s | | 90 t/s ¹ |
 | RTX 2060 | 92 t/s | 89 t/s | 88 t/s |
 
-¹ measured 2026-10-09, before the K/V rotations ran as the fast Walsh-Hadamard transform (RTX 5090 then: 272 t/s).
+¹ measured 2026-10-09, before the K/V rotations ran as the fast Walsh-Hadamard transform (RTX 5090 then: 272 t/s, RTX
+4090 217 t/s).
 The encoder scale search of 2026-10-10 costs 1–2 % of the TurboQuant numbers in the rows measured before it.
 
 Same model on one RTX 2060, decode at empty / 16k context (`llama-bench -n 64 -r 2`, 2026-10-12; the `ktq4_1` row
@@ -74,6 +76,32 @@ base runs alone spread 1.8 % (6209, 6320), the RTX A6000 and RTX 2060 show no ch
 `llama-bench -p` keeps a KTQ K cache in f16 staging until the first decode step, so they show f16 K with `vtq4_1` V;
 the decode cells run on the quantized K.
 
+### Release check on newer GPUs
+
+The release tree of 2026-10-16 (one CUDA 12.8 build for sm_75/80/86/89/120a) on one cloud GPU each, same model,
+`llama-bench -fa 1 -t 4 -p 512 -n 128 -d 0,32768 -r 2`, the pairs run forwards and then backwards and the two rounds
+averaged (RTX 5090: one round). Decode at empty / 32k context in t/s:
+
+| KV cache | bpw | RTX A40 | RTX 4090 | RTX 5090 |
+|---|---:|---:|---:|---:|
+| f16 / f16 | 16 | 175 / 77 | 261 / 112 | 332 / 161 |
+| `q8_0` / `q8_0` | 8.5 | 164 / 92 | 244 / 138 | 298 / 189 |
+| `q8_0` / `vtq4_1` | 6.5 | 155 / 93 | 232 / 148 | 283 / 188 |
+| `ktq4_1` / `vtq4_1` | 5.0 | 158 / 99 | 236 / 157 | 300 / 186 |
+| `q4_0` / `q4_0` | 4.5 | 162 / 101 | 240 / 165 | 306 / 210 |
+| `ktq3_1` / `vtq3_1` | 4.25 | 157 / 96 | 235 / 158 | 290 / 189 |
+| `ktq2_1` / `vtq2_1` | 3.0 | 159 / 98 | 239 / 163 | 320 / 212 |
+| `ktq4` / `vtq4` | 4.6 | 79 / 51 | 123 / 90 | 142 / 107 |
+| `ktq3` / `vtq3` | 3.6 | 88 / 54 | 139 / 97 | 164 / 122 |
+| `ktq2` / `vtq2` | 2.6 | 86 / 55 | 138 / 98 | 166 / 120 |
+
+At 32k context the codebook pairs and `q4_0` decode 16-46 % faster than f16 (`q8_0` 17-23 %); the trellis pairs
+(encoder per token) stay 35-45 % below the codebook pairs and below f16, as on the RTX 2060. Verify batches of 16 queries at 32k
+(speculative decoding): `ktq3` / `vtq3` 706 / 1151 / 1413 t/s, `ktq4_1` / `vtq4_1` 574 / 979 / 1290, `q8_0` / `q8_0` 463 /
+741 / 992 (A40 / 4090 / 5090). In the same run `test-backend-ops` passed every TurboQuant `SET_ROWS`, `GET_ROWS` and
+flash-attention case it reached on all three GPUs and on a TITAN RTX (Turing), and the KL divergence of every pair
+matched the two RTX 2060 within its error ([turboquant.md](../turboquant.md#accuracy)).
+
 ## Trellis and codebook types, two GPUs
 
 Since 2026-10-16 the short names `ktq2`-`ktq4` and `vtq2`-`vtq4` select the trellis types (`ktq*_3s`, `vtq*_2s`); the
@@ -90,7 +118,8 @@ types alternated A,B,B,A, 2026-10-16. Decode: `llama-bench -fa 1 -t 4 -n 64 -r 2
 | `ktq3_1` / `vtq3_1` | 4.25 | 89 / 72 / 44 t/s | 2.6 s / 11.9 s | 1503 / 751 t/s |
 | `ktq3` / `vtq3` (`ktq3_3s` / `vtq3_2s`) | 3.6 | 63 / 49 / 27 t/s | 9.1 s / 23.8 s | 626 / 415 t/s |
 
-The prompt itself is computed equally fast (about 3300 t/s at 7k); the trellis types then spend the extra time in the
+Re-measured on the release tree of 2026-10-16 (same GPUs and settings): every decode cell within 2 %, first prompt
+and follow-up at 7k within 3 % of the table (the 22k column was not repeated). The prompt itself is computed equally fast (about 3300 t/s at 7k); the trellis types then spend the extra time in the
 Viterbi encoder, which converts the f16-staged K and V of the prompt and encodes every later token. Accuracy of these
 pairs: [turboquant.md](../turboquant.md#accuracy).
 Gemma 4 26B-A4B IQ2_XXS (head size 512 on the global layers), same GPUs, decode empty / 8k / 32k: `ktq3` / `vtq3`
@@ -115,35 +144,42 @@ byte-identical to the text without. On this prompt the model picks the right ver
 with only 59 % probability even with an f16 cache, so `ktq4_1` / `vtq4_1` copies the neighbouring section in both
 builds; copy accuracy over many prompts: [TurboQuant, long-context retrieval](../turboquant.md#long-context-retrieval).
 
+Release tree of 2026-10-16, two RTX 2060, two prompts of 27.6k / 27.9k tokens, 4 requests per cell, every copy
+exact: decode with speculation off → on `q8_0` / `q8_0` 47.8 → 79.2 t/s (64 % accepted), `q8_0` / `vtq4_1` 48.9 → 80.8,
+`ktq4_1` / `vtq4_1` 46.9 → 75.3, `ktq3` / `vtq3` 8.8 → 9.5. The trellis pair spends most of a request in the encoder
+over the prompt (49 s per request against 19 s), which speculation does not shorten.
+
 ## Against upstream, two GPUs
 
 2× RTX 2060 (pipeline parallelism), `llama-bench -fa 1 -t 4 -p 2048 -n 128 -b 2048 -ub 512 -d 0,32768 -r 1`,
-2026-10-13; upstream llama.cpp at 23b0202 against this fork. Prefill is `pp2048`, decode `tg128`, "32k" means after 32768
+2026-10-16 (release tree; the run of 2026-10-13 gave the same cells within 2 %); upstream llama.cpp at 23b0202 against
+this fork. Prefill is `pp2048`, decode `tg128`, "32k" means after 32768
 tokens of context, all numbers in t/s, each cell upstream → llama-tq. Each model ran in the order upstream, llama-tq,
 llama-tq, upstream, and each cell is the mean of its two runs: on these GPUs the first build of a round is 2-3 % faster.
 
 | Model | prefill f16 | prefill f16 32k | decode `q8_0` | decode f16 32k | decode `q8_0` 32k |
 |---|---:|---:|---:|---:|---:|
-| Qwen3-4B-Instruct-2507 Q4_K_M | 3509 → 3544 | 1166 → 1167 | 89.2 → 90.9 | 37.3 → 37.5 | 20.0 → 41.9 |
-| gpt-oss-20b MXFP4 | 2623 → 2660 | 1767 → 1778 | 78.6 → 80.1 | 65.3 → 65.6 | 43.4 → 56.4 |
-| Gemma 4 12B Q4_K_M | 1318 → 1301 | 843 → 824 | 33.7 → 33.8 | 32.0 → 32.1 | 27.8 → 29.3 |
-| Qwen3.6-35B-A3B Q4_K_M | 1836 → 1874 | 1286 → 1276 | 78.4 → 81.0 | 67.6 → 69.2 | 46.3 → 67.6 |
-| Qwen3.8-27B Q4_K_M | 638 → 665 | 427 → 429 | 16.5 → 16.7 | 14.9 → 15.0 | 12.4 → 15.0 |
+| Qwen3-4B-Instruct-2507 Q4_K_M | 3510 → 3570 | 1159 → 1166 | 88.6 → 89.9 | 37.3 → 37.4 | 19.9 → 43.7 |
+| gpt-oss-20b MXFP4 | 2616 → 2652 | 1757 → 1774 | 76.9 → 78.4 | 65.2 → 65.2 | 43.4 → 56.2 |
+| Gemma 4 12B Q4_K_M | 1305 → 1307 | 838 → 821 | 33.6 → 34.0 | 32.0 → 31.9 | 28.0 → 29.4 |
+| Qwen3.6-35B-A3B Q4_K_M | 1879 → 1881 | 1281 → 1278 | 77.6 → 80.8 | 67.6 → 69.5 | 46.0 → 69.4 |
+| Qwen3.8-27B Q4_K_M | 635 → 663 | 424 → 427 | 16.5 → 16.7 | 14.9 → 15.0 | 12.4 → 15.1 |
 
 Decode with a quantized KV cache at long context is where the fork is ahead (its flash attention decode kernels read
-`q8_0` and the TurboQuant types directly). Prefill with an f16 cache is within 1 % of upstream except on Gemma 4, which
-is 1.3 % behind without context and 2.3 % behind at 32k; the cause is not known yet.
+`q8_0` and the TurboQuant types directly). Prefill with an f16 cache is within 1 % of upstream or ahead, except on Gemma 4 at 32k context,
+which is 2 % behind; the cause is not known yet.
 
-The fork's TurboQuant rows at 32k (same settings, 2026-10-14, after the GQA decode kernel change; mean of two runs,
-builds alternated with the rows of 2026-10-13, which are given in brackets where they differ by more than 1 %):
+The fork's TurboQuant rows at 32k (same settings and run, one run per cell):
 
-| Model | `q8_0` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` prefill 32k |
-|---|---:|---:|---:|
-| Qwen3-4B-Instruct-2507 Q4_K_M | 46.1 (42.3) | 46.4 (39.5) | 1115 (1087) |
-| gpt-oss-20b MXFP4 | 58.2 | 60.1 | 1748 (1726) |
-| Gemma 4 12B Q4_K_M | 27.3 | 29.7 | 806 |
-| Qwen3.6-35B-A3B Q4_K_M | 69.6 | 66.9 | 1270 |
-| Qwen3.8-27B Q4_K_M | 15.2 | 14.7 | 426 |
+| Model | `q8_0` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` decode 32k | `ktq4_1` / `vtq4_1` prefill 32k | `ktq3` / `vtq3` decode 32k |
+|---|---:|---:|---:|---:|
+| Qwen3-4B-Instruct-2507 Q4_K_M | 45.0 | 46.0 | 1094 | 27.4 |
+| gpt-oss-20b MXFP4 | 57.8 | 59.6 | 1728 | 56.3 ¹ |
+| Gemma 4 12B Q4_K_M | 27.2 | 29.5 | 802 | 17.0 |
+| Qwen3.6-35B-A3B Q4_K_M | 69.3 | 69.7 | 1265 | 56.5 |
+| Qwen3.8-27B Q4_K_M | 15.2 | 15.2 | 422 | 13.4 |
+
+¹ head size 64: the trellis types fall back to `ktq3_1` / `vtq3_1` there.
 
 gpt-oss (attention sinks) is not covered by the GQA kernel. On Gemma 4 (mostly sliding-window layers), Qwen3.6-35B-A3B
 and Qwen3.8-27B (hybrid, few attention layers) attention over the cache is a small part of a decode step, so the

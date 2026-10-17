@@ -268,7 +268,9 @@ tokens, `-fa on`) with the cache really quantized during prefill (`--no-tq-defer
 better; in brackets the share of positions where the most likely token is unchanged. Measured 2026-10-11 with the encoder
 that searches the block scale; the trellis rows (short names `ktq2`-`ktq4`, `vtq2`-`vtq4`) on Qwen3-4B 2026-10-16 with
 the same base and flags. On gpt-oss (head size 64) the trellis types fall back to the codebook types of the same bits;
-on Gemma 4 their KLD was not measured (see the retrieval test on Gemma 4 26B below).
+on Gemma 4 their KLD was not measured (see the retrieval test on Gemma 4 26B below). The Qwen3-4B column was repeated
+on the release tree of 2026-10-16 on two RTX 2060 and on an RTX A40, RTX 4090 and RTX 5090: every pair within ±6 % of
+the table on every GPU (`q8_0` 0.0031-0.0034, `ktq4` / `vtq4` 0.0085-0.0089, `ktq2_1` / `vtq2_1` 0.40-0.42).
 
 Text: Qwen3-4B on wikitext-2 (test). gpt-oss and Gemma 4 are chat models that are far out of distribution on raw wikitext
 (perplexity 207 and 505), so they are measured on their own prose: answers they wrote with an f16 cache on 40 topics
@@ -293,6 +295,18 @@ flash attention off: the numerical noise floor of the model, below which no KV t
 | `ktq2_1` / `f16` | | 0.31 | 3.40 | 1.33 |
 | `ktq4` / `f16` | | 0.0069 | | |
 | `ktq2` / `f16` | | 0.063 | | |
+| `q8_0` / `vtq4` ¹ | 6.4 | 0.0049 (97.0 %) | | |
+| `q8_0` / `vtq3` ¹ | 5.9 | 0.010 (96.0 %) | | |
+| `q8_0` / `vtq2` ¹ | 5.4 | 0.028 (92.9 %) | | |
+| `q8_0` / `vtq3_1` ¹ | 6.25 | 0.013 (95.4 %) | | |
+| `ktq4` / `q8_0` ¹ | 6.75 | 0.0072 (96.4 %) | | |
+| `ktq3` / `q8_0` ¹ | 6.25 | 0.019 (94.3 %) | | |
+| `ktq2` / `q8_0` ¹ | 5.75 | 0.065 (89.3 %) | | |
+| `ktq4` / `vtq4_1` ¹ | 4.75 | 0.0090 (96.1 %) | | |
+| `q4_0` / `vtq2` ¹ | 3.4 | 0.056 (90.3 %) | | |
+| `ktq1` / `vtq1` (`ktq1_1` / `vtq1_1`) ¹ | 2.0 | 4.34 (18.9 %) | | |
+
+¹ 2026-10-16, release tree, two RTX 2060, same base and flags.
 
 - `ktq4_1`/`vtq4_1` is more accurate than `q4_0` on Qwen3-4B and equal on gpt-oss and Gemma 4, at 5 instead of 4.5 bpw.
   Before the encoder change (2026-10-10) it was 0.045 (Qwen3-4B) and 0.55 (gpt-oss).
@@ -327,7 +341,7 @@ on one RTX 2060, 36 prompts (6 documents, target sections at 10-85 % of the cont
 | `q8_0` / `vtq4_1` | 32/36 | 12/12 |
 | `ktq4_1` / `vtq4_1` | 32/36 | 12/12 |
 | `q8_0` / `vtq2_1` | 31/36 | |
-| `ktq3_1` / `vtq3_1` | 9/12 | |
+| `ktq3_1` / `vtq3_1` | 9/12, 28/36 ² | |
 | `ktq2_1` / `vtq2_1` | **0/36** | 12/12 |
 | `ktq2_1` / f16 | **0/12** | |
 | `ktq2` / `vtq2` (`ktq2_3s` / `vtq2_2s`) ¹ | 26/36 | |
@@ -335,17 +349,22 @@ on one RTX 2060, 36 prompts (6 documents, target sections at 10-85 % of the cont
 | `ktq2_1` / `vtq2_1` ¹ | 0/36 | |
 | `ktq2_1` / `q8_0` ¹ | 1/36 | |
 | f16 / f16 ¹ | 32/36 | |
+| `ktq4` / `vtq4` ² | 32/36 | |
+| `ktq3` / `vtq3` ² | 30/36 | |
+| `q8_0` / `vtq3` ² | 33/36 | |
 
-¹ 2026-10-16 on two RTX 2060, same prompts.
+¹ 2026-10-16 on two RTX 2060, same prompts. ² release tree of 2026-10-16, two RTX 2060, same prompts (f16, `q8_0`,
+`ktq4_1` / `vtq4_1` and `ktq2` / `vtq2` gave the same counts as above again).
 
-- Up to 4 bits per K value every pair copies as well as f16 on Qwen3-4B; the prompts that fail are mostly the same
-  ones for every type (the model picks the neighbouring section's version number).
+- With 4-bit K or more every pair copies as well as f16 on Qwen3-4B; 3-bit K loses a few prompts (`ktq3` / `vtq3`
+  30/36, `ktq3_1` / `vtq3_1` 28/36). The prompts that fail are mostly the same ones for every type (the model picks the
+  neighbouring section's version number).
 - 2-bit codebook K loses the retrieval completely on Qwen3-4B: the copies are fluent but wrong lines, with f16 V too, with every
   decode kernel and in the release of 2026-10-12 as well. On Qwen3.6-35B-A3B the same pair copies every section.
   The trellis K `ktq2` keeps the retrieval on Qwen3-4B (30/36 with `q8_0` V, 26/36 with `vtq2` V).
 - Gemma 4 26B-A4B Q4_K_M (36 prompts, 2026-10-16): f16 30/36, `q8_0` 30/36, `ktq3_1` / `vtq3_1` 31/36, `ktq3` / `vtq3`
-  29-31/36 (three runs on different builds and decode kernels), `ktq3` / `q8_0` 29-31/36; the failed prompts are the
-  same few for every type.
+  29-31/36 (four runs on different builds and decode kernels, the release tree included), `ktq4` / `vtq4` 30/36,
+  `ktq3` / `q8_0` 29-31/36; the failed prompts are the same few for every type.
 
 Decode speed per GPU and KV type: [benchmarks](benchmarks/README.md).
 
