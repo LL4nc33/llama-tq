@@ -28,6 +28,11 @@
   V types as 8.5 / 12.5 / 16.5 bits per value instead of 2.25 / 3.25 / 4.25; the bits now come from the type traits.
 - Help texts of `llama-finetune` (`--checkpoint-every` names `--resume`, the `--lora-train-target` example matches
   `attn_output`, `--train-skip-regex` is ignored with a LoRA target) and of the deferred K/V options corrected.
+- Fixed (server): with `--reasoning off`, a request that asked for a reasoning effort (`reasoning_effort` in the
+  request or in `chat_template_kwargs`, as the web UI sends it for Kolibri-1 and gpt-oss) got its thinking block in the
+  answer text, `<think>` included. A reasoning effort other than `none` now turns thinking on for the request when the
+  template can think, the template sees the same setting, and the OAI field `reasoning_effort` reaches templates that
+  read the variable of that name; an `enable_thinking` in the request still wins.
 - Documentation checked against the code: every fork option and environment variable is now described on its page
   (per-layer V types, sliding-window cache types, `GGML_CUDA_P2P`, `GGML_CUDA_VTQ_POOL_SLOTS`, `--tensor-read-lazy`,
   `--mmap-huge`, the MTP debug variables), the trellis K types in every TurboQuant section, MTP speed on the
