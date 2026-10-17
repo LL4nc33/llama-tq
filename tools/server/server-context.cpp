@@ -1096,7 +1096,8 @@ private:
                 /* reasoning_budget      */ params_base.reasoning_budget,
                 /* reasoning_budget_msg  */ params_base.reasoning_budget_message,
                 /* media_path            */ params_base.media_path,
-                /* force_pure_content    */ params_base.force_pure_content_parser
+                /* force_pure_content    */ params_base.force_pure_content_parser,
+                /* template_supports_thinking */ template_supports_thinking
             };
         }
 

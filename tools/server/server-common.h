@@ -298,6 +298,7 @@ struct server_chat_params {
     std::string reasoning_budget_message;
     std::string media_path;
     bool force_pure_content = false;
+    bool template_supports_thinking = false; // a request may turn thinking on (enable_thinking / reasoning_effort)
 };
 
 // used by /completions endpoint

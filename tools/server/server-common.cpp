@@ -1050,11 +1050,34 @@ json oaicompat_chat_params_parse(
         throw std::invalid_argument("invalid type for \"enable_thinking\" (expected boolean, got string)");
     }
 
-    // OAI-standard "reasoning_effort": "none" disables reasoning for this request (upstream #26045).
-    // Other values (low/medium/high/max) have no effect here — enable_thinking stays as-is.
-    if (body.contains("reasoning_effort") && body.at("reasoning_effort").is_string()
-            && body.at("reasoning_effort").get<std::string>() == "none") {
+    // A reasoning effort, as the OAI field "reasoning_effort" or as the chat-template variable of the same name (the web
+    // UI sends it that way for templates with an effort scale, e.g. gpt-oss, Kolibri-1): "none" turns thinking off for
+    // this request (upstream #26045), any other level turns it on when the template can think, so that the reply is
+    // parsed for its thinking block even if the server runs with --reasoning off. An enable_thinking in the request wins.
+    std::string reasoning_effort;
+    if (body.contains("reasoning_effort") && body.at("reasoning_effort").is_string()) {
+        reasoning_effort = body.at("reasoning_effort").get<std::string>();
+    } else if (inputs.chat_template_kwargs.count("reasoning_effort")) {
+        const json effort = json::parse(inputs.chat_template_kwargs.at("reasoning_effort"), nullptr, false);
+        if (effort.is_string()) {
+            reasoning_effort = effort.get<std::string>();
+        }
+    }
+    if (reasoning_effort == "none") {
         inputs.enable_thinking = false;
+    } else if (!reasoning_effort.empty() && !chat_template_kwargs_object.contains("enable_thinking")
+            && opt.template_supports_thinking) {
+        inputs.enable_thinking = true;
+    }
+    if (!reasoning_effort.empty()) {
+        // the template sees the same decision (a default enable_thinking from --reasoning must not contradict it), and
+        // the OAI field reaches templates that read the variable reasoning_effort
+        if (!chat_template_kwargs_object.contains("enable_thinking")) {
+            inputs.chat_template_kwargs["enable_thinking"] = inputs.enable_thinking ? "true" : "false";
+        }
+        if (!inputs.chat_template_kwargs.count("reasoning_effort")) {
+            inputs.chat_template_kwargs["reasoning_effort"] = json(reasoning_effort).dump();
+        }
     }
 
     // if the assistant message appears at the end of list, we do not add end-of-turn token
