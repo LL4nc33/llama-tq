@@ -2151,7 +2151,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--tq-deferred-v"},
         "defer V quantization: stage V-writes as f16 during prefill, bulk-convert at\n"
-        "prefill->decode transition. Avoids 21.7ms/call Viterbi on per-token decode writes.\n"
+        "prefill->decode transition, so the prompt is encoded in one pass (each decoded token\n"
+        "still runs the trellis encoder).\n"
         "On by default for trellis VTQ types; llama-perplexity turns it off so that it\n"
         "scores the quantized cache - pass this flag there to keep the f16 staging",
         [](common_params & params) {
@@ -2160,20 +2161,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH}).set_env("LLAMA_ARG_TQ_DEFERRED_V"));
     add_opt(common_arg(
         {"--no-tq-deferred-k"},
-        "OPT-OUT: disable deferred K staging even for KTQ types. Saves f16 staging\n"
-        "buffer (~n_embd_k_gqa * kv_size * 2 bytes per layer) at the cost of\n"
-        "per-token KTQ quantization noise during prefill (may degrade quality on\n"
-        "long prompts). Useful for fitting full ctx on small-VRAM GPUs.",
+        "OPT-OUT: disable deferred K staging even for KTQ types. Saves the f16 staging\n"
+        "buffer (~n_embd_k_gqa * kv_size * 2 bytes per layer); the prompt is then quantized\n"
+        "as it is written (as in the accuracy tables). Useful for fitting full ctx on small-VRAM GPUs.",
         [](common_params & params) {
             params.tq_no_deferred_k = true;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_MTMD, LLAMA_EXAMPLE_PERPLEXITY, LLAMA_EXAMPLE_BENCH, LLAMA_EXAMPLE_DIFFUSION}).set_env("LLAMA_ARG_NO_TQ_DEFERRED_K"));
     add_opt(common_arg(
         {"--no-tq-deferred-v"},
-        "OPT-OUT: disable deferred V staging even for VTQ_2/_3/_v8 trellis types.\n"
-        "Saves f16 staging buffer (~n_embd_v_gqa * kv_size * 2 bytes per layer) at\n"
-        "the cost of per-token Viterbi encoding on decode writes (~21.7ms/call,\n"
-        "blocks decode loop). Useful for fitting full ctx on small-VRAM GPUs.",
+        "OPT-OUT: disable deferred V staging even for the trellis types (vtq*_2, vtq*_2s,\n"
+        "vtq*_3, vtq3_v8). Saves the f16 staging buffer (~n_embd_v_gqa * kv_size * 2 bytes\n"
+        "per layer); the prompt is then encoded per ubatch as it is written. Useful for\n"
+        "fitting full ctx on small-VRAM GPUs.",
         [](common_params & params) {
             params.tq_no_deferred_v = true;
         }
@@ -4018,16 +4018,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
         {"--train-skip-regex"}, "REGEX",
-        "ECMAScript regex; tensors whose name matches are FROZEN (no gradients). "
-        "Use for hybrid architectures with non-differentiable ops (e.g. Mamba/SSM). "
-        "Example for Qwen3.5/3.6 GatedDeltaNet: '(ssm_|conv1d|linear_attn|\\.A_log$|\\.D$|mamba_)' (default: empty = train everything)",
+        "ECMAScript regex; without --lora-train-target, tensors whose name matches are FROZEN (no gradients) and the "
+        "other F32 tensors are trained; ignored with --lora-train-target (default: empty = train everything)",
         [](common_params & params, const std::string & value) { params.train_skip_regex = value; }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
         {"--lora-train-target"}, "REGEX",
         "ECMAScript regex; matched tensors are FROZEN and a fresh LoRA adapter pair (A,B) is created and trained instead. "
-        "Use together with (not instead of) --train-skip-regex if you want some tensors fully frozen with no LoRA. "
-        "Typical scope: '(attn_[qkvo]|ffn_(gate|down|up)_exps|ffn_gate_inp).weight'",
+        "All other tensors stay frozen. "
+        "Typical scope: '(attn_(q|k|v|output)|ffn_(gate|down|up)_exps|ffn_gate_inp)\\.weight'",
         [](common_params & params, const std::string & value) { params.lora_train_regex = value; }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
@@ -4088,7 +4087,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--checkpoint-every"}, "N",
         string_format("Flush the LoRA adapter to disk every N training batches (0 = only at epoch end / signal; default: %d). "
-                      "Useful for long runs that may crash or be killed mid-epoch — recovery loads the last checkpoint via --lora.",
+                      "Useful for long runs that may crash or be killed mid-epoch; continue from the last checkpoint with --resume.",
                       params.checkpoint_every_n_batches),
         [](common_params & params, int v) { params.checkpoint_every_n_batches = v; }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));

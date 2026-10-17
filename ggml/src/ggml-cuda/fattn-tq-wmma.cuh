@@ -443,8 +443,8 @@ static void ggml_cuda_flash_attn_ext_tq_wmma_case(ggml_backend_cuda_context & ct
 // The cases: X(D, type_K, type_V, decode) for every head size and K/V pair the kernel is compiled for. Batches of
 // queries take all of them; decode (one query) only those with decode = true: ggml_cuda_flash_attn_ext tries the GQA
 // decode kernel first, and at heads 128 and 256 this kernel only gets what that one does not take (GQA ratio 2, a
-// single KQ tile). Heads 64 (gpt-oss, with attention sinks) and 512 (Gemma 4 global layers, GQA 8-16) have no GQA
-// decode kernel. f16 K next to a VTQ V: KTQ K staged as f16 (deferred K, the default).
+// single KQ tile). Heads 64 (gpt-oss, with attention sinks) have no GQA decode kernel; at 512 (Gemma 4 global layers,
+// GQA 8-16) it takes only the pairs with a trellis K or V, the others come here. f16 K next to a VTQ V: KTQ K staged as f16 (deferred K, the default).
 #define FATTN_TQ_WMMA_CASES(X)                                \
     X( 64, GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1, true)          \
     X( 64, GGML_TYPE_KTQ3_1, GGML_TYPE_VTQ3_1, true)          \

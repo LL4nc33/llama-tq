@@ -706,7 +706,7 @@ struct common_params {
     // LoRA training adapter (Stage 3). When lora_train_regex is non-empty,
     // every base-tensor matching the regex gets a fresh LoRA adapter pair
     // (A: in_dim x rank, B: rank x out_dim) and is itself frozen via the
-    // skip path. A is gauss-initialised, B is zeros, so the adapter starts
+    // skip path. A is Kaiming-uniform initialised, B is zeros, so the adapter starts
     // as a no-op. Only A and B are trained.
     std::string lora_train_regex;
     int         lora_train_rank  = 16;

@@ -406,7 +406,7 @@ typedef struct {
 static_assert(sizeof(block_vtq4_1) == 18, "wrong vtq4_1 block size");
 
 // --- VTQ{K}_2 (Trellis v2): group-level Viterbi, L=16 bitshift trellis ---
-// See ggml-trellis.h. One ggml-block == one Trellis group (512 samples).
+// See ggml-trellis.h. One ggml-block == one Trellis group (QK_VTQ_TRELLIS = 128 samples).
 // Decoder is a shift register fed by packed K-bit emit stream.
 // bpw = (16 + 16 + QK_VTQ_TRELLIS·K) / QK_VTQ_TRELLIS
 

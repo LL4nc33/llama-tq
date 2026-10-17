@@ -24,7 +24,7 @@ Two operating modes:
 
     2. --mode samples
        Load pre-extracted post-RHT samples from a `.bin` file (float32,
-       packed contiguously). This is what tq_calibrate_outliers.py emits.
+       packed contiguously). No tool in this repository extracts them yet.
        The script will fit a symmetric Beta(alpha, alpha) to those samples
        (matching their variance) AND additionally run Lloyd-Max directly on
        the raw samples for the *most* faithful codebook.

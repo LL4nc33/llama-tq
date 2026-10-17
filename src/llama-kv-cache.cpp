@@ -341,7 +341,8 @@ llama_kv_cache::llama_kv_cache(
                                          (kv_layer_idx >= n_kv_layers - tq_protect_layers);
                 if (is_boundary) {
                     if (is_tq_k) { eff_type_k = GGML_TYPE_Q8_0; }
-                    if (is_tq_v || is_vtq_v) { eff_type_v = GGML_TYPE_Q8_0; }
+                    // an f16 V (attention-sink protection, KTQ given as V) stays f16
+                    if ((is_tq_v || is_vtq_v) && eff_type_v != GGML_TYPE_F16) { eff_type_v = GGML_TYPE_Q8_0; }
                     LLAMA_LOG_INFO("%s: layer %3d: boundary protection (k=%s, v=%s)\n",
                         __func__, il, ggml_type_name(eff_type_k), ggml_type_name(eff_type_v));
                 }

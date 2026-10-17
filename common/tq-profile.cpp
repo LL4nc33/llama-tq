@@ -197,39 +197,9 @@ std::vector<ggml_type> parse_override(const std::string & spec, int n_layer, std
 
 // ---------- strategy application ----------
 
-// bpw approximations for budget solver (block size 32)
-static float bpw_of(ggml_type t) {
-    switch (t) {
-        case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_2S: return 34.0f * 8.0f / 32.0f; // 8.5
-        case GGML_TYPE_VTQ3_2: case GGML_TYPE_VTQ3_2S: return 50.0f * 8.0f / 32.0f; // 12.5  -> actually 3.0625 bpw per value but matching block-level is fine for ranking
-        case GGML_TYPE_VTQ4_2: case GGML_TYPE_VTQ4_2S: return 66.0f * 8.0f / 32.0f; // 16.5
-        case GGML_TYPE_VTQ2_3: return 48.0f * 8.0f / 128.0f; // 3.0 bpw (block=128 samples)
-        case GGML_TYPE_VTQ3_3: return 64.0f * 8.0f / 128.0f; // 4.0 bpw
-        case GGML_TYPE_VTQ4_3: return 80.0f * 8.0f / 128.0f; // 5.0 bpw
-        case GGML_TYPE_F16:    return 16.0f;
-        case GGML_TYPE_Q8_0:   return 8.5f;
-        default:               return 32.0f;
-    }
-}
-
-// True bpw per element (block=32 samples)
+// bits per value of a cache type, block scales included
 static float bpw_per_elem(ggml_type t) {
-    switch (t) {
-        case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_2S: return 34.0f * 8.0f / 32.0f / 8.0f * 1.0f; // 1.0625 bytes / val is wrong
-        default: break;
-    }
-    // simpler: 8 * nbytes_per_block / block_size
-    switch (t) {
-        case GGML_TYPE_VTQ2_2: case GGML_TYPE_VTQ2_2S: return (34.0f * 8.0f) / 32.0f; // 8.5
-        case GGML_TYPE_VTQ3_2: case GGML_TYPE_VTQ3_2S: return (50.0f * 8.0f) / 32.0f; // 12.5
-        case GGML_TYPE_VTQ4_2: case GGML_TYPE_VTQ4_2S: return (66.0f * 8.0f) / 32.0f; // 16.5
-        case GGML_TYPE_VTQ2_3: return (48.0f * 8.0f) / 128.0f; // 3.00
-        case GGML_TYPE_VTQ3_3: return (64.0f * 8.0f) / 128.0f; // 4.00
-        case GGML_TYPE_VTQ4_3: return (80.0f * 8.0f) / 128.0f; // 5.00
-        case GGML_TYPE_F16:    return 16.0f;
-        case GGML_TYPE_Q8_0:   return 8.5f;
-        default:               return 32.0f;
-    }
+    return 8.0f * (float) ggml_type_size(t) / (float) ggml_blck_size(t);
 }
 
 // Apply overall strategy — returns which layers to upgrade/downgrade.
