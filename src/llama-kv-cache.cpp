@@ -304,17 +304,21 @@ llama_kv_cache::llama_kv_cache(
             }
             // VTQ types work natively in FA — no workaround needed
         }
-        // Attention-sink protection (StreamingLLM, arXiv:2309.17453):
-        // first tokens carry outsized attention weight. When tq_protect_sinks > 0,
-        // protect the first **attention** KV layer's V-cache at f16. On hybrid
-        // models (Mamba/SSM mixed with attention), walk layers honouring both
-        // has_kv() and the caller's filter() — recurrent layers report has_kv()=true
-        // but are excluded by filter().
-        uint32_t kv_layer_idx_sink = 0;
-        for (uint32_t j = 0; j < il; j++) {
-            if (hparams.has_kv(j) && (!filter || filter(j))) { kv_layer_idx_sink++; }
+        // Sink and boundary protection count the attention layers of the whole model: recurrent layers report
+        // has_kv() but hold no K/V here, and a sliding-window model splits its layers over two caches (filter()),
+        // so neither the filter nor n_layer_kv() gives the position among the model's attention layers.
+        const auto is_attn = [&](uint32_t j) { return hparams.has_kv(j) && !hparams.is_recurrent(j); };
+        uint32_t attn_idx = 0;
+        uint32_t n_attn   = 0;
+        for (uint32_t j = 0; j < hparams.n_layer; j++) {
+            if (is_attn(j)) {
+                attn_idx += j < il;
+                n_attn++;
+            }
         }
-        if (tq_protect_sinks > 0 && kv_layer_idx_sink == 0 && hparams.has_kv(il)) {
+        // Attention-sink protection (StreamingLLM, arXiv:2309.17453): the first tokens carry outsized attention
+        // weight, so with tq_protect_sinks > 0 the V cache of the model's first attention layer stays f16.
+        if (tq_protect_sinks > 0 && attn_idx == 0 && is_attn(il)) {
             const bool is_vtq_v = GGML_TYPE_IS_VTQ(type_v);
             const bool is_ktq_v = GGML_TYPE_IS_KTQ(type_v);
             if (is_vtq_v || is_ktq_v) {
@@ -329,16 +333,9 @@ llama_kv_cache::llama_kv_cache(
             const bool is_vtq_v = GGML_TYPE_IS_VTQ(type_v);
 
             if (is_tq_k || is_tq_v || is_vtq_v) {
-                uint32_t kv_layer_idx = 0;
-                for (uint32_t j = 0; j < il; j++) {
-                    if (hparams.has_kv(j) && (!filter || filter(j))) {
-                        kv_layer_idx++;
-                    }
-                }
-                const uint32_t n_kv_layers = hparams.n_layer_kv();
-                const bool is_boundary = (tq_protect_layers >= n_kv_layers) ||
-                                         (kv_layer_idx < tq_protect_layers) ||
-                                         (kv_layer_idx >= n_kv_layers - tq_protect_layers);
+                const bool is_boundary = (tq_protect_layers >= n_attn) ||
+                                         (attn_idx < tq_protect_layers) ||
+                                         (attn_idx >= n_attn - tq_protect_layers);
                 if (is_boundary) {
                     if (is_tq_k) { eff_type_k = GGML_TYPE_Q8_0; }
                     // an f16 V (attention-sink protection, KTQ given as V) stays f16
