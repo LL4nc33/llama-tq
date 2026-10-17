@@ -206,22 +206,26 @@ comparison was not done.
 ### DRAFT_MTP guidance
 
 `--spec-type draft-mtp` drafts with the model's own MTP head and respects `--draft-p-min` (default 0.75). Until
-2026-10-14 the head drafted from a wrong hidden state on Qwen3.5/3.6 and lost against `ngram-cache`; older notes saying
-so are obsolete ([CHANGELOG 2026-10-14](../CHANGELOG.md#2026-10-14)).
+2026-10-15 the head drafted from a wrong hidden state on Qwen3.5/3.6 and lost against `ngram-cache`; older notes saying
+so are obsolete ([CHANGELOG 2026-10-15](../CHANGELOG.md#2026-10-15)). Measured acceptance and speed (Qwen3.6-35B-A3B on
+two RTX 2060): [benchmarks](benchmarks/README.md#speculative-decoding-two-gpus). In short: on short prompts draft max 1
+gains the most, at long context draft max 3.
 
-Qwen3.6-35B-A3B Q4_K_M on two RTX 2060, `q8_0` KV:
+- The MTP layer is loaded only with `--spec-type draft-mtp`; otherwise its memory stays free (856 MiB on Qwen3.6).
+- The draft context takes the target batch size and one output row per sequence, so MTP fits at 40k context with
+  `q8_0` and at 32k with `ktq2_1` / `vtq2_1` on two 12 GB GPUs. Two identical requests draft identically.
+- With MTP the server defaults to `-b 8192` unless `-b` is given: the draft context reads the target hidden states after
+  every prompt batch, and larger batches keep the prompt cost at about 6 %.
+- Several server slots work and share one draft state; with two concurrent requests MTP decodes about 5 % slower than
+  without speculation, so it pays off while one request is active.
 
-| Prompt | `--draft-max` | acceptance | decode, MTP off → on |
-|---|---:|---:|---:|
-| short (2026-10-14) | 1 | 86 % | 79.5 → 93 t/s |
-| short (release tree, 2026-10-16) | 3 | 80 % | 79.4 → 80.4-81.9 t/s |
-| 29k tokens at 40k context (2026-10-14) | 1 | 97 % | 70.5 → 85.4 t/s |
-| 29k tokens at 40k context (2026-10-14) | 3 | 93 % | 70.5 → 92.6 t/s |
+### Hybrid models (Gated DeltaNet)
 
-With `ktq4_1` / `vtq4_1` the acceptance on the short prompt is 86 % (draft max 3, 80.5 t/s). On short prompts draft max
-1 gains the most, at long context draft max 3. With two concurrent requests (`-np 2`) MTP decodes about 5 % slower than
-without speculation; it pays off while one request is active. With MTP the server defaults to `-b 8192`, which keeps
-the prompt cost at about 6 %.
+On Qwen3.5/3.6 every ubatch takes the same rollback path, so speculation (n-gram, MTP or draft model) no longer makes
+the scheduler re-reserve the graph for each verify length. A context with rollback raises `n_ubatch` to at least
+`n_rs_seq + 2`; writing the state snapshots costs about 5 % prompt speed against a context without speculation. The
+n-gram modes reserve output rows for one verify batch instead of the whole batch (output-device compute buffer 672 →
+307 MiB on Qwen3.6-35B-A3B). Requests with images or audio run without speculation.
 
 ### Tuning knobs (env-gated)
 
@@ -229,7 +233,10 @@ the prompt cost at about 6 %.
 |---|---|---|---|
 | `LLAMA_SPEC_RELAX` | 0 | 0..50 | Lower ngram-cache acceptance thresholds for noisier-quant models |
 | `LLAMA_MTP_DECAY` | 0.70 | 0.30..1.00 | DRAFT_MTP per-position p_min decay; 1.0 = strict at every step |
-| `FORK_MTP_PROFILE_ACC=1` | — | — | Print draft/accept stats per TG batch |
+| `FORK_MTP_PROFILE_ACC=1` | — | — | Log the average time of the accept phase (sampling, `seq_rm`) every 50 verify steps, for every speculation type |
+| `FORK_MTP_PROFILE_TGT=1` | — | — | Log the average target decode time every 50 calls (debug only) |
+| `FORK_MTP_PROFILE=1`, `FORK_MTP_DEBUG=1` | — | — | MTP draft timing and debug log (debug only) |
+| `FORK_MTP_SKIP_PROCESS=1` | — | — | Do not feed the target hidden states to the MTP head (debug only; drafts get worse) |
 | `FORK_SPEC_TRACE=1` | — | — | Verbose spec-flow log (very noisy, debug only) |
 
 ### Static lookup-cache
@@ -251,7 +258,7 @@ static cache alone — the bottleneck is the model, not the lookup table.
 DFlash drafts a whole block of tokens per step with a small block-diffusion model that reads
 hidden states of the target model; DFlash2 adds a selector over the drafted lattice. Because
 the drafts are verified in one parallel batch, this also works on hybrid recurrent targets
-(Qwen3.5 / Qwen3.8), where sequential drafts are accepted poorly.
+(Qwen3.5 / Qwen3.8).
 
 ```bash
 llama-server -m Qwen3.8-27B-Q4_K_M.gguf -md dflash2-draft-Q4_K_M.gguf \

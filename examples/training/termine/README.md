@@ -82,8 +82,8 @@ llama-server -m MODEL.gguf -ngl 99 -c 4096 --jinja --reasoning off --lora termin
 python3 eval_termine.py 8080 --misses
 ```
 
-`eval_termine.py` sends each test prompt through `/v1/chat/completions` (greedy, at most 160 tokens), takes the first
-`{...}` of the answer and reports valid JSON, exact match of the whole object and accuracy per field. Without an
+`eval_termine.py` sends each test prompt through `/v1/chat/completions` (greedy, at most 160 tokens), takes the text
+from the first `{` to the last `}` of the answer and reports valid JSON, exact match of the whole object and accuracy per field. Without an
 adapter every tested model scores 0 % exact.
 
 `peft_termine.py` is the PyTorch reference (Hugging Face Transformers + PEFT + bitsandbytes nf4) with the same data,

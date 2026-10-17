@@ -40,6 +40,8 @@ SPEED_ALLOW = {
     "28": ({"docs/models.md", "docs/speculative.md"}, "Bonsai at 23k vs DFlash on Qwen3.8-27B"),
     "47": ({"docs/models.md", "docs/benchmarks/README.md"}, "K2-Horizon vs Qwen3-4B"),
     "57": ({"docs/models.md", "docs/benchmarks/README.md"}, "gpt-oss at 22k vs Qwen3-4B at 16k"),
+    "27": ({"docs/turboquant.md", "docs/benchmarks/README.md"}, "16-state-bit trellis V decode vs trellis pairs at 32k"),
+    "90": ({"docs/turboquant.md", "docs/benchmarks/README.md"}, "follow-up prompt with vtq*_2 vs RTX 4060 Ti decode"),
 }
 
 

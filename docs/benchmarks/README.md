@@ -22,7 +22,7 @@ and RTX A40 2026-10-16 on the release tree, the other rows 2026-10-10 unless mar
 
 ¹ measured 2026-10-09, before the K/V rotations ran as the fast Walsh-Hadamard transform (RTX 5090 then: 272 t/s, RTX
 4090 217 t/s).
-The encoder scale search of 2026-10-10 costs 1–2 % of the TurboQuant numbers in the rows measured before it.
+The encoder scale search of 2026-10-11 costs 1–2 % of the TurboQuant numbers in the rows measured before it.
 
 Same model on one RTX 2060, decode at empty / 16k context (`llama-bench -n 64 -r 2`, 2026-10-12; the `ktq4_1` row
 2026-10-13):
@@ -148,6 +148,28 @@ Release tree of 2026-10-16, two RTX 2060, two prompts of 27.6k / 27.9k tokens, 4
 exact: decode with speculation off → on `q8_0` / `q8_0` 47.8 → 79.2 t/s (64 % accepted), `q8_0` / `vtq4_1` 48.9 → 80.8,
 `ktq4_1` / `vtq4_1` 46.9 → 75.3, `ktq3` / `vtq3` 8.8 → 9.5. The trellis pair spends most of a request in the encoder
 over the prompt (49 s per request against 19 s), which speculation does not shorten.
+
+## Speculative decoding, two GPUs
+
+Qwen3.6-35B-A3B Q4_K_M on two RTX 2060, `llama-server`, `q8_0` KV unless noted. MTP (`--spec-type draft-mtp`, setup in
+[speculative.md](../speculative.md#draft_mtp-guidance)):
+
+| Prompt | `--draft-max` | acceptance | decode, MTP off → on |
+|---|---:|---:|---:|
+| short (2026-10-15) | 1 | 86 % (upstream 86 %) | 79.5 → 93 t/s |
+| short (release tree, 2026-10-16) | 3 | 80 % | 79.4 → 80.4-81.9 t/s |
+| short, `ktq4_1` / `vtq4_1` (release tree, 2026-10-16) | 3 | 86 % | 80.5 t/s with MTP |
+| 29k tokens at 40k context (2026-10-15) | 1 | 97 % | 70.5 → 85.4 t/s (upstream MTP 74.6) |
+| 29k tokens at 40k context (2026-10-15) | 3 | 93 % | 70.5 → 92.6 t/s |
+
+With `-b 8192` (the default with MTP) the prompt costs ~6 % against no speculation instead of 16 % with 2048-token
+batches (1649 t/s without speculation, 1390 t/s with MTP at 2048, 1550 t/s at 8192). Two concurrent requests (`-np 2`,
+draft max 3): 104 t/s combined against 109 t/s without speculation.
+
+n-gram speculation on the same model (`--spec-type ngram-cache --draft-max 8`, 29k-token prompt, 2026-10-15): prompt
+processing of the second and later requests 950 → 1560 t/s with `q8_0` and 1282 → 1539 t/s with `ktq2_1` / `vtq2_1`
+after the hybrid-model fix, decode 80.4 → 82.9 t/s, same text; wall time of a request 35.6 → 23.4 s (23.0 s without
+speculation).
 
 ## Against upstream, two GPUs
 

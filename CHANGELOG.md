@@ -12,6 +12,18 @@
   2026-10-14; RTX 5090 on an empty context 6-9 % faster with `q8_0` and `ktq2_1` / `vtq2_1` than on 2026-10-10). New tables:
   [release check on newer GPUs](docs/benchmarks/README.md#release-check-on-newer-gpus), more mixed pairs in
   [TurboQuant accuracy](docs/turboquant.md#accuracy).
+- Fixed: with `--tq-protect-sinks` and `--tq-protect-layers` together, the layer protection stored the V cache of the
+  first attention layer in `q8_0` instead of the f16 of the sink protection; an f16 V now stays f16.
+- Fixed: the bit budget of the experimental per-layer V types (`--tq-mixed-v --tq-v-budget-bpw`) counted the trellis
+  V types as 8.5 / 12.5 / 16.5 bits per value instead of 2.25 / 3.25 / 4.25; the bits now come from the type traits.
+- Help texts of `llama-finetune` (`--checkpoint-every` names `--resume`, the `--lora-train-target` example matches
+  `attn_output`, `--train-skip-regex` is ignored with a LoRA target) and of the deferred K/V options corrected.
+- Documentation checked against the code: every fork option and environment variable is now described on its page
+  (per-layer V types, sliding-window cache types, `GGML_CUDA_P2P`, `GGML_CUDA_VTQ_POOL_SLOTS`, `--tensor-read-lazy`,
+  `--mmap-huge`, the MTP debug variables), the trellis K types in every TurboQuant section, MTP speed on the
+  [benchmarks page](docs/benchmarks/README.md#speculative-decoding-two-gpus), fine-tuning limits (data format errors,
+  activations without backward, what `llama-export-lora` writes), Blackwell with CUDA 12.8, and the roadmap with
+  current plans and known issues.
 
 ## 2026-10-16
 

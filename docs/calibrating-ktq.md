@@ -7,7 +7,9 @@ constants that are Lloyd-Max optimal for the *theoretical* post-RHT marginal
 
 **Status:** the script below fits calibrated codebooks and writes them as a header; using that header in the build is
 not implemented yet, so the shipped codebooks are always used. Since 2026-10-11 the encoder also searches the block scale,
-which already takes up much of what a re-fitted codebook would gain.
+which already takes up much of what a re-fitted codebook would gain. The codebooks only affect the codebook types
+`ktq*_1` / `vtq*_1`; the trellis types behind the short names `ktq2`-`ktq4` and `vtq2`-`vtq4` use the trellis code
+table (`ggml/src/ggml-trellis.c`) and are not changed by this script.
 
 In practice the empirical post-RHT distribution can deviate -- attention sinks,
 RoPE artefacts, or layer-1 dominance produce heavier tails than the analytical

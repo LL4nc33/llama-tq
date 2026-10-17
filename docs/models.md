@@ -7,13 +7,13 @@ are now also supported by upstream llama.cpp. Comparisons across GPUs and KV typ
 
 All commands assume a CUDA build and `-fa on`. Tensor split: [tensor-split.md](tensor-split.md). The speed numbers
 on this page were measured on 2× RTX 2060 between 2026-10-03 and 2026-10-06 (date per section), before the KTQ/VTQ
-encoder change of 2026-10-10, which costs 1–2 % decode with the TurboQuant types; current KV accuracy:
+encoder change of 2026-10-11, which costs 1–2 % decode with the TurboQuant types; current KV accuracy:
 [turboquant.md](turboquant.md#accuracy).
 
 ## Ternary-Bonsai-2-27B (`PQ2_0`, `PTQ1_0`)
 
-Ternary weights in groups of 128 with Hadamard-rotated activations. `PTQ1_0` packs them at
-1.75 bits, `PQ2_0` at 2 bits. Source: [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
+Ternary weights in groups of 128 with Hadamard-rotated activations. `PTQ1_0` packs the ternary weights at
+1.75 bits, `PQ2_0` stores them as 2-bit codes at 2.125 bits. Source: [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
 
 Two slots with 200k context each, vision:
 
@@ -60,6 +60,11 @@ llama-server -m Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf \
 Decode (2026-10-04): 15.5 t/s at 118k with a peak of 11.6 GB per GPU, measured before the VTQ fix of 2026-10-12 for
 this model (VTQ V gave wrong output here); to be re-measured.
 
+The per-layer n-gram embedding table is tens of GB. `--tensor-read-lazy auto` (the default) reads the rows of
+tensors over 4 GiB from disk on demand instead of keeping them resident (`on`: every such tensor, `off`: all resident;
+needs mmap). For large models in general, `--mmap-huge` maps the file with 2 MB huge pages (Linux; needs a HugeTLB
+pool or transparent huge pages).
+
 ## K2-Horizon-MoVA-36B-A4B (`k2-horizon`)
 
 MoE whose attention layers route the value projection through experts (mixture of value
@@ -105,7 +110,8 @@ The port is based on the patches by Seraphiel102.
 
 At Q3_K_S (31.5 GiB) part of the routed experts has to stay in RAM. The simplest setup lets `-fit`
 (on by default) decide: it measures weights, KV cache and compute buffers and picks the layer split
-and which layers keep their experts in RAM. fit gives those layers to the last device, and prompt
+and which layers keep their experts in RAM. When `-ngl`, `-ts` or `-ot` is set by hand, `-fit` keeps that placement and
+only shrinks the context if it was not set (it logs that it stopped). fit gives those layers to the last device, and prompt
 batches stream their weights to that GPU, so list the GPU with the widest PCIe link last (here GPU0,
 x16, next to GPU1 on x4). Below `GGML_OP_OFFLOAD_MIN_BATCH` tokens the RAM experts run on the CPU
 instead of being streamed, which cuts the time to the first token of short prompts by about 4x:
@@ -125,7 +131,9 @@ GGML_OP_OFFLOAD_MIN_BATCH=256 llama-server -m Kolibri-1-Q3_K_S.gguf -fa on -c 13
 | `-fit`, default device order, min batch 32 (default) | 37.4 t/s | 3.7 s | 5.5 s | 7.0 s | 10.3 s |
 
 An MoE expert cache in VRAM (tried as `--moe-cache-mib`, since removed) did not pay off here: with 5 GB of cache and a 91 % hit
-rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU.
+rate, decode drops to 25 t/s. The cache serves only the layers on its own GPU. `--moe-pin-experts` registers the
+expert weights kept in RAM as pinned host memory for asynchronous PCIe copies (Linux, CUDA; a failed registration
+only warns); with gpt-oss and `--n-cpu-moe 12` it made no measurable difference to prompt speed.
 
 Decode barely drops with context: 38 t/s at 10k in an earlier setup (2026-10-04: 32k context, f16 KV, experts of 20
 layers in RAM). KV accuracy: [turboquant.md](turboquant.md#accuracy). Reasoning effort is set per request through `chat_template_kwargs`

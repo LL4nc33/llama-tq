@@ -162,7 +162,7 @@ plus the conversation. If you enable `--context-shift`, also set `--keep N` so t
 With `--slot-save-path DIR` set, `/v1/messages` honours `cache_control` breakpoints for non-streaming requests: the
 slot state is saved to disk under a key for the prefix up to the last breakpoint (TTL from the breakpoint, 5 min by
 default, `--anthropic-cache-ttl-default`), a later request with the same prefix restores it before prefill, and `usage`
-reports `cache_creation_input_tokens` and `cache_read_input_tokens`. `--anthropic-cache off` disables it.
+reports `cache_creation_input_tokens` and `cache_read_input_tokens`. `--anthropic-cache off` disables it (env `LLAMA_ARG_ANTHROPIC_CACHE`).
 
 Limits: Claude Code streams its requests, and streaming requests are not saved yet, so for Claude Code this path
 currently does nothing beyond the normal in-memory prefix reuse. Only slot 0 is used. `--anthropic-cache-max-gb` is

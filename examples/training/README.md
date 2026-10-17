@@ -1,17 +1,12 @@
-# llama.cpp/examples/training
+# llama-tq/examples/training
 
-This directory contains examples related to language model training using llama.cpp/GGML.
-So far finetuning is technically functional (for FP32 models and limited hardware setups) but the code is very much WIP.
-Finetuning of Stories 260K and LLaMA 3.2 1b seems to work with 24 GB of memory.
-**For CPU training, compile llama.cpp without any additional backends such as CUDA.**
-**For CUDA training, use the maximum number of GPU layers.**
+`llama-finetune` (source: [finetune.cpp](finetune.cpp)) trains LoRA adapters directly on quantized GGUF models, or the
+F32 tensors of a model without LoRA, on CPU and CUDA. Options, data format, supported layers and results:
+[docs/finetune.md](../../docs/finetune.md). A complete, reproducible task with data generator, training commands,
+evaluation script and a PyTorch reference: [termine/](termine/README.md).
 
-Proof of concept:
-
-``` sh
-export model_name=llama_3.2-1b && export quantization=f32
-./build/bin/llama-finetune --file wikitext-2-raw/wiki.test.raw -ngl 999 --model models/${model_name}-${quantization}.gguf -c 512 -b 512 -ub 512
-./build/bin/llama-perplexity --file wikitext-2-raw/wiki.test.raw -ngl 999 --model finetuned-model.gguf
+```sh
+./build/bin/llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
+  --lora-train-target '^blk\.[0-9]+\.attn_(q|k|v|output)\.weight$' --lora-train-rank 16
+# writes task.lora.gguf; serve it with: llama-server -m model.gguf --lora task.lora.gguf
 ```
-
-The perplexity value of the finetuned model should be lower after training on the test set for 2 epochs.

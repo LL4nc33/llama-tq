@@ -43,10 +43,11 @@ echo -e "nvidia\nnvidia_uvm\nnvidia_modeset" | sudo tee /etc/modules-load.d/nvid
 
 ## 2. Fast path (A): prebuilt release binary
 
-Download the CUDA archive (from the next release on, one per GPU generation) from the
+Download the CUDA archive for your GPU generation from the
 [releases page](https://github.com/LL4nc33/llama-tq/releases); what it needs (CUDA runtime libraries, driver) is
-listed in [build.md, Release archives](../build.md#release-archives). The current release v2026.10.06 still needs
-`libnccl.so.2` and `LD_LIBRARY_PATH` pointing at its own directory; the next release needs neither.
+listed in [build.md, Release archives](../build.md#release-archives). Releases up to v2026.10.06 had a single CUDA
+archive that also needed `libnccl.so.2` and `LD_LIBRARY_PATH` pointing at its own directory (block below); newer
+archives need neither.
 
 ```bash
 mkdir -p ~/llama-tq-bin && cd ~/llama-tq-bin
@@ -73,7 +74,7 @@ load, you need the full build (path B).
 
 apt's `nvidia-cuda-toolkit` is 12.0 on 24.04 — too old to match a 12.8 runtime
 / recent driver. Use NVIDIA's repo and install **only the toolkit** (the driver
-already runs; for Blackwell use 12.9 or newer, see [build.md](../build.md#build-llama-tq-locally)):
+already runs; Blackwell builds with 12.8 too, see [build.md](../build.md#build-llama-tq-locally)):
 
 ```bash
 curl -sL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb -o /tmp/cuda-keyring.deb

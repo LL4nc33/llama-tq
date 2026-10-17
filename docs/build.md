@@ -2,8 +2,10 @@
 
 This is the upstream llama.cpp build guide; it applies to this fork unchanged. For the TurboQuant KV cache types build
 with CUDA and set the architecture of your GPU: `-DCMAKE_CUDA_ARCHITECTURES=75` (Turing), `86` (Ampere), `89` (Ada),
-`120` (Blackwell), several as `"86;89"`. Blackwell needs CUDA 12.9 or newer: with CUDA 12.8 the device link for
-`sm_120a` failed (tested 2026-10-11, see [.github/workflows/release.yml](../.github/workflows/release.yml)).
+`120` (Blackwell), several as `"86;89"`. Blackwell builds with CUDA 12.8 since the CUDA code no longer uses relocatable device code (2026-10-12; a CUDA 12.8
+build for `75;80;86;89;120a` passed the tests on an RTX 5090, 2026-10-16); before, the CUDA 12.8 device link for
+`sm_120a` failed. The Blackwell release archive is still built with CUDA 12.9
+([.github/workflows/release.yml](../.github/workflows/release.yml)).
 
 ## Release archives
 
@@ -13,7 +15,8 @@ CUDA for x64 with one archive per GPU generation: `sm75` (Turing, RTX 20xx), `sm
 and `libcublas.so.12` (e.g. the packages `cuda-cudart-12-8` and `libcublas-12-8` from NVIDIA's repository) and a driver
 for CUDA 12.8 (570 or newer); the Blackwell archive is built with CUDA 12.9 and needs the 12.9 packages and a driver 575
 or newer. Releases up to v2026.10.06 had a single CUDA archive that also needed `libnccl.so.2` and had to be started from
-its own directory.
+its own directory. `--version`, the server log and the server's `/props` report the release version; the web
+interface is named llama-tq and has an About page with version, source links and license.
 
 ## Building from source
 

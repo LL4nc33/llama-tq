@@ -4,7 +4,8 @@
 ternary types) without converting them back to full precision: attention, dense and MoE expert
 feed-forward layers and Gated DeltaNet layers, on one or two GPUs or the CPU, including models whose
 experts sit in host memory. The adapter is written as a `.lora.gguf` that loads with `--lora` and merges
-with `llama-export-lora`.
+with `llama-export-lora` (it writes the merged tensors as F16, requantize with `llama-quantize`; split GGUFs cannot
+be merged).
 
 ## Quick start
 
@@ -14,7 +15,7 @@ llama-finetune \
   --lora-train-target '^blk\.[0-9]+\.attn_(q|k|v|output)\.weight$' --lora-train-rank 16 --lora-train-alpha 32 \
   -opt adamw -lr 2e-4 --lr-warmup 20 --epochs 2 -val-split 0.1 \
   -ngl 99 -c 512 -b 512 -ub 512 --reasoning off
-# writes task.lora.gguf (and task.lora.gguf.best, .opt, .state)
+# writes task.lora.gguf (and task.lora.gguf.best, .opt, .state); always pass -o, a name without .gguf gets .lora.gguf appended
 
 llama-server -m Qwen3-4B-Instruct-2507-Q4_K_M.gguf --lora task.lora.gguf --reasoning off
 llama-export-lora -m Qwen3-4B-Instruct-2507-Q4_K_M.gguf --lora task.lora.gguf -o merged.gguf
@@ -29,9 +30,13 @@ Training data is JSONL, one example per line:
 
 Chats are rendered with the model's chat template (`--chat-template` / `--chat-template-file` override
 it) and only the assistant turns are trained, including the template's end-of-turn token. `content`
-may also be `null` or a list of `{"type": "text", "text": ...}` parts; a line the loader or the template
-cannot handle is skipped with its line number. `LLAMA_FINETUNE_SHOW_MASK=1` prints the start of the data
-with the trained spans in `[[ ]]`. A plain `.txt` file trains on every token.
+may also be `null` or a list of `{"type": "text", "text": ...}` parts; only `role` and `content` are read
+(`tool_calls`, `reasoning_content` and `name` are dropped, so a turn with only tool calls trains as an empty answer).
+A line that is not JSON or has neither `messages` nor `text` stops the run with its line number; a chat the template
+cannot render is skipped with its line number, a chat without an assistant turn is skipped and counted. The last
+assistant turn is trained after the generation prompt exactly as the server renders it (Gemma 4 with reasoning off
+adds an empty thought channel only there). `LLAMA_FINETUNE_SHOW_MASK=1` prints the start of the data with the trained
+spans in `[[ ]]`. Any file whose name does not end in `.jsonl` is plain text and trains on every token.
 
 **Train with the `--reasoning` setting you serve with.** The template renders the prompt differently
 with thinking on or off (Gemma 4 adds `<|think|>` to the system turn, Qwen changes the generation
@@ -45,17 +50,17 @@ prompt), and an adapter trained on one form only partly transfers to the other.
 | `--lora-train-rank N`, `--lora-train-alpha A` | Rank (default 16) and alpha (default 32); the adapter scale is alpha / rank. |
 | `-opt adamw\|sgd`, `-lr`, `-wd`, `--epochs`, `-val-split` | Optimizer (AdamW keeps two moments per trained value), learning rate (default 1e-5), weight decay (default 0), epochs (default 2), share of the data used for validation (default 0.05). |
 | `--lr-warmup N` | Raise the learning rate linearly over the first N optimizer steps (default 0). After the warmup the learning rate stays constant unless `-lr-min` is set. |
-| `-lr-min X`, `-decay-epochs N` | Decay the learning rate exponentially to X, reached after N epochs (default: all epochs) and kept from then on. |
+| `-lr-min X`, `-decay-epochs N` | Lower the learning rate once per epoch, exponentially towards X; X itself is used from epoch N on (with the default N = `--epochs` it is not reached). |
 | `--grad-clip N` | Clip the global gradient norm to N (default 1.0, 0 = off). |
-| `--early-stop N` | Stop after N epochs without a lower validation loss. The adapter with the best validation loss is always kept as `<adapter>.best`. |
+| `--early-stop N` | Stop after N epochs without a lower validation loss. The adapter with the best validation loss is always kept as `<adapter>.best` (when there is a validation set: the last `-val-split` share of the windows, not a random sample). |
 | `--reasoning on\|off\|auto` | Render chat data as the server does with this setting. |
-| `--resume` | Continue a stopped run from the adapter, `<adapter>.opt` (step count, AdamW moments) and `<adapter>.state` (position, learning-rate step, early-stop state). The result is bit-identical to an uninterrupted run. Refuses an adapter trained with another alpha. |
-| `--stop-after N` | Stop after N context windows and save everything for `--resume`. SIGINT/SIGTERM do the same after the current window (a second signal exits at once). |
-| `--grad-checkpoint` | Gradient checkpointing: only the layer outputs are kept, each layer is recomputed in the backward pass (about one more forward pass). Same gradients; Qwen3-4B, `-c 512 -ub 512`, without flash attention, RTX 2060 (2026-10-09): 8.2 → 4.4 GB. |
-| `--train-stride N` | Tokens between window starts. Default: the context size for chat JSONL (whole examples are packed into windows, an example that does not fit starts the next window), half of it for plain text. Resume with the same value. |
+| `--resume` | Continue a stopped run from the adapter, `<adapter>.opt` (step count, AdamW moments) and `<adapter>.state` (position, learning-rate step, early-stop state). The result is bit-identical to an uninterrupted run. Refuses an adapter with other targets, rank or alpha and an optimizer state that does not match; without `<adapter>.state` it warns and starts from scratch. LoRA only. |
+| `--stop-after N` | Stop after N context windows and save everything for `--resume`. With LoRA, SIGINT/SIGTERM do the same after the current window (a second signal exits at once). |
+| `--grad-checkpoint` | Gradient checkpointing: only the layer outputs are kept, each layer is recomputed in the backward pass (about one more forward pass; it uses the `l_out-<layer>` tensors of the model graph, so a graph without them trains without checkpointing). `GGML_OPT_CHECKPOINT=1` does the same. Same gradients; Qwen3-4B, `-c 512 -ub 512`, without flash attention, RTX 2060 (2026-10-09): 8.2 → 4.4 GB. |
+| `--train-stride N` | Tokens between window starts. Default: the context size for chat JSONL (whole examples are packed into windows, an example that does not fit starts the next window), half of it for plain text. A stride below the context size turns the packing off. Resume with the same value. |
 | `--checkpoint-every N` | Also save adapter and state every N training ubatches (at the end of a window). |
-| `--train-skip-regex REGEX` | Without a LoRA target: train the model tensors not matching the regex directly (see below). |
-| `GGML_BACKWARD_SKIP_INPLACE=1` | Only for recurrent models whose state ops have no backward (Mamba, RWKV): other inplace ops end the gradient instead of asserting. Each kind of skipped op is reported once. KV cache writes never need it. |
+| `--train-skip-regex REGEX` | Without a LoRA target: train the model tensors not matching the regex directly (see below); ignored with `--lora-train-target`. |
+| `GGML_BACKWARD_SKIP_INPLACE=1` | Only for recurrent models whose state ops have no backward (Mamba, RWKV): other inplace ops, and ops without a backward pass, end the gradient instead of asserting (up to 16 warnings). KV cache writes never need it. |
 | `GGML_OPT_PRINT_GRAD_NORM=1\|2` | Log the global gradient norm of every optimizer step (2: also per parameter). |
 | `GGML_OPT_LINE_PROGRESS=1` | One progress line per step, for logs. |
 
@@ -64,7 +69,9 @@ keeps the previous consistent checkpoint.
 
 Training turns memory mapping off, uses an F32 KV cache and disables CPU weight repacking. Flash attention
 is on by default on CPU and CUDA (it saves the attention probabilities of every layer at the same speed, see
-below) and off when another GPU backend is present; `-fa on`/`-fa off` overrides.
+below) and off when another GPU backend is present; `-fa on`/`-fa off` overrides. The CUDA flash attention backward
+takes head sizes up to 256 with F16/F32 K/V; other layers run it on the CPU. With `-ngl 0` op offload is turned off,
+so the training graph stays on the CPU.
 
 ## What gets a gradient
 
@@ -89,11 +96,14 @@ adds or fixes:
 - **Optimizer:** gradient accumulators are cleared after every step, moments and accumulators live next
   to their parameter (two GPUs), the state is kept per parameter (graphs may differ between ubatches),
   global-norm clipping, save/restore of the AdamW state.
+- **Hyper-connections** (`DSV4_HC_PRE`, `DSV4_HC_POST`, Qwen3.8-Flash-Next): backward checked against float64
+  gradients; the CPU `ACC` takes a strided first operand.
 - **Flash attention** (`-fa on`): `GGML_OP_FLASH_ATTN_BACK` on CPU and CUDA recomputes the softmax from q
   and k instead of storing the attention probabilities (masks, GQA, softcap, ALiBi, sinks).
 
-Not covered: `SSM_SCAN` (Mamba-1/2) has no backward; rows added by `ADD_ID` (the expert biases themselves)
-and the kernel of `GELU_ERF` are not trainable.
+Not covered: `SSM_SCAN` (Mamba-1/2), the plain `GELU`, `GELU_QUICK` and `GELU_ERF` activations, `GEGLU_ERF` and
+fused (single-tensor) gate+up GLUs have no backward, so models with these feed-forward layers abort in the backward
+pass; the rows added by `ADD_ID` (the expert biases themselves) are not trainable.
 
 ## Results
 
@@ -224,7 +234,8 @@ that an automatic placement made without the adapter does not reserve.
 ## Training without LoRA
 
 Without `--lora-train-target`, the model tensors themselves are trained, except those matching
-`--train-skip-regex` (for example `'blk\.'` leaves `token_embd`, `output` and `output_norm`). The
+`--train-skip-regex` (for example `'blk\.'` trains `output_norm` and, if it is F32, `output`; `token_embd` is never
+trained, and only F32 tensors are). The
 trained model is written back as a GGUF (`LLAMA_SAVER_ALLOW_UNTESTED=1` for architectures the saver has
 not been checked with). Quantized tensors cannot be trained this way.
 
