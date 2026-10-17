@@ -64,7 +64,7 @@ Limitations:
 - Upstream fixes are cherry-picked rather than merged continuously, so the fork lags behind upstream.
 - Prefill on Gemma 4 is 1-2 % slower than upstream ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
 - The TurboQuant short names `ktq2`-`ktq4` / `vtq2`-`vtq4` are trellis types: more accurate per bit, but they decode
-  30-40 % slower and take 3.5-4 times as long for the first prompt as the codebook types `ktq*_1` / `vtq*_1`
+  30-40 % slower and take 3-4.5 times as long for the first prompt as the codebook types `ktq*_1` / `vtq*_1`
   ([benchmarks](docs/benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 
 ## Supported GPUs

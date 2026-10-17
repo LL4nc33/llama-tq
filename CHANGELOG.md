@@ -15,8 +15,13 @@
 - Fixed: `--tq-protect-layers N` never protected the last N layers of hybrid models (Qwen3.5/3.6/3.8: it compared the
   position among the attention layers with the count of all layers) and of sliding-window models (Gemma 4, gpt-oss:
   each of the two caches protected its own first N layers instead). Both options now count the attention layers of the
-  whole model; models with attention in every layer (Qwen3-4B, K2-Horizon) keep the same layers. The gpt-oss numbers
-  with layer protection in [TurboQuant accuracy](docs/turboquant.md#accuracy) predate the fix.
+  whole model; models with attention in every layer (Qwen3-4B, K2-Horizon) keep the same layers. gpt-oss, KL divergence with
+  `ktq4_1` / `vtq4_1`: `--tq-protect-layers 4` now protects layers 0-3 and 20-23 (0.180) instead of 0-7 (0.144); the
+  first layers matter more on this model ([TurboQuant accuracy](docs/turboquant.md#accuracy)).
+- Benchmarks: the long first prompt of the trellis/codebook table had been sent to a server that already held the
+  short prompt, so about 7k of its tokens came from the cache. Measured again with a fresh server per prompt (release
+  tree, 23.7k tokens): `ktq4` / `vtq4` 41.2 s, `ktq3` / `vtq3` 32.1 s, `ktq4_1` / `vtq4_1` 10.4 s, `q8_0` 10.3 s; the
+  trellis types take 3-4.5 times as long as the codebook types for the first prompt (before: "3.5-4 times").
 - Fixed: with `--tq-protect-sinks` and `--tq-protect-layers` together, the layer protection stored the V cache of the
   first attention layer in `q8_0` instead of the f16 of the sink protection; an f16 V now stays f16.
 - Fixed: the bit budget of the experimental per-layer V types (`--tq-mixed-v --tq-v-budget-bpw`) counted the trellis

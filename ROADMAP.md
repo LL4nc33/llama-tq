@@ -24,7 +24,7 @@ Nothing at the moment (2026-10-17). The next item is the faster trellis encoder.
 
 ## Planned
 
-- **Faster trellis encoder:** the Viterbi encoder of `ktq2`-`ktq4` / `vtq2`-`vtq4` makes the first prompt 3.5-4 times as
+- **Faster trellis encoder:** the Viterbi encoder of `ktq2`-`ktq4` / `vtq2`-`vtq4` makes the first prompt 3-4.5 times as
   long and decode 30-40 % slower than with the codebook types. → [turboquant.md](docs/turboquant.md#known-issues)
 - **TurboQuant on every RTX generation:** the kernels are tuned on Turing only; tune them on Ampere, Ada and Blackwell
   (decode close to f16), better 2- and 3-bit K accuracy, a cheaper encoder scale search.

@@ -4,7 +4,7 @@
 `vtq*_2s`), the most accurate type of each bit width; the number is the bits per value. They run on CUDA in the GQA and
 vector decode kernels; verify and prompt batches convert them to f16 for the tensor-core kernel. Against the codebook types of the same bits (`ktq*_1` / `vtq*_1`, still available by their full
 names) the KL divergence drops 3-4 times on Qwen3-4B, and 2-bit K no longer loses long-context retrieval (0/36 → 26/36
-copies). The price is speed: decode is 30-40 % slower and the first prompt takes 3.5-4 times as long, because the
+copies). The price is speed: decode is 30-40 % slower and the first prompt takes 3-4.5 times as long, because the
 trellis encoder runs after the prompt and for every new token ([benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 Quality is measured with the KV cache really quantized: in prefill K is staged in f16 by default (deferred K
 quantization) and only quantized at the prefill→decode boundary; `llama-perplexity` turns the staging off, so it scores
@@ -28,7 +28,7 @@ away from an f16 cache; 0 is identical ([Accuracy](#accuracy)).
   (5.0 bpw): take the codebook pair when the memory is there, it decodes 40-70 % faster.
 - `-ctk ktq2 -ctv vtq2` (2.6 bpw, 0.095) is the smallest cache that still retrieves exact text from a long context on
   Qwen3-4B (26/36 copies, f16 32/36); with `q8_0` V 30/36. The 2-bit codebook K (`ktq2_1`) fails there completely.
-- The trellis types (`ktq2`-`ktq4`, `vtq2`-`vtq4`) decode 30-40 % slower than the codebook types and take 3.5-4 times
+- The trellis types (`ktq2`-`ktq4`, `vtq2`-`vtq4`) decode 30-40 % slower than the codebook types and take 3-4.5 times
   as long for the first prompt; when speed matters more than the last bit of accuracy, use the codebook types by
   their full names (`ktq4_1`, `vtq4_1`, …).
 
@@ -321,8 +321,9 @@ flash attention off: the numerical noise floor of the model, below which no KV t
   Before the encoder change (2026-10-10) it was 0.045 (Qwen3-4B) and 0.55 (gpt-oss).
 - `q8_0` is at the noise floor of every model; `vtq4_1` V costs little on Qwen3-4B and gpt-oss.
 - gpt-oss is sensitive in K: every 4-bit K type (`q4_0`, `ktq4_1`) costs about 0.35, V only 0.04; protecting outer layers
-  helps only in proportion (`--tq-protect-layers 4`: 0.145, 8: 0.097; measured before 2026-10-17, when the option protected
-  the first 2N layers of gpt-oss and none at the end, to be re-measured), so use `q8_0` K with
+  helps only in proportion: `ktq4_1` / `vtq4_1` with `--tq-protect-layers` 2 / 4 / 8 (4 / 8 / 16 of 24 layers in `q8_0`)
+  gives 0.235 / 0.180 / 0.087 (2026-10-17, two RTX 2060). The first layers matter more than the last: the first 8 layers
+  alone (what `--tq-protect-layers 4` selected before the fix of 2026-10-17) gave 0.144. So use `q8_0` K with
   `vtq4_1` V there (0.039). Gemma 4 is sensitive in V
   (`vtq2_1` 1.66); it reacts to any numerical change (flash attention on vs off already 0.32) and its same-top-token share
   stays the better guide there.
@@ -617,7 +618,7 @@ Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style
 - **2- and 3-bit codebook K** (`ktq2_1`, `ktq3_1`) still lose a lot of accuracy on every measured model (see
   [Accuracy](#accuracy)); the trellis K `ktq2` / `ktq3` lose 3-5 times less on Qwen3-4B. gpt-oss needs 8-bit K.
 - **Trellis types are slow to encode** (`ktq2`-`ktq4`, `vtq2`-`vtq4`): the Viterbi encoder runs over the whole prompt
-  and then for every new token, so the first prompt takes 3.5-4 times as long as with the codebook types and decode is
+  and then for every new token, so the first prompt takes 3-4.5 times as long as with the codebook types and decode is
   30-40 % slower ([benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)). A faster encoder is planned.
 - **Mixed K/V pairs outside the decode kernels' coverage** (head sizes other than 128 and 256, except the trellis
   pairs, which the GQA kernel also takes at 512; pairs without a vector-kernel instance at GQA ratio 1-2;

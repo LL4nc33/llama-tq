@@ -105,22 +105,23 @@ BIN_A=build/bin BIN_B=build/bin GPUS=0,1 MODEL=models/Qwen3-4B-Instruct-2507-Q4_
 The Gemma 4 26B-A4B line below the table: the same with `MODEL=models/gemma-4-26B-A4B-it-UD-IQ2_XXS.gguf`,
 `KV="ktq3_1/vtq3_1 ktq3/vtq3"` and `ARGS="-p 0 -n 64 -d 0,8192,32768 -r 2"`.
 
-First prompt and follow-up columns: one server per K/V pair, in the order `q8_0`, `ktq3_1`, `ktq3`, `ktq4`, `ktq4`,
-`ktq3`, `ktq3_1`, `q8_0` (V of the same family), default deferred K/V:
+First prompt and follow-up columns: a fresh server for each K/V pair and prompt length, the pairs in the order
+`ktq4_1`, `ktq4`, `ktq3_1`, `ktq3`, `q8_0`, then backwards (V of the same family), default deferred K/V:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 build/bin/llama-server -m models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf -t 4 -ngl 99 -fa on \
     -c 40960 -np 1 --cache-ram 0 -ctk ktq4_1 -ctv vtq4_1 --host 127.0.0.1 --port 8899 &
 python3 scripts/eval/retrieval.py health --url http://127.0.0.1:8899
-python3 scripts/eval/server-turn.py --url http://127.0.0.1:8899 --text wikitext-2-raw/wiki.test.raw --chars 30000,90000
+python3 scripts/eval/server-turn.py --url http://127.0.0.1:8899 --text wikitext-2-raw/wiki.test.raw --chars 30000
 kill %1
+# the same with a newly started server and --chars 96000
 ```
 
-30000 and 90000 characters of wikitext-2 (test) are the 7k and 22k-token prompts, the follow-up adds 2000 characters
-(about 480 tokens). "First prompt" is the wall time of the `A30000` / `A90000` lines, "follow-up" the prompt speed of
-the `B32000` / `B92000` lines. The four requests share one slot, so `A90000` starts with the cached text of `B32000`
-and its `prompt_n` is smaller than the full prompt; for a cold 22k-token prompt run `--chars 90000` on a freshly
-started server. The `out` md5 shows whether the generated text is the same across repetitions of a pair.
+30000 and 96000 characters of wikitext-2 (test) are the 6.8k and 23.7k-token prompts, the follow-up adds 2000
+characters (about 460 tokens). "First prompt" is the wall time of the `A` line, "follow-up" the prompt speed of the `B`
+line. Start a new server for each length: on one server the second prompt would reuse the cached text of the first
+(that is what the first version of the table did). The `out` md5 shows whether the generated text is the same across
+repetitions of a pair.
 
 ## Speculative decoding at long context, one GPU
 
