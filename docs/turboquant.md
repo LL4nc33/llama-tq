@@ -97,8 +97,8 @@ Related options:
 
 | Option | Effect |
 |---|---|
-| `--tq-protect-layers N` | keep the first and last N layers in q8_0 (TurboQuant types only) |
-| `--tq-protect-sinks N` | keep the V cache of the first attention layer in f16 when N > 0 (TurboQuant V types only) (off by default; the value of N does not matter otherwise); with `--tq-protect-layers` as well, that layer's V stays f16 |
+| `--tq-protect-layers N` | keep the first and last N attention layers of the model in q8_0 (TurboQuant types only) |
+| `--tq-protect-sinks N` | keep the V cache of the first attention layer in f16 when N > 0 (TurboQuant V types only; off by default; the value of N does not matter otherwise); with `--tq-protect-layers` as well, that layer's V stays f16 |
 | `LLAMA_ARG_TQ_PROTECT_LAYERS`, `LLAMA_ARG_TQ_PROTECT_SINKS` | the same two options as environment variables. `llama-bench` takes no `--tq-*` flags; it reads these two, `LLAMA_ARG_NO_TQ_DEFERRED_K/V` and `LLAMA_ARG_TQ_V_OVERRIDE=SPEC` (per-layer V types, applied there without `--tq-mixed-v`) |
 | `-ctks`, `-ctvs TYPE` (`--cache-type-k-swa`, `--cache-type-v-swa`) | cache types of the sliding-window layers (Gemma 4, gpt-oss; default: the same as `-ctk` / `-ctv`); `DG_SWA_KV_F16=1` forces f16 there |
 | `--no-tq-deferred-k`, `--no-tq-deferred-v` | skip the f16 staging buffer used during prefill; saves VRAM for full context (env `LLAMA_ARG_NO_TQ_DEFERRED_K`, `LLAMA_ARG_NO_TQ_DEFERRED_V`) |
@@ -321,7 +321,8 @@ flash attention off: the numerical noise floor of the model, below which no KV t
   Before the encoder change (2026-10-10) it was 0.045 (Qwen3-4B) and 0.55 (gpt-oss).
 - `q8_0` is at the noise floor of every model; `vtq4_1` V costs little on Qwen3-4B and gpt-oss.
 - gpt-oss is sensitive in K: every 4-bit K type (`q4_0`, `ktq4_1`) costs about 0.35, V only 0.04; protecting outer layers
-  helps only in proportion (`--tq-protect-layers 4`: 0.145, 8 of 24 layers each side: 0.097), so use `q8_0` K with
+  helps only in proportion (`--tq-protect-layers 4`: 0.145, 8: 0.097; measured before 2026-10-17, when the option protected
+  the first 2N layers of gpt-oss and none at the end, to be re-measured), so use `q8_0` K with
   `vtq4_1` V there (0.039). Gemma 4 is sensitive in V
   (`vtq2_1` 1.66); it reacts to any numerical change (flash attention on vs off already 0.32) and its same-top-token share
   stays the better guide there.
@@ -520,7 +521,7 @@ saved sequence whose staging state differs from the cache's current state fails 
 
 ### Boundary-layer protection
 
-`--tq-protect-layers N` stores the first and last N layers in q8_0 and the rest in the chosen TurboQuant types. On gpt-oss it helps only in proportion to the protected layers (see Accuracy). A V that is already f16 (sink protection, or a
+`--tq-protect-layers N` stores the first and last N attention layers of the model in q8_0 and the rest in the chosen TurboQuant types. Until 2026-10-17 hybrid models (Qwen3.5/3.6/3.8) and sliding-window models (Gemma 4, gpt-oss) got the first N layers of each cache and never the last ones; models with attention in every layer were not affected. On gpt-oss it helps only in proportion to the protected layers (see Accuracy). A V that is already f16 (sink protection, or a
 `ktq*_1` type given as V) stays f16.
 
 ### Attention-sink protection

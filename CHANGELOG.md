@@ -12,6 +12,11 @@
   2026-10-14; RTX 5090 on an empty context 6-9 % faster with `q8_0` and `ktq2_1` / `vtq2_1` than on 2026-10-10). New tables:
   [release check on newer GPUs](docs/benchmarks/README.md#release-check-on-newer-gpus), more mixed pairs in
   [TurboQuant accuracy](docs/turboquant.md#accuracy).
+- Fixed: `--tq-protect-layers N` never protected the last N layers of hybrid models (Qwen3.5/3.6/3.8: it compared the
+  position among the attention layers with the count of all layers) and of sliding-window models (Gemma 4, gpt-oss:
+  each of the two caches protected its own first N layers instead). Both options now count the attention layers of the
+  whole model; models with attention in every layer (Qwen3-4B, K2-Horizon) keep the same layers. The gpt-oss numbers
+  with layer protection in [TurboQuant accuracy](docs/turboquant.md#accuracy) predate the fix.
 - Fixed: with `--tq-protect-sinks` and `--tq-protect-layers` together, the layer protection stored the V cache of the
   first attention layer in `q8_0` instead of the f16 of the sink protection; an f16 V now stays f16.
 - Fixed: the bit budget of the experimental per-layer V types (`--tq-mixed-v --tq-v-budget-bpw`) counted the trellis
