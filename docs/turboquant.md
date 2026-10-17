@@ -385,10 +385,15 @@ window) need it only for some layers.
 | `f16` / `f16` | 16 | 16 | 16 | 100 % |
 | `q8_0` / `q8_0` | 8.5 | 8.5 | 8.5 | 53 % |
 | `q8_0` / `vtq4_1` | 8.5 | 4.5 | 6.5 | 41 % |
-| `q4_0` / `q4_0` | 4.5 | 4.5 | 4.5 | 28 % |
+| `q8_0` / `vtq4` | 8.5 | 4.25 | 6.4 | 40 % |
+| `q8_0` / `vtq3` | 8.5 | 3.25 | 5.9 | 37 % |
 | `ktq4_1` / `vtq4_1` | 5.5 | 4.5 | 5 | 31 % |
+| `ktq4` / `vtq4` | 5 | 4.25 | 4.6 | 29 % |
+| `q4_0` / `q4_0` | 4.5 | 4.5 | 4.5 | 28 % |
 | `ktq3_1` / `vtq3_1` | 4.5 | 4 | 4.25 | 27 % |
+| `ktq3` / `vtq3` | 4 | 3.25 | 3.6 | 23 % |
 | `ktq2_1` / `vtq2_1` | 3.5 | 2.5 | 3 | 19 % |
+| `ktq2` / `vtq2` | 3 | 2.25 | 2.6 | 16 % |
 
 ## Benchmarks
 
@@ -586,7 +591,11 @@ Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style
 
 ## Known Issues
 
-- **2- and 3-bit K** still lose a lot of accuracy on every measured model (see [Accuracy](#accuracy)); gpt-oss needs 8-bit K.
+- **2- and 3-bit codebook K** (`ktq2_1`, `ktq3_1`) still lose a lot of accuracy on every measured model (see
+  [Accuracy](#accuracy)); the trellis K `ktq2` / `ktq3` lose 3-5 times less on Qwen3-4B. gpt-oss needs 8-bit K.
+- **Trellis types are slow to encode** (`ktq2`-`ktq4`, `vtq2`-`vtq4`): the Viterbi encoder runs over the whole prompt
+  and then for every new token, so the first prompt takes 3.5-4 times as long as with the codebook types and decode is
+  30-40 % slower ([benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)). A faster encoder is planned.
 - **Mixed K/V pairs outside the decode kernels' coverage** (head sizes other than 128 and 256, GQA ratio 1-2,
   `ktq1_1`/`vtq1_1`) run on CUDA by converting K and V to f16 at every step; correct, but decode slows down with
   context. Since 2026-10-14 the GQA decode kernel takes every pair of f16, `q8_0`, `q5_0`, `q4_0` and the 2-4-bit

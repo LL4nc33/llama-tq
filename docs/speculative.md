@@ -205,15 +205,23 @@ comparison was not done.
 
 ### DRAFT_MTP guidance
 
-DRAFT_MTP is supported and respects `--draft-p-min` (default 0.75). On consumer
-single-GPU + IQ2-class MoE models it consistently underperforms ngram-cache
-because the single-layer MTP head caps per-step confidence so position 1-3 of a
-dm=4 draft fail the p_min filter (observed: avg 1.30 tokens/draft, firing 32%
-of TG-iterations with the `LLAMA_MTP_DECAY` patch — still net-negative; measured 2026-06 on RTX 2060 12 GB with the
-KTQ/VTQ cache of the table above, so before the KTQ fix of 2026-10-04).
+`--spec-type draft-mtp` drafts with the model's own MTP head and respects `--draft-p-min` (default 0.75). Until
+2026-10-14 the head drafted from a wrong hidden state on Qwen3.5/3.6 and lost against `ngram-cache`; older notes saying
+so are obsolete ([CHANGELOG 2026-10-14](../CHANGELOG.md#2026-10-14)).
 
-On IQ2/IQ3 models use `ngram-cache` instead. Where DRAFT_MTP pays off (higher-bit quants, larger active parameter
-counts) was not measured; compare it against `ngram-cache` on your setup.
+Qwen3.6-35B-A3B Q4_K_M on two RTX 2060, `q8_0` KV:
+
+| Prompt | `--draft-max` | acceptance | decode, MTP off → on |
+|---|---:|---:|---:|
+| short (2026-10-14) | 1 | 86 % | 79.5 → 93 t/s |
+| short (release tree, 2026-10-16) | 3 | 80 % | 79.4 → 80.4-81.9 t/s |
+| 29k tokens at 40k context (2026-10-14) | 1 | 97 % | 70.5 → 85.4 t/s |
+| 29k tokens at 40k context (2026-10-14) | 3 | 93 % | 70.5 → 92.6 t/s |
+
+With `ktq4_1` / `vtq4_1` the acceptance on the short prompt is 86 % (draft max 3, 80.5 t/s). On short prompts draft max
+1 gains the most, at long context draft max 3. With two concurrent requests (`-np 2`) MTP decodes about 5 % slower than
+without speculation; it pays off while one request is active. With MTP the server defaults to `-b 8192`, which keeps
+the prompt cost at about 6 %.
 
 ### Tuning knobs (env-gated)
 

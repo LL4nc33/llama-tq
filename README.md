@@ -71,10 +71,10 @@ Limitations:
 
 | GPU generation | CUDA architecture | Measured on |
 | --- | --- | --- |
-| Turing (RTX 20, T4) | 75 | RTX 2060 (development) |
-| Ampere (RTX 30, A100) | 80, 86 | RTX 3060, RTX 3090 (decode speed) |
-| Ada (RTX 40, L4) | 89 | RTX 4060 Ti, RTX 4090 (decode speed) |
-| Blackwell (RTX 50, RTX PRO 6000) | 120 | RTX 5090 (decode speed, fine-tuning), RTX PRO 6000 (fine-tuning) |
+| Turing (RTX 20, T4) | 75 | RTX 2060 (development), TITAN RTX (kernel tests) |
+| Ampere (RTX 30, A100) | 80, 86 | RTX 3060, RTX 3090 (decode speed), RTX A40 (decode speed, KV accuracy) |
+| Ada (RTX 40, L4) | 89 | RTX 4060 Ti (decode speed), RTX 4090 (decode speed, KV accuracy) |
+| Blackwell (RTX 50, RTX PRO 6000) | 120 | RTX 5090 (decode speed, KV accuracy, fine-tuning), RTX PRO 6000 (fine-tuning) |
 | CPU, Vulkan, other backends | upstream backends | |
 
 The fast TurboQuant KV kernels are CUDA-only; the CPU backend has a slow reference implementation (used for tests),
