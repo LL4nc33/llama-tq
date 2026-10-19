@@ -282,12 +282,13 @@ static __device__ __forceinline__ void fattn_gqa_load(
 }
 
 // Trellis K: the outlier terms of Q·K (fattn-tq.cuh) added to the ncols partial sums s of this lane. k: the decoded
-// samples the lane owns (4t .. 4t+3 of every block), Q_o: the unrotated query (ncols values per element), sign_w: the
-// KTQ signs of a block as bits.
+// samples the lane owns (4t .. 4t+3 of every block), Q_o: the unrotated query (ncols values per element), sign_lo and
+// sign_hi: the KTQ signs of elements 0..63 and 64..127 of a block as bits (set: the outlier term negates). In
+// registers, not shared memory: the kernel is bound by the shared memory pipe.
 template <ggml_type type_K, int ncols, int EPL>
 static __device__ __forceinline__ void fattn_gqa_ktq_trellis_outliers(
         const char * __restrict__ row, const float * __restrict__ k, const float * __restrict__ Q_o,
-        const uint32_t * sign_w, float * __restrict__ s) {
+        const uint64_t sign_lo, const uint64_t sign_hi, float * __restrict__ s) {
     using block_t = typename ktq_trellis<type_K>::block;
 #pragma unroll
     for (int gi = 0; gi < EPL/4; ++gi) {
@@ -297,16 +298,14 @@ static __device__ __forceinline__ void fattn_gqa_ktq_trellis_outliers(
         ggml_cuda_memcpy_1<4>(&pos4, b->outlier_pos);
         ggml_cuda_memcpy_1<2*VTQ_OUTLIER_K, 4>(val, b->outlier_val);
         float sums[VTQ_OUTLIER_K];
-        ktq_trellis_outlier_sums<2, 0>(pos4, k + 4*gi, sums);
+        ktq_trellis_outlier_sums<2, 0>(pos4, k + 4*gi, sums); // the lane owns samples 4*lane + e
 #pragma unroll
         for (int kk = 0; kk < VTQ_OUTLIER_K; ++kk) {
-            const int      p  = (pos4 >> (8*kk)) & 0xFF;
-            const uint32_t sw = p < 64 ? (p < 32 ? sign_w[0] : sign_w[1]) : (p < 96 ? sign_w[2] : sign_w[3]);
+            const int      p   = (pos4 >> (8*kk)) & 0xFF;
+            const uint32_t neg = uint32_t(((p & 64 ? sign_hi : sign_lo) >> (p & 63)) & 1);
             // -x_p (this lane's share), lane 0 also adds the stored value
-            float coef = ((sw >> (p % 32)) & 1 ? -sums[kk] : sums[kk]) * KTQ_TRELLIS_FWHT_SCALE;
-            if (threadIdx.x == 0) {
-                coef += __half2float(val[kk]);
-            }
+            const float coef = fmaf(__int_as_float(__float_as_int(sums[kk]) ^ (neg << 31)), KTQ_TRELLIS_FWHT_SCALE,
+                                    threadIdx.x == 0 ? __half2float(val[kk]) : 0.0f);
             const float4 * q4 = (const float4 *) (Q_o + (gi*QK_VTQ_TRELLIS + p)*ncols);
 #pragma unroll
             for (int j4 = 0; j4 < ncols/4; ++j4) {
@@ -325,8 +324,19 @@ static __device__ __forceinline__ float fattn_gqa_f4(const float4 v, const int i
     return i == 0 ? v.x : i == 1 ? v.y : i == 2 ? v.z : v.w;
 }
 
-template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap, bool use_sparse>
-__launch_bounds__(128, GGML_CUDA_FA_GQA_MIN_BLOCKS)
+// Threads per block: 128, or also 256 (fattn_gqa_nthreads_max). A trellis K, or a trellis V with 12 state bits, puts the
+// 16 KB table in shared memory once per block: with 4 warps that and 130-145 registers allow 3 blocks (12 warps) per SM,
+// with 8 warps sharing the table 2 blocks (16 warps) at up to 128 registers. Head size 512 stays at 4 warps (8 would
+// need a 16 KB combine buffer). The 256-thread blocks take 256 cells per iteration, so they are used only where they
+// still fill every SM (ggml_cuda_flash_attn_ext_vec_gqa_case).
+template <int D, ggml_type type_K, ggml_type type_V>
+static constexpr int fattn_gqa_nthreads_max() {
+    return D <= 256 && (ktq_trellis<type_K>::K > 0 || (vtq_trellis<type_V>::K > 0 && vtq_trellis<type_V>::L == GGML_TRELLIS_L_S)) ?
+        256 : 128;
+}
+
+template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap, bool use_sparse, int nthreads>
+__launch_bounds__(nthreads, nthreads == 256 ? 2 : GGML_CUDA_FA_GQA_MIN_BLOCKS)
 static __global__ void flash_attn_ext_vec_gqa(
         const char * __restrict__ Q,
         const char * __restrict__ K,
@@ -353,12 +363,12 @@ static __global__ void flash_attn_ext_vec_gqa(
     GGML_UNUSED_VARS(sinks, max_bias, m0, m1, n_head_log2, ne00, ne01, ne03, nb01,
                      ne10, ne13, ne31, ne32, nb31, nb32);
 
-    constexpr int nthreads = 128;
     constexpr int nwarps   = nthreads / WARP_SIZE;
     constexpr int EPL      = D / WARP_SIZE; // elements per lane of every K and V row, see fattn_gqa_idx
     constexpr bool K_tq    = GGML_TYPE_IS_KTQ(type_K);
     constexpr bool K_trellis = ktq_trellis<type_K>::K > 0;
     static_assert(D == 128 || D == 256 || D == 512, "head size 128, 256 or 512");
+    static_assert(nthreads == 128 || nthreads == 256, "4 or 8 warps");
     static_assert((ncols == 4 || ncols == 8) && ncols <= fattn_gqa_ncols_max(D), "4 or 8 columns");
 
 
@@ -480,18 +490,22 @@ static __global__ void flash_attn_ext_vec_gqa(
     __syncthreads(); // codebooks and table written, Q_tmp no longer needed
 
     // trellis K: the unrotated query, element i of column j at Q_o[i*ncols + j], and the KTQ signs of the 128 elements
-    // of a block as bits (sign_w[c] bit t: element 32*c + t, set: +1)
+    // of a block as bits (element i: bit i % 64 of sign_lo or sign_hi, set where ktq_trellis_sign_pos)
     float * Q_o = VKQ_combine;
-    uint32_t sign_w[4] = {0, 0, 0, 0};
+    uint64_t sign_lo = 0;
+    uint64_t sign_hi = 0;
     if constexpr (K_trellis) {
         for (int i = tid; i < D*ncols; i += nthreads) {
             const int j = i % ncols;
             Q_o[i] = j < ncols_valid ? ((const float *) (Q + j*nb02))[i / ncols] * scale : 0.0f;
         }
+        uint32_t w[4];
 #pragma unroll
         for (int c = 0; c < 4; ++c) {
-            sign_w[c] = __ballot_sync(0xFFFFFFFF, ktq_trellis_sign_pos(32*c + threadIdx.x));
+            w[c] = __ballot_sync(0xFFFFFFFF, ktq_trellis_sign_pos(32*c + threadIdx.x));
         }
+        sign_lo = (uint64_t(w[1]) << 32) | w[0];
+        sign_hi = (uint64_t(w[3]) << 32) | w[2];
         __syncthreads();
     }
 
@@ -531,7 +545,7 @@ static __global__ void flash_attn_ext_vec_gqa(
                 }
             }
             if constexpr (K_trellis) {
-                fattn_gqa_ktq_trellis_outliers<type_K, ncols, EPL>(K + int64_t(row_KQ)*nb11, k, Q_o, sign_w, s);
+                fattn_gqa_ktq_trellis_outliers<type_K, ncols, EPL>(K + int64_t(row_KQ)*nb11, k, Q_o, sign_lo, sign_hi, s);
             }
             const float sum = fattn_gqa_reduce_cols<ncols>(s);
             if (threadIdx.x % (WARP_SIZE/ncols) == 0) {
@@ -638,6 +652,9 @@ static __global__ void flash_attn_ext_vec_gqa(
         const int dst_row = (sequence*ne02 + head0 + j)*gridDim.y + blockIdx.y;
 #pragma unroll
         for (int i0 = 0; i0 < D; i0 += nthreads) {
+            if (nthreads > D && tid >= D) {
+                break;
+            }
             float val = 0.0f;
 #pragma unroll
             for (int w = 0; w < nwarps; ++w) {
@@ -667,27 +684,42 @@ static __global__ void flash_attn_ext_vec_gqa(
 #endif // FLASH_ATTN_AVAILABLE
 }
 
-template <int D, int ncols, ggml_type type_K, ggml_type type_V>
+template <int D, int ncols, ggml_type type_K, ggml_type type_V, int nthreads>
 static fattn_kernel_t fattn_gqa_kernel(const bool use_logit_softcap, const bool use_sparse) {
     if (use_sparse) {
-        return use_logit_softcap ? flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, true,  true> :
-                                   flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, false, true>;
+        return use_logit_softcap ? flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, true,  true,  nthreads> :
+                                   flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, false, true,  nthreads>;
     }
-    return use_logit_softcap ? flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, true,  false> :
-                               flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, false, false>;
+    return use_logit_softcap ? flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, true,  false, nthreads> :
+                               flash_attn_ext_vec_gqa<D, ncols, type_K, type_V, false, false, nthreads>;
 }
 
 template <int D, int ncols, ggml_type type_K, ggml_type type_V>
 static void ggml_cuda_flash_attn_ext_vec_gqa_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst, const bool use_sparse) {
     float logit_softcap;
     memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+    const bool use_logit_softcap = logit_softcap != 0.0f;
 
-    fattn_kernel_t fattn_kernel = fattn_gqa_kernel<D, ncols, type_K, type_V>(logit_softcap != 0.0f, use_sparse);
-    constexpr int nwarps = 128 / WARP_SIZE;
     if constexpr (GGML_TYPE_IS_VTQ_TRELLIS(type_V) || GGML_TYPE_IS_KTQ_TRELLIS(type_K)) {
         GGML_CUDA_INIT_TRELLIS_TABLE_IMPL(); // the trellis readers take the table through this TU's pointer
     }
-    launch_fattn<D, 1, ncols>(ctx, dst, fattn_kernel, nwarps, 0, 128, false, false, false, WARP_SIZE, use_sparse);
+    if constexpr (fattn_gqa_nthreads_max<D, type_K, type_V>() == 256) {
+        // 256-thread blocks halve the number of blocks along the cache: only if their KV tiles (256 cells each) of all
+        // GQA blocks still fill every SM at the occupancy of that kernel (short contexts keep 128 threads)
+        const ggml_tensor * Q = dst->src[0];
+        const ggml_tensor * K = dst->src[1];
+        const int64_t n_rows = use_sparse ? ggml_get_op_params_i32(dst, 4) : K->ne[1];
+        const int64_t n_dst  = K->ne[2] * ((Q->ne[2]/K->ne[2] + ncols - 1) / ncols);
+        fattn_kernel_t kernel = fattn_gqa_kernel<D, ncols, type_K, type_V, 256>(use_logit_softcap, use_sparse);
+        int blocks_per_sm = 0;
+        CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks_per_sm, kernel, 256, 0));
+        if ((n_rows/256) * n_dst >= int64_t(blocks_per_sm) * ggml_cuda_info().devices[ctx.device].nsm) {
+            launch_fattn<D, 1, ncols>(ctx, dst, kernel, 256/WARP_SIZE, 0, 256, false, false, false, WARP_SIZE, use_sparse);
+            return;
+        }
+    }
+    fattn_kernel_t kernel = fattn_gqa_kernel<D, ncols, type_K, type_V, 128>(use_logit_softcap, use_sparse);
+    launch_fattn<D, 1, ncols>(ctx, dst, kernel, 128/WARP_SIZE, 0, 128, false, false, false, WARP_SIZE, use_sparse);
 }
 
 // The supported (K type, V type) pairs for one head size D, block width ncols and K type: every V type of the list

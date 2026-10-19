@@ -136,6 +136,13 @@ the trellis cache, not by the encoder. Accuracy of these pairs: [turboquant.md](
 Gemma 4 26B-A4B IQ2_XXS (head size 512 on the global layers), same GPUs, decode empty / 8k / 32k: `ktq3` / `vtq3`
 54 / 40 / 33 t/s (release tree before the encoder work: 50 / 38 / 32), `ktq3_1` / `vtq3_1` 78 / 65 / 54 t/s.
 
+Since 2026-10-18 the flash-attention decode kernels read the trellis cache faster; the two-GPU decode column above is
+from before that. Same model and `llama-bench` settings on one RTX 2060, decode empty / 8k / 32k: `ktq4` / `vtq4`
+77.1 / 56.6 / 30.6 t/s, `ktq3` / `vtq3` 76.3 / 56.5 / 30.7, `ktq2` / `vtq2` 75.0 / 56.0 / 30.6, against `ktq4_1` /
+`vtq4_1` 87.3 / 70.6 / 46.0, `ktq3_1` / `vtq3_1` 86.9 / 70.5 / 44.1 and `q8_0` / `q8_0` 88.1 / 71.5 / 43.6 (before the
+change `ktq3` / `vtq3` 68.8 / 53.5 / 28.4). Gemma 4 26B-A4B IQ2_XXS `ktq3` / `vtq3`, one RTX 2060: 53.0 / 40.5 / 33.6 →
+56.5 / 41.9 / 34.5 t/s.
+
 Reproduce: [scripts/eval](../../scripts/eval/README.md#trellis-and-codebook-types-two-gpus).
 
 ## Speculative decoding at long context, one GPU

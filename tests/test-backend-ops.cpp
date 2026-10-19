@@ -10088,8 +10088,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     // trellis K types (ktq*_3s), heads 128 and 256 (one and two blocks per row), 2 KV heads:
-    // - decode with the VEC kernel (GQA 1, or a single KQ tile): V with a VEC instance, and q5_1 V without one (K and V
-    //   converted to f16)
+    // - decode with the VEC kernel (GQA 1): V with a VEC instance, and q5_1 V without one (K and V converted to f16);
+    //   GQA 4 with a single KQ tile, which the GQA kernel takes for trellis types
     for (ggml_type type_K : {GGML_TYPE_KTQ2_3S, GGML_TYPE_KTQ3_3S, GGML_TYPE_KTQ4_3S}) {
         for (int hs : {128, 256}) {
             for (ggml_type type_V : {GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q5_0, GGML_TYPE_Q4_0, GGML_TYPE_VTQ1_1,
@@ -10123,6 +10123,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     test_cases.emplace_back(new test_flash_attn_ext(128, 128, 1, {6, 1}, 2048, 1, true, false, 0, 0,
                 GGML_PREC_F32, GGML_TYPE_KTQ4_3S, GGML_TYPE_VTQ4_1));
+    // - a cache long enough for the 256-thread GQA blocks (64 tiles of 256 cells for each of 8 KV heads fill up to 256
+    //   SMs): trellis K, trellis V with a 12-state-bit table, and both. No f16 V: the CPU reference sums f16 V in f16,
+    //   its error grows with the cache length (NMSE ~3.6e-4 at 16384 cells, the limit is 5e-4)
+    for (int hs : {128, 256}) {
+        for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{{GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ3_1},
+                {GGML_TYPE_Q8_0, GGML_TYPE_VTQ3_2S}, {GGML_TYPE_KTQ2_3S, GGML_TYPE_VTQ2_2S}}) {
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {4, 1}, 16384, 1, true, false, 0, 0,
+                        GGML_PREC_F32, kv_types.first, kv_types.second));
+        }
+    }
     // - the GQA kernel with the stock quantized V types: every K type with q8_0, q5_0 and q4_0 V at GQA 4 (4-column
     //   blocks), 6 (8-column blocks, two columns unused) and 8; logit softcap. vtq1_1 V has no reader in the GQA
     //   kernel: several KQ tiles in the VEC kernel

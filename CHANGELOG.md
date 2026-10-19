@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-18
+
+- **Faster flash-attention decode of trellis caches (`ktq2`-`ktq4`, 12-state-bit `vtq2`-`vtq4`).** Qwen3-4B on one RTX
+  2060, decode empty / 8k / 32k: `ktq4` / `vtq4` 70.0 / 54.1 / 28.5 → 77.1 / 56.5 / 30.5 t/s, `ktq3` / `vtq3` 68.8 /
+  53.5 / 28.4 → 76.2 / 56.2 / 30.6, `ktq2` / `vtq2` 67.9 / 53.5 / 28.6 → 75.3 / 55.9 / 30.5, `q8_0` / `vtq3` +1.5 %;
+  Gemma 4 26B-A4B IQ2_XXS `ktq3` / `vtq3` 53.0 / 40.5 / 33.6 → 56.5 / 41.9 / 34.5, Gemma 4 12B Q4_K_M 26.1 / 21.1 / 17.9
+  → 27.6 / 21.7 / 18.4. The outlier correction of a trellis K builds the 4 sign patterns of a lane's samples once (a
+  Walsh transform) instead of negating per outlier, and the GQA decode kernel takes the KTQ signs from registers instead
+  of shared memory; with a trellis K or a 12-state-bit trellis V, 256-thread blocks share the 16 KB state table (16
+  instead of 12 warps per SM), chosen per launch only where their KV tiles still fill every SM. Caches of a single KQ
+  tile (≤ 256 cells) with a trellis side now also take the GQA kernel: the per-head vector kernel decoded every trellis
+  row once per Q head (68 µs per layer at ≤ 64 cells, now 26). Accuracy unchanged: `test-backend-ops` errors equal
+  before and after on the same inputs, KL divergence against f16 within its noise. New `test-backend-ops` cases:
+  `FLASH_ATTN_EXT` with a 16384-cell cache and a trellis K, V or both (heads 128 and 256).
+
 ## 2026-10-17
 
 - **Faster trellis encoder (`ktq2`-`ktq4`, `vtq2`-`vtq4`).** Qwen3-4B on two RTX 2060, against the release tree:

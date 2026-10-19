@@ -5,8 +5,9 @@
 vector decode kernels; verify and prompt batches convert them to f16 for the tensor-core kernel. Against the codebook types of the same bits (`ktq*_1` / `vtq*_1`, still available by their full
 names) the KL divergence drops 3-4 times on Qwen3-4B, and 2-bit K no longer loses long-context retrieval (0/36 → 26-29/36
 copies). The price is speed, because the trellis encoder runs after the prompt and for every new token: on Qwen3-4B
-decode is 20-25 % slower up to 8k context and 36-38 % at 32k, and the first prompt takes 1.5-1.9 times as long (before the
-encoder work of 2026-10-17: 30-40 % and 3-4.5 times; [benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
+decode is 12-14 % slower on an empty context, 20 % at 8k and 30-34 % at 32k (one RTX 2060, since the flash-attention
+work of 2026-10-18), and the first prompt takes 1.5-1.9 times as long (before the encoder work of 2026-10-17: decode
+30-40 % slower, first prompt 3-4.5 times; [benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 Quality is measured with the KV cache really quantized: in prefill K is staged in f16 by default (deferred K
 quantization) and only quantized at the prefill→decode boundary; `llama-perplexity` turns the staging off, so it scores
 the quantized cache (`--tq-deferred-k`/`--tq-deferred-v` keep the f16 staging there). The attention-rotation feature
@@ -26,11 +27,11 @@ away from an f16 cache; 0 is identical ([Accuracy](#accuracy)).
   such as gpt-oss.
 - For more context: `-ctk ktq4 -ctv vtq4` (4.6 bpw, Qwen3-4B KLD 0.0090) is clearly more accurate than `q4_0` / `q4_0`
   (4.5 bpw, 0.034). `-ctk ktq3 -ctv vtq3` (3.6 bpw, 0.025) is as accurate as the codebook pair `ktq4_1` / `vtq4_1`
-  (5.0 bpw): take the codebook pair when the memory is there, it decodes 25-65 % faster.
+  (5.0 bpw): take the codebook pair when the memory is there, it decodes 15-50 % faster.
 - `-ctk ktq2 -ctv vtq2` (2.6 bpw, 0.091) is the smallest cache that still retrieves exact text from a long context on
   Qwen3-4B (26-29/36 copies, f16 32/36); with `q8_0` V 29-30/36. The 2-bit codebook K (`ktq2_1`) fails there completely.
-- The trellis types (`ktq2`-`ktq4`, `vtq2`-`vtq4`) decode 20-25 % slower than the codebook types up to 8k context and
-  36-38 % at 32k, and take 1.5-1.9 times as long for the first prompt; when speed matters more than the last bit of accuracy, use the codebook types by
+- The trellis types (`ktq2`-`ktq4`, `vtq2`-`vtq4`) decode 12-14 % slower than the codebook types on an empty context, 20 %
+  at 8k and 30-34 % at 32k, and take 1.5-1.9 times as long for the first prompt; when speed matters more than the last bit of accuracy, use the codebook types by
   their full names (`ktq4_1`, `vtq4_1`, …).
 
 ## Overview
@@ -54,7 +55,7 @@ The suffix tells the method:
 | Suffix | Method | Types | Decode |
 |---|---|---|---|
 | `_1` | Hadamard rotation + codebook | `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1` (short names `ktq1`, `vtq1`) | full speed |
-| `_3s` | K: 4 fp16 outliers + Hadamard rotation + trellis with 12 state bits | `ktq{2,3,4}_3s` (short names `ktq2`-`ktq4`) | 20-38 % slower than `_1` with `vtq*_2s` V |
+| `_3s` | K: 4 fp16 outliers + Hadamard rotation + trellis with 12 state bits | `ktq{2,3,4}_3s` (short names `ktq2`-`ktq4`) | 12-34 % slower than `_1` with `vtq*_2s` V |
 | `_2` | trellis | `vtq{2,3,4}_2` | ~3× slower than `_1` (Qwen3-4B, RTX 2060: 20-27 t/s; 1-3 t/s until 2026-10-14) |
 | `_2s` | trellis with 12 state bits ("s" = fast) | `vtq{2,3,4}_2s` (short names `vtq2`-`vtq4`) | 10-15 % slower than `_1` |
 | `_3` | trellis + 4 fp16 outliers per block | `vtq{2,3,4}_3` | same encoder as `_2`, not measured separately |
@@ -174,8 +175,8 @@ with x_p = sign(p)/√128 · Σ_m H(p,m)·t_m computed from the samples a lane a
 
 | Path | K/V pairs | Head sizes |
 |---|---|---|
-| Decode, GQA kernel (GQA ratio ≥ 3, more than 256 cells) | `ktq{2,3,4}_3s` K × V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1`, `vtq{2,3,4}_2s` (12-bit table in shared memory, shared with a `vtq*_2s` V) | 128, 256, 512 (since 2026-10-16) |
-| Decode, vector kernel (GQA ratio 1-2, single KQ tile, `vtq1_1` V) | the GQA kernel's pairs plus `vtq1_1` V | 128, 256, 512 |
+| Decode, GQA kernel (GQA ratio ≥ 3; since 2026-10-18 also a single KQ tile of ≤ 256 cells) | `ktq{2,3,4}_3s` K × V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1`, `vtq{2,3,4}_2s` (12-bit table in shared memory, shared with a `vtq*_2s` V) | 128, 256, 512 (since 2026-10-16) |
+| Decode, vector kernel (GQA ratio 1-2, `vtq1_1` V; before 2026-10-18 also a single KQ tile) | the GQA kernel's pairs plus `vtq1_1` V | 128, 256, 512 |
 | Decode, other pairs | K and V converted to f16 every step, MMA kernel (correct, slow at long context) | any multiple of 128 |
 | 2+ queries (speculative verify, prompt) | K (and a quantized V) converted to f16, MMA kernel | any multiple of 128 |
 
@@ -466,7 +467,7 @@ Decode (one query token per sequence) has two dedicated CUDA kernels for quantiz
 | Kernel | Source | How it works | Covers |
 |---|---|---|---|
 | Tensor-core decode | `fattn-tq-wmma.cu` | Tiles of 64 (D=128), 32 (D=256) or 16 (D=512) K/V rows are dequantized to f16 in shared memory; S = K·Qᵀ and O += Vᵀ·P run as 16×16×16 WMMA with 16 query columns per block (the whole GQA group); attention sinks (gpt-oss) are supported. Also takes speculative-decoding verify batches of 2-16 queries: the columns are (query, head) pairs, one block of 16, or of 32 from 8192 cells (half the tile rows; not f16 K at D=256), each column with its own mask row. | GQA ratio 2-16. Same-bit pairs `ktq{2,3,4}_1` × `vtq{2,3,4}_1` and `q4_0` at D=64/128/256/512, `q5_0` at D=128/256/512 (at D=64 only verify batches) (at 128/256 only what the GQA kernel does not take: GQA ratio 2, a single KQ tile; the GQA kernel goes first since 2026-10-14); `q8_0` and `q8_0` K with `vtq{2,4}_1` V at D=64/512; f16 K with `vtq{2,3,4}_1` V at D=64, with `vtq{2,4}_1` V at D=256/512; `ktq{2,4}_1` K with f16 V at D=256 |
-| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4-column blocks for GQA ratio 3-4, 8-column blocks above 4), one warp per K/V row, the column dot products reduced together. Each lane reads several elements per load (2-byte loads for the 4-bit codes and `q4_0`/`q5_0`), the block scale is applied once per element, 2-bit codebooks sit in registers and 3/4-bit codebooks in shared memory; the scores are stored row by row so that the V loop reads the weights of all columns with one load. Supports the sparse index lists of Qwen3.8-Flash-Next. | GQA ratio ≥ 3, no sinks; contexts of a single KQ tile go to the generic vector kernel. Every pair of K f16, `q8_0`, `q5_0`, `q4_0`, `ktq{2,3,4}_1` and V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` at D=128/256 (since 2026-10-14; tried before the tensor-core decode kernel), except f16 / f16 (tensor-core MMA kernel). Since 2026-10-15 also the trellis V types (`vtq*_2`, `vtq*_2s`, `vtq*_3`, `vtq3_v8`) next to K f16, `q8_0` and `ktq{2,3,4}_1`: each V block is decoded once per GQA group, the 12-state-bit table (16 KB) is copied to shared memory, the 16-bit one (256 KB) is read through L2. Since 2026-10-16 also the trellis K types `ktq{2,3,4}_3s` next to V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` and `vtq{2,3,4}_2s`, and head size 512 (Gemma 4 global layers) for every pair above with a trellis K or V: 4-column blocks there (a GQA group of 8 takes two; Q and the V accumulators of 8 columns would need 256 registers, at most 255 exist), each trellis row decoded twice per group of 8 instead of once per Q head; sm_75 (ptxas): 232-255 registers, no spills, 26.8 KB static shared memory with the 12-state-bit table, 10.4 KB without it. The other pairs at D=512 stay with the tensor-core decode kernel. Not `ktq1_1`/`vtq1_1`; the trellis types not in the tensor-core decode kernel (verify batches convert V to f16, GQA ratio 1-2 and single-tile contexts use the vector kernel) |
+| GQA decode | `fattn-vec-gqa.cu` | One block per GQA group (4-column blocks for GQA ratio 3-4, 8-column blocks above 4), one warp per K/V row, the column dot products reduced together. Each lane reads several elements per load (2-byte loads for the 4-bit codes and `q4_0`/`q5_0`), the block scale is applied once per element, 2-bit codebooks sit in registers and 3/4-bit codebooks in shared memory; the scores are stored row by row so that the V loop reads the weights of all columns with one load. Supports the sparse index lists of Qwen3.8-Flash-Next. Since 2026-10-18, with a trellis K or a 12-state-bit trellis V, 256-thread blocks share the 16 KB table (16 instead of 12 warps per SM), chosen per launch where their KV tiles still fill every SM; the outlier correction of a trellis K builds the 4 sign patterns of a lane's samples once per block and takes the KTQ signs from registers. | GQA ratio ≥ 3, no sinks; contexts of a single KQ tile go to the generic vector kernel, except pairs with a trellis K or V (since 2026-10-18: there each trellis row decoded once per Q head cost more than the split saves). Every pair of K f16, `q8_0`, `q5_0`, `q4_0`, `ktq{2,3,4}_1` and V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` at D=128/256 (since 2026-10-14; tried before the tensor-core decode kernel), except f16 / f16 (tensor-core MMA kernel). Since 2026-10-15 also the trellis V types (`vtq*_2`, `vtq*_2s`, `vtq*_3`, `vtq3_v8`) next to K f16, `q8_0` and `ktq{2,3,4}_1`: each V block is decoded once per GQA group, the 12-state-bit table (16 KB) is copied to shared memory, the 16-bit one (256 KB) is read through L2. Since 2026-10-16 also the trellis K types `ktq{2,3,4}_3s` next to V f16, `q8_0`, `q5_0`, `q4_0`, `vtq{2,3,4}_1` and `vtq{2,3,4}_2s`, and head size 512 (Gemma 4 global layers) for every pair above with a trellis K or V: 4-column blocks there (a GQA group of 8 takes two; Q and the V accumulators of 8 columns would need 256 registers, at most 255 exist), each trellis row decoded twice per group of 8 instead of once per Q head; sm_75 (ptxas): 232-255 registers, no spills, 26.8 KB static shared memory with the 12-state-bit table, 10.4 KB without it. The other pairs at D=512 stay with the tensor-core decode kernel. Not `ktq1_1`/`vtq1_1`; the trellis types not in the tensor-core decode kernel (verify batches convert V to f16, GQA ratio 1-2 and single-tile contexts use the vector kernel) |
 
 Kernel-only microbenchmark of the attention op at 16k context (one RTX 2060, `test-backend-ops perf`, 2026-10-04,
 before the encoder change; end-to-end speeds are on the [benchmarks](benchmarks/README.md) page):
@@ -635,8 +636,8 @@ Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style
 - **2- and 3-bit codebook K** (`ktq2_1`, `ktq3_1`) still lose a lot of accuracy on every measured model (see
   [Accuracy](#accuracy)); the trellis K `ktq2` / `ktq3` lose 3-5 times less on Qwen3-4B. gpt-oss needs 8-bit K.
 - **Trellis types are slower** (`ktq2`-`ktq4`, `vtq2`-`vtq4`): the Viterbi encoder runs over the whole prompt and then
-  for every new token, so the first prompt takes 1.5-1.9 times as long as with the codebook types, and decode is 20-25 %
-  slower up to 8k context and 36-38 % at 32k, where reading the trellis cache limits it
+  for every new token, so the first prompt takes 1.5-1.9 times as long as with the codebook types, and decode is 12-14 %
+  slower on an empty context, 20 % at 8k and 30-34 % at 32k, where reading the trellis cache limits it
   ([benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 - **Mixed K/V pairs outside the decode kernels' coverage** (head sizes other than 128 and 256, except the trellis
   pairs, which the GQA kernel also takes at 512; pairs without a vector-kernel instance at GQA ratio 1-2;

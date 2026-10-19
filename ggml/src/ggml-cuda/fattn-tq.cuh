@@ -310,16 +310,23 @@ static __device__ __forceinline__ void ktq_trellis_rotate_q(float * q) {
 
 // The lane's share of Σ_m H(p_k, m) t_m for the 4 outlier positions p_k (the bytes of pos4): t[e] is the decoded
 // sample m_e = (lane << LSH) | (e << ESH) of the block (e < 4), so the sign of H(p, m_e) is the parity of p & lane << LSH
-// flipped by the bits of p at ESH (e odd) and ESH + 1 (e >= 2).
+// flipped by the bits of p at ESH (e odd) and ESH + 1 (e >= 2). The 4 sign patterns of e over t[0..3] (a Walsh
+// transform of t) are built once; each outlier picks the one its bits ESH and ESH + 1 select and negates it by the
+// parity (fewer instructions than 16 conditional negations per block).
 template <int LSH, int ESH>
 static __device__ __forceinline__ void ktq_trellis_outlier_sums(const uint32_t pos4, const float * t, float * sums) {
+    const float a0 = t[0] + t[1];
+    const float a1 = t[0] - t[1];
+    const float a2 = t[2] + t[3];
+    const float a3 = t[2] - t[3];
+    const float w[4] = { a0 + a2, a1 + a3, a0 - a2, a1 - a3 };
 #pragma unroll
     for (int k = 0; k < VTQ_OUTLIER_K; ++k) {
         const uint32_t p  = (pos4 >> (8*k)) & 0xFF;
         const uint32_t h  = __popc(p & (threadIdx.x << LSH)) & 1;
-        const uint32_t b0 = (p >> ESH) & 1;
-        const uint32_t b1 = (p >> (ESH + 1)) & 1;
-        sums[k] = (h ? -t[0] : t[0]) + ((h ^ b0) ? -t[1] : t[1]) + ((h ^ b1) ? -t[2] : t[2]) + ((h ^ b0 ^ b1) ? -t[3] : t[3]);
+        const uint32_t b  = (p >> ESH) & 3;
+        const float    wb = b == 0 ? w[0] : b == 1 ? w[1] : b == 2 ? w[2] : w[3];
+        sums[k] = __int_as_float(__float_as_int(wb) ^ (h << 31));
     }
 }
 

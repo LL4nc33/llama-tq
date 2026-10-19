@@ -1,6 +1,6 @@
 # Roadmap
 
-What works, what is in flight and what is planned (as of 2026-10-17). Measured numbers are on the [benchmarks page](docs/benchmarks/README.md),
+What works, what is in flight and what is planned (as of 2026-10-18). Measured numbers are on the [benchmarks page](docs/benchmarks/README.md),
 the history in the [changelog](CHANGELOG.md).
 
 ## What works today
@@ -20,8 +20,7 @@ the history in the [changelog](CHANGELOG.md).
 
 ## In flight
 
-- **Faster decode of the trellis types:** reading the trellis cache in the flash-attention decode kernels (the encoder
-  is done, 2026-10-17). → [turboquant.md](docs/turboquant.md#known-issues)
+Nothing at the moment (2026-10-18).
 
 ## Planned
 
@@ -43,7 +42,7 @@ the history in the [changelog](CHANGELOG.md).
 ## Known issues
 
 - **TurboQuant:** the trellis types are slower than the codebook types (first prompt 1.5-1.9 times as long, decode
-  20-38 % slower); 2- and 3-bit codebook K lose a lot of
+  12-34 % slower); 2- and 3-bit codebook K lose a lot of
   accuracy, and gpt-oss needs 8-bit K. Details: [turboquant.md#known-issues](docs/turboquant.md#known-issues).
 - **Prefill on Gemma 4** is 1-2 % slower than upstream at long context
   ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).

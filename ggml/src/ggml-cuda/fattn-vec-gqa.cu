@@ -43,8 +43,11 @@ bool ggml_cuda_flash_attn_ext_vec_gqa(ggml_backend_cuda_context & ctx, ggml_tens
     const bool use_sparse = n_kv_max > 0 && mask->ne[0] == K->ne[1] && mask->ne[2] == 1 && K->ne[1] >= 2*int64_t(n_kv_max);
 
     // with a single KQ tile there is nothing to split across the GQA blocks: the per-head VEC kernel is faster there
-    // (Qwen3-4B q8_0 decode, RTX 2060: 87.3 vs 85.8 t/s at 256 cells, 83.7 vs 85.4 at 512)
-    if (!use_sparse && K->ne[1] <= FATTN_KQ_STRIDE) {
+    // (Qwen3-4B q8_0 decode, RTX 2060: 87.3 vs 85.8 t/s at 256 cells, 83.7 vs 85.4 at 512). Not with a trellis side:
+    // decoding a trellis row costs more than splitting the tile saves, and here it is decoded once per GQA group
+    // instead of once per Q head (Qwen3-4B ktq3/vtq3 at <= 64 cells: VEC 68 us per layer, this kernel 26)
+    const bool trellis = GGML_TYPE_IS_KTQ_TRELLIS(K->type) || GGML_TYPE_IS_VTQ_TRELLIS(V->type);
+    if (!use_sparse && !trellis && K->ne[1] <= FATTN_KQ_STRIDE) {
         return false;
     }
 
