@@ -3,9 +3,10 @@
 **Status (2026-10-16):** the short names `ktq2`-`ktq4` and `vtq2`-`vtq4` now select the trellis types (`ktq*_3s`,
 `vtq*_2s`), the most accurate type of each bit width; the number is the bits per value. They run on CUDA in the GQA and
 vector decode kernels; verify and prompt batches convert them to f16 for the tensor-core kernel. Against the codebook types of the same bits (`ktq*_1` / `vtq*_1`, still available by their full
-names) the KL divergence drops 3-4 times on Qwen3-4B, and 2-bit K no longer loses long-context retrieval (0/36 → 26/36
-copies). The price is speed: decode is 30-40 % slower and the first prompt takes 3-4.5 times as long, because the
-trellis encoder runs after the prompt and for every new token ([benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
+names) the KL divergence drops 3-4 times on Qwen3-4B, and 2-bit K no longer loses long-context retrieval (0/36 → 26-29/36
+copies). The price is speed, because the trellis encoder runs after the prompt and for every new token: on Qwen3-4B
+decode is 20-25 % slower up to 8k context and 36-38 % at 32k, and the first prompt takes 1.5-1.9 times as long (before the
+encoder work of 2026-10-17: 30-40 % and 3-4.5 times; [benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 Quality is measured with the KV cache really quantized: in prefill K is staged in f16 by default (deferred K
 quantization) and only quantized at the prefill→decode boundary; `llama-perplexity` turns the staging off, so it scores
 the quantized cache (`--tq-deferred-k`/`--tq-deferred-v` keep the f16 staging there). The attention-rotation feature
@@ -23,13 +24,13 @@ away from an f16 cache; 0 is identical ([Accuracy](#accuracy)).
 - Use `f16` when the context fits, otherwise `-ctk q8_0 -ctv q8_0`: at the numerical noise floor of the model, full speed.
 - `-ctk q8_0 -ctv vtq4_1` (6.5 bpw) stays close to that at full speed; it is the choice for models that need 8-bit K
   such as gpt-oss.
-- For more context: `-ctk ktq4 -ctv vtq4` (4.6 bpw, Qwen3-4B KLD 0.0087) is clearly more accurate than `q4_0` / `q4_0`
+- For more context: `-ctk ktq4 -ctv vtq4` (4.6 bpw, Qwen3-4B KLD 0.0090) is clearly more accurate than `q4_0` / `q4_0`
   (4.5 bpw, 0.034). `-ctk ktq3 -ctv vtq3` (3.6 bpw, 0.025) is as accurate as the codebook pair `ktq4_1` / `vtq4_1`
-  (5.0 bpw): take the codebook pair when the memory is there, it decodes 40-70 % faster.
-- `-ctk ktq2 -ctv vtq2` (2.6 bpw, 0.095) is the smallest cache that still retrieves exact text from a long context on
-  Qwen3-4B (26/36 copies, f16 32/36); with `q8_0` V 30/36. The 2-bit codebook K (`ktq2_1`) fails there completely.
-- The trellis types (`ktq2`-`ktq4`, `vtq2`-`vtq4`) decode 30-40 % slower than the codebook types and take 3-4.5 times
-  as long for the first prompt; when speed matters more than the last bit of accuracy, use the codebook types by
+  (5.0 bpw): take the codebook pair when the memory is there, it decodes 25-65 % faster.
+- `-ctk ktq2 -ctv vtq2` (2.6 bpw, 0.091) is the smallest cache that still retrieves exact text from a long context on
+  Qwen3-4B (26-29/36 copies, f16 32/36); with `q8_0` V 29-30/36. The 2-bit codebook K (`ktq2_1`) fails there completely.
+- The trellis types (`ktq2`-`ktq4`, `vtq2`-`vtq4`) decode 20-25 % slower than the codebook types up to 8k context and
+  36-38 % at 32k, and take 1.5-1.9 times as long for the first prompt; when speed matters more than the last bit of accuracy, use the codebook types by
   their full names (`ktq4_1`, `vtq4_1`, …).
 
 ## Overview
@@ -53,7 +54,7 @@ The suffix tells the method:
 | Suffix | Method | Types | Decode |
 |---|---|---|---|
 | `_1` | Hadamard rotation + codebook | `ktq{1,2,3,4}_1`, `vtq{1,2,3,4}_1` (short names `ktq1`, `vtq1`) | full speed |
-| `_3s` | K: 4 fp16 outliers + Hadamard rotation + trellis with 12 state bits | `ktq{2,3,4}_3s` (short names `ktq2`-`ktq4`) | 30-40 % slower than `_1` with `vtq*_2s` V |
+| `_3s` | K: 4 fp16 outliers + Hadamard rotation + trellis with 12 state bits | `ktq{2,3,4}_3s` (short names `ktq2`-`ktq4`) | 20-38 % slower than `_1` with `vtq*_2s` V |
 | `_2` | trellis | `vtq{2,3,4}_2` | ~3× slower than `_1` (Qwen3-4B, RTX 2060: 20-27 t/s; 1-3 t/s until 2026-10-14) |
 | `_2s` | trellis with 12 state bits ("s" = fast) | `vtq{2,3,4}_2s` (short names `vtq2`-`vtq4`) | 10-15 % slower than `_1` |
 | `_3` | trellis + 4 fp16 outliers per block | `vtq{2,3,4}_3` | same encoder as `_2`, not measured separately |
@@ -160,11 +161,13 @@ whose K is very sensitive to quantization):
 Offline on the same model's K/Q rows (softmax KL per head), the same 2-outlier split around the codebook (`ktq3_1` +
 2 outliers, 4.875 bpw: 0.043) stays behind the trellis with 2 outliers (3.625 bpw: 0.029): the gain is not only the
 outliers. Heads that are not a multiple of 128 fall back to `ktq*_1` when the cache is created. The CPU Viterbi
-encoder needs ~12 ms per 3-bit block.
+encoder needs ~0.6 ms per block at 12 state bits and ~9 ms at 16 (Ryzen 7 4800H, one thread; before 2026-10-17 it
+searched every state instead of every butterfly: 13 and 380 ms).
 
 CUDA (since 2026-10-16): the K cache write runs the shared-memory Viterbi encoder of `vtq*_2s` with the rotation
-added after the outlier pick (KTQ signs, 128-point FWHT across 128 threads, same operands and stage order as the CPU,
-so the encoder aims at bit-identical blocks); the deferred K conversion after the prompt takes the same path. Flash
+added after the outlier pick (KTQ signs, 128-point FWHT across 128 threads, same operands and stage order as the CPU);
+the deferred K conversion after the prompt takes the same path. CPU and CUDA write bit-identical blocks (see
+[VTQ v2](#vtq-v2--trellis)). Flash
 attention rotates Q once per query like the K blocks and dots it with the decoded samples; the CPU dequant overwrites
 the inverse-rotated value x_p at each of the 4 outlier positions, so the readers add −q_p·x_p + q_p·val_p per outlier,
 with x_p = sign(p)/√128 · Σ_m H(p,m)·t_m computed from the samples a lane already holds. Coverage:
@@ -275,11 +278,13 @@ earlier CUDA results for these types are without them.
 KL divergence of the token distributions against an f16 KV cache (`llama-perplexity --kl-divergence`, 40 chunks of 512
 tokens, `-fa on`) with the cache really quantized during prefill (`--no-tq-deferred-k --no-tq-deferred-v`). Lower is
 better; in brackets the share of positions where the most likely token is unchanged. Measured 2026-10-11 with the encoder
-that searches the block scale; the trellis rows (short names `ktq2`-`ktq4`, `vtq2`-`vtq4`) on Qwen3-4B 2026-10-16 with
-the same base and flags. On gpt-oss (head size 64) the trellis types fall back to the codebook types of the same bits;
-on Gemma 4 their KLD was not measured (see the retrieval test on Gemma 4 26B below). The Qwen3-4B column was repeated
-on the release tree of 2026-10-16 on two RTX 2060 and on an RTX A40, RTX 4090 and RTX 5090: every pair within ±6 % of
-the table on every GPU (`q8_0` 0.0031-0.0034, `ktq4` / `vtq4` 0.0085-0.0089, `ktq2_1` / `vtq2_1` 0.40-0.42).
+that searches the block scale; the trellis rows (short names `ktq2`-`ktq4`, `vtq2`-`vtq4`) on Qwen3-4B 2026-10-17 with
+the same base and flags, after the CUDA encoder switched to IEEE norms and scales (identical blocks on CPU and GPU;
+before: 0.0087 / 0.025 / 0.095; the encoder now picks a different, equally good path in some blocks). On gpt-oss
+(head size 64) the trellis types fall back to the codebook types of the same bits; on Gemma 4 their KLD was not
+measured (see the retrieval test on Gemma 4 26B below). The Qwen3-4B column was repeated on the release tree of
+2026-10-16 on two RTX 2060 and on an RTX A40, RTX 4090 and RTX 5090: every pair within ±6 % of the table on every GPU
+(`q8_0` 0.0031-0.0034, `ktq4` / `vtq4` 0.0085-0.0089, `ktq2_1` / `vtq2_1` 0.40-0.42).
 
 Text: Qwen3-4B on wikitext-2 (test). gpt-oss and Gemma 4 are chat models that are far out of distribution on raw wikitext
 (perplexity 207 and 505), so they are measured on their own prose: answers they wrote with an f16 cache on 40 topics
@@ -295,9 +300,9 @@ flash attention off: the numerical noise floor of the model, below which no KV t
 | `ktq4_1` / `vtq4_1` | 5.0 | **0.025** (93.6 %) | 0.36 (74.7 %) | 0.58 (75.3 %) |
 | `ktq3_1` / `vtq3_1` | 4.25 | 0.084 (88.1 %) | 1.30 (50.7 %) | 0.99 (66.3 %) |
 | `ktq2_1` / `vtq2_1` | 3.0 | 0.40 (73.9 %) | 3.65 (18.8 %) | 2.13 (49.2 %) |
-| `ktq4` / `vtq4` (`ktq4_3s` / `vtq4_2s`) | 4.6 | **0.0087** (95.8 %) | | |
-| `ktq3` / `vtq3` (`ktq3_3s` / `vtq3_2s`) | 3.6 | **0.025** (93.8 %) | | |
-| `ktq2` / `vtq2` (`ktq2_3s` / `vtq2_2s`) | 2.6 | **0.095** (87.2 %) | | |
+| `ktq4` / `vtq4` (`ktq4_3s` / `vtq4_2s`) | 4.6 | **0.0090** (95.9 %) | | |
+| `ktq3` / `vtq3` (`ktq3_3s` / `vtq3_2s`) | 3.6 | **0.024** (93.4 %) | | |
+| `ktq2` / `vtq2` (`ktq2_3s` / `vtq2_2s`) | 2.6 | **0.091** (87.6 %) | | |
 | `f16` / `vtq4_1` | | 0.0053 | 0.043 | 0.54 |
 | `f16` / `vtq2_1` | | 0.044 | 0.23 | 1.66 |
 | `ktq4_1` / `f16` | | 0.023 | 0.35 | 0.48 |
@@ -330,8 +335,10 @@ flash attention off: the numerical noise floor of the model, below which no KV t
 - 2-bit and 3-bit codebook K lose clearly on all three models. The trellis K types with 4 fp16 outliers per block lose
   3-5 times less on Qwen3-4B: `ktq3` / `vtq3` at 3.6 bpw is as accurate as `ktq4_1` / `vtq4_1` at 5.0 bpw, `ktq4` /
   `vtq4` lies between `q8_0` / `vtq4_1` and `q4_0` / `q4_0`.
-- Reproduce: base `llama-perplexity -m M -f TEXT -c 512 --chunks 40 -fa on --kl-divergence-base base.kld`, then the same
-  with `-ctk K -ctv V --no-tq-deferred-k --no-tq-deferred-v --kl-divergence-base base.kld --kl-divergence`.
+- Reproduce: base `llama-perplexity -m M -f TEXT -c 512 -b 512 --chunks 40 -fa on --kl-divergence-base base.kld`, then
+  the same with `-ctk K -ctv V --no-tq-deferred-k --no-tq-deferred-v --kl-divergence-base base.kld --kl-divergence`.
+  `-b 512` keeps one sequence per batch; with the default batch of 2048 four chunks share a batch and the values differ
+  by a few percent (`ktq4` / `vtq4`: 0.0092 instead of 0.0087).
 - Kolibri-1 Q3_K_S: perplexity +0.5 % with `ktq4_1`/`vtq4_1` against f16 (cache quantized in prefill, 2026-10-05, before
   the encoder change).
 - Mixed pairs such as `q8_0` K with `vtq{2,3,4}_1` or `q4_0` V, or `ktq4_1` K with `q8_0` V, use the GQA decode kernel
@@ -355,24 +362,25 @@ on one RTX 2060, 36 prompts (6 documents, target sections at 10-85 % of the cont
 | `ktq3_1` / `vtq3_1` | 9/12, 28/36 ² | |
 | `ktq2_1` / `vtq2_1` | **0/36** | 12/12 |
 | `ktq2_1` / f16 | **0/12** | |
-| `ktq2` / `vtq2` (`ktq2_3s` / `vtq2_2s`) ¹ | 26/36 | |
-| `ktq2` / `q8_0` ¹ | 30/36 | |
+| `ktq2` / `vtq2` (`ktq2_3s` / `vtq2_2s`) ¹ | 26/36, 29/36 ³ | |
+| `ktq2` / `q8_0` ¹ | 30/36, 29/36 ³ | |
 | `ktq2_1` / `vtq2_1` ¹ | 0/36 | |
 | `ktq2_1` / `q8_0` ¹ | 1/36 | |
 | f16 / f16 ¹ | 32/36 | |
-| `ktq4` / `vtq4` ² | 32/36 | |
-| `ktq3` / `vtq3` ² | 30/36 | |
-| `q8_0` / `vtq3` ² | 33/36 | |
+| `ktq4` / `vtq4` ² | 32/36, 32/36 ³ | |
+| `ktq3` / `vtq3` ² | 30/36, 31/36 ³ | |
+| `q8_0` / `vtq3` ² | 33/36, 34/36 ³ | |
 
 ¹ 2026-10-16 on two RTX 2060, same prompts. ² release tree of 2026-10-16, two RTX 2060, same prompts (f16, `q8_0`,
-`ktq4_1` / `vtq4_1` and `ktq2` / `vtq2` gave the same counts as above again).
+`ktq4_1` / `vtq4_1` and `ktq2` / `vtq2` gave the same counts as above again). ³ 2026-10-17 after the CPU/CUDA encoder
+parity change (the CUDA encoder picks a different, equally good path in some blocks), two RTX 2060, same prompts.
 
 - With 4-bit K or more every pair copies as well as f16 on Qwen3-4B; 3-bit K loses a few prompts (`ktq3` / `vtq3`
-  30/36, `ktq3_1` / `vtq3_1` 28/36). The prompts that fail are mostly the same ones for every type (the model picks the
+  30-31/36, `ktq3_1` / `vtq3_1` 28/36). The prompts that fail are mostly the same ones for every type (the model picks the
   neighbouring section's version number).
 - 2-bit codebook K loses the retrieval completely on Qwen3-4B: the copies are fluent but wrong lines, with f16 V too, with every
   decode kernel and in the release of 2026-10-12 as well. On Qwen3.6-35B-A3B the same pair copies every section.
-  The trellis K `ktq2` keeps the retrieval on Qwen3-4B (30/36 with `q8_0` V, 26/36 with `vtq2` V).
+  The trellis K `ktq2` keeps the retrieval on Qwen3-4B (29-30/36 with `q8_0` V, 26-29/36 with `vtq2` V).
 - Gemma 4 26B-A4B Q4_K_M (36 prompts, 2026-10-16): f16 30/36, `q8_0` 30/36, `ktq3_1` / `vtq3_1` 31/36, `ktq3` / `vtq3`
   29-31/36 (four runs on different builds and decode kernels, the release tree included), `ktq4` / `vtq4` 30/36,
   `ktq3` / `q8_0` 29-31/36; the failed prompts are the same few for every type.
@@ -499,6 +507,15 @@ of its codes in registers and reads the rest from L2 at every step, and the back
 reach. The backtrack pool holds at least one slot per SM and 32 MiB: 2 MiB slots at L = 16 (68 MiB on an RTX 2060 12 GB with
 34 SMs), 128 KiB slots at L = 12 (32 MiB); `GGML_CUDA_VTQ_POOL_SLOTS` sets the slot count.
 
+At L = 12 (since 2026-10-17) the readers of a DP segment sit in one warp, so the DP reads shared memory without bank
+conflicts, and one warp picks the outliers of the K types. A decoded token writes a few trellis blocks per cache and each
+one takes the time of one block on one SM, so the K and the V write of a layer run in one launch when their blocks fit
+on the SMs together (one fused node in the CUDA graph executor; `GGML_CUDA_DISABLE_FUSION=1` turns it off with the other
+fusions). The conversion after the prompt runs CUDA blocks of 256 threads, two per SM, and on a model split over
+several GPUs each GPU converts its layers at the same time. CPU and CUDA encoders write bit-identical blocks: the CPU
+runs the same butterfly DP with the same fused multiply-adds, and the CUDA encoder, built with `-use_fast_math`,
+computes the block norm and scale with IEEE operations and in the same order as the CPU.
+
 The Viterbi path optimizes globally over the block, adapting implicitly to the running model's V-distribution — every V-element leverages local statistics at the same average bpw.
 
 All trellis types (`vtq*_2`, `vtq*_2s`, `vtq*_3`, `vtq3_v8`) stage V in f16 during prefill and encode the prompt in one pass at the prefill→decode boundary; every decoded token still runs the encoder (cost: see [V-cache v2](#v-cache-v2--trellis-vtq_2-vtq_2s)). Startup logs: `deferred V quantization enabled (N layers with f16 staging)`. `llama-perplexity` turns the staging off by default, so it scores the quantized V cache.
@@ -617,9 +634,10 @@ Not planned: FA3 (sm_80+ only), paged attention, multi-node inference, MLA-style
 
 - **2- and 3-bit codebook K** (`ktq2_1`, `ktq3_1`) still lose a lot of accuracy on every measured model (see
   [Accuracy](#accuracy)); the trellis K `ktq2` / `ktq3` lose 3-5 times less on Qwen3-4B. gpt-oss needs 8-bit K.
-- **Trellis types are slow to encode** (`ktq2`-`ktq4`, `vtq2`-`vtq4`): the Viterbi encoder runs over the whole prompt
-  and then for every new token, so the first prompt takes 3-4.5 times as long as with the codebook types and decode is
-  30-40 % slower ([benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)). A faster encoder is planned.
+- **Trellis types are slower** (`ktq2`-`ktq4`, `vtq2`-`vtq4`): the Viterbi encoder runs over the whole prompt and then
+  for every new token, so the first prompt takes 1.5-1.9 times as long as with the codebook types, and decode is 20-25 %
+  slower up to 8k context and 36-38 % at 32k, where reading the trellis cache limits it
+  ([benchmarks](benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 - **Mixed K/V pairs outside the decode kernels' coverage** (head sizes other than 128 and 256, except the trellis
   pairs, which the GQA kernel also takes at 512; pairs without a vector-kernel instance at GQA ratio 1-2;
   `ktq1_1`/`vtq1_1`) run on CUDA by converting K and V to f16 at every step; correct, but decode slows down with

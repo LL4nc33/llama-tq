@@ -2,6 +2,31 @@
 
 ## 2026-10-17
 
+- **Faster trellis encoder (`ktq2`-`ktq4`, `vtq2`-`vtq4`).** Qwen3-4B on two RTX 2060, against the release tree:
+  decode 59 → 71 t/s with `ktq4` / `vtq4` and 63 → 70 with `ktq3` / `vtq3` on an empty context (8k: 47 → 55 and
+  49 → 54; 32k: +3-6 %), and the first prompt of 6.8k / 23.7k tokens takes 4.1 / 15.5 s instead of 11.8 / 41.7 s
+  (`ktq3` / `vtq3`: 4.6 / 17.1 s instead of 9.2 / 32.8; the codebook types take 2.6 / 10.4 s). Gemma 4 26B-A4B decode
+  50 → 54 t/s. These changes keep the output bit-identical to the release tree (perplexity, greedy text,
+  `llama-server` answers; the encoder parity below then changes some blocks). What changed: the DP of the CUDA
+  encoder reads shared memory without bank conflicts and one warp picks the outliers; the K and the V write of a
+  decoded token run as one launch; the conversion after the prompt runs two CUDA blocks per SM; and on a model split
+  over two GPUs both GPUs now convert their layers at the same time. Before, the conversion graph had
+  more inputs per GPU than the scheduler allows in one split, and the f32 copy of the first layer on the second GPU ran
+  on the first one, so the second GPU waited until the first had finished. New test: `SET_ROWS_KV_PAIR` in
+  `test-backend-ops`. [Benchmarks](docs/benchmarks/README.md#trellis-and-codebook-types-two-gpus).
+- **CPU and CUDA trellis encoders write identical blocks; the CPU encoder is 20-40 times faster.** The CUDA code is
+  built with `-use_fast_math`, so the block norm and scales of the CUDA encoder were approximate, and the CPU encoder
+  searched every state with its own order of operations: in rare blocks the two picked different paths, and
+  `test-backend-ops` failed a trellis `SET_ROWS` case now and then (one run in twelve with the 1024-block cases). Both
+  now run the same butterfly DP with fused multiply-adds, IEEE norms and scales, and sums in one fixed order; three full
+  `SET_ROWS` runs with 16384-block cases pass. The CPU encoder now visits every butterfly instead of every state: 13 →
+  0.6 ms per block at 12 state bits, 380 → 9 ms at 16 (one thread of a Ryzen 7 4800H). The GPU now picks a different,
+  equally good path in some blocks: Qwen3-4B KLD `ktq4` / `vtq4` 0.0087 → 0.0090, `ktq3` / `vtq3` 0.025 → 0.024,
+  `ktq2` / `vtq2` 0.095 → 0.091; exact copies in the retrieval test (36 prompts) 32 → 32, 30 → 31 and 26 → 29.
+  Removed: the undocumented beam pruning of the CPU encoder (`GGML_TRELLIS_BEAM`).
+- Documentation: the KL divergence instructions in [TurboQuant accuracy](docs/turboquant.md#accuracy) now give
+  `-b 512`, with which the table was measured; with the default batch of 2048 the values come out a few percent
+  different.
 - **Release check of the tree of 2026-10-16.** One CUDA 12.8 build for sm_75/80/86/89/120a, tested on two RTX 2060
   and on one TITAN RTX, RTX A40, RTX 4090 and RTX 5090 (cloud): `test-backend-ops` passed every TurboQuant `SET_ROWS`,
   `GET_ROWS` and flash-attention case it ran (0 failures; the large flash-attention groups ran until their time

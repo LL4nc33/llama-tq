@@ -108,27 +108,33 @@ Reproduce: [scripts/eval](../../scripts/eval/README.md#release-check-on-newer-gp
 
 Since 2026-10-16 the short names `ktq2`-`ktq4` and `vtq2`-`vtq4` select the trellis types (`ktq*_3s`, `vtq*_2s`); the
 codebook types `ktq*_1` / `vtq*_1` keep their full names. Qwen3-4B-Instruct-2507 Q4_K_M on two RTX 2060, builds and
-types alternated A,B,B,A. Decode (2026-10-16): `llama-bench -fa 1 -t 4 -n 64 -r 2`. First prompt and follow-up
-(release tree, 2026-10-17): `llama-server -c 40960`, a fresh server for each prompt, a prompt of 6.8k / 23.7k tokens
-(30000 / 96000 characters of wikitext-2), then the same prompt plus about 460 tokens on the cached prefix; the generated
-text is identical across repetitions of a type:
+types alternated A,B,B,A. Decode: `llama-bench -fa 1 -t 4 -n 64 -r 2`. First prompt and follow-up: `llama-server
+-c 40960`, a fresh server for each prompt, a prompt of 6.8k / 23.7k tokens (30000 / 96000 characters of wikitext-2),
+then the same prompt plus about 460 tokens on the cached prefix; the generated text is identical across repetitions of
+a type. Trellis rows: tree of 2026-10-17 with the faster encoder, in brackets the release tree before it (measured in
+the same runs); codebook and `q8_0` rows: release tree of 2026-10-16 / 2026-10-17 (the encoder work does not touch them,
+the server columns of `ktq3_1` / `vtq3_1` re-measured within 2 %):
 
 | KV cache | bpw | decode empty / 8k / 32k | first prompt 6.8k / 23.7k | follow-up at 6.8k / 23.7k |
 |---|---:|---:|---:|---:|
 | `q8_0` / `q8_0` | 8.5 | 90 / 72 / 44 t/s | 2.6 s / 10.3 s | 1520 / 842 t/s |
 | `ktq4_1` / `vtq4_1` | 5.0 | 89 / 72 / 46 t/s | 2.6 s / 10.4 s | 1508 / 834 t/s |
-| `ktq4` / `vtq4` (`ktq4_3s` / `vtq4_2s`) | 4.6 | 59 / 47 / 27 t/s | 11.7 s / 41.2 s | 507 / 387 t/s |
+| `ktq4` / `vtq4` (`ktq4_3s` / `vtq4_2s`) | 4.6 | 71 / 55 / 28 t/s (59 / 47 / 27) | 4.1 s / 15.5 s (11.8 / 41.7) | 893 / 568 t/s (501 / 384) |
 | `ktq3_1` / `vtq3_1` | 4.25 | 89 / 72 / 44 t/s | 2.6 s / 10.4 s | 1512 / 838 t/s |
-| `ktq3` / `vtq3` (`ktq3_3s` / `vtq3_2s`) | 3.6 | 63 / 49 / 27 t/s | 9.0 s / 32.1 s | 631 / 456 t/s |
+| `ktq3` / `vtq3` (`ktq3_3s` / `vtq3_2s`) | 3.6 | 70 / 54 / 28 t/s (63 / 49 / 28) | 4.6 s / 17.1 s (9.2 / 32.8) | 799 / 529 t/s (625 / 446) |
+| `ktq2` / `vtq2` (`ktq2_3s` / `vtq2_2s`) | 2.6 | 69 / 54 / 28 t/s (62 / 50 / 28) | 4.9 s / 18.3 s (9.1 / 32.3) | 743 / 501 t/s (627 / 447) |
 
 The decode columns were re-measured on the release tree of 2026-10-16 (same GPUs and settings): every cell within 2 %.
 The first version of the server columns (2026-10-16) sent the long prompt to the same server right after the short one,
 so about 7k of its tokens came from the cache (`ktq4` / `vtq4`: 28.4 s for 21.8k new tokens on a 29k context); the
 table now starts a fresh server for each prompt. The prompt itself is computed equally fast (about 3300 t/s at 7k); the trellis types then spend the extra time in the
-Viterbi encoder, which converts the f16-staged K and V of the prompt and encodes every later token. Accuracy of these
-pairs: [turboquant.md](../turboquant.md#accuracy).
+Viterbi encoder, which converts the f16-staged K and V of the prompt and encodes every later token. Since 2026-10-17
+the decoded token writes K and V in one encoder launch, the conversion runs two CUDA blocks per SM and both GPUs
+convert at the same time (before, the second GPU started when the first had finished): the first prompt takes
+1.5-1.9 times as long as with the codebook types instead of 3-4.5 times; at 32k context decode is limited by reading
+the trellis cache, not by the encoder. Accuracy of these pairs: [turboquant.md](../turboquant.md#accuracy).
 Gemma 4 26B-A4B IQ2_XXS (head size 512 on the global layers), same GPUs, decode empty / 8k / 32k: `ktq3` / `vtq3`
-50 / 39 / 33 t/s, `ktq3_1` / `vtq3_1` 79 / 67 / 54 t/s.
+54 / 40 / 33 t/s (release tree before the encoder work: 50 / 38 / 32), `ktq3_1` / `vtq3_1` 78 / 65 / 54 t/s.
 
 Reproduce: [scripts/eval](../../scripts/eval/README.md#trellis-and-codebook-types-two-gpus).
 

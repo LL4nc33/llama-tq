@@ -20,12 +20,11 @@ the history in the [changelog](CHANGELOG.md).
 
 ## In flight
 
-Nothing at the moment (2026-10-17). The next item is the faster trellis encoder.
+- **Faster decode of the trellis types:** reading the trellis cache in the flash-attention decode kernels (the encoder
+  is done, 2026-10-17). → [turboquant.md](docs/turboquant.md#known-issues)
 
 ## Planned
 
-- **Faster trellis encoder:** the Viterbi encoder of `ktq2`-`ktq4` / `vtq2`-`vtq4` makes the first prompt 3-4.5 times as
-  long and decode 30-40 % slower than with the codebook types. → [turboquant.md](docs/turboquant.md#known-issues)
 - **TurboQuant on every RTX generation:** the kernels are tuned on Turing only; tune them on Ampere, Ada and Blackwell
   (decode close to f16), better 2- and 3-bit K accuracy, a cheaper encoder scale search.
 - **Long-context decode:** split the KV length across SMs (Stream-K style) for single-sequence decode at long context.
@@ -43,7 +42,8 @@ Nothing at the moment (2026-10-17). The next item is the faster trellis encoder.
 
 ## Known issues
 
-- **TurboQuant:** the trellis types encode slowly (first prompt, decode); 2- and 3-bit codebook K lose a lot of
+- **TurboQuant:** the trellis types are slower than the codebook types (first prompt 1.5-1.9 times as long, decode
+  20-38 % slower); 2- and 3-bit codebook K lose a lot of
   accuracy, and gpt-oss needs 8-bit K. Details: [turboquant.md#known-issues](docs/turboquant.md#known-issues).
 - **Prefill on Gemma 4** is 1-2 % slower than upstream at long context
   ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
