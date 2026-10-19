@@ -60,7 +60,7 @@ def main():
     a = ap.parse_args()
 
     for n in (int(x) for x in a.concurrent.split(",") if x.strip()):
-        res = [None] * n
+        res: list[str] = [""] * n
         t0 = time.time()
         threads = [threading.Thread(target=one, args=(a.url, i, a.max_tokens, a.timeout, res)) for i in range(n)]
         for t in threads:

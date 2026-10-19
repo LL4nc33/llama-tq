@@ -497,8 +497,8 @@ def cmd_run(a) -> int:
     if rec["http_ok"]:
         acc = ""
         if rec.get("draft_n"):
-            acc = " acc %d/%d (%.0f%%)" % (rec.get("draft_n_accepted", 0), rec["draft_n"],
-                                          100.0 * rec.get("draft_n_accepted", 0) / rec["draft_n"])
+            n_acc, n_draft = int(rec.get("draft_n_accepted", 0)), int(rec["draft_n"])
+            acc = " acc %d/%d (%.0f%%)" % (n_acc, n_draft, 100.0 * n_acc / n_draft)
         print("  %-7s %-6s %-14s spec=%-3s rep%d: prefill %6s tok %7.1f t/s | decode %4s tok %6.2f t/s%s"
               " | wall %6.1fs | verbatim %s %.3f"
               % (a.kind, a.build, a.pair, a.spec, a.rep, rec.get("prompt_n", "?"),

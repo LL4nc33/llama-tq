@@ -26,7 +26,7 @@ def test_name(d):
 
 def main(paths):
     if not paths:
-        print(__doc__.strip(), file=sys.stderr)
+        print((__doc__ or "").strip(), file=sys.stderr)
         return 1
     runs = collections.defaultdict(list)  # (model, pair, test) -> build -> [t/s]
     builds, rows = [], []
