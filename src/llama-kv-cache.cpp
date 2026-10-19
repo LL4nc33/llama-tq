@@ -2502,8 +2502,6 @@ void llama_kv_cache::set_input_deferred_convert(ggml_tensor * dst) const {
 }
 
 ggml_cgraph * llama_kv_cache::build_graph_deferred_convert(llm_graph_result * res, llama_context * lctx) {
-    GGML_UNUSED(lctx);
-
     auto * ctx = res->get_ctx();
     auto * gf  = res->get_gf();
 
@@ -2539,6 +2537,26 @@ ggml_cgraph * llama_kv_cache::build_graph_deferred_convert(llm_graph_result * re
     const int64_t max_chunks = std::max<int64_t>(1, std::min<int64_t>(8,
             (ggml_graph_size(gf) - 2*n_staged) / std::max<int64_t>(1, 4*n_staged*(int64_t) n_stream)));
 
+    // the index view of a chunk, the same tensor in every layer: each distinct view is an input of the backend split
+    // that uses it, and a split with more inputs than the scheduler allows is cut in two, whose second half waits on
+    // the host for the first, so the GPUs of a split model would convert one after the other
+    std::map<int64_t, ggml_tensor *> idx_views; // by first row
+
+    // the f32 copy of a chunk runs on the device of its staging buffer. Left to the scheduler, the copy of the first
+    // layer on a device goes to the device of the layer before it, and copying it over makes this device wait for all
+    // the work queued on the other one.
+    ggml_backend_sched_t sched = lctx->get_sched();
+    auto backend_of = [&](const ggml_tensor * t) -> ggml_backend_t {
+        ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
+        for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+            ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+            if (ggml_backend_get_device(backend) == dev) {
+                return backend;
+            }
+        }
+        return nullptr;
+    };
+
     auto convert = [&](ggml_tensor * staging, ggml_tensor * cache) {
         const int64_t n_embd  = staging->ne[0];
         const int64_t kv_size = staging->ne[1];
@@ -2557,10 +2575,18 @@ ggml_cgraph * llama_kv_cache::build_graph_deferred_convert(llm_graph_result * re
                 const int64_t row0 = s*kv_size + r0;
 
                 ggml_tensor * src_c = ggml_view_2d(ctx, src, n_embd, nr, src->nb[1], row0*src->nb[1]);
-                ggml_tensor * idx_c = ggml_view_1d(ctx, inp->idxs, nr, row0*ggml_element_size(inp->idxs));
+                ggml_tensor *& idx_c = idx_views[row0];
+                if (!idx_c) {
+                    idx_c = ggml_view_1d(ctx, inp->idxs, nr, row0*ggml_element_size(inp->idxs));
+                }
 
                 // set_rows needs f32 input; the quantization (bulk Viterbi) happens in set_rows
-                ggml_build_forward_expand(gf, ggml_set_rows(ctx, dst, ggml_cast(ctx, src_c, GGML_TYPE_F32), idx_c));
+                ggml_tensor * src_f32 = ggml_cast(ctx, src_c, GGML_TYPE_F32);
+                ggml_backend_t backend = backend_of(staging);
+                if (backend && ggml_backend_supports_op(backend, src_f32)) {
+                    ggml_backend_sched_set_tensor_backend(sched, src_f32, backend);
+                }
+                ggml_build_forward_expand(gf, ggml_set_rows(ctx, dst, src_f32, idx_c));
             }
         }
     };
