@@ -37,7 +37,8 @@ SPEED = re.compile(r"\b(\d{2,4}(?:\.\d)?) t/s\b")
 # the same value on several pages that belongs to different measurements (value -> pages, reason)
 SPEED_ALLOW = {
     "15.5": ({"docs/models.md", "docs/speculative.md"}, "Qwen3.8-Flash-Next at 118k vs the Qwen3.8-27B baseline"),
-    "28": ({"docs/models.md", "docs/speculative.md"}, "Bonsai at 23k vs DFlash on Qwen3.8-27B"),
+    "28": ({"docs/models.md", "docs/speculative.md", "docs/benchmarks/README.md"},
+           "Bonsai at 23k vs DFlash on Qwen3.8-27B vs trellis pairs at 32k"),
     "47": ({"docs/models.md", "docs/benchmarks/README.md"}, "K2-Horizon vs Qwen3-4B"),
     "57": ({"docs/models.md", "docs/benchmarks/README.md"}, "gpt-oss at 22k vs Qwen3-4B at 16k"),
     "27": ({"docs/turboquant.md", "docs/benchmarks/README.md"}, "16-state-bit trellis V decode vs trellis pairs at 32k"),
