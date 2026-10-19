@@ -136,184 +136,130 @@ void ggml_trellis_decode_group(
     }
 }
 
-// --- Beam-pruning helper: nth_element via Hoare partition (O(n) expected) ---
-// Finds the k-th smallest value (0-indexed). Modifies arr.
-static float nth_element_f(float * arr, int n, int k) {
-    int lo = 0, hi = n - 1;
-    while (lo < hi) {
-        float pivot = arr[(lo + hi) >> 1];
-        int i = lo, j = hi;
-        while (i <= j) {
-            while (arr[i] < pivot) i++;
-            while (arr[j] > pivot) j--;
-            if (i <= j) { float t = arr[i]; arr[i] = arr[j]; arr[j] = t; i++; j--; }
+// --- Encoder: Viterbi over butterflies ---
+// The same DP and the same float operations in the same order as the CUDA encoder (trellis-encode.cuh), so the CPU and
+// the GPU write identical blocks. The 2^K states (g << K) | e (e < 2^K) are the predecessors of the 2^K states
+// g | b << (L-K); the cost of an edge depends only on its target state, so all targets of a butterfly share its best
+// predecessor and the DP keeps one value per butterfly: m[g] at time i is the cost of the cheapest predecessor of
+// butterfly g. A state t costs m[t & (NG-1)] + (x_i - code_t)^2 at time i+1 (one fused multiply-add, as on the GPU),
+// ties keep the lowest e, and at time N the cheapest state wins (the lowest state among equal costs).
+// Memory: N * 2^(L-K) bytes of backtrack (L = 16, K = 2: 2 MiB) and 2^L codes.
+
+// sum of v[0 .. GGML_TRELLIS_QK_GROUP) in the order of a CUDA warp: lane l adds v[l], v[l + 32], ..., then the lanes
+// are combined by an xor butterfly. In double, as the GPU computes norms and scales.
+static double trellis_warp_order_sum(const double * v) {
+    double s[32];
+    for (int l = 0; l < 32; l++) {
+        s[l] = 0.0;
+        for (int j = l; j < GGML_TRELLIS_QK_GROUP; j += 32) {
+            s[l] += v[j];
         }
-        if (k <= j) hi = j;
-        else if (k >= i) lo = i;
-        else return arr[k];
     }
-    return arr[k];
+    for (int off = 16; off > 0; off >>= 1) {
+        double t[32];
+        for (int l = 0; l < 32; l++) {
+            t[l] = s[l] + s[l ^ off];
+        }
+        memcpy(s, t, sizeof(s));
+    }
+    return s[0];
 }
 
-// Beam width: read from env at first call, cached thereafter.
-//   GGML_TRELLIS_BEAM=0 (default): full Viterbi (exact, slow)
-//   GGML_TRELLIS_BEAM=256..16384: beam-pruned (faster, ~1% MSE cost)
-static int g_beam_width_cached = -1;
-static int get_beam_width(void) {
-    if (g_beam_width_cached < 0) {
-        const char * env = getenv("GGML_TRELLIS_BEAM");
-        g_beam_width_cached = env ? atoi(env) : 0;
-        if (g_beam_width_cached < 0) g_beam_width_cached = 0;
+// fmaf is exact everywhere, but without FMA instructions in the build it is a library call: on x86-64 Linux the DP
+// loop is also compiled for FMA and the faster version is picked at load time (same results, ~10x faster)
+#if defined(__GNUC__) && defined(__x86_64__) && defined(__linux__)
+#    define GGML_TRELLIS_FMA_CLONES __attribute__((target_clones("fma", "default")))
+#else
+#    define GGML_TRELLIS_FMA_CLONES
+#endif
+
+// the forward DP: m_cur holds the values at time 0, bt[NG .. N*NG) receives the best e per step and butterfly;
+// returns the cheapest state at time N
+GGML_TRELLIS_FMA_CLONES
+static uint32_t trellis_viterbi_forward(const float * xn, const float * code, float * m_cur, float * m_next,
+                                        uint8_t * bt, int K, uint32_t NG) {
+    const uint32_t NE = 1u << K;
+    float    best   = FLT_MAX;
+    uint32_t best_s = 0;
+    for (int step = 1; step <= GGML_TRELLIS_QK_GROUP; step++) {
+        const float xi = xn[step - 1];
+        for (uint32_t g = 0; g < NG; g++) {
+            const float * mp = m_cur + ((g << K) & (NG - 1));
+            const float * cp = code + (g << K);
+            float   gbest   = FLT_MAX;
+            uint8_t gbest_e = 0;
+            for (uint32_t e = 0; e < NE; e++) {
+                const float diff = xi - cp[e];
+                const float c    = fmaf(diff, diff, mp[e]);
+                if (c < gbest) { gbest = c; gbest_e = (uint8_t)e; }
+            }
+            if (step < GGML_TRELLIS_QK_GROUP) {
+                m_next[g]         = gbest;
+                bt[step * NG + g] = gbest_e;
+            } else if (gbest < best || (gbest == best && ((g << K) | gbest_e) < best_s)) {
+                best   = gbest;
+                best_s = (g << K) | gbest_e;
+            }
+        }
+        float * tmp = m_cur; m_cur = m_next; m_next = tmp;
     }
-    return g_beam_width_cached;
+    return best_s;
 }
 
-// --- Encoder: Viterbi DP over 2^L states (optionally beam-pruned) ---
-// Memory: O(N · 2^L) for backtrack + O(2^L) for 2 DP rows.
-//   L=16, N=128: 128·65536·2 = 16 MiB backtrack (L=12: 1 MiB). Heavy but only at quant-time.
-// Beam pruning cuts CPU time proportional to S/beam_width.
 void ggml_trellis_encode_group(
     const float * x, int K, int L,
     uint16_t * out_start_state, float * out_d, uint8_t * qs) {
     GGML_ASSERT(L > K && L <= GGML_TRELLIS_L);
-    const int N = GGML_TRELLIS_QK_GROUP;
-    const uint32_t S = 1u << L;
-    const uint32_t Kmask = (1u << K) - 1u;
-    const uint32_t Lmask = S - 1u;
-    const int qs_bytes = (N * K + 7) / 8;
-    const float cb_scale = 1.0f / sqrtf((float)N);
+    enum { N = GGML_TRELLIS_QK_GROUP };
+    const uint32_t S        = 1u << L;
+    const uint32_t NE       = 1u << K;  // predecessors per butterfly
+    const uint32_t NG       = S >> K;   // butterflies
+    const uint32_t Kmask    = NE - 1u;
+    const int      qs_bytes = (N * K + 7) / 8;
+    const float    cb_scale = 1.0f / sqrtf((float)N);
 
     memset(qs, 0, (size_t)qs_bytes);
 
-    // Group L2 norm
-    double n2 = 0.0;
-    for (int j = 0; j < N; j++) n2 += (double)x[j] * (double)x[j];
-    float norm = (float)sqrt(n2);
-    if (norm < 1e-30f) {
+    double sq[N];
+    for (int j = 0; j < N; j++) sq[j] = (double)x[j] * (double)x[j];
+    const float norm = (float)sqrt(trellis_warp_order_sum(sq));
+    if (norm <= 1e-30f) {
         *out_start_state = 0;
         *out_d = 0.0f;
         return;
     }
     const float inv = 1.0f / norm;
-
-    // normalize samples
-    float * xn = (float *)malloc((size_t)N * sizeof(float));
-    float * dp_cur  = (float *)malloc((size_t)S * sizeof(float));
-    float * dp_next = (float *)malloc((size_t)S * sizeof(float));
-    uint16_t * bt = (uint16_t *)malloc((size_t)N * S * sizeof(uint16_t));
-    if (!xn || !dp_cur || !dp_next || !bt) {
-        free(xn); free(dp_cur); free(dp_next); free(bt);
-        *out_start_state = 0; *out_d = 0.0f; return;
-    }
+    float xn[N];
     for (int j = 0; j < N; j++) xn[j] = x[j] * inv;
 
+    float   * code   = (float   *)malloc((size_t)S * sizeof(float));
+    float   * m_cur  = (float   *)malloc((size_t)NG * sizeof(float));
+    float   * m_next = (float   *)malloc((size_t)NG * sizeof(float));
+    uint8_t * bt     = (uint8_t *)malloc((size_t)N * NG);
+    if (!code || !m_cur || !m_next || !bt) {
+        free(code); free(m_cur); free(m_next); free(bt);
+        *out_start_state = 0; *out_d = 0.0f; return;
+    }
     const float * table = ggml_trellis_table();
+    for (uint32_t t = 0; t < S; t++) code[t] = table[t] * cb_scale;
 
-    // Beam pruning setup
-    const int beam = get_beam_width();
-    const int use_beam = (beam > 0 && (uint32_t)beam < S);
+    // open start: at time 0 every state costs 0, so every butterfly's best predecessor costs 0 (e = 0)
+    for (uint32_t g = 0; g < NG; g++) m_cur[g] = 0.0f;
+    memset(bt, 0, NG);
 
-    // Active-state lists — track which states are "live" in dp_cur / dp_next.
-    // Dramatically reduces scan cost from O(S) to O(beam).
-    uint32_t * active_cur  = (uint32_t *)malloc((size_t)S * sizeof(uint32_t));
-    uint32_t * active_next = (uint32_t *)malloc((size_t)S * sizeof(uint32_t));
-    uint8_t  * touched     = (uint8_t  *)calloc((size_t)S, 1);  // bitmap: which dp_next slots written
-    float    * beam_costs  = use_beam ? (float *)malloc((size_t)beam * sizeof(float)) : NULL;
-    if (!active_cur || !active_next || !touched) {
-        free(active_cur); free(active_next); free(touched); free(beam_costs);
-        free(xn); free(dp_cur); free(dp_next); free(bt);
-        *out_start_state = 0; *out_d = 0.0f; return;
+    const uint32_t best_s = trellis_viterbi_forward(xn, code, m_cur, m_next, bt, K, NG);
+
+    // backtrack: the predecessor of state st is (g << K) | e with g the low L-K bits of st
+    uint32_t states[N + 1];
+    uint32_t st = best_s;
+    states[N] = st;
+    for (int step = N - 1; step >= 0; step--) {
+        const uint32_t g = st & (NG - 1);
+        st = (g << K) | bt[step * NG + g];
+        states[step] = st;
     }
 
-    // Open start: dp[0][s] = 0 for all s  →  all S states are active
-    for (uint32_t s = 0; s < S; s++) dp_cur[s] = 0.0f;
-    uint32_t n_active_cur = S;
-    for (uint32_t s = 0; s < S; s++) active_cur[s] = s;
-
-    const int kshift = L - K;
-    for (int i = 0; i < N; i++) {
-        uint16_t * bt_i = bt + (size_t)i * S;
-        const float xi = xn[i];
-        uint32_t n_active_next = 0;
-
-        // Expand active_cur → active_next via K-bit transitions
-        for (uint32_t ia = 0; ia < n_active_cur; ia++) {
-            uint32_t prev = active_cur[ia];
-            float pc = dp_cur[prev];
-            for (uint32_t kk = 0; kk <= Kmask; kk++) {
-                uint32_t next = ((prev >> K) | (kk << kshift)) & Lmask;
-                float code = table[next] * cb_scale;
-                float diff = xi - code;
-                float cost = pc + diff * diff;
-                if (!touched[next]) {
-                    touched[next] = 1;
-                    active_next[n_active_next++] = next;
-                    dp_next[next] = cost;
-                    bt_i[next] = (uint16_t)prev;
-                } else if (cost < dp_next[next]) {
-                    dp_next[next] = cost;
-                    bt_i[next] = (uint16_t)prev;
-                }
-            }
-        }
-
-        // Optionally prune active_next to top-`beam` by cost
-        if (use_beam && beam_costs && n_active_next > (uint32_t)beam) {
-            // Collect costs of active states
-            for (uint32_t j = 0; j < (uint32_t)beam && j < n_active_next; j++) {
-                beam_costs[j] = dp_next[active_next[j]];
-            }
-            // nth_element over active_next indirection: build temp array
-            float * tmp_costs = (float *)malloc(n_active_next * sizeof(float));
-            if (tmp_costs) {
-                for (uint32_t j = 0; j < n_active_next; j++) tmp_costs[j] = dp_next[active_next[j]];
-                float thresh = nth_element_f(tmp_costs, (int)n_active_next, beam - 1);
-                free(tmp_costs);
-                uint32_t kept = 0;
-                for (uint32_t j = 0; j < n_active_next; j++) {
-                    uint32_t s = active_next[j];
-                    if (dp_next[s] <= thresh && kept < (uint32_t)beam) {
-                        active_next[kept++] = s;
-                    } else {
-                        // Clear touched flag so it's reusable in next iteration
-                        touched[s] = 0;
-                    }
-                }
-                n_active_next = kept;
-            }
-        }
-
-        // Clear touched for next iteration: only active_next entries are marked
-        for (uint32_t j = 0; j < n_active_next; j++) touched[active_next[j]] = 0;
-
-        // Swap dp_cur/dp_next and active lists
-        float * tmp_dp = dp_cur; dp_cur = dp_next; dp_next = tmp_dp;
-        uint32_t * tmp_a = active_cur; active_cur = active_next; active_next = tmp_a;
-        n_active_cur = n_active_next;
-    }
-
-    // Best end state — scan only active states in final dp_cur
-    uint32_t best_s = 0;
-    float best_c = FLT_MAX;
-    for (uint32_t ia = 0; ia < n_active_cur; ia++) {
-        uint32_t s = active_cur[ia];
-        if (dp_cur[s] < best_c) { best_c = dp_cur[s]; best_s = s; }
-    }
-
-    free(active_cur); free(active_next); free(touched); free(beam_costs);
-
-    // Backtrack: states[0..N]
-    uint32_t * states = (uint32_t *)malloc((size_t)(N + 1) * sizeof(uint32_t));
-    if (!states) {
-        free(xn); free(dp_cur); free(dp_next); free(bt);
-        *out_start_state = 0; *out_d = 0.0f; return;
-    }
-    states[N] = best_s;
-    for (int i = N - 1; i >= 0; i--) {
-        states[i] = (uint32_t)bt[(size_t)i * S + states[i + 1]];
-    }
-
-    *out_start_state = (uint16_t)(states[0] & Lmask);
+    *out_start_state = (uint16_t)states[0];
 
     const int kshift_emit = L - K;
     for (int i = 0; i < N; i++) {
@@ -322,22 +268,22 @@ void ggml_trellis_encode_group(
     }
 
     // Norm-correction: scale so decoded group matches x's L2 norm.
-    double recon_sq = 0.0;
-    double dot      = 0.0;
+    double rq[N];
     for (int i = 0; i < N; i++) {
-        float code = table[states[i + 1]] * cb_scale;
-        recon_sq += (double)code * (double)code;
-        dot      += (double)code * (double)xn[i];
+        const float c = code[states[i + 1]];
+        rq[i] = (double)c * (double)c;
     }
-    float recon_norm = (float)sqrt(recon_sq);
+    const float recon_norm = (float)sqrt(trellis_warp_order_sum(rq));
 #if GGML_TRELLIS_UNBIASED_SCALE
-    *out_d = (dot > 1e-30) ? (float)(norm / dot) : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
+    double dt[N];
+    for (int i = 0; i < N; i++) dt[i] = (double)code[states[i + 1]] * (double)xn[i];
+    const double dot = trellis_warp_order_sum(dt);
+    *out_d = (dot > 1e-30) ? (float)((double)norm / dot) : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
 #else
-    GGML_UNUSED(dot);
     *out_d = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
 #endif
 
-    free(states); free(xn); free(dp_cur); free(dp_next); free(bt);
+    free(code); free(m_cur); free(m_next); free(bt);
 }
 
 // --- Outlier-Channel-Split (VTQ_3) ---

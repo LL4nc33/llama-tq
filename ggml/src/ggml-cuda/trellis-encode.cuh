@@ -129,6 +129,19 @@ static __device__ __forceinline__ void vtq_enc_pick_outliers(float * xn, block_t
     }
 }
 
+// The CUDA code is built with -use_fast_math, which makes sqrtf and float division approximate. The block norm, the
+// code scale and the block scale therefore use IEEE operations (double sqrt, __fdiv_rn) and sums in double in a fixed
+// order, the same as ggml_trellis_encode_group on the CPU: both encoders write identical blocks.
+
+// sum over a warp by an xor butterfly, in double (trellis_warp_order_sum on the CPU)
+static __device__ __forceinline__ double vtq_enc_warp_sum(double v) {
+    #pragma unroll
+    for (int off = WARP_SIZE/2; off > 0; off >>= 1) {
+        v += __shfl_xor_sync(0xFFFFFFFF, v, off, WARP_SIZE);
+    }
+    return v;
+}
+
 // One warp: packs the emitted bits of the state path states[0..N] and stores start state and block scale. Each lane
 // assembles whole bytes of qs, so the block is written once instead of bit by bit.
 template <typename block_t, int K, int L>
@@ -140,15 +153,16 @@ static __device__ __forceinline__ void vtq_enc_emit(
     constexpr int      kshift   = L - K;
     constexpr int      qs_bytes = (N * K + 7) / 8;
 
-    float recon_sq = 0.0f;
-    float dot      = 0.0f;
+    // in double and in the order of ggml_trellis_encode_group (trellis_warp_order_sum), as the scale below
+    double recon_sq = 0.0;
+    double dot      = 0.0;
     for (int step = lane; step < N; step += WARP_SIZE) {
         const float code = vtq_trellis_table_storage[states[step + 1]] * cb_scale;
-        recon_sq += code * code;
-        dot      += code * xn[step];
+        recon_sq += (double) code * (double) code;
+        dot      += (double) code * (double) xn[step];
     }
-    recon_sq = warp_reduce_sum(recon_sq);
-    dot      = warp_reduce_sum(dot);
+    recon_sq = vtq_enc_warp_sum(recon_sq);
+    dot      = vtq_enc_warp_sum(dot);
 
     // byte b holds the bits [8b, 8b+8) of the stream; step s starts at bit s*K
     for (int b = lane; b < qs_bytes; b += WARP_SIZE) {
@@ -163,12 +177,12 @@ static __device__ __forceinline__ void vtq_enc_emit(
 
     if (lane == 0) {
         dst_block->start_state = states[0];
-        const float recon_norm = sqrtf(recon_sq);
+        const float recon_norm = (float) sqrt(recon_sq);
 #if GGML_TRELLIS_UNBIASED_SCALE
-        const float d_out = dot > 1e-30f ? norm / dot : ((recon_norm > 1e-30f) ? (norm / recon_norm) : norm);
+        const float d_out = dot > 1e-30 ? (float) ((double) norm / dot) : ((recon_norm > 1e-30f) ? __fdiv_rn(norm, recon_norm) : norm);
 #else
         (void) dot;
-        const float d_out = (recon_norm > 1e-30f) ? (norm / recon_norm) : norm;
+        const float d_out = (recon_norm > 1e-30f) ? __fdiv_rn(norm, recon_norm) : norm;
 #endif
         dst_block->d = __float2half(d_out);
     }
@@ -310,7 +324,7 @@ static __device__ __forceinline__ void vtq_encode_trellis_blocks(
     const int lane = tid % WARP_SIZE;
     const int warp = tid / WARP_SIZE;
     uint8_t * bt   = a.bt + (int64_t) cta * N * NG;
-    const float cb_scale = rsqrtf((float) N);
+    const float cb_scale = __fdiv_rn(1.0f, __fsqrt_rn((float) N));
 
     // butterfly of slot q, row position of butterfly x, slot of butterfly g (identities at L = 16)
     const auto bfly_of = [](const int q) { return SMEM_DP ? q/NE + (q % NE)*NS : q; };
@@ -324,7 +338,7 @@ static __device__ __forceinline__ void vtq_encode_trellis_blocks(
         const int g = bfly_of(tid + k*NT);
         #pragma unroll
         for (int e = 0; e < NE; e++) {
-            code[k][e] = g < NG ? __ldg(vtq_trellis_table_storage + ((g << K) | e)) * cb_scale : 0.0f;
+            code[k][e] = g < NG ? __fmul_rn(__ldg(vtq_trellis_table_storage + ((g << K) | e)), cb_scale) : 0.0f;
         }
     }
 
@@ -363,13 +377,13 @@ static __device__ __forceinline__ void vtq_encode_trellis_blocks(
             __syncthreads();
         }
         if (warp == 0) {
-            float sq = 0.0f;
+            double sq = 0.0;
             for (int j = lane; j < N; j += WARP_SIZE) {
-                sq += s_xn[j] * s_xn[j];
+                sq += (double) s_xn[j] * (double) s_xn[j];
             }
-            sq = warp_reduce_sum(sq);
+            sq = vtq_enc_warp_sum(sq);
             if (lane == 0) {
-                sm.norm = sqrtf(sq);
+                sm.norm = (float) sqrt(sq);
             }
         }
         __syncthreads();
@@ -385,7 +399,7 @@ static __device__ __forceinline__ void vtq_encode_trellis_blocks(
             __syncthreads();
             continue;
         }
-        const float inv_norm = 1.0f / norm;
+        const float inv_norm = __fdiv_rn(1.0f, norm);
         for (int j = tid; j < N; j += NT) {
             s_xn[j] *= inv_norm;
         }
