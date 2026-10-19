@@ -3937,6 +3937,20 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 
+    // the K and the V write of a decoded token into trellis caches: one encoder launch (ggml_cuda_set_rows_trellis_pair)
+    if (node->op == GGML_OP_SET_ROWS) {
+        int j = i + 1;
+        while (j < cgraph->n_nodes && (ggml_is_empty(cgraph->nodes[j]) || cgraph->nodes[j]->op == GGML_OP_NONE ||
+                cgraph->nodes[j]->op == GGML_OP_RESHAPE || cgraph->nodes[j]->op == GGML_OP_VIEW ||
+                cgraph->nodes[j]->op == GGML_OP_PERMUTE || cgraph->nodes[j]->op == GGML_OP_TRANSPOSE)) {
+            j++;
+        }
+        if (j < cgraph->n_nodes && (cgraph->nodes[j]->flags & GGML_TENSOR_FLAG_COMPUTE) &&
+                ggml_cuda_set_rows_trellis_pair(*cuda_ctx, node, cgraph->nodes[j])) {
+            return j - i;
+        }
+    }
+
     if (node->op == GGML_OP_MUL) {
         ggml_cuda_moe_weighted_reduction_match match;
         if (ggml_cuda_match_moe_weighted_reduction(cgraph, i, match)) {

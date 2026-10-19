@@ -2506,6 +2506,76 @@ struct test_set_rows : public test_case {
     }
 };
 
+// the K and the V write of decoded tokens into two trellis caches, which the CUDA backend encodes in one launch
+// when all trellis blocks fit one wave (ggml_cuda_set_rows_trellis_pair)
+struct test_set_rows_kv_pair : public test_case {
+    const ggml_type type_k;
+    const ggml_type type_v;
+    const int64_t head_size;
+    const int64_t n_head;
+    const int64_t n_tokens;
+    const bool v_first; // graph order V, K
+
+    ggml_tensor * set_k = nullptr;
+    ggml_tensor * set_v = nullptr;
+
+    std::string vars() override {
+        return VARS_TO_STR6(type_k, type_v, head_size, n_head, n_tokens, v_first);
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "SET_ROWS_KV_PAIR";
+    }
+
+    bool run_whole_graph() override { return true; }
+
+    std::vector<ggml_tensor *> fusion_test_nodes() override { return { set_k, set_v }; }
+
+    test_set_rows_kv_pair(ggml_type type_k, ggml_type type_v, int64_t head_size, int64_t n_head, int64_t n_tokens,
+            bool v_first = false)
+        : type_k(type_k), type_v(type_v), head_size(head_size), n_head(n_head), n_tokens(n_tokens), v_first(v_first) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        const int64_t n_cells = 2*n_tokens + 3;
+
+        const auto set_rows = [&](ggml_type type, const char * name) {
+            ggml_tensor * cache = ggml_new_tensor_3d(ctx, type, head_size, n_cells, n_head);
+            ggml_set_name(cache, (std::string("cache_") + name).c_str());
+            ggml_tensor * cur = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_size, n_tokens, n_head);
+            ggml_set_name(cur, name);
+            ggml_tensor * idxs = ggml_new_tensor_2d(ctx, GGML_TYPE_I64, n_tokens, n_head);
+            ggml_set_name(idxs, (std::string("idxs_") + name).c_str());
+            ggml_tensor * out = ggml_set_rows(ctx, cache, cur, idxs);
+            ggml_set_name(out, (std::string("set_") + name).c_str());
+            return out;
+        };
+
+        ggml_tensor * first  = v_first ? set_rows(type_v, "v") : set_rows(type_k, "k");
+        ggml_tensor * second = v_first ? set_rows(type_k, "k") : set_rows(type_v, "v");
+        set_k = v_first ? second : first;
+        set_v = v_first ? first  : second;
+        if (mode == MODE_TEST) {
+            ggml_build_forward_expand(gf, first);
+        }
+        return second;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (t->type == GGML_TYPE_I64) {
+                init_set_rows_row_ids(t, 2*n_tokens + 3);
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+
+    double max_nmse_err() override {
+        return 1e-7;
+    }
+};
+
 // GGML_OP_ROPE + GGML_OP_VIEW + GGML_OP_SET_ROWS
 struct test_rope_set_rows : public test_case {
     const ggml_type type;
@@ -8487,6 +8557,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_set_rows(GGML_TYPE_VTQ2_2, GGML_TYPE_I64, { 128, 16, 8, 1 }, { 1, 1, }, 16, false));
     for (ggml_type type : {GGML_TYPE_VTQ3_2, GGML_TYPE_VTQ4_2, GGML_TYPE_VTQ3_V8}) {
         test_cases.emplace_back(new test_set_rows(type, GGML_TYPE_I64, { 128, 4, 4, 1 }, { 1, 1, }, 4, false));
+    }
+
+    // K and V write of one decoded token as one CUDA launch: every trellis K/V pair at head sizes 128 (8 KV heads),
+    // 256 and 512, both graph orders; 8 tokens are too many blocks for one launch (the writes run one by one)
+    for (auto [type_k, type_v] : std::initializer_list<std::pair<ggml_type, ggml_type>>{
+            { GGML_TYPE_KTQ2_3S, GGML_TYPE_VTQ2_2S }, { GGML_TYPE_KTQ2_3S, GGML_TYPE_VTQ3_2S },
+            { GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ2_2S }, { GGML_TYPE_KTQ3_3S, GGML_TYPE_VTQ3_2S },
+            { GGML_TYPE_KTQ4_3S, GGML_TYPE_VTQ4_2S } }) {
+        test_cases.emplace_back(new test_set_rows_kv_pair(type_k, type_v, 128, 8, 1));
+        test_cases.emplace_back(new test_set_rows_kv_pair(type_k, type_v, 128, 8, 1, true));
+        test_cases.emplace_back(new test_set_rows_kv_pair(type_k, type_v, 256, 4, 1));
+        test_cases.emplace_back(new test_set_rows_kv_pair(type_k, type_v, 512, 2, 1));
+        test_cases.emplace_back(new test_set_rows_kv_pair(type_k, type_v, 128, 8, 8));
     }
 
     for (int mode : { GGML_ROPE_TYPE_NORMAL, GGML_ROPE_TYPE_NEOX, GGML_ROPE_TYPE_MROPE, GGML_ROPE_TYPE_VISION }) {

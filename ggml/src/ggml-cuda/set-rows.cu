@@ -856,3 +856,57 @@ void ggml_cuda_op_set_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         set_rows_cuda<float, int32_t>(ctx, src0, src1, dst);
     }
 }
+
+// the tensor whose memory t lives in
+static const ggml_tensor * set_rows_base(const ggml_tensor * t) {
+    while (t->view_src) {
+        t = t->view_src;
+    }
+    return t;
+}
+
+bool ggml_cuda_set_rows_trellis_pair(ggml_backend_cuda_context & ctx, const ggml_tensor * a, const ggml_tensor * b) {
+    if (a->op != GGML_OP_SET_ROWS || b->op != GGML_OP_SET_ROWS) {
+        return false;
+    }
+    for (const ggml_tensor * t : { a, b }) {
+        if (t->src[0]->type != GGML_TYPE_F32 || t->src[1]->type != GGML_TYPE_I64) {
+            return false;
+        }
+    }
+    // independent writes: different caches, and neither reads the cache the other one writes
+    const ggml_tensor * cache_a = set_rows_base(a);
+    const ggml_tensor * cache_b = set_rows_base(b);
+    if (cache_a == cache_b) {
+        return false;
+    }
+    for (int k = 0; k < 2; ++k) {
+        if (set_rows_base(a->src[k]) == cache_b || set_rows_base(b->src[k]) == cache_a) {
+            return false;
+        }
+    }
+    // one CUDA block per trellis block, all in one wave
+    const int64_t n_blocks = (ggml_nelements(a->src[0]) + ggml_nelements(b->src[0])) / QK_VTQ_TRELLIS;
+    if (n_blocks > ggml_cuda_info().devices[ctx.device].nsm) {
+        return false;
+    }
+
+    // a trellis K type next to a trellis V type with the same CUDA block size (2 and 3 bits: 512 threads, 4 bits:
+    // 256), in either graph order
+    const bool a_is_k = a->type == GGML_TYPE_KTQ2_3S || a->type == GGML_TYPE_KTQ3_3S || a->type == GGML_TYPE_KTQ4_3S;
+    const ggml_tensor * k = a_is_k ? a : b;
+    const ggml_tensor * v = k == a ? b : a;
+    cudaStream_t stream = ctx.stream();
+#define TRELLIS_PAIR(TK, block_k, BK, TV, block_v, BV)                                                              \
+    if (k->type == TK && v->type == TV) {                                                                           \
+        vtq_cuda_encode_set_rows_pair<block_k, BK, VTQ_OUTLIER_K, true, block_v, BV, 0, false>(k, v, stream);         \
+        return true;                                                                                                \
+    }
+    TRELLIS_PAIR(GGML_TYPE_KTQ2_3S, block_ktq2_3s, 2, GGML_TYPE_VTQ2_2S, block_vtq2_2s, 2)
+    TRELLIS_PAIR(GGML_TYPE_KTQ2_3S, block_ktq2_3s, 2, GGML_TYPE_VTQ3_2S, block_vtq3_2s, 3)
+    TRELLIS_PAIR(GGML_TYPE_KTQ3_3S, block_ktq3_3s, 3, GGML_TYPE_VTQ2_2S, block_vtq2_2s, 2)
+    TRELLIS_PAIR(GGML_TYPE_KTQ3_3S, block_ktq3_3s, 3, GGML_TYPE_VTQ3_2S, block_vtq3_2s, 3)
+    TRELLIS_PAIR(GGML_TYPE_KTQ4_3S, block_ktq4_3s, 4, GGML_TYPE_VTQ4_2S, block_vtq4_2s, 4)
+#undef TRELLIS_PAIR
+    return false;
+}

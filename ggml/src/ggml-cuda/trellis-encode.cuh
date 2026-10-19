@@ -1,4 +1,5 @@
-// Trellis v2 CUDA encoder (full Viterbi, no pruning): k_vtq_encode_trellis_smem, one launch per SET_ROWS.
+// Trellis v2 CUDA encoder (full Viterbi, no pruning): k_vtq_encode_trellis_smem, one launch per SET_ROWS, or
+// k_vtq_encode_trellis_pair for the K and the V write of a decoded token together.
 //
 // 1 trellis block = N = QK_VTQ_TRELLIS = 128 samples, S = 2^L states (L = 12 for vtq*_2s, L = 16 for vtq*_2, vtq*_3 and
 // vtq3_v8). The DP runs over butterflies (see the kernel), NG = S / 2^K values per step. Where they live depends on L:
@@ -625,6 +626,27 @@ __global__ void k_vtq_encode_trellis_smem(const vtq_enc_args<block_t, idx_t> a) 
     vtq_encode_trellis_blocks<block_t, idx_t, K, L, NTM, N_OUT, ROT>(a, blockIdx.x, gridDim.x, sm);
 }
 
+// Two KV writes of 12 state bits in one launch, one CUDA block per trellis block: the first n_cta_a CUDA blocks encode
+// a, the others b (ggml_cuda_set_rows_trellis_pair). A decoded token writes a few trellis blocks per cache, and each
+// encode takes the time of one block on one SM, so the K and the V write of a layer take that time once instead of twice.
+template <typename block_a, int K_A, int N_OUT_A, bool ROT_A, typename block_b, int K_B, int N_OUT_B, bool ROT_B>
+__launch_bounds__(VTQ_ENC_SMEM_THREADS, 1)
+__global__ void k_vtq_encode_trellis_pair(
+        const vtq_enc_args<block_a, int64_t> a, const vtq_enc_args<block_b, int64_t> b, const int n_cta_a) {
+    constexpr int L   = GGML_TRELLIS_L_S;
+    constexpr int NTM = VTQ_ENC_SMEM_THREADS;
+    static_assert(vtq_enc_smem_threads<K_A, L, NTM>() == vtq_enc_smem_threads<K_B, L, NTM>(), "both encodes use the same block size");
+    __shared__ union {
+        vtq_enc_smem<block_a, K_A, L, NTM> a;
+        vtq_enc_smem<block_b, K_B, L, NTM> b;
+    } sm;
+    if ((int) blockIdx.x < n_cta_a) {
+        vtq_encode_trellis_blocks<block_a, int64_t, K_A, L, NTM, N_OUT_A, ROT_A>(a, blockIdx.x, n_cta_a, sm.a);
+    } else {
+        vtq_encode_trellis_blocks<block_b, int64_t, K_B, L, NTM, N_OUT_B, ROT_B>(b, blockIdx.x - n_cta_a, gridDim.x - n_cta_a, sm.b);
+    }
+}
+
 // the arguments of one encode; bt: its first backtrack slot
 template <typename idx_t, typename block_t>
 static vtq_enc_args<block_t, idx_t> vtq_enc_make_args(
@@ -692,4 +714,27 @@ static void vtq_cuda_encode_set_rows(
     }
     constexpr int NTM = VTQ_ENC_SMEM_THREADS;
     k_vtq_encode_trellis_smem<block_t, idx_t, K, L, NTM, N_OUT, ROT><<<nblocks, vtq_enc_smem_threads<K, L, NTM>(), 0, stream>>>(a);
+}
+
+// the arguments of the encode of SET_ROWS node t (src0 f32, src1 i64)
+template <typename block_t>
+static vtq_enc_args<block_t, int64_t> vtq_enc_args_of(const ggml_tensor * t, uint8_t * bt) {
+    const ggml_tensor * src0 = t->src[0];
+    const ggml_tensor * src1 = t->src[1];
+    return vtq_enc_make_args((const float *) src0->data, (const int64_t *) src1->data, (block_t *) t->data,
+        src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3], src1->ne[1], src1->ne[2],
+        src0->nb[1], src0->nb[2], src0->nb[3], src1->nb[0], src1->nb[1], src1->nb[2], t->nb[1], t->nb[2], t->nb[3], bt);
+}
+
+// the KV writes a and b (SET_ROWS, 12 state bits, one wave of CUDA blocks together) in one launch
+template <typename block_a, int K_A, int N_OUT_A, bool ROT_A, typename block_b, int K_B, int N_OUT_B, bool ROT_B>
+static void vtq_cuda_encode_set_rows_pair(const ggml_tensor * ta, const ggml_tensor * tb, cudaStream_t stream) {
+    constexpr int L = GGML_TRELLIS_L_S;
+    GGML_CUDA_INIT_TRELLIS_TABLE_IMPL();
+    const vtq_encode_workspace * ws = vtq_get_encode_workspace(L);
+    const auto a = vtq_enc_args_of<block_a>(ta, ws->bt);
+    const auto b = vtq_enc_args_of<block_b>(tb, ws->bt + a.ne_total * VTQ_ENC_N * ((1 << L) >> K_A));
+    GGML_ASSERT(a.ne_total * VTQ_ENC_N * ((1 << L) >> K_A) + b.ne_total * VTQ_ENC_N * ((1 << L) >> K_B) <= ws->bytes);
+    k_vtq_encode_trellis_pair<block_a, K_A, N_OUT_A, ROT_A, block_b, K_B, N_OUT_B, ROT_B>
+        <<<(int) (a.ne_total + b.ne_total), vtq_enc_smem_threads<K_A, L, VTQ_ENC_SMEM_THREADS>(), 0, stream>>>(a, b, (int) a.ne_total);
 }
