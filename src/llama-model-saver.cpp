@@ -45,6 +45,7 @@ bool llama_model_saver_supports_arch(llm_arch arch) {
         case LLM_ARCH_MELLUM:
         case LLM_ARCH_SPARK2_5:
         case LLM_ARCH_MUSE_GLIMMER:
+        case LLM_ARCH_MUSE_SPARK:
             if (allow_untested) {
                 fprintf(stderr,
                     "llama_model_saver: arch '%s' is marked untested but LLAMA_SAVER_ALLOW_UNTESTED=1 — attempting save anyway.\n",

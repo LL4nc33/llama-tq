@@ -25,6 +25,7 @@
 #include "../src/llama-model-saver.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -139,7 +140,8 @@ struct request_result {
     llama_token  id_last = 0;            // sampled, not yet decoded
     llama_tokens draft_last;             // the draft of the final round
     std::vector<llama_tokens> drafts;    // all drafts
-    std::vector<float> logits_dft_last;  // ctx_dft logits of the last draft step
+    std::vector<llama_token> cands_dft_last; // candidates of the last draft step
+    std::vector<float> logits_dft_last;      // their ctx_dft logits
     bool ok = false;
 };
 
@@ -189,8 +191,19 @@ static request_result run_request(common_speculative * spec, llama_context * ctx
         if (round == n_accept_schedule.size()) {
             // final round: keep the draft and the logits of the last MTP step for the reference
             res.draft_last = draft;
-            const float * logits = llama_get_logits_ith(ctx_dft, -1);
-            res.logits_dft_last.assign(logits, logits + N_VOCAB);
+            // with the top-k chain on the device only the candidates reach the host
+            const uint32_t n_cands = llama_get_sampled_candidates_count_ith(ctx_dft, -1);
+            if (n_cands > 0) {
+                const llama_token * cands = llama_get_sampled_candidates_ith(ctx_dft, -1);
+                const float * logits = llama_get_sampled_logits_ith(ctx_dft, -1);
+                res.cands_dft_last.assign(cands, cands + n_cands);
+                res.logits_dft_last.assign(logits, logits + n_cands);
+            } else {
+                const float * logits = llama_get_logits_ith(ctx_dft, -1);
+                res.cands_dft_last.resize(N_VOCAB);
+                std::iota(res.cands_dft_last.begin(), res.cands_dft_last.end(), 0);
+                res.logits_dft_last.assign(logits, logits + N_VOCAB);
+            }
             break;
         }
 
@@ -530,9 +543,22 @@ int main(void) {
         batch.token = nullptr;
         llama_batch_free(batch);
 
-        // the final draft step's input is (draft[1], h of step 1): its logits are what ctx_dft holds
-        const double err = tokens_match ? nmse(logits_ref.data(), r1.logits_dft_last.data(), N_VOCAB) : 1.0;
-        const bool pass = tokens_match && err < 1e-4;
+        // the final draft step's input is (draft[1], h of step 1): its logits are what ctx_dft holds,
+        // and its candidates must be the best of the reference
+        double err = 1.0;
+        bool best_cands = false;
+        if (tokens_match && !r1.cands_dft_last.empty()) {
+            std::vector<float> ref_cands;
+            for (const llama_token id : r1.cands_dft_last) {
+                ref_cands.push_back(logits_ref[id]);
+            }
+            err = nmse(ref_cands.data(), r1.logits_dft_last.data(), ref_cands.size());
+
+            std::vector<float> sorted(logits_ref);
+            std::sort(sorted.begin(), sorted.end(), std::greater<float>());
+            best_cands = *std::min_element(ref_cands.begin(), ref_cands.end()) >= sorted[ref_cands.size() - 1];
+        }
+        const bool pass = tokens_match && best_cands && err < 1e-4;
         printf("check 2 (MTP drafts match a replay of h_{p-1} + x_p pairs): nmse = %.3e %s\n", err, pass ? "OK" : "FAIL");
         ok &= pass;
     }
@@ -543,7 +569,8 @@ int main(void) {
         if (!r2.ok) {
             return 1;
         }
-        const bool pass = r2.drafts == r1.drafts && r2.tokens == r1.tokens && r2.logits_dft_last == r1.logits_dft_last;
+        const bool pass = r2.drafts == r1.drafts && r2.tokens == r1.tokens &&
+            r2.cands_dft_last == r1.cands_dft_last && r2.logits_dft_last == r1.logits_dft_last;
         printf("check 3 (second identical request drafts the same): %s\n", pass ? "OK" : "FAIL");
         ok &= pass;
     }

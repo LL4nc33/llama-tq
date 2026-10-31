@@ -610,7 +610,6 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     }
 
     const int64_t attn_score_elems    = S_v * H_v * n_seq_tokens * n_seqs;
-    const int64_t state_size_per_snap = S_v * S_v * H_v * n_seqs;
 
     ggml_tensor * output = ggml_view_4d(ctx0, gdn_out,
         S_v, H_v, n_seq_tokens, n_seqs,
