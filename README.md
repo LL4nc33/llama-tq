@@ -29,12 +29,21 @@ P2P and measured on RTX 30, 40 and 50 cards.
 - **Build** with CUDA: `cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86 && cmake --build build -j`
   (75 Turing, 86 Ampere, 89 Ada, 120 Blackwell; [build guide](docs/build.md))
 
+Accurate 8-bit KV cache:
+
 ```sh
-# accurate 8-bit KV cache
 llama-server -m model.gguf -ngl 99 -fa on -ctk q8_0 -ctv q8_0
-# more context: 4.6 bpw, more accurate than q4_0 (ktq2 / vtq2 go down to 2.6 bpw)
+```
+
+More context: 4.6 bpw, more accurate than `q4_0` (`ktq2` / `vtq2` go down to 2.6 bpw):
+
+```sh
 llama-server -m model.gguf -ngl 99 -fa on -ctk ktq4 -ctv vtq4
-# LoRA directly on the quantized GGUF
+```
+
+LoRA directly on the quantized GGUF:
+
+```sh
 llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
   --lora-train-target '^blk\.[0-9]+\.attn_(q|k|v|output)\.weight$' --lora-train-rank 16
 ```
