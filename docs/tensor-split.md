@@ -25,5 +25,8 @@ Ternary-Bonsai-2-27B, see [models.md](models.md)). For MoE models with experts i
 whole model, we have no comparison; try `-sm layer` and a single GPU as well.
 The TurboQuant KV types work with it; the 27B setups in [models.md](models.md) use both.
 
-Known issue: with `-sm tensor`, `test-llama-archs` still aborts on Kolibri-1 in the meta backend ("split axis
-unknown"); DeepSeek V4 runs since 2026-10-13. Use `-sm layer` (the default) for Kolibri-1.
+`test-llama-archs` passes with `-sm tensor` on every architecture that supports it (2026-10-21, two RTX 2060).
+
+Speculative decoding (MTP) works with `-sm tensor` since 2026-10-21; it samples on the CPU there, since the logits are
+split along the vocabulary. Since 2026-10-22 each device selects the best candidates of its part of the vocabulary, and only
+those cross to the host (the samplers that read only the k largest logits, as MTP drafts and greedy or top-k sampling do).

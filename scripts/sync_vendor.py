@@ -5,7 +5,7 @@ import os
 import sys
 import subprocess
 
-HTTPLIB_VERSION = "refs/tags/v0.40.0"
+HTTPLIB_VERSION = "refs/tags/v0.60.1"
 
 vendor = {
     "https://github.com/nlohmann/json/releases/latest/download/json.hpp":     "vendor/nlohmann/json.hpp",
@@ -24,9 +24,24 @@ vendor = {
     "https://raw.githubusercontent.com/sheredom/subprocess.h/b49c56e9fe214488493021017bf3954b91c7c1f5/subprocess.h": "vendor/sheredom/subprocess.h",
 }
 
+# local changes to vendored files, kept as diffs and applied with git apply
+patch_files = [
+    # backport of the fix for the stack overflow on deeply nested values (nlohmann/json#5387)
+    # TODO: remove once nlohmann/json releases a version newer than 3.12.0
+    "vendor/nlohmann/json-deep-nesting.patch",
+]
+
 for url, filename in vendor.items():
     print(f"downloading {url} to {filename}") # noqa: NP100
     urllib.request.urlretrieve(url, filename)
+
+for patch_file in patch_files:
+    print(f"applying {patch_file}") # noqa: NP100
+    try:
+        subprocess.check_call(["git", "apply", patch_file])
+    except subprocess.CalledProcessError:
+        print(f"Error: cannot apply {patch_file}, upstream code has changed") # noqa: NP100
+        sys.exit(1)
 
 print("Splitting httplib.h...") # noqa: NP100
 try:

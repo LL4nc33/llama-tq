@@ -234,6 +234,13 @@ public:
 // tokenizer and input processing utils
 //
 
+// requests nested deeper than this are rejected before a handler sees them:
+// chat templates, schema converters and other consumers walk JSON recursively
+constexpr int SERVER_MAX_JSON_DEPTH = 512;
+
+// whether JSON text nests objects/arrays deeper than max_depth (counted without parsing)
+bool json_text_nested_deeper_than(const std::string & text, int max_depth);
+
 bool json_is_array_of_numbers(const json & data);
 
 // is array having BOTH numbers & strings?
@@ -303,6 +310,10 @@ struct server_chat_params {
 
 // used by /completions endpoint
 json oaicompat_completion_params_parse(const json & body);
+
+// key of the serialized output parser in the parameters of a task; the server sets it from the chat template, and its
+// per-process random suffix keeps requests from passing their own parser (as upstream #30210, which dropped the field)
+const std::string & server_chat_parser_key();
 
 // used by /chat/completions endpoint
 json oaicompat_chat_params_parse(

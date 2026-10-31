@@ -831,6 +831,8 @@ class ModelBase:
                             gguf.MODEL_TENSOR.SSM_CONV1D_Q,
                             gguf.MODEL_TENSOR.SSM_CONV1D_K,
                             gguf.MODEL_TENSOR.SSM_CONV1D_V,
+                            # DSA indexer weights should be F32
+                            gguf.MODEL_TENSOR.INDEXER_PROJ,
                         )
                     )
                     or new_name[-7:] not in (".weight", ".lora_a", ".lora_b")
@@ -1093,7 +1095,7 @@ class TextModel(ModelBase):
             self.gguf_writer.add_embedding_length(n_embd)
             logger.info(f"gguf: embedding length = {n_embd}")
 
-        if (n_ff := self.find_hparam(["intermediate_size", "n_inner", "hidden_dim"], optional=True)) is not None:
+        if (n_ff := self.find_hparam(["prefix_dense_intermediate_size", "intermediate_size", "n_inner", "hidden_dim"], optional=True)) is not None:
             self.gguf_writer.add_feed_forward_length(n_ff)
             logger.info(f"gguf: feed forward length = {n_ff}")
 
@@ -1178,7 +1180,7 @@ class TextModel(ModelBase):
             self.gguf_writer.add_expert_group_used_count(n_group_used)
             logger.info(f"gguf: expert groups used count = {n_group_used}")
 
-        if (score_func := self.find_hparam(["score_function", "scoring_func", "score_func", "moe_router_activation", "moe_router_activation_func"], optional=True)) is not None:
+        if (score_func := self.find_hparam(["score_function", "scoring_func", "score_func", "moe_router_activation", "moe_router_activation_func", "expert_selection_fn"], optional=True)) is not None:
             if score_func == "sigmoid":
                 self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
             elif score_func == "softmax":
@@ -1339,12 +1341,21 @@ class TextModel(ModelBase):
         if chkhsh == "66b8d4e19ab16c3bfd89bce5d785fb7e0155e8648708a1f42077cb9fe002c273":
             # ref: https://huggingface.co/alvarobartt/grok-2-tokenizer
             res = "grok-2"
+        if chkhsh == "f5c965e4198da6e7525072d87d1ecf4c51d981fd486c7c4ec728ef9cec7e03fc":
+            # ref: https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B
+            res = "gpt-4o"
         if chkhsh == "b3d1dd861f1d4c5c0d2569ce36baf3f90fe8a102db3de50dd71ff860d91be3df":
             # ref: https://huggingface.co/aari1995/German_Semantic_V3
             res = "jina-v2-de"
         if chkhsh == "0fe1cf6eda062318a1af7270f3331a85c539a01778ff948e24388e949c5282f4":
             # ref: https://huggingface.co/evilfreelancer/ruGPT3XL
             res = "gpt-2"
+        if chkhsh == "846deafc5b0fa786186fa4ae6c7b49903cf2f1d1895bdb80b9120d60be135252":
+            # ref: https://huggingface.co/danish-foundation-models/DFM-Mimir
+            res = "gemma4"
+        if chkhsh == "0a766d034107bc736a3f2dc4968fd62e54a3570f1454443e0c5a4cc6bd7941ed":
+            # ref: https://huggingface.co/XHToken/Spark-X2.5-1.7B
+            res = "spark2_5"
         if chkhsh == "0ef9807a4087ebef797fc749390439009c3b9eda9ad1a097abbe738f486c01e5":
             # ref: https://huggingface.co/meta-llama/Meta-Llama-3-8B
             res = "llama-bpe"
@@ -1387,6 +1398,9 @@ class TextModel(ModelBase):
         if chkhsh == "d772b220ace2baec124bed8cfafce0ead7d6c38a4b65ef11261cf9d5d62246d1":
             # ref: https://huggingface.co/CohereLabs/tiny-aya-base
             res = "tiny_aya"
+        if chkhsh == "52df12b4c8d4176e7481aab4b6e8454d1fd0a210a04a574f6d4e067d10e23c3e":
+            # ref: https://huggingface.co/CohereLabs/North-Mini-Code-1.0
+            res = "cohere2moe"
         if chkhsh == "e636dc30a262dcc0d8c323492e32ae2b70728f4df7dfe9737d9f920a282b8aea":
             # ref: https://huggingface.co/Qwen/Qwen1.5-7B
             res = "qwen2"
@@ -1546,6 +1560,12 @@ class TextModel(ModelBase):
         if chkhsh == "862f827721df956049dff5ca81a57f29e575280bc622e290d3bf4e35eca29015":
             # ref: https://huggingface.co/codefuse-ai/F2LLM-v2-4B
             res = "f2llmv2"
+        if chkhsh == "9dcf830ee9990cdbf78cc523a5f7bd9ad8f3f9890c2d3581d2785ad10f07049d":
+            # ref: https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Base
+            res = "mellum2"
+        if chkhsh == "972da7b59cec44d1f0a490a86c96df53859e486e481563e5dddac155013d87ac":
+            # ref: https://huggingface.co/poolside/Laguna-XS.2
+            res = "laguna"
 
         if res is None:
             logger.warning("\n")
@@ -3003,6 +3023,264 @@ class ArceeModel(LlamaModel):
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
         self._try_set_pooling_type()
+
+
+def _unpermute_for_rope(tensor: Tensor, n_heads: int) -> Tensor:
+    """Invert transformers' `_permute_for_rope`: HF stores Q/K in rotate_half layout,
+    llama.cpp consumes the interleaved (NORM) layout."""
+    if tensor.ndim == 2:
+        dim1, dim2 = tensor.shape
+        return tensor.view(n_heads, 2, dim1 // n_heads // 2, dim2).transpose(1, 2).reshape(dim1, dim2)
+    if tensor.ndim == 1:
+        (dim1,) = tensor.shape
+        return tensor.view(n_heads, 2, dim1 // n_heads // 2).transpose(1, 2).reshape(dim1)
+    raise ValueError(f"_unpermute_for_rope: unexpected shape {tuple(tensor.shape)}")
+
+
+@ModelBase.register("MuseGlimmerForConditionalGeneration")
+class MuseGlimmerModel(TextModel):
+    model_arch = gguf.MODEL_ARCH.MUSE_GLIMMER
+
+    def norm_shift(self, name: str) -> float:
+        # All four layer norms use 1, the final norm uses 0.
+        return 1.0 if name.endswith("layernorm.weight") else 0.0
+
+    def set_vocab(self):
+        self._set_vocab_gpt2()
+
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(self.dir_model)
+        eot_id = tok.convert_tokens_to_ids("<|eot|>")  # ty: ignore[unresolved-attribute]
+        if isinstance(eot_id, int) and eot_id >= 0:
+            self.gguf_writer.add_eot_token_id(eot_id)
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        hparams = self.hparams
+
+        self.gguf_writer.add_final_logit_softcapping(hparams["final_logit_softcapping"])
+        self.gguf_writer.add_logit_scale(hparams["output_multiplier"])
+        self.gguf_writer.add_sliding_window(hparams["sliding_window"])
+        self.gguf_writer.add_sliding_window_pattern([t == "sliding_attention" for t in hparams["layer_types"]])
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # the vision tower and its projector go to the mmproj file
+        if name.startswith(("model.vision_tower.", "model.vision_adapter.", "model.vision_projection.")):
+            return
+
+        if "language_model." in name:
+            name = name.replace("language_model.", "")
+
+        shift = self.norm_shift(name)
+        if shift != 0.0:
+            data_torch = data_torch + shift
+
+        # Invert transformers' `_permute_for_rope` on Q/K, we keep ggml's NORM (interleaved) rope
+        if ".self_attn.q_proj." in name:
+            data_torch = _unpermute_for_rope(data_torch, int(self.hparams["num_attention_heads"]))
+        elif ".self_attn.k_proj." in name:
+            data_torch = _unpermute_for_rope(data_torch, int(self.hparams["num_key_value_heads"]))
+
+        # Synthesize QK-norm weights to absorb qk_scale_factor.
+        # MuseGlimmer implementation: scaleless RMSNorm followed by qk_scale_factor..
+        if bid is not None and name.endswith(f"model.layers.{bid}.self_attn.q_proj.weight"):
+            head_dim = self.hparams["head_dim"]
+            q_scale = float(self.hparams["qk_scale_factor"])
+            yield (
+                self.map_tensor_name(f"model.layers.{bid}.self_attn.q_norm.weight"),
+                torch.full((head_dim,), q_scale, dtype=torch.float32),
+            )
+            yield (
+                self.map_tensor_name(f"model.layers.{bid}.self_attn.k_norm.weight"),
+                torch.ones((head_dim,), dtype=torch.float32),
+            )
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("MuseGlimmerForConditionalGeneration")
+class MuseGlimmerVisionModel(MmprojModel):
+    def get_vision_config(self) -> dict[str, Any] | None:
+        c = self.global_config.get("vision_config")
+        if not c:
+            return None
+        # MuseGlimmer actually uses dynamic size, initialize with nominal size
+        image_size = c["pos_emb_height"] * c["patch_size"] * c["merge_size"]
+        return {**c, "image_size": image_size}
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        assert self.hparams_vision is not None
+        c = self.hparams_vision  # enriched vision_config from get_vision_config()
+
+        self.gguf_writer.add_clip_projector_type(gguf.VisionProjectorType.MUSE_GLIMMER)
+        self.gguf_writer.add_vision_attention_layernorm_eps(float(c["layer_norm_eps"]))
+        self.gguf_writer.add_vision_spatial_merge_size(int(c["merge_size"]))
+
+    # 3-layer projector MLP
+    _MM_MLP_MAP = {
+        "model.vision_adapter.fc1": (gguf.MODEL_TENSOR.V_MMPROJ, 0),
+        "model.vision_adapter.fc2": (gguf.MODEL_TENSOR.V_MMPROJ, 1),
+        "model.vision_projection":  (gguf.MODEL_TENSOR.V_MMPROJ, 2),
+    }
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        assert self.hparams_vision is not None
+        # only the vision tower and its projector belong to the mmproj file
+        if not name.startswith(("model.vision_tower.", "model.vision_adapter.", "model.vision_projection.")):
+            return
+        if ".attn.q_proj." in name or ".attn.k_proj." in name:
+            n_heads = int(self.hparams_vision["num_attention_heads"])
+            data_torch = _unpermute_for_rope(data_torch, n_heads)
+        # Lay out the pt=2 temporal slabs of the patch embedding as a conv2d for build_inp()
+        if name.endswith("patch_embedder.patch_embedding.weight"):
+            n_embd = data_torch.shape[0]
+            pt = int(self.hparams_vision["patch_temporal"])
+            ps = int(self.hparams_vision["patch_size"])
+            data_torch = data_torch.view(n_embd, pt, 3, ps, ps).sum(dim=1)  # (n_embd, 3, ps, ps)
+        stem, _, suffix = name.rpartition(".")
+        if stem in self._MM_MLP_MAP:
+            tensor_key, idx = self._MM_MLP_MAP[stem]
+            yield (self.format_tensor_name(tensor_key, bid=idx, suffix="." + suffix), data_torch)
+            return
+        yield (self.map_tensor_name(name), data_torch)
+
+
+# The reference clamps the squared stream coefficient with this floor.
+_MUSE_SPARK_RESIDUAL_GATE_EPS = 1e-3
+
+# Block norms hold a delta around one; the output norm holds an absolute gain.
+_MUSE_SPARK_OFFSET_NORM_SUFFIXES = (
+    "input_layernorm.weight",
+    "pre_feedforward_layernorm.weight",
+    "post_feedforward_layernorm.weight",
+    "pre_expert_norm.weight",
+    "post_expert_norm.weight",
+)
+
+
+@ModelBase.register("MuseSparkForConditionalGeneration")
+class MuseSparkModel(TextModel):
+    model_arch = gguf.MODEL_ARCH.MUSE_SPARK
+
+    def set_vocab(self):
+        self._set_vocab_gpt2()
+
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(self.dir_model)
+        eot_id = tok.convert_tokens_to_ids("<|eot|>")  # ty: ignore[unresolved-attribute]
+        if isinstance(eot_id, int) and eot_id >= 0:
+            self.gguf_writer.add_eot_token_id(eot_id)
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        hparams = self.hparams
+
+        # MetaP resolves to two scalars
+        # The output multiplier lands here and the attention scale rides on the synthesized QK-norm weights
+        self.gguf_writer.add_logit_scale(hparams["output_multiplier"])
+        self.gguf_writer.add_final_logit_softcapping(hparams["final_logit_softcapping"])
+
+        self.gguf_writer.add_post_norm_eps(hparams["post_norm_eps"])
+
+        # Only the sliding layers carry rope, so the graph takes it from the pattern
+        sliding = [t == "sliding_attention" for t in hparams["layer_types"]]
+        theta = hparams["rope_parameters"]["rope_theta"]
+        assert sliding == [bool(t) for t in hparams["layer_rope_theta"]]
+        assert all(t in (0, theta) for t in hparams["layer_rope_theta"])
+        assert all(t == "sparse" for t in hparams["mlp_layer_types"])
+
+        self.gguf_writer.add_sliding_window(hparams["sliding_window"])
+        self.gguf_writer.add_rope_freq_base_swa(theta)
+        self.gguf_writer.add_sliding_window_pattern(sliding)
+
+        # Experts live in a latent space narrower than the residual stream.
+        self.gguf_writer.add_moe_latent_size(hparams["moe_hidden_size"])
+        self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_weights_scale(hparams["routed_scaling_factor"])
+        self.gguf_writer.add_expert_weights_norm(True)
+        # the config carries no score function, the reference hardcodes sigmoid
+        self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # the vision and audio towers and their projectors go to the mmproj file
+        if name.startswith(("model.vision_tower.", "model.vision_adapter.", "model.vision_projection.", "model.audio_tower.")):
+            return
+
+        if "language_model." in name:
+            name = name.replace("language_model.", "")
+
+        if name.endswith(_MUSE_SPARK_OFFSET_NORM_SUFFIXES):
+            data_torch = data_torch + 1.0
+
+        if name.endswith(".self_attn.q_proj.weight"):
+            assert bid is not None
+            n_head = self.hparams["num_attention_heads"]
+            head_dim = self.hparams["head_dim"]
+
+            yield self.map_tensor_name(name), _unpermute_for_rope(data_torch, n_head)
+
+            # Synthesize QK-norm to carry the MetaP scale so the graph keeps the plain 1 / sqrt(head_dim)
+            ones = torch.ones(head_dim, dtype=torch.float32)
+            q_norm = ones * self.hparams["qk_scale_factor"]
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_Q_NORM, bid), q_norm
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_K_NORM, bid), ones
+            return
+
+        if name.endswith(".self_attn.k_proj.weight"):
+            n_head_kv = self.hparams["num_key_value_heads"]
+            yield self.map_tensor_name(name), _unpermute_for_rope(data_torch, n_head_kv)
+            return
+
+        # gate_up_proj fuses both projections over the output dim, gate first.
+        if name.endswith(".mlp.experts.gate_up_proj"):
+            assert bid is not None
+            n_ff = data_torch.shape[1] // 2
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_EXP, bid), data_torch[:, :n_ff, :]
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_UP_EXP, bid), data_torch[:, n_ff:, :]
+            return
+
+        if name.endswith(".mlp.experts.down_proj"):
+            assert bid is not None
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_DOWN_EXP, bid), data_torch
+            return
+
+        # The router scales its logits by the MetaP output multiplier before the sigmoid
+        # Fold it into the weight to keep a plain matmul
+        if name.endswith(".mlp.gate.weight"):
+            data_torch = data_torch.float() * self.hparams["output_multiplier"]
+            yield from super().modify_tensors(data_torch, name, bid)
+            return
+
+        # Norm preserving residual gate: alpha scales the stream, beta the branch, with alpha^2 + beta^2 = 1
+        # Both follow from the weight, so resolve them here
+        if name.endswith("_residual_gate.gate"):
+            assert bid is not None
+            attn = "post_attention" in name
+
+            w = data_torch.float() / self.hparams["residual_gate_temperature"]
+            beta = torch.sigmoid(w)
+            alpha_sq = torch.sigmoid(-w) * (1.0 + beta)
+            alpha = torch.sqrt(torch.clamp(alpha_sq, min=_MUSE_SPARK_RESIDUAL_GATE_EPS))
+
+            t_alpha = gguf.MODEL_TENSOR.ATTN_RESID_ALPHA if attn else gguf.MODEL_TENSOR.FFN_RESID_ALPHA
+            t_beta = gguf.MODEL_TENSOR.ATTN_RESID_BETA if attn else gguf.MODEL_TENSOR.FFN_RESID_BETA
+            yield self.format_tensor_name(t_alpha, bid), alpha
+            yield self.format_tensor_name(t_beta, bid), beta
+            return
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("MuseSparkForConditionalGeneration")
+class MuseSparkVisionModel(MuseGlimmerVisionModel):
+    # same vision encoder as Muse Glimmer; the audio encoder has no runtime support here,
+    # so the mmproj file only carries the vision tower
+    has_vision_encoder = True
+    has_audio_encoder = False
+
+    def get_audio_config(self) -> dict[str, Any] | None:
+        return None
 
 
 @ModelBase.register("AfmoeForCausalLM")
@@ -7893,7 +8171,7 @@ class Gemma4Model(Gemma3Model):
         self.gguf_writer.add_key_length_swa(head_dim_swa)
         self.gguf_writer.add_value_length_swa(head_dim_swa)
 
-        expert_intermediate_size = self.find_hparam(["expert_intermediate_size", "moe_intermediate_size"])
+        expert_intermediate_size = self.find_hparam(["expert_intermediate_size", "moe_intermediate_size"], optional=True)
         if expert_intermediate_size is not None:
             self.gguf_writer.add_expert_feed_forward_length(expert_intermediate_size)
 
@@ -7957,6 +8235,36 @@ class Gemma4Model(Gemma3Model):
             name += ".weight"
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("EmbeddingGemma2Model")
+# TODO: add example model
+class EmbeddingGemma2Model(Gemma4Model):
+    model_arch = gguf.MODEL_ARCH.GEMMA_EMBEDDING2
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hparams["num_kv_shared_layers"] = 0
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        # HF sliding_window is bidirectional, llama.cpp expects the full window size
+        self.gguf_writer.add_sliding_window(2 * self.hparams["sliding_window"])
+        self.gguf_writer.add_embedding_length_out(self.hparams["embedding_dim"])
+        self.gguf_writer.add_causal_attention(False)
+        self._try_set_pooling_type()
+
+    def generate_extra_tensors(self) -> Iterable[tuple[str, Tensor]]:
+        # default rope on all layers, no rope_freqs needed
+        return iter(())
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # the text tensors carry no "language_model." prefix; the vision and audio towers are not converted here
+        if "vision" in name or "audio" in name:
+            return
+        if name.endswith("per_dim_scale") or name.endswith("layer_scalar"):
+            name = name + ".weight"
+        yield from Gemma3Model.modify_tensors(self, data_torch, name, bid)
 
 
 @ModelBase.register("Starcoder2ForCausalLM")
@@ -8595,6 +8903,92 @@ class Cohere2Model(TextModel):
             return
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("Cohere2MoeForCausalLM")
+class Cohere2MoeModel(TextModel):
+    model_arch = gguf.MODEL_ARCH.COHERE2MOE
+    _expert_tensor_re = re.compile(
+        r"model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.(down_proj|gate_proj|up_proj)\.weight"
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # the MTP/NextN blocks are stored as extra decoder blocks after the main stack
+        if (n_nextn := int(self.hparams.get("num_nextn_predict_layers", 0) or 0)) > 0:
+            self.block_count += n_nextn
+            self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+        self._experts: list[dict[str, Tensor]] = [{} for _ in range(self.block_count)]
+
+    def set_gguf_parameters(self):
+        hparams = self.hparams
+        expert_intermediate_size = hparams["intermediate_size"]
+        mlp_layer_types = hparams.get("mlp_layer_types")
+        n_dense_lead = hparams.get("first_k_dense_replace", 0)
+        if mlp_layer_types is not None:
+            n_dense_lead = next((i for i, t in enumerate(mlp_layer_types) if t != "dense"), len(mlp_layer_types))
+
+        super().set_gguf_parameters()
+
+        self.gguf_writer.add_logit_scale(hparams["logit_scale"])
+        self.gguf_writer.add_sliding_window(hparams["sliding_window"])
+        self.gguf_writer.add_sliding_window_pattern([t == "sliding_attention" for t in hparams["layer_types"]])
+        self.gguf_writer.add_vocab_size(hparams["vocab_size"])
+        self.gguf_writer.add_expert_feed_forward_length(expert_intermediate_size)
+        self.gguf_writer.add_leading_dense_block_count(n_dense_lead)
+        self.gguf_writer.add_expert_weights_norm(hparams.get("norm_topk_prob", False))
+        if (num_shared_experts := hparams.get("num_shared_experts", 0)) > 0:
+            if hparams.get("shared_expert_combination_strategy", "average") != "average":
+                raise ValueError("Cohere2 MoE only supports average shared expert combination")
+            self.gguf_writer.add_expert_shared_count(num_shared_experts)
+            self.gguf_writer.add_expert_shared_feed_forward_length(expert_intermediate_size * num_shared_experts)
+        if (n_nextn := hparams.get("num_nextn_predict_layers", 0)) > 0:
+            self.gguf_writer.add_nextn_predict_layers(n_nextn)
+        self.gguf_writer.add_rope_dimension_count(hparams["head_dim"])
+        self.gguf_writer.add_rope_scaling_type(gguf.RopeScalingType.NONE)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        if name.endswith(".bias"):
+            if torch.any(data_torch != 0):
+                raise ValueError(f"Bias tensor {name!r} is not zero.")
+            logger.debug(f"Skipping bias tensor {name!r}.")
+            return
+
+        if (m := self._expert_tensor_re.fullmatch(name)) is not None:
+            n_experts = self.hparams["num_experts"]
+            layer_idx = int(m.group(1))
+            assert bid is None or bid == layer_idx
+
+            self._experts[layer_idx][name] = data_torch
+
+            expected = {
+                f"model.layers.{layer_idx}.mlp.experts.{xid}.{w_name}.weight"
+                for xid in range(n_experts)
+                for w_name in ("down_proj", "gate_proj", "up_proj")
+            }
+            if expected.issubset(self._experts[layer_idx]):
+                for w_name in ["down_proj", "gate_proj", "up_proj"]:
+                    datas: list[Tensor] = []
+
+                    for xid in range(n_experts):
+                        ename = f"model.layers.{layer_idx}.mlp.experts.{xid}.{w_name}.weight"
+                        datas.append(self._experts[layer_idx][ename])
+                        del self._experts[layer_idx][ename]
+
+                    data_torch = torch.stack(datas, dim=0)
+                    merged_name = f"model.layers.{layer_idx}.mlp.experts.{w_name}.weight"
+
+                    yield from super().modify_tensors(data_torch, merged_name, layer_idx)
+            return
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+    def prepare_tensors(self):
+        super().prepare_tensors()
+
+        experts = [k for d in self._experts for k in d.keys()]
+        if len(experts) > 0:
+            raise ValueError(f"Unprocessed experts: {experts}")
 
 
 @ModelBase.register("OlmoForCausalLM")
@@ -10244,6 +10638,35 @@ class Glm4MoeLiteModel(DeepseekV2Model):
         return self._set_vocab_glm()
 
 
+@ModelBase.register("DeepseekV32ForCausalLM")
+class DeepseekV32Model(DeepseekV2Model):
+    model_arch = gguf.MODEL_ARCH.DEEPSEEK32
+    skip_mtp = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.block_count = self.hparams["num_hidden_layers"] + self.hparams.get("num_nextn_predict_layers", 0)
+        self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def set_vocab(self):
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
+        assert getattr(tokenizer, "add_bos_token", False), "Change value of add_bos_token to true in tokenizer_config.json file."
+        self._set_vocab_gpt2()
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        # NextN/MTP prediction layers
+        if (num_nextn_predict_layers := self.hparams.get("num_nextn_predict_layers")) is not None:
+            self.gguf_writer.add_nextn_predict_layers(num_nextn_predict_layers)
+
+        # DSA indexer parameters
+        self.gguf_writer.add_indexer_head_count(self.hparams["index_n_heads"])
+        self.gguf_writer.add_indexer_key_length(self.hparams["index_head_dim"])
+        self.gguf_writer.add_indexer_top_k(self.hparams["index_topk"])
+
+
 @ModelBase.register("GlmMoeDsaForCausalLM")
 class GlmMoeDsaModel(DeepseekV2Model):
     model_arch = gguf.MODEL_ARCH.GLM_DSA
@@ -10704,6 +11127,106 @@ class GraniteModel(LlamaModel):
             logger.info("gguf: (granite) logits_scale = %s", logits_scale)
 
 
+@ModelBase.register("GraniteSWAForCausalLM")
+class GraniteSWAModel(GraniteModel):
+    """Conversion for IBM's GraniteSWAForCausalLM (interleaved sliding window attention)"""
+    model_arch = gguf.MODEL_ARCH.GRANITE_SWA
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # the attention sinks are stored without a ".weight" suffix
+        if name.endswith("sinks"):
+            name += ".weight"
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+    def set_gguf_parameters(self):
+        """GraniteSWA uses Granite parameters plus sliding window configuration."""
+        super().set_gguf_parameters()
+
+        # Add sliding_window from config
+        sliding_window = self.hparams.get("sliding_window", 128)
+        self.gguf_writer.add_sliding_window(sliding_window)
+        logger.info("gguf: (granite_swa) sliding_window = %s", sliding_window)
+
+        # Derive sliding_window_pattern from layer_types
+        if layer_types := self.hparams.get("layer_types"):
+            is_swa = [t == "sliding_attention" for t in layer_types]
+            self.gguf_writer.add_sliding_window_pattern(is_swa)
+            logger.info("gguf: (granite_swa) sliding_window_pattern = %d SWA layers / %d total",
+                        sum(is_swa), len(is_swa))
+        else:
+            # Fall back to period-based pattern: i % 4 != 0
+            # This matches the transformers default pattern
+            n_layers = self.block_count
+            is_swa = [i % 4 != 0 for i in range(n_layers)]
+            self.gguf_writer.add_sliding_window_pattern(is_swa)
+            logger.info("gguf: (granite_swa) sliding_window_pattern (inferred) = %d SWA layers / %d total",
+                        sum(is_swa), n_layers)
+
+        # Add rope_pattern from no_rope_layers
+        if no_rope_layers := self.hparams.get("no_rope_layers"):
+            # Convert 1/0 to bool (1 = use RoPE, 0 = NoPE)
+            rope_pattern = [bool(x) for x in no_rope_layers]
+            self.gguf_writer.add_rope_pattern(rope_pattern)
+            logger.info("gguf: (granite_swa) rope_pattern = %d RoPE layers / %d total",
+                        sum(rope_pattern), len(rope_pattern))
+
+
+@ModelBase.register("GraniteMoeSWAForCausalLM")
+class GraniteMoeSWAModel(GraniteSWAModel):
+    """Conversion for IBM's GraniteMoeSWAForCausalLM (unified dense + MoE with iSWA)"""
+    model_arch = gguf.MODEL_ARCH.GRANITE_SWA
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        if shared_intermediate_size := self.hparams.get("shared_intermediate_size"):
+            self.gguf_writer.add_expert_shared_feed_forward_length(shared_intermediate_size)
+            logger.info("gguf: (granitemoewa) shared_intermediate_size = %s", shared_intermediate_size)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        """Split merged MoE tensors (gate+up) following standard MoE pattern."""
+
+        # Handle expert FFN tensors (merged gate+up) - swash format: experts.gate_up_proj
+        # Kept fused since inference (build_moe_ffn) supports a single gate_up_exps
+        # tensor for the routed experts.
+        if name.endswith("block_sparse_moe.experts.gate_up_proj"):
+            ffn_dim = self.hparams["intermediate_size"]
+            assert data_torch.shape[-2] == 2 * ffn_dim, f"Merged FFN tensor size must be 2 * intermediate_size, got {data_torch.shape[-2]}"
+            yield from ModelBase.modify_tensors(self, data_torch, self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_UP_EXP, bid), bid)
+            return
+
+        # Handle expert FFN down projection - swash format: experts.down_proj
+        if name.endswith("block_sparse_moe.experts.down_proj"):
+            yield from ModelBase.modify_tensors(self, data_torch, self.format_tensor_name(gguf.MODEL_TENSOR.FFN_DOWN_EXP, bid), bid)
+            return
+
+        # Handle expert FFN tensors (merged gate+up) - standard granite format: input_linear.weight
+        # Kept fused since inference (build_moe_ffn) supports a single gate_up_exps
+        # tensor for the routed experts.
+        if name.endswith("block_sparse_moe.input_linear.weight"):
+            ffn_dim = self.hparams["intermediate_size"]
+            assert data_torch.shape[-2] == 2 * ffn_dim, "Merged FFN tensor size must be 2 * intermediate_size"
+            yield from ModelBase.modify_tensors(self, data_torch, self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_UP_EXP, bid), bid)
+            return
+
+        # Handle shared expert FFN tensors (if present) - kept fused since
+        # inference (build_ffn) supports a single ffn_up_shexp tensor with
+        # LLM_FFN_SWIGLU for the shared expert.
+        if name.endswith("shared_mlp.input_linear.weight"):
+            ffn_dim = self.hparams.get("shared_intermediate_size", self.hparams["intermediate_size"])
+            assert data_torch.shape[-2] == 2 * ffn_dim, "Merged FFN tensor size must be 2 * shared_intermediate_size"
+            yield from ModelBase.modify_tensors(self, data_torch, self.format_tensor_name(gguf.MODEL_TENSOR.FFN_UP_SHEXP, bid), bid)
+            return
+
+        # Handle shared expert output (if present)
+        if name.endswith("shared_mlp.output_linear.weight"):
+            yield from ModelBase.modify_tensors(self, data_torch, self.format_tensor_name(gguf.MODEL_TENSOR.FFN_DOWN_SHEXP, bid), bid)
+            return
+
+        # Pass through to parent for all other tensors (including sinks)
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
 @ModelBase.register("GraniteMoeForCausalLM", "GraniteMoeSharedForCausalLM")
 class GraniteMoeModel(GraniteModel):
     """Conversion for IBM's GraniteMoeForCausalLM"""
@@ -10752,6 +11275,166 @@ class GraniteMoeModel(GraniteModel):
             return
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("GraniteSwitchForCausalLM")
+class GraniteSwitchModel(GraniteMoeModel):
+    """Dense, all-attention Granite with N per-token embedded LoRA adapters, stacked
+    over the adapter dim with a zero adapter at slot 0 (N = num_adapters + 1)."""
+    model_arch = gguf.MODEL_ARCH.GRANITE_SWITCH
+
+    # permute q/k per-slice below (NORM-rope layout), not via the parent's auto-permute
+    undo_permute = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # the weightless switch reserves one cache slot: one fewer block than num_hidden_layers
+        self.block_count = self.block_count - 1
+        self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+        self._n_adapters = int(self.hparams["num_adapters"])
+        self._max_lora_rank = int(self.hparams["max_lora_rank"])
+        self._n_slots = self._n_adapters + 1  # +1 for the zero slot at index 0
+
+        n_head = int(self.hparams["num_attention_heads"])
+        n_kv_head = int(self.hparams["num_key_value_heads"])
+        head_dim = (
+            self.hparams.get("projection_head_dim")
+            or self.hparams.get("head_dim")
+            or (self.hparams["hidden_size"] // n_head)
+        )
+        self._n_head = n_head
+        self._n_kv_head = n_kv_head
+        self._head_dim = int(head_dim)
+        self._q_size = n_head * self._head_dim
+        self._kv_size = n_kv_head * self._head_dim
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        # dense: pin expert_used_count to 0 (config carries a leftover num_experts_per_tok)
+        if not self.hparams.get("num_local_experts"):
+            self.gguf_writer.add_expert_used_count(0)
+
+        self.gguf_writer.add_adapter_count(self._n_adapters)
+        self.gguf_writer.add_adapter_lora_rank(self._max_lora_rank)
+        self.gguf_writer.add_adapter_token_ids_activate(self.hparams["adapter_token_ids"])
+        self.gguf_writer.add_adapter_token_ids_substitute(self.hparams["adapter_substitute_token_ids"])
+        router_gain = float(self.hparams.get("control_token_gain", 15.0))
+        self.gguf_writer.add_adapter_router_gain(router_gain)
+        logger.info("gguf: (graniteswitch) num_adapters=%s max_lora_rank=%s n_slots=%s router_gain=%s", self._n_adapters, self._max_lora_rank, self._n_slots, router_gain)
+
+    def _lora_a(self, data: Tensor) -> Tensor:
+        # on-disk A: [n_adapters, 1, max_rank, in] -> [n_adapters+1, max_rank, in]
+        a = data.squeeze(1)
+        zero = torch.zeros_like(a[:1])
+        return torch.cat([zero, a], dim=0).contiguous()
+
+    def _lora_b(self, data: Tensor, permute_n_head: int | None = None) -> Tensor:
+        # on-disk B: [n_adapters, 1, out, max_rank] -> [n_adapters+1, out, max_rank]
+        b = data.squeeze(1)
+        if permute_n_head is not None:
+            # permute each adapter's B output rows to match the permuted q/k base
+            b = torch.stack([self.permute(b[i], permute_n_head, permute_n_head) for i in range(b.shape[0])], dim=0)
+        zero = torch.zeros_like(b[:1])
+        return torch.cat([zero, b], dim=0).contiguous()
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        T = gguf.MODEL_TENSOR
+
+        # skip the weightless switch + control-token buffers (rebuilt at load time)
+        bare = name.split(".")[-1]
+        if (
+            name.startswith("model.switch.") or name.startswith("switch.")
+            or bare in ("adapter_token_ids", "control_to_substitute_lut")
+        ):
+            return
+
+        if "self_attn.qkv_proj" in name:
+            if name.endswith("base_layer.weight"):
+                # fused [q|k|v] rows: permute q/k row-blocks for ggml's NORM-rope layout
+                q, k, v = data_torch.split([self._q_size, self._kv_size, self._kv_size], dim=0)
+                q = self.permute(q, self._n_head, self._n_head)
+                k = self.permute(k, self._n_kv_head, self._n_kv_head)
+                fused = torch.cat([q, k, v], dim=0)
+                yield (self.format_tensor_name(T.ATTN_QKV, bid), fused)
+                return
+            if "lora_A_slices." in name:
+                slot = int(name.rsplit(".", 1)[1])
+                key = {0: T.ATTN_Q, 1: T.ATTN_K, 2: T.ATTN_V}[slot]
+                yield (self.format_tensor_name(key, bid, suffix=".lora_a"), self._lora_a(data_torch))
+                return
+            if "lora_B_slices." in name:
+                slot = int(name.rsplit(".", 1)[1])
+                key, ph = {
+                    0: (T.ATTN_Q, self._n_head),
+                    1: (T.ATTN_K, self._n_kv_head),
+                    2: (T.ATTN_V, None),
+                }[slot]
+                yield (self.format_tensor_name(key, bid, suffix=".lora_b"), self._lora_b(data_torch, ph))
+                return
+            raise ValueError(f"Unexpected qkv_proj tensor: {name}")
+
+        if "self_attn.o_proj" in name:
+            if name.endswith("base_layer.weight"):
+                yield (self.format_tensor_name(T.ATTN_OUT, bid), data_torch)
+                return
+            if name.endswith("lora_A"):
+                yield (self.format_tensor_name(T.ATTN_OUT, bid, suffix=".lora_a"), self._lora_a(data_torch))
+                return
+            if name.endswith("lora_B"):
+                yield (self.format_tensor_name(T.ATTN_OUT, bid, suffix=".lora_b"), self._lora_b(data_torch))
+                return
+            raise ValueError(f"Unexpected o_proj tensor: {name}")
+
+        if "shared_mlp.input_linear" in name:
+            ffn = self.hparams["shared_intermediate_size"]
+            if name.endswith("base_layer.weight"):
+                gate, up = data_torch.split([ffn, ffn], dim=0)
+                yield (self.format_tensor_name(T.FFN_GATE, bid), gate)
+                yield (self.format_tensor_name(T.FFN_UP, bid), up)
+                return
+            if "lora_A_slices." in name:
+                slot = int(name.rsplit(".", 1)[1])
+                key = {0: T.FFN_GATE, 1: T.FFN_UP}[slot]
+                yield (self.format_tensor_name(key, bid, suffix=".lora_a"), self._lora_a(data_torch))
+                return
+            if "lora_B_slices." in name:
+                slot = int(name.rsplit(".", 1)[1])
+                key = {0: T.FFN_GATE, 1: T.FFN_UP}[slot]
+                yield (self.format_tensor_name(key, bid, suffix=".lora_b"), self._lora_b(data_torch))
+                return
+            raise ValueError(f"Unexpected shared_mlp.input_linear tensor: {name}")
+
+        if "shared_mlp.output_linear" in name:
+            if name.endswith("base_layer.weight"):
+                yield (self.format_tensor_name(T.FFN_DOWN, bid), data_torch)
+                return
+            if name.endswith("lora_A"):
+                yield (self.format_tensor_name(T.FFN_DOWN, bid, suffix=".lora_a"), self._lora_a(data_torch))
+                return
+            if name.endswith("lora_B"):
+                yield (self.format_tensor_name(T.FFN_DOWN, bid, suffix=".lora_b"), self._lora_b(data_torch))
+                return
+            raise ValueError(f"Unexpected shared_mlp.output_linear tensor: {name}")
+
+        if bid is not None and ".layers." in name and (
+            "input_layernorm" in name or "post_attention_layernorm" in name
+        ):
+            key = T.ATTN_NORM if "input_layernorm" in name else T.FFN_NORM
+            yield (self.format_tensor_name(key, bid), data_torch)
+            return
+
+        if name in ("model.embed_tokens.weight", "embed_tokens.weight"):
+            yield (self.format_tensor_name(T.TOKEN_EMBD), data_torch)
+            return
+        if name in ("model.norm.weight", "norm.weight"):
+            yield (self.format_tensor_name(T.OUTPUT_NORM), data_torch)
+            return
+        if name == "lm_head.weight":
+            return  # tied to token_embd
+
+        raise ValueError(f"graniteswitch: unhandled tensor {name!r} (bid={bid})")
 
 
 @ModelBase.register("GraniteMoeHybridForCausalLM", "BambaForCausalLM")
@@ -11257,6 +11940,148 @@ class BailingMoeV2Model(TextModel):
             if len(experts) > 0:
                 raise ValueError(f"Unprocessed experts: {experts}")
 
+
+
+@ModelBase.register("BailingMoeV3ForCausalLM")
+class BailingMoeV3Model(TextModel):
+    model_arch = gguf.MODEL_ARCH.BAILINGMOE3
+
+    _experts: list[dict[str, Tensor]] | None = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # the MTP/NextN blocks are stored as extra decoder blocks after the main stack
+        nextn_layers = self.hparams.get("num_nextn_predict_layers", 0) or 0
+        self.block_count = self.hparams["num_hidden_layers"] + nextn_layers
+        self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def set_vocab(self):
+        self._set_vocab_gpt2()
+
+    def is_full_attention(self, bid: int) -> bool:
+        n_layer = self.hparams["num_hidden_layers"]
+        layer_group_size = self.hparams["layer_group_size"]
+        return bid >= n_layer or (bid + 1) % layer_group_size == 0 or bid >= n_layer // layer_group_size * layer_group_size
+
+    def set_gguf_parameters(self):
+        if not self.hparams.get("no_kda_lora", False):
+            raise ValueError("BailingMoeV3 KDA LoRA projections are not supported")
+        if not self.hparams.get("kda_safe_gate", False):
+            raise ValueError("BailingMoeV3 non-safe KDA gates are not supported")
+        if self.hparams.get("gated_attention_proj_granularity_type") != "head_wise":
+            raise ValueError("BailingMoeV3 requires head-wise attention gates")
+
+        self.hparams["num_key_value_heads"] = 1
+        super().set_gguf_parameters()
+
+        n_head_kv = [1 if self.is_full_attention(il) else 0 for il in range(self.block_count)]
+        self.gguf_writer.add_head_count_kv(n_head_kv)
+
+        self.gguf_writer.add_vocab_size(self.hparams["vocab_size"])
+        self.gguf_writer.add_ssm_conv_kernel(self.hparams["short_conv_kernel_size"])
+        self.gguf_writer.add_kda_head_dim(self.hparams["head_dim"])
+        self.gguf_writer.add_kda_safe_gate(self.hparams["kda_safe_gate"])
+        self.gguf_writer.add_kda_gate_lower_bound(self.hparams["kda_lower_bound"])
+
+        kv_lora_rank = self.hparams["kv_lora_rank"]
+        qk_nope_head_dim = self.hparams["qk_nope_head_dim"]
+        qk_rope_head_dim = self.hparams["qk_rope_head_dim"]
+        if (q_lora_rank := self.hparams.get("q_lora_rank")) is not None:
+            self.gguf_writer.add_q_lora_rank(q_lora_rank)
+        self.gguf_writer.add_kv_lora_rank(kv_lora_rank)
+        self.gguf_writer.add_rope_dimension_count(qk_rope_head_dim)
+        self.gguf_writer.add_key_length(kv_lora_rank + qk_rope_head_dim)
+        self.gguf_writer.add_key_length_mla(qk_nope_head_dim + qk_rope_head_dim)
+        self.gguf_writer.add_value_length_mla(self.hparams["v_head_dim"])
+
+        self.gguf_writer.add_expert_feed_forward_length(self.hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_shared_feed_forward_length(self.hparams["moe_shared_expert_intermediate_size"])
+        self.gguf_writer.add_expert_shared_count(self.hparams["num_shared_experts"])
+        self.gguf_writer.add_leading_dense_block_count(self.hparams["first_k_dense_replace"])
+        self.gguf_writer.add_expert_weights_scale(self.hparams["routed_scaling_factor"])
+        self.gguf_writer.add_expert_weights_norm(self.hparams["norm_topk_prob"])
+
+        def clamp_limits(key: str) -> list[float] | None:
+            values = self.hparams.get(key)
+            if values is None:
+                return None
+            values = [0.0 if value is None else float(value) for value in values[:self.block_count]]
+            return values + [0.0] * (self.block_count - len(values))
+
+        if (values := clamp_limits("expert_swiglu_limit_list")) is not None:
+            self.gguf_writer.add_swiglu_clamp_exp(values)
+        if (values := clamp_limits("share_expert_swiglu_limit_list")) is not None:
+            self.gguf_writer.add_swiglu_clamp_shexp(values)
+
+        if (nextn_layers := self.hparams.get("num_nextn_predict_layers", 0)):
+            self.gguf_writer.add_nextn_predict_layers(nextn_layers)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        if name.endswith(".expert_bias"):
+            name += ".bias"
+
+        if name.endswith((".q_conv1d.weight", ".k_conv1d.weight", ".v_conv1d.weight")) and data_torch.ndim in (2, 3):
+            d_inner = data_torch.shape[0]
+            d_conv = data_torch.shape[-1]
+            data_torch = data_torch.reshape(1, d_inner, 1, d_conv)
+
+        if name.endswith(".A_log"):
+            data_torch = torch.exp(data_torch).reshape(-1, 1)
+
+        if name.endswith(".dt_bias"):
+            name = name.rpartition(".dt_bias")[0] + ".dt_proj.bias"
+
+        if name.endswith(".attention.f_proj.weight"):
+            assert bid is not None
+            if self.is_full_attention(bid):
+                raise ValueError(f"unexpected f_proj on full-attention layer {bid}")
+            name = self.format_tensor_name(gguf.MODEL_TENSOR.SSM_F_A, bid)
+
+        if name.endswith(".attention.g_proj.weight"):
+            assert bid is not None
+            tensor = gguf.MODEL_TENSOR.ATTN_GATE if self.is_full_attention(bid) else gguf.MODEL_TENSOR.SSM_G_A
+            name = self.format_tensor_name(tensor, bid)
+
+        if ".mlp.experts." in name:
+            n_experts = self.hparams["num_experts"]
+            assert bid is not None
+
+            if self._experts is None:
+                self._experts = [{} for _ in range(self.block_count)]
+
+            self._experts[bid][name] = data_torch
+            if len(self._experts[bid]) >= n_experts * 3:
+                for weight_name in ("down_proj", "gate_proj", "up_proj"):
+                    tensors = []
+                    for expert_id in range(n_experts):
+                        expert_name = f"model.layers.{bid}.mlp.experts.{expert_id}.{weight_name}.weight"
+                        tensors.append(self._experts[bid].pop(expert_name))
+                    merged_name = f"model.layers.{bid}.mlp.experts.{weight_name}.weight"
+                    yield from super().modify_tensors(torch.stack(tensors, dim=0), merged_name, bid)
+            return
+
+        if name.endswith(".attention.kv_b_proj.weight"):
+            assert bid is not None
+            n_head = self.hparams["num_attention_heads"]
+            v_head_dim = self.hparams["v_head_dim"]
+            qk_nope_head_dim = self.hparams["qk_nope_head_dim"]
+            assert data_torch.shape[0] == n_head * (v_head_dim + qk_nope_head_dim)
+            kv_b = data_torch.view(n_head, v_head_dim + qk_nope_head_dim, data_torch.shape[-1])
+            k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
+            name_k = self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_K_B, bid)
+            name_v = self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_V_B, bid)
+            yield from super().modify_tensors(k_b.transpose(1, 2), name_k, bid)
+            yield from super().modify_tensors(v_b, name_v, bid)
+            return
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+    def prepare_tensors(self):
+        super().prepare_tensors()
+        if self._experts is not None:
+            experts = [name for layer in self._experts for name in layer]
+            if experts:
+                raise ValueError(f"Unprocessed experts: {experts}")
 
 @ModelBase.register("GroveMoeForCausalLM", "modeling_grove_moe.GroveMoeForCausalLM")
 class GroveMoeModel(TextModel):
@@ -12054,6 +12879,470 @@ class HunyuanOCRVisionModel(MmprojModel):
         if ("mm.0." in new_name or "mm.2." in new_name) and new_name.endswith(".weight"):
             return gguf.GGMLQuantizationType.F16 if self.ftype == gguf.LlamaFileType.MOSTLY_F16 else gguf.GGMLQuantizationType.F32
         return super().tensor_force_quant(name, new_name, bid, n_dims)
+
+
+@ModelBase.register("HYV3ForCausalLM")
+class HYV3Model(TextModel):
+    model_arch = gguf.MODEL_ARCH.HY_V3
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # NextN/MTP layers are appended past num_hidden_layers; extend the
+        # tensor map so the MTP block's tensors resolve to blk.<n>.* names.
+        self._n_main_layers = self.hparams["num_hidden_layers"]
+        n_nextn = int(self.hparams.get("num_nextn_predict_layers", 0))
+        if n_nextn > 0:
+            self.block_count += n_nextn
+            self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def set_vocab(self):
+        self._set_vocab_gpt2()
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        self.gguf_writer.add_expert_feed_forward_length(self.hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_shared_feed_forward_length(
+            self.hparams["moe_intermediate_size"] * self.hparams.get("num_shared_experts", 1)
+        )
+        self.gguf_writer.add_expert_weights_norm(self.hparams.get("route_norm", True))
+        self.gguf_writer.add_expert_weights_scale(float(self.hparams.get("router_scaling_factor", 1.0)))
+        # sigmoid router with expert selection bias
+        self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+
+        n_nextn = int(self.hparams.get("num_nextn_predict_layers", 0))
+        if n_nextn > 0:
+            self.gguf_writer.add_nextn_predict_layers(n_nextn)
+
+    _experts: list[dict[str, Tensor]] | None = None
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # The MTP block's trailing final_layernorm (applied after the decoder
+        # block, before the shared LM head) maps to nextn.shared_head_norm.
+        if bid is not None and bid >= self._n_main_layers:
+            name = name.replace(".final_layernorm.", ".shared_head.norm.")
+
+        # merge the per-expert tensors into stacked 3d tensors
+        if name.startswith("model.layers.") and ".mlp.experts." in name:
+            n_experts = self.find_hparam(["num_local_experts", "num_experts"])
+            assert bid is not None
+
+            if self._experts is None:
+                self._experts = [{} for _ in range(self.block_count)]
+
+            self._experts[bid][name] = data_torch
+
+            if len(self._experts[bid]) >= n_experts * 3:
+                for w_name in ("down_proj", "gate_proj", "up_proj"):
+                    datas: list[Tensor] = []
+                    for xid in range(n_experts):
+                        ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
+                        datas.append(self._experts[bid][ename])
+                        del self._experts[bid][ename]
+
+                    merged = torch.stack(datas, dim=0)
+                    yield from super().modify_tensors(merged, f"model.layers.{bid}.mlp.experts.{w_name}.weight", bid)
+            return
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+    def prepare_tensors(self):
+        super().prepare_tensors()
+        if self._experts is not None:
+            experts = [k for d in self._experts for k in d.keys()]
+            if experts:
+                raise ValueError(f"Unprocessed experts: {experts}")
+
+
+@ModelBase.register("NanbeigeForCausalLM")
+class NanbeigeModel(LlamaModel):
+    model_arch = gguf.MODEL_ARCH.NANBEIGE
+    undo_permute = True
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        hparams = self.hparams
+
+        n_loops = int(hparams.get("num_loops", 1) or 1)
+        if n_loops < 1:
+            n_loops = 1
+        self.gguf_writer.add_num_loops(n_loops)
+        logger.info(f"gguf: num_loops = {n_loops}")
+
+        skip_loop_final_norm = bool(hparams.get("skip_loop_final_norm", False))
+        self.gguf_writer.add_skip_loop_final_norm(skip_loop_final_norm)
+        logger.info(f"gguf: skip_loop_final_norm = {skip_loop_final_norm}")
+
+
+@ModelBase.register("MellumForCausalLM")
+class MellumModel(TextModel):
+    model_arch = gguf.MODEL_ARCH.MELLUM
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        if (moe_intermediate_size := self.hparams.get("moe_intermediate_size")) is not None:
+            self.gguf_writer.add_expert_feed_forward_length(moe_intermediate_size)
+            logger.info(f"gguf: expert feed forward length = {moe_intermediate_size}")
+
+        use_sliding_window = self.hparams.get("use_sliding_window")
+        sliding_window = self.hparams.get("sliding_window")
+        if (use_sliding_window is True or use_sliding_window is None) and sliding_window is not None:
+            self.gguf_writer.add_sliding_window(sliding_window)
+            logger.info(f"gguf: sliding window = {sliding_window}")
+            self.gguf_writer.add_sliding_window_pattern([t == "sliding_attention" for t in self.hparams["layer_types"]])
+            logger.info(f"gguf: sliding window pattern length = {len(self.hparams['layer_types'])}")
+
+        if (norm_topk_prob := self.hparams.get("norm_topk_prob")) is not None:
+            self.gguf_writer.add_expert_weights_norm(norm_topk_prob)
+
+    _experts: list[dict[str, Tensor]] | None = None
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        if name.find("experts") != -1:
+            n_experts = self.find_hparam(["num_local_experts", "num_experts"])
+            assert bid is not None
+
+            if self._experts is None:
+                self._experts = [{} for _ in range(self.block_count)]
+
+            self._experts[bid][name] = data_torch
+
+            if len(self._experts[bid]) >= n_experts * 3:
+                for w_name in ["down_proj", "gate_proj", "up_proj"]:
+                    datas: list[Tensor] = []
+
+                    for xid in range(n_experts):
+                        ename = f"model.layers.{bid}.mlp.experts.{xid}.{w_name}.weight"
+                        datas.append(self._experts[bid][ename])
+                        del self._experts[bid][ename]
+
+                    data_torch = torch.stack(datas, dim=0)
+
+                    merged_name = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
+
+                    yield from super().modify_tensors(data_torch, merged_name, bid)
+                return
+            else:
+                return
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("LagunaForCausalLM")
+class LagunaModel(TextModel):
+    model_arch = gguf.MODEL_ARCH.LAGUNA
+    _experts: list[dict] | None = None
+    _gate_types: list[str] | None = None
+
+    # --- vocab ---------------------------------------------------------------
+
+    def set_vocab(self) -> None:
+        self._set_vocab_gpt2()
+
+        # Some Laguna releases wrap the chat template in tokenizer_config.json as
+        # "{% include 'chat_template.jinja' %}", which SpecialVocab embeds verbatim
+        # and llama.cpp's jinja engine cannot process. Prefer the resolved template
+        # from the chat_template.jinja file so the GGUF is self-contained.
+        tmpl_file = self.dir_model / "chat_template.jinja"
+        if tmpl_file.is_file():
+            self.gguf_writer.add_chat_template(tmpl_file.read_text(encoding="utf-8"))
+            logger.info("gguf: embedded resolved chat_template.jinja (overriding include directive)")
+
+        # eos_token_id is a list [2, 24]: token 2 (EOS, also BOS) and token 24
+        # (</assistant>, the turn-end). _set_vocab_gpt2 only records the scalar
+        # eos, so register the extra id as eot; llama.cpp folds eot into its EOG
+        # set, so the model halts on </assistant> natively.
+        eos_ids = self.hparams.get("eos_token_id")
+        if isinstance(eos_ids, list):
+            bos_id = self.hparams.get("bos_token_id")
+            extra = [e for e in eos_ids if e != bos_id]
+            if extra:
+                self.gguf_writer.add_eot_token_id(extra[0])
+                logger.info(f"gguf: registered eot_token_id={extra[0]} from eos list {eos_ids}")
+
+    def get_vocab_base(self) -> tuple[list[str], list[int], str]:
+        # </assistant> is the assistant turn-end (registered as eot below). The
+        # HF tokenizer flags it special=false, so the base classifies it as
+        # USER_DEFINED and llama.cpp renders its text into generated content,
+        # leaking "</assistant>" and breaking response parsing. It is a control
+        # marker, so promote it to CONTROL: llama.cpp then treats it as
+        # end-of-generation and suppresses its text.
+        tokens, toktypes, tokpre = super().get_vocab_base()
+        for i, tok in enumerate(tokens):
+            if tok == "</assistant>":
+                toktypes[i] = gguf.TokenType.CONTROL
+                logger.info(f"gguf: marked </assistant> (id {i}) as CONTROL token")
+        return tokens, toktypes, tokpre
+
+    # --- hparams -------------------------------------------------------------
+
+    def set_gguf_parameters(self) -> None:
+        super().set_gguf_parameters()
+        hparams = self.hparams
+
+        # super() does not emit vocab_size for the gpt2 vocab path; head_count is
+        # overridden with a per-layer array (XS.2 varies heads per layer via
+        # num_attention_heads_per_layer; M.1 is uniform and omits it).
+        self.gguf_writer.add_vocab_size(hparams["vocab_size"])
+
+        per_layer_heads = hparams.get("num_attention_heads_per_layer")
+        if not per_layer_heads:
+            per_layer_heads = [hparams["num_attention_heads"]] * hparams["num_hidden_layers"]
+        assert len(per_layer_heads) == hparams["num_hidden_layers"], (
+            f"num_attention_heads_per_layer length {len(per_layer_heads)} != "
+            f"num_hidden_layers {hparams['num_hidden_layers']}"
+        )
+        self.gguf_writer.add_head_count(per_layer_heads)
+
+        # Resolve + validate the attention gate type now so an inconsistent
+        # `gating` field fails at conversion time. See _attn_gate_types.
+        self._attn_gate_types()
+
+        # SWA window size (M.1 has none -> key omitted, swa_type stays NONE).
+        sliding_window = hparams.get("sliding_window") or 0
+        if sliding_window > 0:
+            self.gguf_writer.add_sliding_window(sliding_window)
+
+        # MoE (expert_count / expert_used_count come from super().set_gguf_parameters())
+        self.gguf_writer.add_expert_feed_forward_length(hparams["moe_intermediate_size"])
+        self.gguf_writer.add_expert_shared_feed_forward_length(hparams["shared_expert_intermediate_size"])
+        self.gguf_writer.add_expert_weights_norm(True)  # HF reference always sum-normalises after top-k
+        self.gguf_writer.add_expert_weights_scale(float(hparams["moe_routed_scaling_factor"]))
+        self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+
+        # Leading dense layers (XS.2 has 1, M.1 has 3) before the MoE layers.
+        mlp_layer_types: list[str] = hparams["mlp_layer_types"]
+        leading_dense = 0
+        for t in mlp_layer_types:
+            if t == "dense":
+                leading_dense += 1
+            else:
+                break
+        self.gguf_writer.add_leading_dense_block_count(leading_dense)
+
+        # Per-layer-type RoPE dimension count (partial rotary). base emits
+        # rope_freq_base(_swa) and the YaRN params from self.rope_parameters.
+        head_dim = hparams["head_dim"]
+        full_rope = self.rope_parameters["full_attention"]
+        self.gguf_writer.add_rope_dimension_count(
+            int(head_dim * float(full_rope.get("partial_rotary_factor", 1.0))))
+        swa_rope = self.rope_parameters.get("sliding_attention")
+        if swa_rope is not None:
+            self.gguf_writer.add_rope_dimension_count_swa(
+                int(head_dim * float(swa_rope.get("partial_rotary_factor", 1.0))))
+
+    def _attn_gate_types(self) -> list[str]:
+        """Per-layer attention output gate type: "per_head" or "per_element".
+
+        `gating_types` (per layer) is authoritative when present; otherwise the
+        scalar `gating` field is used (the "per-element"/"per-head" string, or
+        the legacy boolean True == per-head, as in Laguna-XS.2).
+
+        Fails loudly when the model is per-element but the `gating` field does
+        not declare that as a string: runtimes that key off `gating` (vLLM,
+        transformers) ignore gating_types and read a bare boolean True as
+        per-head, silently corrupting the model. Surfacing it here keeps a
+        broken checkpoint from being packaged as if it were fine.
+        """
+        if self._gate_types is not None:
+            return self._gate_types
+        hparams = self.hparams
+        n_layer = hparams["num_hidden_layers"]
+        gating = hparams.get("gating")
+        gating_types = hparams.get("gating_types")
+
+        def _norm(t: object) -> str:
+            sval = str(t).replace("-", "_")
+            if sval in ("per_element", "per_head"):
+                return sval
+            raise ValueError(f"Laguna: unrecognised attention gate type {t!r}")
+
+        if gating_types:
+            assert len(gating_types) == n_layer, (
+                f"gating_types length {len(gating_types)} != num_hidden_layers {n_layer}")
+            types = [_norm(t) for t in gating_types]
+        elif isinstance(gating, str):
+            types = [_norm(gating)] * n_layer
+        elif gating is True:
+            types = ["per_head"] * n_layer
+        else:
+            raise ValueError(
+                f"Laguna: cannot determine attention gate type "
+                f"(gating={gating!r}, gating_types={gating_types!r})")
+
+        if any(t == "per_element" for t in types) and not (
+                isinstance(gating, str) and _norm(gating) == "per_element"):
+            raise ValueError(
+                f"Laguna config declares a per-element attention gate but "
+                f"`gating`={gating!r} is not the string \"per-element\". Runtimes that "
+                f"read `gating` (vLLM, transformers) will mis-handle this checkpoint as "
+                f"per-head. Set gating=\"per-element\" in the source config.")
+
+        self._gate_types = types
+        return types
+
+    # --- tensor handling -----------------------------------------------------
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # Per-expert MoE weights: model.layers.{bid}.mlp.experts.{xid}.{w}.weight.
+        # Only the NUMBERED per-expert weights are stacked; the router bias
+        # (mlp.experts.e_score_correction_bias) takes the normal mapping path.
+        if re.search(r"mlp\.experts\.\d+\.", name):
+            n_experts = self.find_hparam(["num_local_experts", "num_experts"])
+            assert bid is not None
+            if self._experts is None:
+                self._experts = [{} for _ in range(self.block_count)]
+            self._experts[bid][name] = data_torch
+            needed = [f"model.layers.{bid}.mlp.experts.{x}.{w}.weight"
+                      for x in range(n_experts) for w in ("gate_proj", "up_proj", "down_proj")]
+            if all(e in self._experts[bid] for e in needed):
+                for w_name in ["gate_proj", "up_proj", "down_proj"]:
+                    datas = [self._experts[bid][f"model.layers.{bid}.mlp.experts.{x}.{w_name}.weight"]
+                             for x in range(n_experts)]
+                    stacked = torch.stack(datas, dim=0)
+                    merged = f"model.layers.{bid}.mlp.experts.{w_name}.weight"
+                    yield from TextModel.modify_tensors(self, stacked, merged, bid)
+                self._experts[bid].clear()
+                return
+            return
+        # Cross-check the gate projection width against the declared gate type;
+        # a mismatch means the weights and config disagree -> fail, do not guess.
+        if bid is not None and name.endswith("self_attn.g_proj.weight"):
+            heads = (self.hparams.get("num_attention_heads_per_layer")
+                     or [self.hparams["num_attention_heads"]] * self.hparams["num_hidden_layers"])
+            n_head = heads[bid]
+            head_dim = self.hparams["head_dim"]
+            gate_type = self._attn_gate_types()[bid]
+            expected = n_head * head_dim if gate_type == "per_element" else n_head
+            out_features = int(data_torch.shape[0])
+            if out_features != expected:
+                raise ValueError(
+                    f"Laguna layer {bid}: g_proj output width {out_features} contradicts the "
+                    f"declared {gate_type} gate (expected {expected}); weights and config disagree.")
+
+        yield from TextModel.modify_tensors(self, data_torch, name, bid)
+
+
+@ModelBase.register("Spark2_5ForCausalLM")
+class Spark2_5Model(TextModel):
+    model_arch = gguf.MODEL_ARCH.SPARK2_5
+
+    def set_gguf_parameters(self) -> None:
+        super().set_gguf_parameters()
+
+        hparams = self.hparams
+        layer_types = hparams["layer_types"]
+        if len(layer_types) != self.block_count:
+            raise ValueError(
+                f"Spark2_5 layer_types length {len(layer_types)} != num_hidden_layers {self.block_count}"
+            )
+        if any(layer_type not in ("sliding_attention", "full_attention") for layer_type in layer_types):
+            raise ValueError(f"Spark2_5 has unsupported layer_types: {layer_types}")
+        if hparams.get("gate_attn_act_mode") != "sigmoid" or hparams.get("headwise_attn_output_gate") is not True:
+            raise ValueError("Spark2_5 conversion requires head-wise sigmoid attention gates")
+        if hparams.get("hidden_act") != "gelu":
+            raise ValueError(f"Spark2_5 conversion requires GELU, got {hparams.get('hidden_act')!r}")
+
+        self.gguf_writer.add_vocab_size(hparams["vocab_size"])
+        self.gguf_writer.add_sliding_window(hparams["sliding_window"])
+        self.gguf_writer.add_sliding_window_pattern(
+            [layer_type == "sliding_attention" for layer_type in layer_types]
+        )
+
+        head_dim = hparams["head_dim"]
+        full_rope = self.rope_parameters["full_attention"]
+        swa_rope = self.rope_parameters["sliding_attention"]
+        self.gguf_writer.add_rope_dimension_count(
+            int(head_dim * float(full_rope["partial_rotary_factor"]))
+        )
+        self.gguf_writer.add_rope_dimension_count_swa(
+            int(head_dim * float(swa_rope["partial_rotary_factor"]))
+        )
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        if name.endswith(".self_attn.q_k_v_proj.weight"):
+            if bid is None:
+                raise ValueError(f"Spark2_5 fused QKV tensor has no block id: {name}")
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_QKV, bid), data_torch
+            return
+
+        if name.endswith(".self_attn.g_proj.weight"):
+            if bid is None:
+                raise ValueError(f"Spark2_5 attention gate tensor has no block id: {name}")
+            expected = self.hparams["num_attention_heads"]
+            if data_torch.shape[0] != expected:
+                raise ValueError(
+                    f"Spark2_5 layer {bid} attention gate width {data_torch.shape[0]} != head count {expected}"
+                )
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("HrmTextForCausalLM")
+class HrmTextModel(TextModel):
+    model_arch = gguf.MODEL_ARCH.HRM_TEXT
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # training-style configs store the per-stack count in num_hidden_layers,
+        # transformers-style configs keep it in num_layers_per_stack
+        self.layers_per_stack = self.hparams.get("num_layers_per_stack") or self.hparams["num_hidden_layers"]
+        self.h_cycles = self.hparams["H_cycles"]
+        self.l_cycles = self.hparams["L_cycles"]
+
+        # block_count is the expanded cache-slot count; the file only holds
+        # 2 * layers_per_stack physical blocks
+        self.block_count = self.layers_per_stack * self.h_cycles * (self.l_cycles + 1)
+        self.tensor_map = gguf.get_tensor_name_map(self.model_arch, 2 * self.layers_per_stack)
+
+    def set_vocab(self):
+        self._set_vocab_gpt2()
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        head_dim = self.hparams.get("head_dim") or self.hparams["hidden_size"] // self.hparams["num_attention_heads"]
+        self.gguf_writer.add_rope_dimension_count(head_dim)
+        self.gguf_writer.add_embedding_scale(self.hparams["embedding_scale"])
+        self.gguf_writer.add_hrm_layers_per_stack(self.layers_per_stack)
+        self.gguf_writer.add_hrm_h_cycles(self.h_cycles)
+        self.gguf_writer.add_hrm_l_cycles(self.l_cycles)
+        self.gguf_writer.add_hrm_prefix_lm(bool(self.hparams.get("prefix_lm", False)))
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        if name == "model.embed_tokens.weight":
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.TOKEN_EMBD), data_torch
+            return
+        if name == "lm_head.weight":
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.OUTPUT), data_torch
+            return
+        if name == "model.z_L_init":
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.HRM_Z_L_INIT, suffix=""), data_torch
+            return
+
+        match = re.fullmatch(r"model\.([LH])_module\.layers\.(\d+)\.(.+)", name)
+        if match is None:
+            raise ValueError(f"can not map tensor: {name}")
+
+        stack, layer_s, tensor_name = match.groups()
+        # the L stack occupies blocks [0, layers_per_stack), the H stack follows it
+        layer_idx = int(layer_s) + (self.layers_per_stack if stack == "H" else 0)
+
+        if tensor_name == "attn.gqkv_proj.weight":
+            gate, q, k, v = data_torch.chunk(4, dim=0)
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_GATE, layer_idx), gate.contiguous()
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_Q, layer_idx), q.contiguous()
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_K, layer_idx), k.contiguous()
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_V, layer_idx), v.contiguous()
+        elif tensor_name == "mlp.gate_up_proj.weight":
+            gate, up = data_torch.chunk(2, dim=0)
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE, layer_idx), gate.contiguous()
+            yield self.format_tensor_name(gguf.MODEL_TENSOR.FFN_UP, layer_idx), up.contiguous()
+        else:
+            if tensor_name.startswith("attn."):
+                tensor_name = "self_attn." + tensor_name[len("attn."):]
+            tensor_name = "model.layers.{bid}." + tensor_name
+            yield from super().modify_tensors(data_torch, tensor_name.format(bid=layer_idx), layer_idx)
 
 
 @ModelBase.register("SmolLM3ForCausalLM")

@@ -286,6 +286,12 @@ struct mtmd_context {
                     img_end = "<|vision_end|>";
                     image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
                 } break;
+            case PROJECTOR_TYPE_MUSE_GLIMMER:
+                {
+                    img_beg = "<|image_start|>";
+                    img_end = "<|image_end|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_muse_glimmer>(ctx_v);
+                } break;
             case PROJECTOR_TYPE_YOUTUVL:
                 {
                     // <|vision_start|> ... (image embeddings) ... <|vision_end|>
@@ -850,9 +856,12 @@ struct mtmd_tokenizer {
             // consider each mel_spec as a separate audio chunk
             // TODO: maybe support batching, but this may come with memory cost
             for (auto & mel_spec : mel_spec_chunks) {
+                // the image dimensions are int
+                GGML_ASSERT(mel_spec.n_len <= INT32_MAX && mel_spec.n_len >= 0);
+                GGML_ASSERT(mel_spec.n_mel <= INT32_MAX && mel_spec.n_mel >= 0);
                 clip_image_f32_ptr mel_f32(clip_image_f32_init());
-                mel_f32->nx  = mel_spec.n_len;
-                mel_f32->ny  = mel_spec.n_mel;
+                mel_f32->nx  = (int) mel_spec.n_len;
+                mel_f32->ny  = (int) mel_spec.n_mel;
                 mel_f32->buf = std::move(mel_spec.data);
                 size_t n_tokens = clip_n_output_tokens(ctx->ctx_a, mel_f32.get());
 
@@ -1409,13 +1418,13 @@ void mtmd_debug_preprocess_audio(mtmd_context * ctx, const std::vector<float> & 
     }
     LOG_INF("%s: preprocessed audio to %zu mel spec chunks\n", __func__, mel_spec_chunks.size());
     for (size_t i = 0; i < mel_spec_chunks.size(); i++) {
-        LOG_INF("%s: mel spec chunk %zu has n_len=%d, n_mel=%d\n", __func__, i, mel_spec_chunks[i].n_len, mel_spec_chunks[i].n_mel);
+        LOG_INF("%s: mel spec chunk %zu has n_len=%lld, n_mel=%lld\n", __func__, i, (long long) mel_spec_chunks[i].n_len, (long long) mel_spec_chunks[i].n_mel);
 
         // dump mel entries: data is stored as [n_mel][n_len] (mel-major)
         const auto & mel = mel_spec_chunks[i];
-        for (int m = 0; m < mel.n_mel; m++) {
-            for (int t = 0; t < mel.n_len; t++) {
-                LOG_INF("mel[%zu][m=%d][t=%d] = %f\n", i, m, t, mel.data[m * mel.n_len + t]);
+        for (int64_t m = 0; m < mel.n_mel; m++) {
+            for (int64_t t = 0; t < mel.n_len; t++) {
+                LOG_INF("mel[%zu][m=%lld][t=%lld] = %f\n", i, (long long) m, (long long) t, mel.data[(size_t) m * mel.n_len + t]);
             }
         }
     }

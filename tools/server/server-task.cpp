@@ -312,6 +312,8 @@ task_params server_task::params_from_json_cmpl(
     params.speculative.n_max = json_value(data, "speculative.n_max", defaults.speculative.n_max);
     params.speculative.p_min = json_value(data, "speculative.p_min", defaults.speculative.p_min);
 
+    // a request may draft less than the server is set up for, not more: the draft batches are sized for its maximum
+    params.speculative.n_max = std::min(params.speculative.n_max, defaults.speculative.n_max);
     params.speculative.n_min = std::min(params.speculative.n_max, params.speculative.n_min);
     params.speculative.n_min = std::max(params.speculative.n_min, 0);
     params.speculative.n_max = std::max(params.speculative.n_max, 0);
@@ -360,6 +362,18 @@ task_params server_task::params_from_json_cmpl(
         params.sampling.dry_penalty_last_n = n_ctx_slot;
     }
 
+    // the penalty windows never need more than the slot's context; a window of 2^31 tokens would allocate 8 GB
+    params.sampling.penalty_last_n     = std::min(params.sampling.penalty_last_n,     n_ctx_slot);
+    params.sampling.dry_penalty_last_n = std::min(params.sampling.dry_penalty_last_n, n_ctx_slot);
+
+    if (params.sampling.dry_allowed_length < 0) {
+        throw std::runtime_error("Error: dry_allowed_length must be >= 0");
+    }
+
+    if (params.sampling.min_keep < 0) {
+        throw std::runtime_error("Error: min_keep must be >= 0");
+    }
+
     if (params.sampling.dry_base < 1.0f) {
         params.sampling.dry_base = defaults.sampling.dry_base;
     }
@@ -381,7 +395,7 @@ task_params server_task::params_from_json_cmpl(
     if (data.contains("json_schema") && !data.contains("grammar")) {
         try {
             auto schema                  = json_value(data, "json_schema", json::object());
-            SRV_DBG("JSON schema: %s\n", schema.dump(2).c_str());
+            SRV_DBG("JSON schema: %s\n", schema.dump().c_str());
             std::string grammar_str      = json_schema_to_grammar(schema);
             SRV_DBG("Converted grammar: %s\n", grammar_str.c_str());
             params.sampling.grammar      = {COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT, std::move(grammar_str)};
@@ -410,7 +424,11 @@ task_params server_task::params_from_json_cmpl(
     {
         auto it = data.find("chat_format");
         if (it != data.end()) {
-            params.chat_parser_params.format = static_cast<common_chat_format>(it->get<int>());
+            const int format = it->get<int>();
+            if (format < 0 || format >= COMMON_CHAT_FORMAT_COUNT) {
+                throw std::invalid_argument("chat_format out of range");
+            }
+            params.chat_parser_params.format = static_cast<common_chat_format>(format);
             SRV_INF("Chat format: %s\n", common_chat_format_name(params.chat_parser_params.format));
         } else {
             params.chat_parser_params.format = defaults.chat_parser_params.format;
@@ -425,8 +443,8 @@ task_params server_task::params_from_json_cmpl(
         params.sampling.generation_prompt = params.chat_parser_params.generation_prompt;
         SRV_DBG("Generation prompt: '%s'\n", params.chat_parser_params.generation_prompt.c_str());
         params.chat_parser_params.parse_tool_calls = json_value(data, "parse_tool_calls", false);
-        if (data.contains("chat_parser")) {
-            params.chat_parser_params.parser.load(data.at("chat_parser").get<std::string>());
+        if (data.contains(server_chat_parser_key())) {
+            params.chat_parser_params.parser.load(data.at(server_chat_parser_key()).get<std::string>());
         }
     }
 

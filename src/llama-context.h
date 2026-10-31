@@ -66,6 +66,11 @@ struct llama_context {
     float * get_logits();
     float * get_logits_ith(int32_t i);
 
+    const float * get_logits_top_k_ith(int32_t i, const llama_token ** ids, int32_t * n);
+
+    // the first token of each device's part of the vocabulary when the logits are split over the devices, else empty
+    std::vector<llama_token> logits_vocab_parts(const ggml_tensor * t_logits) const;
+
     float * get_embeddings();
     float * get_embeddings_ith(int32_t i);
     float * get_embeddings_seq(llama_seq_id seq_id);
@@ -112,6 +117,7 @@ struct llama_context {
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
     void set_embeddings (bool value);
+    void set_logits_top_k(int32_t k);
     void set_embeddings_pre_norm(bool value);
     void set_causal_attn(bool value);
     void set_warmup(bool value);
@@ -240,6 +246,13 @@ public:
     // (re)create the scheduler for graphs of up to max_nodes nodes
     void sched_create(size_t max_nodes, bool parallel);
 
+    // graph slots (see graph_slots below): make slot i the active pair, pick the slot for a ubatch, invalidate the
+    // graphs of all slots, free the small slots
+    void graph_slot_use(size_t i);
+    void graph_slot_select(const llama_ubatch & ubatch, const llama_memory_context_i * mctx, llm_graph_type gtype);
+    void graph_slots_reset();
+    void graph_slots_drop();
+
     // can reuse the llm_graph_result instance of the context (for example to update a memory module)
     llm_graph_result * get_gf_res_reserve() const;
 
@@ -291,6 +304,22 @@ private:
 
     // decode output (2-dimensional array: [n_outputs][n_vocab])
     buffer_view<float> logits = {nullptr, 0};
+
+    // k of llama_set_logits_top_k: > 0 copies the selection of the graph (cparams.logits_top_k >= k), 0 whole rows
+    uint32_t logits_top_k_want = 0;
+
+    // the largest k the graph can select: below the vocabulary size, and with the logits split over the devices
+    // (-sm tensor) no larger than the smallest part, since every device takes k of its own part (see graph_reserve)
+    int64_t logits_top_k_max = 0;
+
+    // with cparams.logits_top_k instead of logits: the k largest logits of each output and their token ids
+    // (2-dimensional arrays: [n_outputs][logits_top_k_n], unordered within a row)
+    int32_t                  logits_top_k_n = 0;
+    std::vector<float>       logits_top_k_val;
+    std::vector<llama_token> logits_top_k_ids;
+    // with the logits split over the devices (-sm tensor): the first token of each device's part of the vocabulary, the
+    // ids of a row are taken per part as indices into it and become token ids when they are first read
+    std::vector<llama_token> logits_top_k_part_first;
 
     // embeddings output (2-dimensional array: [n_outputs][n_embd])
     // populated only when pooling_type == LLAMA_POOLING_TYPE_NONE
@@ -380,6 +409,23 @@ private:
 
     llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
+
+    // MTP verify batches change their size from step to step, and with a single graph every change was a rebuild
+    // (with -sm tensor about 8 ms). Batches of up to GRAPH_SLOT_MAX_TOKENS tokens keep their graphs in small slots,
+    // each with its own scheduler, so a size seen before evaluates its graph again. gf_res_prev and sched always hold
+    // the active slot's pair, the entry of the active slot is empty. Slot 0 is the main pair with the reserved
+    // worst-case buffers: larger batches, reserves and memory updates use it, and the small slots place their graphs in
+    // its compute buffers (ggml-backend-share.h), so they cost no VRAM; switching slots synchronizes.
+    static constexpr uint32_t GRAPH_SLOT_MAX_TOKENS = 16;
+    static constexpr size_t   GRAPH_SLOTS_SMALL     = 8;
+    struct graph_slot {
+        llm_graph_result_ptr   res;
+        ggml_backend_sched_ptr sched;
+        uint64_t               last_use = 0;
+    };
+    std::vector<graph_slot> graph_slots = std::vector<graph_slot>(1);
+    size_t                  graph_slot_cur  = 0;
+    uint64_t                graph_slot_tick = 0;
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

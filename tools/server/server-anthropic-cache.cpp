@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -66,6 +67,7 @@ bool anthropic_cache_manager::init(const std::string & slot_save_path,
     max_gb_          = max_gb > 0 ? max_gb : 32;
 
     seed_from_disk_unlocked();
+    evict_unlocked();
 
     enabled_ = true;
     fprintf(stderr, "anthropic-cache: enabled (dir=%s, seeded=%zu, ttl_default=%ds, max=%dGiB)\n",
@@ -173,6 +175,7 @@ void anthropic_cache_manager::record(const std::string & key_hex,
     e.created_at = now_unix_seconds();
     index_[key_hex] = e;
     write_meta_unlocked(e, scope);
+    evict_unlocked();
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +235,46 @@ void anthropic_cache_manager::write_meta_unlocked(const anthropic_cache_entry & 
 
 void anthropic_cache_manager::erase_unlocked(const std::string & key_hex) {
     std::error_code ec;
-    std::filesystem::remove(bin_path(key_hex),  ec);
-    std::filesystem::remove(meta_path(key_hex), ec);
+    std::filesystem::remove(bin_path(key_hex),           ec);
+    std::filesystem::remove(bin_path(key_hex) + ".ckpt", ec);
+    std::filesystem::remove(meta_path(key_hex),          ec);
     index_.erase(key_hex);
+}
+
+void anthropic_cache_manager::evict_unlocked() {
+    const int64_t now = now_unix_seconds();
+
+    std::vector<std::pair<int64_t, std::string>> by_age; // (created_at, key) of the live entries
+    std::vector<std::string> expired;
+    uintmax_t total = 0;
+    for (const auto & [key, e] : index_) {
+        if (now - e.created_at > e.ttl_sec) {
+            expired.push_back(key);
+            continue;
+        }
+        by_age.emplace_back(e.created_at, key);
+        for (const std::string & path : { bin_path(key), bin_path(key) + ".ckpt", meta_path(key) }) {
+            std::error_code ec;
+            const uintmax_t size = std::filesystem::file_size(path, ec);
+            total += ec ? 0 : size;
+        }
+    }
+    for (const auto & key : expired) {
+        erase_unlocked(key);
+    }
+
+    const uintmax_t limit = (uintmax_t) max_gb_ << 30;
+    std::sort(by_age.begin(), by_age.end());
+    for (const auto & [created_at, key] : by_age) {
+        if (total <= limit) {
+            break;
+        }
+        for (const std::string & path : { bin_path(key), bin_path(key) + ".ckpt", meta_path(key) }) {
+            std::error_code ec;
+            const uintmax_t size = std::filesystem::file_size(path, ec);
+            total -= ec ? 0 : std::min(size, total);
+        }
+        fprintf(stderr, "anthropic-cache: evicting %s (over %d GiB)\n", key.c_str(), max_gb_);
+        erase_unlocked(key);
+    }
 }

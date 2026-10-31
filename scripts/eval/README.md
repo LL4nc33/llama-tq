@@ -154,6 +154,34 @@ Table of 2026-10-14 (one GPU, the 28,883-token prompt): the prompt was fitted to
 counted) and two measured ones (`--max-tokens 400`), two server starts per build, K/V pair and speculation mode, the
 two builds alternated A, B, B, A.
 
+## MTP, one GPU
+
+[benchmarks, MTP, one GPU](../../docs/benchmarks/README.md#mtp-one-gpu). One server per configuration on one GPU;
+`mtp-bench.py` sends the three prompts at temperature 0 and 1 twice and prints decode speed and draft acceptance per
+prompt. Run the configurations alternated (A, B, B, A) and average the two results of each:
+
+```bash
+M=models
+S="build/bin/llama-server -ngl 99 -fa on -np 1 -ctk q8_0 -ctv q8_0 --jinja --reasoning off --host 127.0.0.1 --port 8899"
+GEMMA="-m $M/gemma-4-12b-it-Q4_K_M.gguf -c 32768"
+MTP_GEMMA="-md $M/mtp-gemma-4-12B-it-Q8_0.gguf -ngld 99 --spec-type draft-mtp"
+# Gemma 4 12B, MTP off
+CUDA_VISIBLE_DEVICES=0 $S $GEMMA &
+python3 scripts/eval/retrieval.py health --url http://127.0.0.1:8899
+python3 scripts/eval/mtp-bench.py --url http://127.0.0.1:8899; kill %1
+# Gemma 4 12B, draft max 7 at the same p_min for every draft position
+LLAMA_MTP_DECAY=1.0 CUDA_VISIBLE_DEVICES=0 $S $GEMMA $MTP_GEMMA --draft-max 7 &
+python3 scripts/eval/retrieval.py health --url http://127.0.0.1:8899
+python3 scripts/eval/mtp-bench.py --url http://127.0.0.1:8899; kill %1
+```
+
+The other Gemma rows: `--draft-max 3` without `LLAMA_MTP_DECAY`, and `--draft-max 5` with it. Qwen3.6-35B-A3B: `-m
+$M/Qwen_Qwen3.6-35B-A3B-IQ2_XXS.gguf -c 8192` and `--spec-type draft-mtp --draft-max 1` (or 3) without `-md`; the model
+carries its MTP layer. Upstream (`23b0202`, built as in [Against upstream](#against-upstream-two-gpus)) takes
+`--spec-draft-n-max N` instead of `--draft-max N`. The batch costs in the text below the tables: `llama-bench -m
+$M/Qwen_Qwen3.6-35B-A3B-IQ2_XXS.gguf -ngl 99 -fa 1 -ctk q8_0 -ctv q8_0 -p 1,2,4,8 -n 0 -r 5 -o jsonl` alternated
+with upstream (fork, upstream, fork, upstream); the time per batch is `avg_ns` of each line.
+
 ## Speculative decoding, two GPUs
 
 [benchmarks, Speculative decoding, two GPUs](../../docs/benchmarks/README.md#speculative-decoding-two-gpus).
@@ -185,6 +213,23 @@ with an earlier request driver that is not part of this directory. The closest r
 procedure above on this model: a 29k-token prompt from `retrieval.py calibrate`, a server with `-c 40960 -np 1` and
 `$MTP` (or `--draft-max 1`) or the n-gram flags, and `retrieval.py run`, which prints prompt and decode speed and the
 draft counts per request. For the `-b 8192` sentence compare the prefill speed with `-b 2048` and with the default.
+
+The Qwen3.8-27B table: one server per row on both GPUs, as in [MTP, one GPU](#mtp-one-gpu) with 300 tokens:
+
+```bash
+S="build/bin/llama-server -m models/Qwen3.8-27B-UD-Q4_K_M.gguf -ngl 99 -fa on -c 8192 -np 1 -ctk q8_0 -ctv q8_0 --jinja \
+   --reasoning off --host 127.0.0.1 --port 8899"
+CUDA_VISIBLE_DEVICES=0,1 $S &                                   # MTP off
+python3 scripts/eval/retrieval.py health --url http://127.0.0.1:8899
+python3 scripts/eval/mtp-bench.py --url http://127.0.0.1:8899 --max-tokens 300; kill %1
+LLAMA_MTP_DECAY=1.0 CUDA_VISIBLE_DEVICES=0,1 $S --spec-type draft-mtp --draft-max 5 &
+python3 scripts/eval/retrieval.py health --url http://127.0.0.1:8899
+python3 scripts/eval/mtp-bench.py --url http://127.0.0.1:8899 --max-tokens 300; kill %1
+```
+
+Upstream takes `--spec-draft-n-max N` for `--draft-max N` and has no `LLAMA_MTP_DECAY`. The `-sm tensor` rows: the same
+commands with `-sm tensor` added to `S` and `GGML_CUDA_HOST_ALLREDUCE_BF16=1` in front, on a build without NCCL
+(`-DGGML_CUDA_NCCL=OFF`, as the release archives).
 
 ## Against upstream, two GPUs
 

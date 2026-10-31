@@ -750,6 +750,14 @@ struct common_params {
     std::string api_prefix    = "";                                                                         // NOLINT
     std::string chat_template = "";                                                                         // NOLINT
     bool use_jinja = true;                                                                                  // NOLINT
+
+    // server CORS params
+    std::string cors_origins = "*";
+    std::string cors_methods = "GET, POST, DELETE, OPTIONS";
+    std::string cors_headers = "*";
+    bool cors_credentials = true;
+    bool cors_origins_explicit = false; // set by --cors-origins; otherwise --tools and the MCP proxy limit it to localhost
+
     bool enable_chat_template = true;
     bool force_pure_content_parser = false;
     common_reasoning_format reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
@@ -797,7 +805,7 @@ struct common_params {
     // <slot_save_path>/anthropic-cache/. Design:
     bool     anthropic_cache_enabled = true;
     int32_t  anthropic_cache_ttl_default_sec = 300;   // 5 minutes
-    int32_t  anthropic_cache_max_gb          = 32;    // disk quota (informational, not enforced v1)
+    int32_t  anthropic_cache_max_gb          = 32;    // disk quota: expired, then least recently used entries go first
 
     // batched-bench params
     bool is_pp_shared   = false;

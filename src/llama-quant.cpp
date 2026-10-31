@@ -30,9 +30,11 @@ enum class tensor_category {
     ATTENTION_QKV,
     ATTENTION_KV_B,
     ATTENTION_OUTPUT,
+    ATTENTION_GATE,
     FFN_UP,
     FFN_GATE,
     FFN_DOWN,
+    FFN_LATENT,
     OUTPUT,
     OTHER
 };
@@ -142,6 +144,12 @@ static tensor_category tensor_get_category(const std::string & tensor_name) {
     }
     if (tensor_name.find("ffn_gate") != std::string::npos) {
         return tensor_category::FFN_GATE;
+    }
+    if (tensor_name.find("ffn_latent") != std::string::npos) {
+        return tensor_category::FFN_LATENT;
+    }
+    if (tensor_name.find("attn_gate.weight") != std::string::npos) {
+        return tensor_category::ATTENTION_GATE;
     }
     if (tensor_name.find("ffn_down") != std::string::npos) {
         return tensor_category::FFN_DOWN;
@@ -436,6 +444,19 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
         return std::make_pair(i_layer, n_layer);
     };
 
+    // bumping to q8_0 is preferred since these tensors are not really big
+    // TODO: nemotron 3 super shares ffn_latent and afmoe, bailingmoe3, dots3note, hy-v4, kimi-k3 and laguna share attn_gate.
+    //       Widening the guard is likely a win there too, but it changes their files, so it wants a perplexity comparison per architecture first.
+    if (arch == LLM_ARCH_MUSE_SPARK &&
+        (category == tensor_category::FFN_LATENT || category == tensor_category::ATTENTION_GATE)) {
+        auto bits_per_weight = [](ggml_type t) {
+            return 8.0 * ggml_type_size(t) / ggml_blck_size(t);
+        };
+        if (ggml_is_quantized(new_type) && bits_per_weight(new_type) < bits_per_weight(GGML_TYPE_Q8_0)) {
+            new_type = GGML_TYPE_Q8_0;
+        }
+    }
+
     // for arches that share the same tensor between the token embeddings and the output, we quantize the token embeddings
     // with the quantization of the output tensor
     if (category == tensor_category::OUTPUT || (qs.has_tied_embeddings && category == tensor_category::TOKEN_EMBD)) {
@@ -467,7 +488,12 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type 
     } else if (ftype == LLAMA_FTYPE_MOSTLY_MXFP4_MOE) {
         // MoE   tensors -> MXFP4
         // other tensors -> Q8_0
-        if (tensor->ne[2] > 1) {
+        // MLA projection tensors are also 3D, so match expert tensor roles explicitly.
+        const bool is_bailingmoe3_expert = arch == LLM_ARCH_BAILINGMOE3 &&
+            (category == tensor_category::FFN_UP ||
+             category == tensor_category::FFN_GATE ||
+             category == tensor_category::FFN_DOWN);
+        if (tensor->ne[2] > 1 && (arch != LLM_ARCH_BAILINGMOE3 || is_bailingmoe3_expert)) {
             new_type = GGML_TYPE_MXFP4;
         } else {
             new_type = GGML_TYPE_Q8_0;

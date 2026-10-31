@@ -181,9 +181,10 @@ static __global__ void flash_attn_ext_tq_wmma(
     const int tid  = threadIdx.y*WARP_SIZE + threadIdx.x;
     const int warp = threadIdx.y;
 
-    // column c: query q0 + c/cpq, Q head head0 + c%cpq (cpq columns per query, qpb queries per block)
+    // column c: query q0 + c/cpq, Q head head0 + c%cpq (cpq columns per query, qpb queries per block); a group that
+    // does not divide NC leaves the last NC % cpq columns empty
     const int gqa_ratio  = ne02 / ne12;
-    const int cpq        = NC % gqa_ratio == 0 ? gqa_ratio : NC;
+    const int cpq        = min(gqa_ratio, NC);
     const int qpb        = NC / cpq;
     const int ntiles_gqa = (gqa_ratio + cpq - 1) / cpq;
     const int sequence   = blockIdx.z / (ntiles_gqa*ne12);
@@ -409,7 +410,8 @@ static __global__ void flash_attn_ext_tq_wmma(
 }
 
 // launch_fattn<D, ncols1, ncols2> sets the grid (x: tiles of ncols1 queries, z: tiles of ncols2 heads per KV head
-// and sequence) and the combination of the parallel KV blocks; ncols1*ncols2 == NC matches the column layout above.
+// and sequence) and the combination of the parallel KV blocks; ncols1 = NC/G queries of ncols2 = G heads match the
+// column layout above (G = 6: ncols1*ncols2 < NC, the empty columns).
 // No conversion to f16, no stream-K; KV_max (mask scan) stays off since these batches are below 1024 queries.
 template <int D, int NC, ggml_type type_K, ggml_type type_V>
 static void ggml_cuda_flash_attn_ext_tq_wmma_case(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -434,6 +436,7 @@ static void ggml_cuda_flash_attn_ext_tq_wmma_case(ggml_backend_cuda_context & ct
     switch (Q->ne[2] / K->ne[2]) {
         case  2: launch_fattn<D, NC/ 2,  2>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
         case  4: launch_fattn<D, NC/ 4,  4>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
+        case  6: launch_fattn<D, NC/ 6,  6>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
         case  8: launch_fattn<D, NC/ 8,  8>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
         case 16: launch_fattn<D, NC/16, 16>(ctx, dst, fattn_kernel, nwarps, 0, T, false, false, false); break;
         default: GGML_ABORT("fatal error");

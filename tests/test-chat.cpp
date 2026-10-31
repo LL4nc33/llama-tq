@@ -426,6 +426,32 @@ static common_chat_tool special_function_tool_with_optional_param{
     })",
 };
 
+static common_chat_tool nested_args_tool{
+    /* .name = */ "nested_args",
+    /* .description = */ "Tool with nested array arguments",
+    /* .parameters = */ R"({
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": { "type": "string" }
+            },
+            "entries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer" },
+                        "label": { "type": "string" }
+                    },
+                    "required": ["id", "label"]
+                }
+            }
+        },
+        "required": ["tags", "entries"]
+    })",
+};
+
 static common_chat_tool empty_args_tool{
     /* .name = */ "empty_args",
     /* .description = */ "A tool that takes no arguments",
@@ -1051,6 +1077,16 @@ static void test_peg_parser(common_chat_templates *                      tmpls,
         assert_msg_equals(tc.expect, parser.parse(tc.input, false), true);
     }
     assert_msg_equals(tc.expect, msg_accum, true);
+
+    // A response format must be enforced by an eager grammar
+    if (!tc.params.json_schema.empty()) {
+        if (parser.params_.grammar.empty()) {
+            throw std::runtime_error("json_schema is set but no grammar was produced");
+        }
+        if (parser.params_.grammar_lazy) {
+            throw std::runtime_error("json_schema is set but the grammar is lazy");
+        }
+    }
 
     // Test grammar if present in params
     if (!parser.params_.grammar.empty()) {
@@ -2980,6 +3016,100 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
         }
     }
 
+    // Spark2.5 uses tagged arguments with forced-open thinking.
+    {
+        auto tst = peg_tester("models/templates/Spark2.5.jinja", detailed_debug);
+
+        tst.test("Hello, world!\nWhat's up?")
+            .enable_thinking(false)
+            .expect(message_assist)
+            .expect_reconstruction()
+            .run();
+
+        tst.test("I'm\nthinking</think>Hello, world!\nWhat's up?")
+            .enable_thinking(true)
+            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
+            .expect(message_assist_thoughts)
+            .expect_reconstruction()
+            .run();
+
+        tst.test(
+               "<tool_call>special_function"
+               "<arg_key>arg1</arg_key><arg_value>1</arg_value>"
+               "</tool_call>")
+            .enable_thinking(false)
+            .tools({ special_function_tool })
+            .expect(message_assist_call)
+            .expect_reconstruction()
+            .run();
+
+        tst.test(
+               "I'm\nthinking</think>"
+               "<tool_call>special_function"
+               "<arg_key>arg1</arg_key><arg_value>1</arg_value>"
+               "</tool_call>")
+            .enable_thinking(true)
+            .reasoning_format(COMMON_REASONING_FORMAT_DEEPSEEK)
+            .tools({ special_function_tool })
+            .expect(message_assist_call_thoughts)
+            .expect_reconstruction()
+            .run();
+
+        tst.test(
+               "<tool_call>special_function"
+               "<arg_key>arg1</arg_key><arg_value>1</arg_value>"
+               "</tool_call>"
+               "<tool_call>special_function_with_opt"
+               "<arg_key>arg1</arg_key><arg_value>1</arg_value>"
+               "<arg_key>arg2</arg_key><arg_value>2</arg_value>"
+               "</tool_call>")
+            .enable_thinking(false)
+            .parallel_tool_calls(true)
+            .tools({ special_function_tool, special_function_tool_with_optional_param })
+            .expect_tool_calls({
+                { "special_function", R"({"arg1": 1})", {} },
+                { "special_function_with_opt", R"({"arg1": 1, "arg2": 2})", {} },
+            })
+            .expect_reconstruction()
+            .run();
+
+        tst.test(
+               "Preparing updates."
+               "<tool_call>magic_int"
+               "<arg_key>ref</arg_key><arg_value>42</arg_value>"
+               "<arg_key>name</arg_key><arg_value>上海</arg_value>"
+               "</tool_call>"
+               "<tool_call>amount"
+               "<arg_key>orig</arg_key><arg_value>2.5</arg_value>"
+               "</tool_call>"
+               "<tool_call>toggle"
+               "<arg_key>enabled</arg_key><arg_value>true</arg_value>"
+               "</tool_call>"
+               "<tool_call>set_config"
+               "<arg_key>config</arg_key><arg_value>{\"source\": \"spark\", \"options\": {\"strict\": true}}</arg_value>"
+               "</tool_call>"
+               "<tool_call>nested_args"
+               "<arg_key>tags</arg_key><arg_value>[\"alpha\", \"测试\"]</arg_value>"
+               "<arg_key>entries</arg_key><arg_value>[{\"id\": 1, \"label\": \"first\"}, {\"id\": 2, \"label\": \"第二\"}]</arg_value>"
+               "</tool_call>"
+               "<tool_call>empty_args"
+               "</tool_call>")
+            .enable_thinking(false)
+            .parallel_tool_calls(true)
+            .tools({ magic_int_tool, amount_tool, toggle_tool, config_tool, nested_args_tool, empty_args_tool })
+            .expect_content("Preparing updates.")
+            .expect_tool_calls({
+                { "magic_int", R"({"ref": 42, "name": "上海"})", {} },
+                { "amount", R"({"orig": 2.5})", {} },
+                { "toggle", R"({"enabled": true})", {} },
+                { "set_config", R"({"config": {"source": "spark", "options": {"strict": true}}})", {} },
+                { "nested_args", R"({"tags": ["alpha", "测试"], "entries": [{"id": 1, "label": "first"}, {"id": 2, "label": "第二"}]})", {} },
+                { "empty_args", "{}", {} },
+            })
+            .expect_reconstruction()
+            .run();
+    }
+
     // Verify the throw path produces a readable error message, not std::out_of_range.
     // #20424 introduced effective_input = generation_prompt + input, but the throw
     // uses input.substr(result.end) where result.end is in effective_input space.
@@ -3680,6 +3810,120 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
         // Llama 3.3
         auto tst = peg_tester("models/templates/meta-llama-Llama-3.3-70B-Instruct.jinja", detailed_debug);
         tst.test("Hello, world!\nWhat's up?").tools({ python_tool }).expect(message_assist).expect_reconstruction().run();
+    }
+
+    // Muse Glimmer format tests
+    {
+        auto tst = peg_tester("models/templates/muse-glimmer.jinja", detailed_debug);
+
+        const std::string call_markup =
+            "<atem:function_calls>\n"
+            "<atem:invoke name=\"special_function\">\n"
+            "<atem:parameter name=\"arg1\">1</atem:parameter>\n"
+            "</atem:invoke>\n"
+            "</atem:function_calls>";
+
+        // A plain answer is unaffected
+        tst.test(" to=user<|message|>Hello, world!\nWhat's up?<|eot|>")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect(message_assist)
+            .run();
+
+        // A tool call as the first message of the turn: "<|start|>assistant" is the
+        // generation prompt, so the output starts at " to=".
+        tst.test(" to=special_function<|message|>" + call_markup)
+            .tools({ special_function_tool })
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect(message_assist_call)
+            .run();
+
+        // "Inform then act": the model answers the user and calls a tool in ONE generation,
+        // closing the answer with <|eom|>. The answer must stop there rather than swallow it.
+        tst.test(" to=user<|message|>Hello, world!\nWhat's up?<|eom|>"
+                 "<|start|>assistant to=special_function<|message|>" +
+                 call_markup)
+            .tools({ special_function_tool })
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect(message_with_content_and_tool_call("Hello, world!\nWhat's up?", "special_function",
+                                                       "{\"arg1\":1}"))
+            .run();
+
+        // Markup quoted in an answer has no preceding <|eom|>, so it stays content instead of
+        // becoming an invocation the user never asked for
+        tst.test(" to=user<|message|>You invoke it like this:\n" + call_markup + "<|eot|>")
+            .tools({ special_function_tool })
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect_content("You invoke it like this:\n" + call_markup)
+            .run();
+
+        // Structured output, straight to the final answer
+        tst.test(" to=user<|message|>" R"({"amount": 123.45, "date": "2025-12-03"})")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .json_schema(invoice_schema)
+            .expect_content(R"({"amount": 123.45, "date": "2025-12-03"})")
+            .run();
+
+        // Structured output after a reasoning message: reasoning stays free-form
+        tst.test(" to=self<|message|>I need to output the invoice details in JSON<|eom|>"
+                 "<|start|>assistant to=user<|message|>" R"({"amount": 123.45, "date": "2025-12-03"})")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .json_schema(invoice_schema)
+            .expect_reasoning("I need to output the invoice details in JSON")
+            .expect_content(R"({"amount": 123.45, "date": "2025-12-03"})")
+            .run();
+
+        // Tool markup inside the analysis channel is reasoning, not a call
+        tst.test(" to=self<|message|>I could use " + call_markup + " here<|eom|>"
+                 "<|start|>assistant to=user<|message|>Hello!<|eot|>")
+            .tools({ special_function_tool })
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect_reasoning("I could use " + call_markup + " here")
+            .expect_content("Hello!")
+            .run();
+    }
+
+    // Muse Spark format tests
+    {
+        auto tst = peg_tester("models/templates/muse-spark.jinja", detailed_debug);
+
+        const std::string call_markup =
+            "<atem:function_calls>\n"
+            "<atem:invoke name=\"special_function\">\n"
+            "<atem:parameter name=\"arg1\">1</atem:parameter>\n"
+            "</atem:invoke>\n"
+            "</atem:function_calls>";
+
+        // A plain answer behaves as it does for Muse Glimmer
+        tst.test(" to=user<|message|>Hello, world!\nWhat's up?<|eot|>")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect(message_assist)
+            .run();
+
+        // A commentary message is user facing content, not reasoning
+        tst.test(" to=commentary<|message|>Hello, world!\nWhat's up?<|eom|>"
+                 "<|start|>assistant to=user<|message|>Done!<|eot|>")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect_content("Hello, world!\nWhat's up?Done!")
+            .run();
+
+        // Commentary announces the work, then the tool call follows in the same generation
+        tst.test(" to=commentary<|message|>Let me look that up.<|eom|>"
+                 "<|start|>assistant to=special_function<|message|>" +
+                 call_markup)
+            .tools({ special_function_tool })
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect(message_with_content_and_tool_call("Let me look that up.", "special_function",
+                                                       "{\"arg1\":1}"))
+            .run();
+
+        // Reasoning still reaches the reasoning channel with commentary in the picture
+        tst.test(" to=self<|message|>Thinking.<|eom|>"
+                 "<|start|>assistant to=commentary<|message|>Working on it.<|eom|>"
+                 "<|start|>assistant to=user<|message|>Hello!<|eot|>")
+            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
+            .expect_reasoning("Thinking.")
+            .expect_content("Working on it.Hello!")
+            .run();
     }
 
     // GPT-OSS format tests

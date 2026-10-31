@@ -580,5 +580,16 @@ int main()
         {LLAMA_GRETYPE_END, 0},
     });
 
+    // groups recurse once per level: 256 levels parse, deeper nesting is refused
+    {
+        llama_grammar_parser result;
+        result.parse(("root ::= " + std::string(256, '(') + "\"a\"" + std::string(256, ')')).c_str());
+        assert(!result.rules.empty() && "256 nested groups should parse");
+    }
+    verify_failure(("root ::= " + std::string(257, '(') + "\"a\"" + std::string(257, ')')).c_str());
+
+    // token ids above uint32 are refused instead of truncated
+    verify_failure(R"""(root ::= <[4294967296]>)""");
+
     return 0;
 }

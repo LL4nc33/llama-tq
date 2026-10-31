@@ -558,6 +558,13 @@ struct gguf_context * gguf_init_from_file_ptr(FILE * file, struct gguf_init_para
         GGML_ASSERT(int64_t(ctx->kv.size()) == n_kv);
 
         const int alignment_idx = gguf_find_key(ctx, GGUF_KEY_GENERAL_ALIGNMENT);
+        if (alignment_idx != -1 && gguf_get_kv_type(ctx, alignment_idx) != GGUF_TYPE_UINT32) {
+            GGML_LOG_ERROR("%s: key '%s' must be of type %s but is %s\n",
+                __func__, GGUF_KEY_GENERAL_ALIGNMENT, gguf_type_name(GGUF_TYPE_UINT32),
+                gguf_type_name(gguf_get_kv_type(ctx, alignment_idx)));
+            gguf_free(ctx);
+            return nullptr;
+        }
         ctx->alignment = alignment_idx == -1 ? GGUF_DEFAULT_ALIGNMENT : gguf_get_val_u32(ctx, alignment_idx);
 
         if (ctx->alignment == 0 || (ctx->alignment & (ctx->alignment - 1)) != 0) {
@@ -629,15 +636,24 @@ struct gguf_context * gguf_init_from_file_ptr(FILE * file, struct gguf_init_para
             }
 
             // check that the total number of elements is representable
-            if (ok && ((INT64_MAX/info.t.ne[1] <= info.t.ne[0]) ||
-                       (INT64_MAX/info.t.ne[2] <= info.t.ne[0]*info.t.ne[1]) ||
-                       (INT64_MAX/info.t.ne[3] <= info.t.ne[0]*info.t.ne[1]*info.t.ne[2]))) {
-
-                GGML_LOG_ERROR("%s: total number of elements in tensor '%s' with shape "
-                    "(%" PRIi64 ", %" PRIi64 ", %" PRIi64 ", %" PRIi64 ") is >= %" PRIi64 "\n",
-                    __func__, info.t.name, info.t.ne[0], info.t.ne[1], info.t.ne[2], info.t.ne[3], INT64_MAX);
-                ok = false;
-                break;
+            // (a zero-element tensor is trivially representable)
+            if (ok) {
+                int64_t current_nelements = info.t.ne[0];
+                for (int i = 1; i < GGML_MAX_DIMS; ++i) {
+                    if (info.t.ne[i] > 1) { // 1 or 0 won't cause an overflow
+                        if (INT64_MAX / info.t.ne[i] < current_nelements) {
+                             ok = false;
+                             break;
+                         }
+                     }
+                     current_nelements *= info.t.ne[i];
+                 }
+                 if (!ok) {
+                     GGML_LOG_ERROR("%s: incorrect shape for a tensor '%s' may cause overflow errors: "
+                         "(%" PRIi64 ", %" PRIi64 ", %" PRIi64 ", %" PRIi64 ") is >= INT64_MAX (%" PRIi64 ")\n",
+                         __func__, info.t.name, info.t.ne[0], info.t.ne[1], info.t.ne[2], info.t.ne[3], INT64_MAX);
+                     break;
+                 }
             }
         }
         if (!ok) {
@@ -721,7 +737,16 @@ struct gguf_context * gguf_init_from_file_ptr(FILE * file, struct gguf_init_para
                 gguf_free(ctx);
                 return nullptr;
             }
-            size_t padded_size = GGML_PAD(ggml_nbytes(&ti.t), ctx->alignment);
+            const size_t nbytes = ggml_nbytes(&ti.t);
+            // GGML_PAD adds (alignment - 1) to nbytes. when nbytes is near
+            // SIZE_MAX this wraps to 0 and makes the check below dead.
+            if (nbytes > SIZE_MAX - (ctx->alignment - 1)) {
+                GGML_LOG_ERROR("%s: tensor '%s' size %zu overflows after padding (alignment %zu)\n",
+                    __func__, ti.t.name, nbytes, ctx->alignment);
+                gguf_free(ctx);
+                return nullptr;
+            }
+            const size_t padded_size = GGML_PAD(nbytes, ctx->alignment);
             if (SIZE_MAX - ctx->size < padded_size) {
                 GGML_LOG_ERROR("%s: tensor '%s' size overflow, cannot accumulate size %zu + %zu\n",
                     __func__, ti.t.name, ctx->size, padded_size);

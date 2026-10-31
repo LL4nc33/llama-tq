@@ -3129,6 +3129,54 @@ struct test_cpy : public test_case {
     }
 };
 
+// GGML_OP_CPY from a (row-padded) source into the slots of a larger cache buffer, with differing shapes as in the
+// recurrent-state updates (snapshot slots, conv-state windows)
+struct test_cpy_slots : public test_case {
+    const ggml_type type;
+    const std::array<int64_t, 4> ne_src;
+    const int64_t src_pad;               // elements in front of each source row (0: contiguous source)
+    const std::array<int64_t, 3> ne_dst;
+    const int64_t dst_mem;               // rows per slot in the cache buffer (>= ne_dst[1])
+
+    std::string vars() override {
+        return VARS_TO_STR5(type, ne_src, src_pad, ne_dst, dst_mem);
+    }
+
+    double max_nmse_err() override {
+        return 0.0;
+    }
+
+    size_t op_size(ggml_tensor * t) override {
+        // the bytes read and written, without the gaps between the slots
+        return 2 * ggml_row_size(t->type, ggml_nelements(t));
+    }
+
+    test_cpy_slots(ggml_type type = GGML_TYPE_F32,
+            std::array<int64_t, 4> ne_src = {16, 16, 4, 3}, int64_t src_pad = 0,
+            std::array<int64_t, 3> ne_dst = {1024, 1, 3}, int64_t dst_mem = 2)
+        : type(type), ne_src(ne_src), src_pad(src_pad), ne_dst(ne_dst), dst_mem(dst_mem) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * src = ggml_new_tensor_4d(ctx, type, ne_src[0] + src_pad, ne_src[1], ne_src[2], ne_src[3]);
+        ggml_set_name(src, "src");
+        if (src_pad > 0) {
+            src = ggml_view_4d(ctx, src, ne_src[0], ne_src[1], ne_src[2], ne_src[3],
+                    src->nb[1], src->nb[2], src->nb[3], ggml_row_size(type, src_pad));
+            ggml_set_name(src, "src_window");
+        }
+
+        ggml_tensor * cache = ggml_new_tensor_3d(ctx, type, ne_dst[0], dst_mem, ne_dst[2]);
+        ggml_set_name(cache, "cache");
+        ggml_tensor * dst = ggml_view_3d(ctx, cache, ne_dst[0], ne_dst[1], ne_dst[2], cache->nb[1], cache->nb[2], 0);
+        ggml_set_name(dst, "slots");
+
+        ggml_tensor * out = ggml_cpy(ctx, src, dst);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+};
+
 // GGML_OP_CONT
 struct test_cont : public test_case {
     const ggml_type type;
@@ -4316,6 +4364,8 @@ struct test_gated_delta_net : public test_case {
     const int64_t K; // snapshot slot count: 1 = final-only, >1 = last K states
     const bool    gather; // state gathered from a cache by GET_ROWS, as the recurrent memory does
     const bool    raw;    // gate activations folded into the op (ggml_gated_delta_net_set_raw_gates)
+    const bool    scatter; // new state(s) copied into the slots of a cache, as the recurrent memory does
+    const bool    in_place; // with scatter: the state is read from the cache rows the new state is copied to
 
     std::string vars() override {
         std::string res = VARS_TO_STR9(type, head_count, head_size, n_seq_tokens, n_seqs, v_repeat, permuted, kda, K);
@@ -4325,14 +4375,29 @@ struct test_gated_delta_net : public test_case {
         if (raw) {
             res += "," + VAR_TO_STR(raw);
         }
+        if (scatter) {
+            res += "," + VAR_TO_STR(scatter);
+        }
+        if (in_place) {
+            res += "," + VAR_TO_STR(in_place);
+        }
         return res;
+    }
+
+    bool run_whole_graph() override { return scatter; }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "GATED_DELTA_NET";
     }
 
     test_gated_delta_net(ggml_type type = GGML_TYPE_F32,
             int64_t head_count = 4, int64_t head_size = 16, int64_t n_seq_tokens = 1, int64_t n_seqs = 1,
-            int v_repeat = 1, bool permuted = false, bool kda = false, int64_t K = 1, bool gather = false, bool raw = false)
+            int v_repeat = 1, bool permuted = false, bool kda = false, int64_t K = 1, bool gather = false, bool raw = false,
+            bool scatter = false, bool in_place = false)
         : type(type), head_count(head_count), head_size(head_size), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs),
-          v_repeat(v_repeat), permuted(permuted), kda(kda), K(K), gather(gather), raw(raw) {}
+          v_repeat(v_repeat), permuted(permuted), kda(kda), K(K), gather(gather), raw(raw), scatter(scatter),
+          in_place(in_place) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * q;
@@ -4356,13 +4421,22 @@ struct test_gated_delta_net : public test_case {
         ggml_tensor * beta  = ggml_new_tensor_4d(ctx, type, 1, head_count * v_repeat, n_seq_tokens, n_seqs);
         const int64_t D     = head_size * v_repeat * head_size * head_count;
         ggml_tensor * state = nullptr;
+        ggml_tensor * cache = nullptr;
         if (gather) {
             GGML_ASSERT(n_seqs == 1);
-            ggml_tensor * cache = ggml_new_tensor_2d(ctx, type, D, 5);
+            // with scatter the new states go back into this cache: 5 rows per rollback slot, as the recurrent memory
+            cache = ggml_new_tensor_2d(ctx, type, D, scatter ? 5 * K : 5);
             ggml_tensor * ids   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
             ggml_set_name(cache, "state_cache");
             ggml_set_name(ids,   "state_ids");
             state = ggml_reshape_4d(ctx, ggml_get_rows(ctx, cache, ids), head_size, head_size, head_count * v_repeat, n_seqs);
+        } else if (in_place) {
+            // rows 1 .. n_seqs of the cache, as the recurrent memory reads states that stay in their cells
+            GGML_ASSERT(scatter && K == 1);
+            cache = ggml_new_tensor_2d(ctx, type, D, n_seqs + 2);
+            ggml_set_name(cache, "state_rows");
+            state = ggml_reshape_4d(ctx, ggml_view_2d(ctx, cache, D, n_seqs, cache->nb[1], cache->nb[1]),
+                                    head_size, head_size, head_count * v_repeat, n_seqs);
         } else {
             state = ggml_new_tensor_4d(ctx, type, head_size, head_size, head_count * v_repeat, n_seqs);
             ggml_set_name(state, "state");
@@ -4379,6 +4453,27 @@ struct test_gated_delta_net : public test_case {
             ggml_set_name(dt_bias, "dt_bias");
             ggml_set_name(a,       "a_raw");
             ggml_gated_delta_net_set_raw_gates(out, dt_bias, a);
+        }
+        if (scatter) {
+            // attention scores and the state slots copied into a cache: the CUDA backend writes the slots from the
+            // kernel and skips the copy
+            const int64_t n_written = std::min<int64_t>(n_seq_tokens, K);
+            const int64_t n_attn    = head_size * head_count * v_repeat * n_seq_tokens * n_seqs;
+            ggml_tensor * attn  = ggml_view_1d(ctx, out, n_attn, 0);
+            ggml_tensor * tail  = ggml_view_1d(ctx, out, D * n_seqs * n_written, ggml_row_size(type, n_attn));
+            ggml_tensor * slots = nullptr;
+            if (gather) {
+                // back into the row the state was read from (the kernel reads and writes the same cache)
+                slots = ggml_view_3d(ctx, cache, D, n_seqs, n_written, cache->nb[1], 5 * cache->nb[1], 3 * cache->nb[1]);
+            } else if (in_place) {
+                slots = ggml_view_3d(ctx, cache, D, n_seqs, n_written, cache->nb[1], ggml_nbytes(cache), cache->nb[1]);
+            } else {
+                cache = ggml_new_tensor_3d(ctx, type, D, n_seqs + 1, K);
+                ggml_set_name(cache, "state_out_cache");
+                slots = ggml_view_3d(ctx, cache, D, n_seqs, n_written, cache->nb[1], cache->nb[2], cache->nb[1]);
+            }
+            ggml_tensor * cpy   = ggml_cpy(ctx, tail, slots);
+            out = ggml_concat(ctx, attn, ggml_reshape_1d(ctx, ggml_cont(ctx, cpy), D * n_seqs * n_written), 0);
         }
         return out;
     }
@@ -8962,6 +9057,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_cpy(GGML_TYPE_I32, GGML_TYPE_I32, {256, 1, 4, 1}, {1, 2, 0, 3}, {0, 0, 0, 0}));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F32, GGML_TYPE_F32, {256, 1, 4, 1}, {1, 2, 0, 3}, {0, 0, 0, 0}));
 
+    // recurrent-state updates: snapshots into cache slots, conv windows, rows that do not line up
+    for (ggml_type type : {GGML_TYPE_F32, GGML_TYPE_F16}) {
+        test_cases.emplace_back(new test_cpy_slots(type, {32, 32, 4, 6}, 0, {4096, 1, 6}, 2));
+        test_cases.emplace_back(new test_cpy_slots(type, {32, 32, 4, 4}, 0, {4096, 2, 2}, 4));
+        test_cases.emplace_back(new test_cpy_slots(type, {3, 256, 2, 1}, 6, {1536, 1, 1}, 2));
+        test_cases.emplace_back(new test_cpy_slots(type, {64, 32, 2, 1}, 8, {4096, 1, 1}, 2));
+        test_cases.emplace_back(new test_cpy_slots(type, {64, 1, 32, 1}, 8, {64, 1, 32}, 2));
+        test_cases.emplace_back(new test_cpy_slots(type, {3, 256, 2, 1}, 6, {384, 2, 2}, 4));
+    }
+
     for (ggml_type type_dst : { GGML_TYPE_F32, GGML_TYPE_I32, GGML_TYPE_F16, GGML_TYPE_BF16 }) {
         for (bool use_view_slice : { true, false }) {
             for (std::array<int64_t, 4> ne : std::initializer_list<std::array<int64_t, 4>>{ {2, 1, 1, 1}, {2, 1, 3, 5},
@@ -9072,6 +9177,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_add_rms_norm(GGML_TYPE_F32, { n, 5, 4, 3 }, eps, false));
             test_cases.emplace_back(new test_add_rms_norm(GGML_TYPE_F32, { n, 5, 4, 3 }, eps, true));
         }
+    }
+    // every row width of the float4 rms_norm (CUDA): 128, 256, 512 and 1024 threads, 4 float4 per thread with a partial
+    // last pass
+    for (uint32_t n : {512, 1024, 2048, 4096, 5120}) {
+        test_cases.emplace_back(new test_rms_norm(GGML_TYPE_F32, { n, 5, 4, 3 }, false, 1e-6f));
+        test_cases.emplace_back(new test_rms_norm_scale({ n, 5, 4, 3 }, 1e-6f, 1.0f/sqrtf((float) n)));
+        test_cases.emplace_back(new test_rms_norm_mul_add(GGML_TYPE_F32, { n, 5, 4, 3 }, 1e-6f, false));
+        test_cases.emplace_back(new test_rms_norm_mul_add(GGML_TYPE_F32, { n, 5, 4, 3 }, 1e-6f, true));
     }
     for (uint32_t n : {1, 511, 1025, 8192, 33*512}) {
         for (bool multi_add : {false, true}) {
@@ -9715,6 +9828,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {cols, 37, 1, 1}, k, true));
         }
     }
+    // the logits of a few output rows over a large vocabulary (sampling, a speculative verify)
+    for (int k : {10, 40, 64}) {
+        for (int64_t rows : {1, 4}) {
+            test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {262144, rows, 1, 1}, k));
+        }
+    }
 
     // exhaustive top_k tests
     //for (int i = 1; i < 9999; ++i) {
@@ -9994,9 +10113,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // kernel with (query, head) columns, one block of 16 (more columns: the f16 conversion path); causal mask, so that
     // each column has its own mask row and some KV tiles are fully masked
     for (int hs : {64, 128, 256, 512}) {
-        for (int gqa : {2, 4, 8, 16}) {
+        for (int gqa : {2, 4, 6, 8, 16}) {
             if (hs == 512 ? gqa < 8 : gqa > 8) {
-                continue; // head 512: GQA 8 and 16 (Gemma 4), the others: GQA 2, 4 and 8
+                continue; // head 512: GQA 8 and 16 (Gemma 4), the others: GQA 2, 4, 6 (Qwen3.8 27B) and 8
             }
             for (int64_t nb : {2, 3, 4, 5, 8, 9, 16}) {
                 for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
@@ -10021,7 +10140,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     // one block of 32 columns: only on caches of at least 8192 cells (FATTN_TQ_WMMA_NC32_MIN_KV), not f16 K at head 256
     for (int hs : {64, 128, 256}) {
-        for (int gqa : {2, 4, 8}) {
+        for (int gqa : {2, 4, 6, 8}) {
             for (int64_t nb : {int64_t(16/gqa + 1), int64_t(32/gqa)}) {
                 for (auto kv_types : std::vector<std::pair<ggml_type, ggml_type>>{
                         {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_KTQ4_1, GGML_TYPE_VTQ4_1},
@@ -10299,6 +10418,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                                 use_id, 16, 8, b, with_bias, with_gate));
                             test_cases.emplace_back(new test_mul_mat_vec_fusion(type, glu_op, 1, 32, 256,
                                 use_id, 16, 8, b, with_bias, with_gate, {1, 1}));
+                            // multi-token batches (parallel sequences, speculative decoding)
+                            for (int64_t m_batch : { 2, 4, 8 }) {
+                                test_cases.emplace_back(new test_mul_mat_vec_fusion(type, glu_op, m_batch, 32, 256,
+                                    use_id, 16, 8, b, with_bias, with_gate, {1, 1}));
+                            }
                         }
                     }
                 }
@@ -10318,6 +10442,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                     test_cases.emplace_back(new test_topk_moe({128, 1, 1, 1}, 128, with_norm, bias_probs, gate, scale_w));
                     test_cases.emplace_back(new test_topk_moe({129, 1, 1, 1}, 128, with_norm, bias_probs, gate, scale_w));
                     test_cases.emplace_back(new test_topk_moe({160, 4, 1, 1}, 160, with_norm, bias_probs, gate, scale_w));
+                    // rows at and just past the limit where one block still covers all rows
+                    test_cases.emplace_back(new test_topk_moe({32, 8, 1, 1}, 4, with_norm, bias_probs, gate, scale_w));
+                    test_cases.emplace_back(new test_topk_moe({32, 8, 1, 1}, 8, with_norm, bias_probs, gate, scale_w));
+                    test_cases.emplace_back(new test_topk_moe({32, 9, 1, 1}, 8, with_norm, bias_probs, gate, scale_w));
                 }
             }
         }
@@ -10365,6 +10493,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, n_tokens, 1, 1, false, false, 1, true,  true));
     }
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 4, 1, 1, false, false, 4, false, true));
+    // new state written into the cache by the kernel (CUDA): final state, rollback slots, several sequences, gathered
+    for (int64_t n_tokens : {1, 3, 6}) {
+        for (int64_t K : {1, 4}) {
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, n_tokens, 1, 2, false, false, K, false, true, true));
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, n_tokens, 3, 2, false, false, K, false, true, true));
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, n_tokens, 1, 2, false, false, K, true,  true, true));
+        }
+        // the state read from the rows the new state goes to
+        for (int64_t n_seqs : {1, 3}) {
+            test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64, n_tokens, n_seqs, 2, false, false, 1, false, true, true, true));
+        }
+    }
     // the CUDA backend folds the GET_ROWS of a single sequence into the kernel
     for (int64_t n_tokens : {1, 4}) {
         test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, n_tokens, 1, 1, false, false, 1, true));
@@ -10509,6 +10649,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
 
+
     // Conv2d: K=CRS=NPQ=4096 matmul performance
     uint32_t                        iwh_idx  = 0;
     uint32_t                        kwh_idx  = 1;
@@ -10570,6 +10711,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F16, GGML_TYPE_F16, {768*1024, 256, 1, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}, true));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_F16, GGML_TYPE_F16, {768, 1024, 256, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}, true));
     test_cases.emplace_back(new test_cpy(GGML_TYPE_BF16, GGML_TYPE_BF16, {768, 1024, 256, 1}, {0, 0, 0, 0}, {0, 0, 0, 0}, true));
+
+    // gated delta net: MTP snapshots (6 slots) for 1 and 2 sequences, conv window
+    test_cases.emplace_back(new test_cpy_slots(GGML_TYPE_F32, {128, 128, 48, 6}, 0, {128*128*48, 1, 6}, 2));
+    test_cases.emplace_back(new test_cpy_slots(GGML_TYPE_F32, {128, 128, 48, 12}, 0, {128*128*48, 2, 6}, 4));
+    test_cases.emplace_back(new test_cpy_slots(GGML_TYPE_F32, {3, 10240, 1, 1}, 6, {3*10240, 1, 1}, 2));
 
 
     test_cases.emplace_back(new test_soft_max(GGML_TYPE_F32, {4096, 4096, 5, 1}, false, false, GGML_TYPE_F32, {1, 1}, 1.0f, 0.0f));
@@ -10787,6 +10933,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {200000, 16, 1, 1}));
 
     test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {2, 1, 1, 1}, 1));
+    // the logits of a few output rows over a 262k vocabulary (sampling, a speculative verify)
+    for (int k : {10, 40, 64}) {
+        for (auto nrows : {1, 4}) {
+            test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {262144, nrows, 1, 1}, k));
+        }
+    }
     // qwen4exp sparse attention: top 2048 + ratio - 1 cells per query over the whole context,
     // one query row while generating, a ubatch of rows while reading the prompt
     for (auto nrows : {1, 256}) {

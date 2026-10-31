@@ -1,4 +1,5 @@
 #include "server-common.h"
+#include "http.h"
 #include "server-models.h"
 
 #include "preset.h"
@@ -1215,7 +1216,8 @@ server_http_proxy::server_http_proxy(
             }
             if (key == "Host" || key == "host") {
                 bool is_default_port = (scheme == "https" && port == 443) || (scheme == "http" && port == 80);
-                req.set_header(key, is_default_port ? host : host + ":" + std::to_string(port));
+                const std::string url_host = common_http_format_host(host);
+                req.set_header(key, is_default_port ? url_host : url_host + ":" + std::to_string(port));
             } else {
                 req.set_header(key, value);
             }

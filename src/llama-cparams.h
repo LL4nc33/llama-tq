@@ -33,6 +33,8 @@ struct llama_cparams {
     bool embeddings_pre_norm; // also extract the hidden state before the final output norm
     bool embeddings_nextn;        // also extract MTP-input embeddings
     bool embeddings_nextn_masked; // extract only rows where batch.logits != 0
+    uint32_t logits_top_k;        // > 0: the graph selects the k largest logits of each output row (the largest k asked for)
+    uint32_t logits_top_k_parts;  // the k largest are taken per part of the vocabulary: -sm tensor, one part per device
     bool embeddings_eagle3;       // also extract Eagle3 (low/mid/high) hidden states
     // Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
     // Size == n_layer()+1. embeddings_layer_inp[il] == true requests that the residual

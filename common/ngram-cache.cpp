@@ -169,7 +169,8 @@ void common_ngram_cache_draft(
     GGML_ASSERT(draft.size() == 1);
     const int inp_size = inp.size();
 
-    if (inp_size < LLAMA_NGRAM_STATIC) {
+    // the n-grams below are read back from the end of the input: a shorter input has nothing to draft from
+    if (inp_size < std::max(LLAMA_NGRAM_STATIC, ngram_max)) {
         return;
     }
 

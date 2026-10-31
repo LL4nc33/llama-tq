@@ -476,6 +476,21 @@ bool llm_build_delta_net_base::keep_rs() const {
     return cparams.n_rs_seq > 0;
 }
 
+ggml_tensor * llm_build_delta_net_base::build_gdn_state(
+        llm_graph_input_rs * inp, ggml_tensor * ssm_states_all, int64_t n_seqs) const {
+    // the unfused paths read the state in several nodes, some of which may run after the new state is written back
+    const bool fused = ubatch.n_seq_tokens == 1 ? cparams.fused_gdn_ar : cparams.fused_gdn_ch;
+    if (!fused || !inp->main_in_place) {
+        return build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
+    }
+    // rows head .. head + n_seqs of the cache instead of a gather of the same rows
+    const size_t offs = (size_t) inp->head * ggml_row_size(ssm_states_all->type, hparams.n_embd_s());
+    return build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs,
+        [offs](ggml_context * ctx, ggml_tensor * states, ggml_tensor * ids) {
+            return ggml_view_2d(ctx, states, states->ne[0], ids->ne[0], states->nb[1], offs);
+        });
+}
+
 ggml_tensor * llm_build_delta_net_base::build_conv_state(
         llm_graph_input_rs * inp,
         ggml_tensor *        conv_states_all,
@@ -610,11 +625,14 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     // op writes the last min(n_seq_tokens, K) snapshots; trailing slots are left unwritten
     const int64_t n_written = std::min<int64_t>(n_seq_tokens, K);
 
-    // write the produced snapshots into the recurrent cache (snapshot slot i -> rollback group i)
-    ggml_tensor * src = ggml_view_3d(ctx0, gdn_out,
-        D, n_seqs, n_written,
+    // write the produced snapshots into the recurrent cache (snapshot slot i -> rollback group i). The snapshots are
+    // viewed per head ([S_v, S_v, H_v, n_seqs*n_written], as the single state of build_delta_net_fused) so that a tensor
+    // split along the heads can take its share; the slots follow each other, so it is the same memory as a flat view.
+    ggml_tensor * src = ggml_view_4d(ctx0, gdn_out,
+        S_v, S_v, H_v, n_seqs * n_written,
+        ggml_row_size(gdn_out->type, S_v),
+        ggml_row_size(gdn_out->type, S_v * S_v),
         ggml_row_size(gdn_out->type, D),
-        ggml_row_size(gdn_out->type, state_size_per_snap),
         ggml_row_size(gdn_out->type, attn_score_elems));
 
     ggml_tensor * dst = ggml_view_3d(ctx0, ssm_states_all,

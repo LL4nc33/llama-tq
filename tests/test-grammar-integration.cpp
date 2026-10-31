@@ -882,6 +882,39 @@ static void test_failure_left_recursion() {
     fprintf(stderr, "  ✅︎ Passed\n");
 }
 
+static void test_parse_state_limit() {
+    fprintf(stderr, "⚫ Testing the limit on parse states:\n");
+
+    // rules that may be empty and are referenced twice per level double the parse states with every level
+    std::string nested_str = "root ::= r0\n";
+    for (int i = 0; i < 40; i++) {
+        nested_str += "r" + std::to_string(i) + " ::= (r" + std::to_string(i + 1) + " r" + std::to_string(i + 1) + ")?\n";
+    }
+    nested_str += "r40 ::= \"a\"\n";
+    assert(test_build_grammar_fails(nested_str));
+
+    // the same rules behind a first character: the grammar builds, accepting that character is refused
+    llama_grammar * late = build_grammar("root ::= \"x\" r0\n" + nested_str.substr(nested_str.find('\n') + 1));
+    assert(late != nullptr);
+    bool refused = false;
+    try {
+        llama_grammar_accept(late, 'x');
+    } catch (const std::runtime_error &) {
+        refused = true;
+    }
+    assert(refused);
+    llama_grammar_free_impl(late);
+
+    // a long list of alternatives stays below the limit
+    std::string enum_str = "root ::= ";
+    for (int i = 0; i < 1000; i++) {
+        enum_str += (i > 0 ? " | \"v" : "\"v") + std::to_string(i) + "\"";
+    }
+    test_grammar("enum with 1000 values", enum_str, {"v0", "v500", "v999"}, {"v1000", "x"});
+
+    fprintf(stderr, "  ✅︎ Passed\n");
+}
+
 static void test_failure_missing_root_symbol() {
     fprintf(stderr, "⚫ Testing missing root symbol:\n");
 
@@ -1485,6 +1518,7 @@ int main() {
     test_failure_missing_root();
     test_failure_missing_reference();
     test_failure_left_recursion();
+    test_parse_state_limit();
     test_failure_missing_root_symbol();
     test_custom_root_symbol_check();
     test_json_schema();

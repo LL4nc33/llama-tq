@@ -3,6 +3,7 @@
 #include "ggml.h"
 #include "ggml-cuda.h"
 #include "ggml-backend.h"
+#include "ggml-backend-share.h"
 #include "llama-arch.h"
 #include "llama-graph.h"
 #include "llama-impl.h"
@@ -153,6 +154,9 @@ llama_context::llama_context(
     cparams.embeddings_pre_norm = false;
     cparams.embeddings_nextn = false;
     cparams.embeddings_nextn_masked = false;
+    cparams.logits_top_k            = 0;
+    cparams.logits_top_k_parts      = model.split_mode() == LLAMA_SPLIT_MODE_TENSOR ? model.get_split_state_ud.n_devices : 1;
+    logits_top_k_max                = (int64_t) model.vocab.n_tokens() - 1;
     cparams.embeddings_eagle3 = false;
     // Generic per-layer input-feature extraction (DFlash / upstream layer_inp path).
     // +1: layer id == n_layer() taps the output of the last layer (input of the head).
@@ -552,6 +556,7 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
+    graph_slot_use(0); // the expectation is for the main scheduler
     if (!model.hparams.no_alloc) {
         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
             ggml_backend_t             backend = backend_ptrs[i];
@@ -581,6 +586,7 @@ void llama_context::sched_reserve() {
     LLAMA_LOG_INFO("%s: reserving ...\n", __func__);
 
     synchronize();
+    graph_slots_drop();
 
     const int64_t t_start_us = ggml_time_us();
 
@@ -993,10 +999,11 @@ bool llama_context::memory_update(bool optimize) {
                 }
         }
 
-        // reset the previous graph result to make sure that it won't be reused
+        // reset the previous graph results to make sure that they won't be reused (the memory update runs on the
+        // main scheduler)
         // TODO: change the mctx->apply() to return information if a graph reserve is needed
         //       reset the graph result only if the memory module did reset the scheduler
-        gf_res_prev->reset();
+        graph_slots_reset();
 
         if (!mctx->apply()) {
             LLAMA_LOG_ERROR("%s: failed to apply memory update\n", __func__);
@@ -1080,6 +1087,68 @@ float * llama_context::get_logits_ith(int32_t i) {
 #else
         return nullptr;
 #endif
+    }
+}
+
+std::vector<llama_token> llama_context::logits_vocab_parts(const ggml_tensor * t_logits) const {
+    if (cparams.logits_top_k_parts <= 1 || t_logits == nullptr) {
+        return {};
+    }
+    // the logits are split like the rows of the output weight they come from
+    const ggml_tensor * t = t_logits;
+    while (t != nullptr && t->op != GGML_OP_MUL_MAT) {
+        t = t->src[0];
+    }
+    if (t == nullptr) {
+        return {};
+    }
+    const ggml_backend_meta_split_state ss = llama_meta_device_get_split_state(
+        t->src[0], const_cast<llama_meta_device_get_split_state_userdata *>(&model.get_split_state_ud));
+    if (ss.axis != GGML_BACKEND_SPLIT_AXIS_1) {
+        return {}; // whole rows on every device
+    }
+    GGML_ASSERT(ss.n_segments == 1 && ss.ne[0] >= 0);
+    std::vector<llama_token> first(cparams.logits_top_k_parts);
+    llama_token sum = 0;
+    for (size_t j = 0; j < first.size(); j++) {
+        first[j] = sum;
+        sum     += (llama_token) ss.ne[j];
+    }
+    return first;
+}
+
+const float * llama_context::get_logits_top_k_ith(int32_t i, const llama_token ** ids, int32_t * n) {
+    if (logits_top_k_n == 0) {
+        return nullptr;
+    }
+
+    output_reorder();
+
+    // indices into the parts of the vocabulary -> token ids (each row holds logits_top_k_n / n_parts per part)
+    if (!logits_top_k_part_first.empty()) {
+        const size_t n_per_part = logits_top_k_n / logits_top_k_part_first.size();
+        for (size_t r = 0; r < logits_top_k_ids.size(); r += logits_top_k_n) {
+            for (size_t p = 0; p < logits_top_k_part_first.size(); p++) {
+                for (size_t c = 0; c < n_per_part; c++) {
+                    logits_top_k_ids[r + p*n_per_part + c] += logits_top_k_part_first[p];
+                }
+            }
+        }
+        logits_top_k_part_first.clear();
+    }
+
+    try {
+        const int64_t j = output_resolve_row(i);
+        if (ids) {
+            *ids = logits_top_k_ids.data() + j*logits_top_k_n;
+        }
+        if (n) {
+            *n = logits_top_k_n;
+        }
+        return logits_top_k_val.data() + j*logits_top_k_n;
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: invalid logits id %d, reason: %s\n", __func__, i, err.what());
+        return nullptr;
     }
 }
 
@@ -1414,6 +1483,19 @@ void llama_context::set_embeddings(bool value) {
     //sched_need_reserve = true;
 }
 
+void llama_context::set_logits_top_k(int32_t k) {
+    // k of the whole vocabulary or more is the whole row, and so is a k larger than a device's part of it
+    logits_top_k_want = k > 0 && k <= logits_top_k_max ? k : 0;
+
+    // the graph keeps the largest k asked for: batches that take whole rows or fewer candidates use it as it is, so
+    // requests that alternate between them (a chat, then its title under a grammar) do not re-reserve each time
+    if (logits_top_k_want > cparams.logits_top_k) {
+        LLAMA_LOG_DEBUG("%s: k = %u\n", __func__, logits_top_k_want);
+        cparams.logits_top_k = logits_top_k_want;
+        sched_need_reserve = true;
+    }
+}
+
 void llama_context::set_embeddings_pre_norm(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -1457,11 +1539,13 @@ bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
 
     LLAMA_LOG_DEBUG("%s: seq_id = %d, sampler = %p\n", __func__, (int) seq_id, (void *) sampler);
 
+    // with -sm tensor the logits are split along the vocabulary over the devices, the samplers need whole rows
     const bool can_offload =
         sampler &&
         sampler->iface->backend_init &&
         sampler->iface->backend_apply &&
-        llama_sampler_chain_n(sampler) > 0;
+        llama_sampler_chain_n(sampler) > 0 &&
+        model.split_mode() != LLAMA_SPLIT_MODE_TENSOR;
 
     if (sampler && can_offload) {
         auto * buft = ggml_backend_dev_buffer_type(model.dev_output());
@@ -1558,6 +1642,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
+    }
+
+    if (!graph_reuse_disable) {
+        graph_slot_select(ubatch, mctx, gtype);
     }
 
     auto * res = gf_res_prev.get();
@@ -2010,6 +2098,10 @@ int llama_context::decode(const llama_batch & batch_inp) {
     const bool output_all   = cparams.embeddings;
     const bool has_samplers = !sampling.samplers.empty();
 
+    // set again when this batch selects the top-k logits of its outputs
+    logits_top_k_n = 0;
+    logits_top_k_part_first.clear();
+
     const uint32_t n_seq_max = cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max;
 
     // TODO: avoid this workaround in the future
@@ -2199,8 +2291,23 @@ int llama_context::decode(const llama_batch & batch_inp) {
             t_embd = res->get_embd_pooled();
         }
 
-        // extract logits
-        if (logits.data && t_logits && n_outputs > 0 && needs_raw_logits(ubatch, sampling.samplers)) {
+        // extract logits: only the k largest of each row when they were selected in the graph and suffice
+        if (res->t_logits_top_k && logits_top_k_want > 0 && n_outputs > 0) {
+            ggml_tensor * t_val = res->t_logits_top_k;
+            ggml_tensor * t_ids = res->t_logits_top_k_ids;
+            const int64_t k = t_ids->ne[0];
+            GGML_ASSERT(t_ids->ne[1] == n_outputs);
+
+            logits_top_k_n = k;
+            logits_top_k_val.resize((size_t) n_outputs_all*k);
+            logits_top_k_ids.resize((size_t) n_outputs_all*k);
+            logits_top_k_part_first = logits_vocab_parts(res->t_logits);
+
+            ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_val);
+            ggml_backend_tensor_get_async(backend_res, t_val, logits_top_k_val.data() + n_outputs_prev*k, 0, n_outputs*k*sizeof(float));
+            backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_ids);
+            ggml_backend_tensor_get_async(backend_res, t_ids, logits_top_k_ids.data() + n_outputs_prev*k, 0, n_outputs*k*sizeof(int32_t));
+        } else if (logits.data && t_logits && n_outputs > 0 && needs_raw_logits(ubatch, sampling.samplers)) {
             ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
             GGML_ASSERT(backend_res != nullptr);
             GGML_ASSERT(logits.data != nullptr);
@@ -2488,7 +2595,7 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     // Masked nextn (MTP) is compacted to output rows and keeps the n_outputs_max basis.
     // (Upstream sizes this n_embd_out*n_batch for encoder models; here n_batch covers it.)
     const size_t nextn_n = cparams.embeddings_nextn_masked ? (size_t) n_outputs_max : (size_t) n_batch;
-    embd_nextn.size = has_embd_nextn ? n_embd*nextn_n : 0;
+    embd_nextn.size = has_embd_nextn ? n_embd_out*nextn_n : 0; // rows are n_embd_out wide (a Gemma 4 assistant: 1024 -> 3840)
 
     // Eagle3 multi-stream extraction needs 3 × (n_embd × n_outputs_max) floats.
     const bool has_embd_eagle3 = cparams.embeddings_eagle3 && hparams.has_eagle3();
@@ -2661,6 +2768,11 @@ void llama_context::output_reorder() {
             }
         }
 
+        for (int64_t k = 0; k < logits_top_k_n; k++) {
+            std::swap(logits_top_k_val[i0*logits_top_k_n + k], logits_top_k_val[i1*logits_top_k_n + k]);
+            std::swap(logits_top_k_ids[i0*logits_top_k_n + k], logits_top_k_ids[i1*logits_top_k_n + k]);
+        }
+
         if (embd.size > 0) {
             for (uint64_t k = 0; k < n_embd; k++) {
                 std::swap(embd.data[i0*n_embd + k], embd.data[i1*n_embd + k]);
@@ -2721,9 +2833,82 @@ void llama_context::sched_create(size_t max_nodes, bool parallel) {
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, parallel, cparams.op_offload));
 }
 
+void llama_context::graph_slot_use(size_t i) {
+    if (i != graph_slot_cur) {
+        // the slots share the compute buffers of the main pair: the graph of the active one must be done
+        if (sched) {
+            ggml_backend_sched_synchronize(sched.get());
+        }
+        std::swap(graph_slots[graph_slot_cur].res,   gf_res_prev);
+        std::swap(graph_slots[graph_slot_cur].sched, sched);
+        std::swap(graph_slots[i].res,   gf_res_prev);
+        std::swap(graph_slots[i].sched, sched);
+        graph_slot_cur = i;
+    }
+    graph_slots[i].last_use = ++graph_slot_tick;
+}
+
+void llama_context::graph_slot_select(const llama_ubatch & ubatch, const llama_memory_context_i * mctx, llm_graph_type gtype) {
+    if (ubatch.n_tokens > GRAPH_SLOT_MAX_TOKENS) {
+        graph_slot_use(0);
+        return;
+    }
+
+    // a small slot that holds this graph
+    for (size_t i = 1; i < graph_slots.size(); i++) {
+        llm_graph_result * res   = i == graph_slot_cur ? gf_res_prev.get() : graph_slots[i].res.get();
+        ggml_backend_sched_t sch = i == graph_slot_cur ? sched.get()       : graph_slots[i].sched.get();
+        if (ggml_backend_sched_compute_buffers_valid(sch) && res->can_reuse(graph_params(res, ubatch, mctx, gtype))) {
+            graph_slot_use(i);
+            return;
+        }
+    }
+
+    // a new small slot, or the one used longest ago
+    size_t i = 1;
+    if (graph_slots.size() < 1 + GRAPH_SLOTS_SMALL) {
+        const auto * res_main   = graph_slot_cur == 0 ? gf_res_prev.get() : graph_slots[0].res.get();
+        auto *       sched_main = graph_slot_cur == 0 ? sched.get()       : graph_slots[0].sched.get();
+        graph_slot slot;
+        slot.res.reset(new llm_graph_result(res_main->get_max_nodes()));
+        slot.sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(),
+            res_main->get_max_nodes(), cparams.pipeline_parallel, cparams.op_offload));
+        ggml_backend_sched_share_compute_buffers(slot.sched.get(), sched_main);
+        graph_slots.push_back(std::move(slot));
+        i = graph_slots.size() - 1;
+    } else {
+        for (size_t k = 2; k < graph_slots.size(); k++) {
+            if (graph_slots[k].last_use < graph_slots[i].last_use) {
+                i = k;
+            }
+        }
+    }
+    graph_slot_use(i);
+}
+
+void llama_context::graph_slots_reset() {
+    graph_slot_use(0);
+    gf_res_prev->reset();
+    for (size_t i = 1; i < graph_slots.size(); i++) {
+        graph_slots[i].res->reset();
+    }
+}
+
+void llama_context::graph_slots_drop() {
+    if (graph_slots.size() > 1) {
+        synchronize(); // a small slot's graph may still run on its compute buffers
+    }
+    graph_slot_use(0);
+    graph_slots.resize(1);
+}
+
 uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+    if (model.arch == LLM_ARCH_HRM_TEXT) {
+        // the 128-slot looped graph needs roughly one stack per token budget
+        return std::max<uint32_t>(n_tokens * 80, 64u * model.n_tensors());
+    }
     if (model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_KIMI_LINEAR || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE ||
-        model.arch == LLM_ARCH_QWEN4EXP) {
+        model.arch == LLM_ARCH_QWEN4EXP || model.arch == LLM_ARCH_BAILINGMOE3 || model.arch == LLM_ARCH_NANBEIGE) {
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
     uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
@@ -2746,6 +2931,9 @@ ggml_cgraph * llama_context::graph_reserve(
         n_tokens = ((n_tokens + (n_seqs - 1)) / n_seqs) * n_seqs; // round to next multiple of n_seqs
         LLAMA_LOG_DEBUG("%s: making n_tokens a multiple of n_seqs - n_tokens = %u, n_seqs = %u, n_outputs = %u\n", __func__, n_tokens, n_seqs, n_outputs);
     }
+
+    // reserves size the main scheduler
+    graph_slot_use(0);
 
     ggml_backend_sched_reset(sched.get());
 
@@ -2777,6 +2965,15 @@ ggml_cgraph * llama_context::graph_reserve(
     res->reset();
 
     auto * gf = model.build_graph(gparams);
+
+    // with the logits split over the devices, every device selects k of its own part of the vocabulary
+    if (res->t_logits != nullptr) {
+        const std::vector<llama_token> first = logits_vocab_parts(res->t_logits);
+        for (size_t j = 0; j < first.size(); j++) {
+            const int64_t end = j + 1 < first.size() ? first[j + 1] : res->t_logits->ne[0];
+            logits_top_k_max  = std::min<int64_t>(logits_top_k_max, end - first[j]);
+        }
+    }
 
     // check transform coverage on the pristine graph: after scheduling,
     // cross-backend copies break the producer chain the check follows
@@ -3501,6 +3698,11 @@ std::map<ggml_backend_buffer_type_t, llama_memory_breakdown_data> llama_context:
             ggml_backend_t             backend = backend_ptr.get();
             ggml_backend_buffer_type_t buft    = ggml_backend_sched_get_buffer_type(sched.get(), backend);
             ret[buft].compute += ggml_backend_sched_get_buffer_size(sched.get(), backend);
+            for (const auto & slot : graph_slots) { // the parked graph slots
+                if (slot.sched) {
+                    ret[buft].compute += ggml_backend_sched_get_buffer_size(slot.sched.get(), backend);
+                }
+            }
         }
     }
     return ret;
@@ -3546,6 +3748,7 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
     // the scheduler was sized for the inference graph, before the training adapter existed; the training graphs
     // (forward + backward + optimizer step) get LLAMA_OPT_GRAPH_SIZE_FACTOR x the forward graph size
     {
+        graph_slots_drop();
         const size_t max_nodes = graph_max_nodes(n_ubatch);
         gf_res_prev.reset(new llm_graph_result(max_nodes));
         sched_create(LLAMA_OPT_GRAPH_SIZE_FACTOR * max_nodes, false);
@@ -4093,6 +4296,16 @@ void llama_set_abort_callback(llama_context * ctx, bool (*abort_callback)(void *
 
 void llama_set_embeddings(llama_context * ctx, bool embeddings) {
     ctx->set_embeddings(embeddings);
+}
+
+void llama_set_logits_top_k(llama_context * ctx, int32_t k) {
+    ctx->set_logits_top_k(k);
+}
+
+const float * llama_get_logits_top_k_ith(llama_context * ctx, int32_t i, const llama_token ** ids, int32_t * n) {
+    ctx->synchronize();
+
+    return ctx->get_logits_top_k_ith(i, ids, n);
 }
 
 void llama_set_causal_attn(llama_context * ctx, bool causal_attn) {

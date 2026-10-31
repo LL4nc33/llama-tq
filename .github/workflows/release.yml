@@ -228,11 +228,15 @@ jobs:
           export LIBRARY_PATH="/usr/local/cuda/lib64/stubs:${LIBRARY_PATH:-}"
           # $ORIGIN: the binaries find the bundled libllama/libggml next to them from any directory (the default
           # build RUNPATH is the CI checkout path). No NCCL: users rarely have it, and -sm tensor reduces across GPUs
-          # through host memory without it.
+          # through host memory without it. CPU backend in all variants, loaded at runtime for the CPU at hand: built
+          # natively, it took the runner's AVX-512 and stopped with an illegal instruction on CPUs without it.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_RPATH='$ORIGIN' \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
             -DGGML_CUDA=ON \
             -DGGML_CUDA_NCCL=OFF \
             -DCMAKE_CUDA_ARCHITECTURES="${{ matrix.gpu.archs }}" \

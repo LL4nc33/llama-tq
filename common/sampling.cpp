@@ -130,6 +130,9 @@ struct common_sampler {
         const float *       sampled_logits = llama_get_sampled_logits_ith    (ctx, idx);
         const llama_token * sampled_ids    = llama_get_sampled_candidates_ith(ctx, idx);
 
+        const llama_token * top_ids = nullptr;
+        int32_t             n_top   = 0;
+
         const llama_model * model = llama_get_model(ctx);
         const llama_vocab * vocab = llama_model_get_vocab(model);
 
@@ -146,6 +149,11 @@ struct common_sampler {
             cur.resize(sampled_logits_count);
             for (uint32_t i = 0; i < sampled_logits_count; i++) {
                 cur[i] = llama_token_data{sampled_ids[i], sampled_logits[i], 0.0f};
+            }
+        } else if (const float * top = llama_get_logits_top_k_ith(ctx, idx, &top_ids, &n_top)) {
+            cur.resize(n_top);
+            for (int32_t i = 0; i < n_top; i++) {
+                cur[i] = llama_token_data{top_ids[i], top[i], 0.0f};
             }
         } else {
             const auto * logits = llama_get_logits_ith(ctx, idx);
@@ -420,6 +428,41 @@ struct common_sampler * common_sampler_init(
     };
 
     return result;
+}
+
+int32_t common_sampler_logits_top_k(const struct common_sampler * gsmpl) {
+    const auto & p = gsmpl->params;
+
+    // the k best logits pay off for a few candidates; a larger k samples from whole rows, which also keeps k within
+    // each device's part of the vocabulary when the logits are split over devices (-sm tensor)
+    if (gsmpl->grmr || gsmpl->rbudget || p.has_logit_bias() || p.mirostat != 0 || p.n_probs > 0 || p.top_k <= 0 ||
+            p.top_k > COMMON_SAMPLER_LOGITS_TOP_K_MAX) {
+        return 0;
+    }
+
+    // every sampler before top-k must leave the logits as they are (temperature only scales them)
+    for (const auto & s : p.samplers) {
+        bool active = true;
+        switch (s) {
+            case COMMON_SAMPLER_TYPE_TOP_K:       return p.top_k;
+            case COMMON_SAMPLER_TYPE_TEMPERATURE: active = p.dynatemp_range > 0.0f; break;
+            case COMMON_SAMPLER_TYPE_PENALTIES:   active = p.penalty_last_n != 0 &&
+                                                           (p.penalty_repeat != 1.0f || p.penalty_freq != 0.0f || p.penalty_present != 0.0f); break;
+            case COMMON_SAMPLER_TYPE_DRY:         active = p.dry_multiplier != 0.0f && p.dry_base >= 1.0f && p.dry_penalty_last_n != 0; break;
+            case COMMON_SAMPLER_TYPE_TOP_N_SIGMA: active = p.top_n_sigma > 0.0f; break;
+            case COMMON_SAMPLER_TYPE_TYPICAL_P:   active = p.typ_p < 1.0f; break;
+            case COMMON_SAMPLER_TYPE_TOP_P:       active = p.top_p < 1.0f; break;
+            case COMMON_SAMPLER_TYPE_MIN_P:       active = p.min_p > 0.0f; break;
+            case COMMON_SAMPLER_TYPE_XTC:         active = p.xtc_probability > 0.0f && p.xtc_threshold <= 0.5f; break;
+            case COMMON_SAMPLER_TYPE_ADAPTIVE_P:  active = false; break; // added at the end of the chain
+            default:                              break;
+        }
+        if (active) {
+            return 0;
+        }
+    }
+
+    return 0;
 }
 
 void common_sampler_free(struct common_sampler * gsmpl) {

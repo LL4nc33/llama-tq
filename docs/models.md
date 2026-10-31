@@ -13,7 +13,7 @@ encoder change of 2026-10-11, which costs 1–2 % decode with the TurboQuant typ
 ## Ternary-Bonsai-2-27B (`PQ2_0`, `PTQ1_0`)
 
 Ternary weights in groups of 128 with Hadamard-rotated activations. `PTQ1_0` packs the ternary weights at
-1.75 bits, `PQ2_0` stores them as 2-bit codes at 2.125 bits. Source: [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
+1.75 bits, `PQ2_0` stores them as 2-bit codes at 2.125 bits ([format and kernels](bonsai-ternary.md)). Source: [prism-ml/Ternary-Bonsai-2-27B-gguf](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
 
 Two slots with 200k context each, vision:
 
@@ -42,6 +42,18 @@ GGML_CUDA_HOST_ALLREDUCE_BF16=1 llama-server -m Qwen3.8-27B-UD-Q4_K_M.gguf \
 ```
 
 Decode (2026-10-04): 22.5 t/s short, 17.2 t/s at 118k. Prefill 190–250 t/s. With f16 KV the context ends at 72k (24 t/s short).
+
+With the MTP layer of the model (faster on code and rewrites, [benchmarks](benchmarks/README.md#speculative-decoding-two-gpus)),
+two slots of 98k context (11.1 GB per GPU):
+
+```bash
+GGML_CUDA_HOST_ALLREDUCE_BF16=1 LLAMA_MTP_DECAY=1.0 llama-server -m Qwen3.8-27B-UD-Q4_K_M.gguf -ngl 99 -sm tensor \
+  -fa on -c 98304 -np 2 -kvu -ctk q8_0 -ctv q8_0 --jinja --spec-type draft-mtp --draft-max 5
+```
+
+With the layer split instead (builds with NCCL, or without the host reduction), `-ts 36,30` in place of `-sm tensor`
+moves layers to the first GPU: the output layer sits on the second one, which runs out of memory at this context with
+the default split.
 
 ## Qwen3.8-Flash-Next (`qwen4exp`)
 
@@ -169,6 +181,13 @@ llama-server -m gemma-4-12b-it-Q4_K_M.gguf -ngl 99 -fa on -c 131072 -ctk q8_0 -c
 ```
 
 Compact (6.5 bpw): the same with `-ctv vtq4_1`. Speed: [benchmarks](benchmarks/README.md#against-upstream-two-gpus).
+
+Faster decode with the MTP assistant of Gemma 4 12B (one GPU, [benchmarks](benchmarks/README.md#mtp-one-gpu)):
+
+```bash
+LLAMA_MTP_DECAY=1.0 llama-server -m gemma-4-12b-it-Q4_K_M.gguf -ngl 99 -fa on -c 32768 -ctk q8_0 -ctv q8_0 --jinja \
+  -md mtp-gemma-4-12B-it-Q8_0.gguf -ngld 99 --spec-type draft-mtp --draft-max 7
+```
 
 ## Known limitations
 

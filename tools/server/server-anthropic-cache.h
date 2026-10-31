@@ -11,6 +11,9 @@
 // Storage layout (under `<slot_save_path>/anthropic-cache/`):
 //     <key_hex>.bin     — raw slot KV dump produced by llama_state_seq_save_file
 //     <key_hex>.meta    — small JSON: { n_tokens, ttl_sec, created_at, scope, ttl_label }
+//     <key_hex>.bin.ckpt — partial state of hybrid / recurrent models, written next to the .bin by the server
+//
+// The files are kept within max_gb: expired entries go first, then the least recently used ones.
 //
 // Thread-safety: the in-memory index is guarded by an internal mutex; the
 // class is safe to share across request handlers.
@@ -89,6 +92,8 @@ private:
     bool read_meta_unlocked(const std::string & key_hex, anthropic_cache_entry & out) const;
     void write_meta_unlocked(const anthropic_cache_entry & e, const std::string & scope) const;
     void erase_unlocked(const std::string & key_hex);
+    // drops expired entries, then the oldest ones until the files fit into max_gb_
+    void evict_unlocked();
 
     mutable std::mutex mu_;
     bool        enabled_         = false;

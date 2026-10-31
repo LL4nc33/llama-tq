@@ -387,6 +387,9 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
 
     std::vector<common_sampler_ptr> smpls;
 
+    // per sequence: top-k on the draft context's device (see the constructor)
+    std::vector<llama_sampler *> smpls_dev;
+
     int32_t n_embd = 0;
 
     bool is_mem_shared = false;
@@ -433,13 +436,32 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         // TODO: fix, how to call without malloc
         batch.token = (llama_token *) malloc(sizeof(llama_token) * n_b);
 
+        const int32_t n_top_k = 10; // upstream parity: 10 candidates so p_min filter can cull low-confidence drafts
+
         smpls.resize(n_seq);
         for (auto & s : smpls) {
             common_params_sampling sparams;
             sparams.no_perf  = false;
-            sparams.top_k    = 10; // upstream parity: 10 candidates so p_min filter can cull low-confidence drafts
+            sparams.top_k    = n_top_k;
             sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
             s.reset(common_sampler_init(llama_get_model(ctx_dft), sparams));
+        }
+
+        // the draft reads only the best candidates of each row: select them on the device, so the full logits (1 MB
+        // per draft token for a 262k vocabulary) neither cross to the host nor get scanned by the CPU. The CPU chain
+        // then runs on these candidates and draws the same token with the same probability.
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+            llama_sampler * top_k = llama_sampler_chain_init(llama_sampler_chain_default_params());
+            llama_sampler_chain_add(top_k, llama_sampler_init_top_k(n_top_k));
+            if (!llama_set_sampler(ctx_dft, seq_id, top_k)) {
+                llama_sampler_free(top_k);
+                break;
+            }
+            smpls_dev.push_back(top_k);
+        }
+        // samplers that cannot run on the device (-sm tensor): copy only the best candidates of each row
+        if (smpls_dev.size() < (size_t) n_seq) {
+            llama_set_logits_top_k(ctx_dft, n_top_k);
         }
 
         // DEBUG: skip pre_norm — only nextn is needed for MTP draft seed
@@ -465,6 +487,10 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
     }
 
     ~common_speculative_state_draft_mtp() override {
+        for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) smpls_dev.size(); ++seq_id) {
+            llama_set_sampler(params.ctx_dft, seq_id, nullptr);
+            llama_sampler_free(smpls_dev[seq_id]);
+        }
         if (batch.token != nullptr) {
             free(batch.token);
             batch.token = nullptr;
@@ -662,13 +688,43 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
         if (dbg_mtp) LOG_WRN("MTP draft: starting AR loop, n_drafting=%d, p_min=%.3f, n_max=%d\n",
                               n_drafting, (double)params.p_min, (int)params.n_max);
 
+        // a hybrid/recurrent target splits a verify batch with unequal sequence lengths into one forward pass per length,
+        // each reading all weights: there a sequence below p_min keeps drafting while another sequence of the step is
+        // still confident, so that all drafts end equally long (Qwen3.8-27B, 2 GPUs, two requests: 43 -> 55 t/s)
+        const llama_model * model_dft = llama_get_model(ctx_dft);
+        const bool equal_len = llama_model_is_hybrid(model_dft) || llama_model_is_recurrent(model_dft);
+        // Env LLAMA_MTP_DECAY (default 0.70, clamped 0.30..1.00) tunes how fast the threshold relaxes (see below).
+        static const float mtp_decay = []() {
+            const char * env = std::getenv("LLAMA_MTP_DECAY");
+            float v = env ? std::atof(env) : 0.70f;
+            if (v < 0.30f) v = 0.30f;
+            if (v > 1.00f) v = 1.00f;
+            return v;
+        }();
+
+        std::vector<llama_token>   ids(n_seq);
+        std::vector<const float *> h_rows(n_seq);
+        std::vector<bool>          confident(n_seq);
+
         int i = 0;
 
         while (n_drafting > 0) {
             int i_batch = 0;
 
-            common_batch_clear(batch);
+            // only collect high-confidence draft tokens (upstream DRAFT_MTP filter).
+            // Without this, low-probability drafts poison ctx_tgts KV at verify time
+            // and lock the target into attractors like 'the the the' on greedy decode.
+            //
+            // Position-aware threshold: position 0 must clear full p_min (KV-poisoning guard),
+            // later positions decay (default decay 0.7) so quantized models (IQ2/IQ3) with flatter
+            // logits can still build dm=2..4 drafts. Target verifies every token, so a later weak
+            // draft costs only the draft compute — never quality.
+            float p_min_pos = params.p_min;
+            for (int dec = 0; dec < i; ++dec) {
+                p_min_pos *= mtp_decay;
+            }
 
+            bool any_confident = false;
             for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
                 if (!drafting[seq_id]) {
                     continue;
@@ -677,7 +733,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 auto * smpl = smpls[seq_id].get();
 
                 common_sampler_sample(smpl, ctx_dft, i_batch, true);
-                h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_batch);
+                h_rows[seq_id] = llama_get_embeddings_nextn_ith(ctx_dft, i_batch);
                 ++i_batch;
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);
@@ -688,42 +744,31 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
                 }
 
-                // add drafted token for each sequence
-                const llama_token id = cur_p->data[0].id;
+                ids[seq_id]       = cur_p->data[0].id;
+                confident[seq_id] = cur_p->data[0].p >= p_min_pos;
+                any_confident     = any_confident || confident[seq_id];
 
                 if (dbg_mtp) LOG_WRN("MTP draft step %d seq=%d: top=%d p=%.4f (p_min=%.3f) %s\n",
-                                      i, (int)seq_id, (int)id, (double)cur_p->data[0].p,
-                                      (double)params.p_min,
-                                      (cur_p->data[0].p < params.p_min ? "DROPPED" : "keep"));
+                                      i, (int)seq_id, (int)ids[seq_id], (double)cur_p->data[0].p,
+                                      (double)p_min_pos, confident[seq_id] ? "keep" : "DROPPED");
+            }
 
-                // only collect high-confidence draft tokens (upstream DRAFT_MTP filter).
-                // Without this, low-probability drafts poison ctx_tgts KV at verify time
-                // and lock the target into attractors like 'the the the' on greedy decode.
-                //
-                // Position-aware threshold: position 0 must clear full p_min (KV-poisoning guard),
-                // later positions decay (default decay 0.7) so quantized models (IQ2/IQ3) with flatter
-                // logits can still build dm=2..4 drafts. Target verifies every token, so a later weak
-                // draft costs only the draft compute — never quality.
-                //
-                // Env LLAMA_MTP_DECAY (default 0.70, clamped 0.30..1.00) tunes how fast threshold relaxes.
-                static const float mtp_decay = []() {
-                    const char * env = std::getenv("LLAMA_MTP_DECAY");
-                    float v = env ? std::atof(env) : 0.70f;
-                    if (v < 0.30f) v = 0.30f;
-                    if (v > 1.00f) v = 1.00f;
-                    return v;
-                }();
-                float p_min_pos = params.p_min;
-                for (int dec = 0; dec < i; ++dec) {
-                    p_min_pos *= mtp_decay;
+            common_batch_clear(batch);
+
+            for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                if (!drafting[seq_id]) {
+                    continue;
                 }
-                if (cur_p->data[0].p < p_min_pos) {
+                if (!confident[seq_id] && !(equal_len && any_confident)) {
                     drafting[seq_id] = false;
                     n_drafting--;
                     continue;
                 }
 
-                common_sampler_accept(smpl, id, true);
+                // add drafted token for each sequence
+                const llama_token id = ids[seq_id];
+
+                common_sampler_accept(smpls[seq_id].get(), id, true);
 
                 auto & dp = dparams.at(seq_id);
                 auto & result = *dp.result;
@@ -743,7 +788,7 @@ struct common_speculative_state_draft_mtp : public common_speculative_impl {
                 } else {
                     common_batch_add(batch, id, dp.n_past + i + 1, { seq_id }, true);
                 }
-                std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_row, row_bytes);
+                std::memcpy(batch.embd + n_embd*(batch.n_tokens - 1), h_rows[seq_id], row_bytes);
             }
 
             if (batch.n_tokens == 0) {

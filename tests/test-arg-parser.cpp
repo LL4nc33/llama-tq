@@ -137,6 +137,22 @@ int main(void) {
     assert(params.lora_adapters[2].path == "file3\"3\".gguf");
     assert(params.lora_adapters[3].path == "file4\".gguf");
 
+    // a draft model next to MTP does not add draft-simple, in either order
+    for (const auto & args : std::vector<std::vector<std::string>>{
+            {"binary_name", "--spec-type", "draft-mtp", "-md", "mtp.gguf"},
+            {"binary_name", "-md", "mtp.gguf", "--spec-type", "draft-mtp"}}) {
+        common_params p;
+        argv = args;
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_SERVER));
+        assert(p.speculative.types.size() == 1 && p.speculative.types[0] == COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+    }
+    {
+        common_params p;
+        argv = {"binary_name", "-md", "draft.gguf"};
+        assert(true == common_params_parse(argv.size(), list_str_to_char(argv).data(), p, LLAMA_EXAMPLE_SERVER));
+        assert(p.speculative.types.size() == 1 && p.speculative.types[0] == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
+    }
+
 // skip this part on windows, because setenv is not supported
 #ifdef _WIN32
     printf("test-arg-parser: skip on windows build\n");

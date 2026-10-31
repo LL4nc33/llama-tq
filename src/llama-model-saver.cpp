@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 
 bool llama_model_saver_supports_arch(llm_arch arch) {
     // LLAMA_SAVER_ALLOW_UNTESTED=1 forces a best-effort save attempt for
@@ -31,6 +32,7 @@ bool llama_model_saver_supports_arch(llm_arch arch) {
         case LLM_ARCH_GEMMA3:
         case LLM_ARCH_GEMMA3N:
         case LLM_ARCH_COHERE2:
+        case LLM_ARCH_COHERE2MOE:
         case LLM_ARCH_OLMO2:
         case LLM_ARCH_BITNET:
         case LLM_ARCH_T5:
@@ -39,6 +41,10 @@ bool llama_model_saver_supports_arch(llm_arch arch) {
         case LLM_ARCH_APERTUS:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
+        case LLM_ARCH_GRANITE_SWA:
+        case LLM_ARCH_MELLUM:
+        case LLM_ARCH_SPARK2_5:
+        case LLM_ARCH_MUSE_GLIMMER:
             if (allow_untested) {
                 fprintf(stderr,
                     "llama_model_saver: arch '%s' is marked untested but LLAMA_SAVER_ALLOW_UNTESTED=1 — attempting save anyway.\n",
@@ -141,6 +147,7 @@ void llama_model_saver::add_kv(const enum llm_kv key, const Container & value, c
 // instantiate for external usage:
 template void llama_model_saver::add_kv<std::vector<uint32_t>>(const enum llm_kv, const std::vector<uint32_t> &, const bool);
 template void llama_model_saver::add_kv<std::vector<uint64_t>>(const enum llm_kv, const std::vector<uint64_t> &, const bool);
+template void llama_model_saver::add_kv<std::vector<float>>(const enum llm_kv, const std::vector<float> &, const bool);
 
 void llama_model_saver::add_kv(const enum llm_kv key, const std::vector<std::string> & value) {
     std::vector<const char *> tmp(value.size());
@@ -240,8 +247,10 @@ void llama_model_saver::add_kv_from_model() {
     // FIX: was duplicate LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, overwriting
     // n_ff_shexp with n_ff_chexp (which is usually 0) and breaking saved MoE GGUFs.
     add_kv(LLM_KV_EXPERT_CHUNK_FEED_FORWARD_LENGTH,  hparams.n_ff_chexp);
-    add_kv(LLM_KV_SWIGLU_CLAMP_EXP,                  hparams.swiglu_clamp_exp);
-    add_kv(LLM_KV_SWIGLU_CLAMP_SHEXP,                hparams.swiglu_clamp_shexp);
+    add_kv(LLM_KV_SWIGLU_CLAMP_EXP, std::vector<float>(
+            hparams.swiglu_clamp_exp.begin(), hparams.swiglu_clamp_exp.begin() + hparams.n_layer));
+    add_kv(LLM_KV_SWIGLU_CLAMP_SHEXP, std::vector<float>(
+            hparams.swiglu_clamp_shexp.begin(), hparams.swiglu_clamp_shexp.begin() + hparams.n_layer));
     add_kv(LLM_KV_USE_PARALLEL_RESIDUAL,             hparams.use_par_res);
     // add_kv(LLM_KV_TENSOR_DATA_LAYOUT,                ???);
     add_kv(LLM_KV_EXPERT_COUNT,                      hparams.n_expert);
@@ -270,6 +279,10 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_TIME_DECAY_EXTRA_DIM,              hparams.time_decay_extra_dim);
     add_kv(LLM_KV_RESIDUAL_SCALE,                    hparams.f_residual_scale);
     add_kv(LLM_KV_EMBEDDING_SCALE,                   hparams.f_embedding_scale);
+    add_kv(LLM_KV_HRM_LAYERS_PER_STACK,              hparams.n_hrm_layers_per_stack);
+    add_kv(LLM_KV_HRM_H_CYCLES,                      hparams.n_hrm_h_cycles);
+    add_kv(LLM_KV_HRM_L_CYCLES,                      hparams.n_hrm_l_cycles);
+    add_kv(LLM_KV_HRM_PREFIX_LM,                     hparams.hrm_prefix_lm);
     add_kv(LLM_KV_TOKEN_SHIFT_COUNT,                 hparams.token_shift_count);
     add_kv(LLM_KV_INTERLEAVE_MOE_LAYER_STEP,         hparams.n_moe_layer_step);
     // add_kv(LLM_KV_FULL_ATTENTION_INTERVAL,           ???);
@@ -282,6 +295,7 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_ATTENTION_VALUE_LENGTH,            hparams.n_embd_head_v_full);
     add_kv(LLM_KV_ATTENTION_LAYERNORM_EPS,           hparams.f_norm_eps);
     add_kv(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
+    add_kv(LLM_KV_POST_NORM_EPS,                     hparams.f_post_norm_eps);
     add_kv(LLM_KV_ATTENTION_GROUPNORM_EPS,           hparams.f_norm_group_eps);
     add_kv(LLM_KV_ATTENTION_GROUPNORM_GROUPS,        hparams.n_norm_groups);
     add_kv(LLM_KV_ATTENTION_CAUSAL,                  hparams.causal_attn);
@@ -292,6 +306,7 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_ATTENTION_VALUE_RESIDUAL_MIX_LORA_RANK, hparams.n_lora_value_res_mix);
     add_kv(LLM_KV_ATTENTION_GATE_LORA_RANK,          hparams.n_lora_gate);
     add_kv(LLM_KV_ATTENTION_RELATIVE_BUCKETS_COUNT,  hparams.n_rel_attn_bkts);
+    add_kv(LLM_KV_ATTENTION_ROPE_PATTERN,            hparams.rope_pattern, true);
     add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW,          hparams.n_swa);
     // add_kv(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN,  ???);
     add_kv(LLM_KV_ATTENTION_SCALE,                   hparams.f_attention_scale);
@@ -368,6 +383,8 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_SSM_DT_B_C_RMS,                    hparams.ssm_dt_b_c_rms);
 
     add_kv(LLM_KV_KDA_HEAD_DIM,                      hparams.n_embd_head_kda);
+    add_kv(LLM_KV_KDA_SAFE_GATE,                     hparams.kda_safe_gate);
+    add_kv(LLM_KV_KDA_GATE_LOWER_BOUND,              hparams.kda_gate_lower_bound);
 
     add_kv(LLM_KV_WKV_HEAD_SIZE,                     hparams.wkv_head_size);
 
@@ -379,13 +396,13 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_TOKENIZER_SCORES,                  scores);
     add_kv(LLM_KV_TOKENIZER_MERGES,                  vocab.get_bpe_merges());
     // FIXME llama_token is type i32 but when reading in a GGUF file u32 is expected, not an issue for writing though
-    add_kv(LLM_KV_TOKENIZER_BOS_ID,                  uint32_t(vocab.token_bos()));
-    add_kv(LLM_KV_TOKENIZER_EOS_ID,                  uint32_t(vocab.token_eos()));
-    add_kv(LLM_KV_TOKENIZER_EOT_ID,                  uint32_t(vocab.token_eot()));
-    add_kv(LLM_KV_TOKENIZER_EOM_ID,                  uint32_t(vocab.token_eom()));
-    add_kv(LLM_KV_TOKENIZER_UNK_ID,                  uint32_t(vocab.token_unk()));
-    add_kv(LLM_KV_TOKENIZER_SEP_ID,                  uint32_t(vocab.token_sep()));
-    add_kv(LLM_KV_TOKENIZER_PAD_ID,                  uint32_t(vocab.token_pad()));
+    if (vocab.token_bos()  != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_BOS_ID, uint32_t(vocab.token_bos()));  }
+    if (vocab.token_eos()  != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_EOS_ID, uint32_t(vocab.token_eos()));  }
+    if (vocab.token_eot()  != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_EOT_ID, uint32_t(vocab.token_eot()));  }
+    if (vocab.token_eom()  != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_EOM_ID, uint32_t(vocab.token_eom()));  }
+    if (vocab.token_unk()  != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_UNK_ID, uint32_t(vocab.token_unk()));  }
+    if (vocab.token_sep()  != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_SEP_ID, uint32_t(vocab.token_sep()));  }
+    if (vocab.token_pad()  != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_PAD_ID, uint32_t(vocab.token_pad()));  }
     // add_kv(LLM_KV_TOKENIZER_CLS_ID,                  uint32_t(vocab.token_bos())); // deprecated
     // add_kv(LLM_KV_TOKENIZER_MASK_ID,                 ???);
     add_kv(LLM_KV_TOKENIZER_ADD_BOS,                 vocab.get_add_bos());
@@ -396,12 +413,12 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_TOKENIZER_PRECOMPILED_CHARSMAP,    vocab.get_precompiled_charsmap());
     // add_kv(LLM_KV_TOKENIZER_HF_JSON,                 ???);
     // add_kv(LLM_KV_TOKENIZER_RWKV,                    ???);
-    add_kv(LLM_KV_TOKENIZER_FIM_PRE_ID,              uint32_t(vocab.token_fim_pre()));
-    add_kv(LLM_KV_TOKENIZER_FIM_SUF_ID,              uint32_t(vocab.token_fim_suf()));
-    add_kv(LLM_KV_TOKENIZER_FIM_MID_ID,              uint32_t(vocab.token_fim_mid()));
-    add_kv(LLM_KV_TOKENIZER_FIM_PAD_ID,              uint32_t(vocab.token_fim_pad()));
-    add_kv(LLM_KV_TOKENIZER_FIM_REP_ID,              uint32_t(vocab.token_fim_rep()));
-    add_kv(LLM_KV_TOKENIZER_FIM_SEP_ID,              uint32_t(vocab.token_fim_sep()));
+    if (vocab.token_fim_pre() != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_FIM_PRE_ID, uint32_t(vocab.token_fim_pre())); }
+    if (vocab.token_fim_suf() != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_FIM_SUF_ID, uint32_t(vocab.token_fim_suf())); }
+    if (vocab.token_fim_mid() != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_FIM_MID_ID, uint32_t(vocab.token_fim_mid())); }
+    if (vocab.token_fim_pad() != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_FIM_PAD_ID, uint32_t(vocab.token_fim_pad())); }
+    if (vocab.token_fim_rep() != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_FIM_REP_ID, uint32_t(vocab.token_fim_rep())); }
+    if (vocab.token_fim_sep() != LLAMA_TOKEN_NULL) { add_kv(LLM_KV_TOKENIZER_FIM_SEP_ID, uint32_t(vocab.token_fim_sep())); }
 
     // TODO: implement LoRA support
     // add_kv(LLM_KV_ADAPTER_TYPE,                      ???);
@@ -455,14 +472,23 @@ void llama_model_saver::add_tensors_from_model() {
     add_tensor(model->cls_out);
     add_tensor(model->cls_out_b);
     add_tensor(model->cls_norm);
+    add_tensor(model->hrm_z_l_init);
     add_tensor(model->hc_head_norm);
     add_tensor(model->hc_head_down);
     add_tensor(model->hc_head_up);
     add_tensor(model->per_layer_tok_embd);
 
+    // looped architectures alias physical tensors across cache slots; save each
+    // tensor once. a different tensor with an existing name still asserts below
+    std::unordered_set<const struct ggml_tensor *> seen;
+
     for (const struct llama_layer & layer : model->layers) {
         for (size_t i = 0; i < sizeof(layer)/sizeof(struct ggml_tensor *); ++i) {
-            add_tensor(reinterpret_cast<const struct ggml_tensor * const *>(&layer)[i]);
+            const struct ggml_tensor * tensor = reinterpret_cast<const struct ggml_tensor * const *>(&layer)[i];
+            if (tensor == nullptr || !seen.insert(tensor).second) {
+                continue;
+            }
+            add_tensor(tensor);
         }
     }
 }

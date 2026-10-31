@@ -219,6 +219,9 @@ llama_kv_cache::llama_kv_cache(
 
     other = static_cast<llama_kv_cache *>(mem_other);
 
+    // buffer types of the layers of this cache (the rotation matrices get a device copy when there is only one)
+    std::vector<ggml_backend_buffer_type_t> layer_bufts;
+
     for (uint32_t il = 0; il < hparams.n_layer; il++) {
         if (!hparams.has_kv(il)) {
             LLAMA_LOG_DEBUG("%s: layer %3d: does not have KV cache\n", __func__, il);
@@ -275,6 +278,10 @@ llama_kv_cache::llama_kv_cache(
         }
 
         LLAMA_LOG_DEBUG("%s: layer %3d: dev = %s\n", __func__, il, dev_name);
+
+        if (std::find(layer_bufts.begin(), layer_bufts.end(), buft) == layer_bufts.end()) {
+            layer_bufts.push_back(buft);
+        }
 
         ggml_context * ctx = ctx_for_buft(buft);
         if (!ctx) {
@@ -537,6 +544,11 @@ llama_kv_cache::llama_kv_cache(
             n_embd_head_v_all > 0 &&
             ggml_is_quantized(type_v) &&
             hparams.n_embd_head_v() % 64 == 0;
+
+        // always create Hadamard rotation tensors for DeepSeek V3.2 DSA lightning indexer
+        if (model.arch == LLM_ARCH_DEEPSEEK32 && hparams.n_embd_head_k_full == hparams.indexer_head_size) {
+            attn_rot_k = true;
+        }
     }
 
     LLAMA_LOG_INFO("%s: attn_rot_k = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_k, n_embd_head_k_all);
@@ -571,10 +583,52 @@ llama_kv_cache::llama_kv_cache(
         // rotated coordinates approximately i.i.d. for the 2-bit codebooks. The signs are passed next to the plain H (see
         // build_input_v_rot), so every rotation stays a Sylvester Hadamard transform and K keeps the bare H.
         if (is_vtq_v && attn_rot_v) {
-            const int64_t nrot_v = 64;  // V uses 64x64 rotation (upstream default)
-            attn_rot_v_signs.resize(nrot_v);
-            gen_diagonal_signs(attn_rot_v_signs.data(), nrot_v, 0x56545121u);
+            attn_rot_v_signs.resize(n_rot_v);
+            gen_diagonal_signs(attn_rot_v_signs.data(), n_rot_v, 0x56545121u);
             LLAMA_LOG_INFO("%s: VTQ V-cache active — using D*H*D randomized rotation for better 2-bit quality\n", __func__);
+        }
+    }
+
+    // the rotation matrices never change: with every layer on one buffer type they are written there once and a graph
+    // reads them like weights (as graph inputs they were uploaded with every evaluation: 1.3 MB per token for Gemma 4
+    // with a q8_0 cache). Layers on several devices and tensor split keep the inputs.
+    const bool is_meta = !model.devices.empty() && model.devices[0].is_meta;
+    if (other) {
+        rot_k_dev = other->rot_k_dev;
+        rot_v_dev = other->rot_v_dev;
+    } else if ((attn_rot_k || attn_rot_v) && layer_bufts.size() == 1 && !is_meta && !model.hparams.no_alloc) {
+        ggml_init_params params = {
+            /* .mem_size   = */ 2*ggml_tensor_overhead(),
+            /* .mem_buffer = */ nullptr,
+            /* .no_alloc   = */ true,
+        };
+        rot_ctx.reset(ggml_init(params));
+
+        ggml_tensor * k = nullptr;
+        ggml_tensor * v = nullptr;
+        if (attn_rot_k) {
+            k = ggml_new_tensor_2d(rot_ctx.get(), GGML_TYPE_F32, n_rot_k(), n_rot_k());
+            ggml_set_name(k, "attn_k_rot");
+        }
+        if (attn_rot_v) {
+            v = ggml_new_tensor_2d(rot_ctx.get(), GGML_TYPE_F32, n_rot_v, n_rows_rot_v());
+            ggml_set_name(v, "attn_v_rot");
+        }
+
+        rot_buf.reset(ggml_backend_alloc_ctx_tensors_from_buft(rot_ctx.get(), layer_bufts[0]));
+        if (rot_buf) {
+            if (k) {
+                ggml_backend_tensor_set(k, attn_rot_hadamard.at(k->ne[0]).data(), 0, ggml_nbytes(k));
+            }
+            if (v) {
+                const size_t h_bytes = v->ne[0]*v->ne[0]*sizeof(float);
+                ggml_backend_tensor_set(v, attn_rot_hadamard.at(v->ne[0]).data(), 0, h_bytes);
+                if (!attn_rot_v_signs.empty()) {
+                    ggml_backend_tensor_set(v, attn_rot_v_signs.data(), h_bytes, attn_rot_v_signs.size()*sizeof(float));
+                }
+            }
+            rot_k_dev = k;
+            rot_v_dev = v;
         }
     }
 
@@ -1919,14 +1973,11 @@ ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
     ggml_tensor * res = nullptr;
 
     if (attn_rot_k) {
-        int nrot = 64;
+        const int64_t nrot = n_rot_k();
 
-        // TODO: investigate if using the smallest rotation matrix is beneficial also for K (similar as for V)
-        // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
-        do {
-            nrot *= 2;
-        } while (n_embd_head_k_all % nrot == 0);
-        nrot /= 2;
+        if (rot_k_dev && rot_k_dev->ne[0] == nrot) {
+            return rot_k_dev;
+        }
 
         res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);
         ggml_set_input(res);
@@ -1936,21 +1987,32 @@ ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
     return res;
 }
 
+int64_t llama_kv_cache::n_rot_k() const {
+    // the largest power of two (at least 64) that divides the head size
+    // TODO: investigate if using the smallest rotation matrix is beneficial also for K (similar as for V)
+    // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
+    int64_t nrot = 64;
+    do {
+        nrot *= 2;
+    } while (n_embd_head_k_all % nrot == 0);
+
+    return nrot/2;
+}
+
+int64_t llama_kv_cache::n_rows_rot_v() const {
+    // with random signs (VTQ) one more row carries them: rows [0, n_rot_v) = H, row n_rot_v = the signs of D
+    return attn_rot_v_signs.empty() ? n_rot_v : n_rot_v + 1;
+}
+
 ggml_tensor * llama_kv_cache::build_input_v_rot(ggml_context * ctx) const {
     ggml_tensor * res = nullptr;
 
     if (attn_rot_v) {
-        int nrot = 64;
-        // using smaller rotation matrices for V seems beneficial
-        // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4146397570
-        //do {
-        //    nrot *= 2;
-        //} while (hparams.n_embd_head_v() % nrot == 0);
-        //nrot /= 2;
+        if (rot_v_dev && rot_v_dev->ne[0] == n_rot_v && rot_v_dev->ne[1] == n_rows_rot_v()) {
+            return rot_v_dev;
+        }
 
-        // with random signs (VTQ) one more row carries them: rows [0, nrot) = H, row nrot = the signs of D
-        const int64_t n_rows = attn_rot_v_signs.empty() ? nrot : nrot + 1;
-        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, n_rows);
+        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_rot_v, n_rows_rot_v());
         ggml_set_input(res);
         ggml_set_name(res, "attn_inp_v_rot");
     }
@@ -2288,6 +2350,10 @@ void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch 
 }
 
 void llama_kv_cache::set_input_k_rot(ggml_tensor * dst) const {
+    if (dst == rot_k_dev) {
+        return; // written once at creation
+    }
+
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
 
     const auto n_rot = dst->ne[0];
@@ -2297,6 +2363,10 @@ void llama_kv_cache::set_input_k_rot(ggml_tensor * dst) const {
 }
 
 void llama_kv_cache::set_input_v_rot(ggml_tensor * dst) const {
+    if (dst == rot_v_dev) {
+        return; // written once at creation
+    }
+
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
 
     const auto n_rot = dst->ne[0];
@@ -2437,6 +2507,10 @@ ggml_cgraph * llama_kv_cache::build_graph_shift(llm_graph_result * res, llama_co
 
     for (const auto & layer : layers) {
         const uint32_t il = layer.il;
+
+        if (!hparams.has_rope(il)) {
+            continue;
+        }
 
         const int64_t n_head_kv    = hparams.n_head_kv(il);
         const int64_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
@@ -3087,6 +3161,24 @@ bool llama_kv_cache::state_read_meta(llama_io_read_i & io, uint32_t strm, uint32
 bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32_t cell_count, const slot_info & sinfo) {
     auto & cells = v_cells[strm];
 
+    // batch the scatter reads per contiguous run of destination indices
+    // from inclusive, to exclusive - same convention as cell_ranges_t
+    // contiguous cells yield a single run covering the whole block
+    struct cell_run { uint32_t from; uint32_t to; };
+    std::vector<cell_run> runs;
+    if (cell_count > 0) {
+        const auto & idxs = sinfo.idxs[0];
+        uint32_t i0 = 0;
+        while (i0 < cell_count) {
+            uint32_t i1 = i0 + 1;
+            while (i1 < cell_count && idxs[i1] == idxs[i1 - 1] + 1) {
+                ++i1;
+            }
+            runs.push_back({idxs[i0], idxs[i1 - 1] + 1});
+            i0 = i1;
+        }
+    }
+
     uint32_t v_trans;
     uint32_t n_layer;
 
@@ -3137,16 +3229,11 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
         }
 
         if (cell_count) {
-            if (sinfo.is_contiguous()) {
-                // Fast path: contiguous cells, single memcpy
-                ggml_backend_tensor_set(k, io.read(cell_count * k_size_row), sinfo.head() * k_size_row, cell_count * k_size_row);
-            } else {
-                // Slow path: scatter to non-contiguous positions
-                const void * src = io.read(cell_count * k_size_row);
-                for (uint32_t i = 0; i < cell_count; ++i) {
-                    const size_t dst_offset = sinfo.idxs[0][i] * k_size_row;
-                    ggml_backend_tensor_set(k, (const char*)src + i * k_size_row, dst_offset, k_size_row);
-                }
+            const char * src = (const char *) io.read(cell_count * k_size_row);
+            for (const auto & r : runs) {
+                const size_t n = (size_t) (r.to - r.from) * k_size_row;
+                ggml_backend_tensor_set(k, src, (size_t) r.from * k_size_row, n);
+                src += n;
             }
         }
     }
@@ -3182,16 +3269,11 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
             }
 
             if (cell_count) {
-                if (sinfo.is_contiguous()) {
-                    // Fast path: contiguous cells, single memcpy
-                    ggml_backend_tensor_set(v, io.read(cell_count * v_size_row), sinfo.head() * v_size_row, cell_count * v_size_row);
-                } else {
-                    // Slow path: scatter to non-contiguous positions
-                    const void * src = io.read(cell_count * v_size_row);
-                    for (uint32_t i = 0; i < cell_count; ++i) {
-                        const size_t dst_offset = sinfo.idxs[0][i] * v_size_row;
-                        ggml_backend_tensor_set(v, (const char*)src + i * v_size_row, dst_offset, v_size_row);
-                    }
+                const char * src = (const char *) io.read(cell_count * v_size_row);
+                for (const auto & r : runs) {
+                    const size_t n = (size_t) (r.to - r.from) * v_size_row;
+                    ggml_backend_tensor_set(v, src, (size_t) r.from * v_size_row, n);
+                    src += n;
                 }
             }
         }
@@ -3235,21 +3317,12 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
             }
 
             if (cell_count) {
-                if (sinfo.is_contiguous()) {
-                    // Fast path: contiguous cells
-                    const uint32_t h = sinfo.head();
-                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
-                        const size_t dst_offset = (h + j * cells.size()) * v_size_el;
-                        ggml_backend_tensor_set(v, io.read(cell_count * v_size_el), dst_offset, cell_count * v_size_el);
-                    }
-                } else {
-                    // Slow path: scatter to non-contiguous positions
-                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
-                        const void * src = io.read(cell_count * v_size_el);
-                        for (uint32_t i = 0; i < cell_count; ++i) {
-                            const size_t dst_offset = (sinfo.idxs[0][i] + j * cells.size()) * v_size_el;
-                            ggml_backend_tensor_set(v, (const char*)src + i * v_size_el, dst_offset, v_size_el);
-                        }
+                for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
+                    const char * src = (const char *) io.read(cell_count * v_size_el);
+                    for (const auto & r : runs) {
+                        const size_t n = (size_t) (r.to - r.from) * v_size_el;
+                        ggml_backend_tensor_set(v, src, ((size_t) r.from + j * cells.size()) * v_size_el, n);
+                        src += n;
                     }
                 }
             }

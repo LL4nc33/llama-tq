@@ -106,6 +106,8 @@ class ServerProcess:
     no_clear_idle: bool = False
     log_path: str | None = None
     webui_mcp_proxy: bool = False
+    cors_origins: str | None = None
+    server_tools: str | None = None
 
     # session variables
     process: subprocess.Popen | None = None
@@ -246,6 +248,10 @@ class ServerProcess:
             server_args.append("--no-clear-idle")
         if self.webui_mcp_proxy:
             server_args.append("--webui-mcp-proxy")
+        if self.cors_origins:
+            server_args.extend(["--cors-origins", self.cors_origins])
+        if self.server_tools:
+            server_args.extend(["--tools", self.server_tools])
 
         args = [str(arg) for arg in [server_path, *server_args]]
         print(f"tests: starting server with: {' '.join(args)}")

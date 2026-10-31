@@ -77,6 +77,7 @@ extern "C" {
         LLAMA_VOCAB_TYPE_UGM    = 4, // T5 tokenizer based on Unigram
         LLAMA_VOCAB_TYPE_RWKV   = 5, // RWKV tokenizer based on greedy tokenization
         LLAMA_VOCAB_TYPE_PLAMO2 = 6, // PLaMo-2 tokenizer based on Aho-Corasick with dynamic programming
+        LLAMA_VOCAB_TYPE_TEST   = 7, // Dummy tokenizer for testing: rolling hash of fixed-size chunks -> tokens, tokens -> hex
     };
 
     enum llama_rope_type {
@@ -1048,6 +1049,11 @@ extern "C" {
     // TODO: rename to avoid confusion with llama_get_embeddings()
     LLAMA_API void llama_set_embeddings(struct llama_context * ctx, bool embeddings);
 
+    // Copy only the k largest logits of every output row (k > 0) and read them with llama_get_logits_top_k_ith instead
+    // of llama_get_logits*: for a large vocabulary that saves the transfer of whole rows and their scan on the CPU.
+    // 0 (the default) copies whole rows. The selection keeps the largest k set so far, so a row can hold more than k.
+    LLAMA_API void llama_set_logits_top_k(struct llama_context * ctx, int32_t k);
+
     // Set whether to use causal attention or not
     // If set to true, the model will only attend to the past tokens
     LLAMA_API void llama_set_causal_attn(struct llama_context * ctx, bool causal_attn);
@@ -1077,6 +1083,10 @@ extern "C" {
     // Negative indices can be used to access logits in reverse order, -1 is the last logit.
     // returns NULL for invalid ids.
     LLAMA_API float * llama_get_logits_ith(struct llama_context * ctx, int32_t i);
+
+    // The k largest logits of the ith output (unordered) and their token ids in *ids, k in *n
+    // (see llama_set_logits_top_k). Returns NULL when the last decode copied whole rows.
+    LLAMA_API const float * llama_get_logits_top_k_ith(struct llama_context * ctx, int32_t i, const llama_token ** ids, int32_t * n);
 
     // Get all output token embeddings.
     // when pooling_type == LLAMA_POOLING_TYPE_NONE or when using a generative model,

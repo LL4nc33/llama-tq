@@ -3,6 +3,8 @@
 #   - the main tools are inside (server, cli, bench, quantize, perplexity, finetune)
 #   - every binary finds the bundled libraries next to it ($ORIGIN), from any directory
 #   - every other library it needs is a common system library or, for CUDA, the CUDA runtime the user installs
+#   - x86-64: no AVX-512 code outside the CPU backend variants (libggml-cpu-<variant>.so), which are loaded only on
+#     CPUs that have it; a natively built CPU backend stops with an illegal instruction on most desktop CPUs
 #   - CPU and Vulkan archives start (--version) from another directory with an empty environment and report the
 #     release version, if one is given
 #
@@ -45,6 +47,18 @@ for f in "$bin"/*; do
         echo "$lib" | grep -Eq "$allowed" || err "$name needs $lib, which is neither bundled nor a common system library"
     done
 done
+
+if [ "$(uname -m)" = x86_64 ] && command -v objdump > /dev/null; then
+    for f in "$bin"/*; do
+        [ -L "$f" ] && continue
+        [ -f "$f" ] && head -c 4 "$f" | grep -q $'\x7fELF' || continue
+        name=$(basename "$f")
+        case $name in libggml-cpu-*.so) continue ;; esac
+        readelf -h "$f" | grep -q 'X86-64' || continue
+        n=$(objdump -d --no-show-raw-insn "$f" | grep -c '%zmm' || true)
+        [ "$n" -eq 0 ] || err "$name has $n AVX-512 instructions (built with GGML_NATIVE?)"
+    done
+fi
 
 if [ "$kind" != cuda ]; then
     # the CUDA archive needs a GPU driver to start, the others must run anywhere

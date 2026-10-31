@@ -62,6 +62,9 @@ struct img_tool {
                 case RESIZE_ALGO_BICUBIC_PILLOW:
                     resize_bicubic_pillow(src, dst, target_resolution.width, target_resolution.height);
                     break;
+                case RESIZE_ALGO_LANCZOS:
+                    resize_bicubic_pillow(src, dst, target_resolution.width, target_resolution.height, /* lanczos */ true);
+                    break;
                 default:
                     throw std::runtime_error("Unsupported resize algorithm");
             }
@@ -83,6 +86,9 @@ struct img_tool {
                     break;
                 case RESIZE_ALGO_BICUBIC_PILLOW:
                     resize_bicubic_pillow(src, resized_image, new_width, new_height);
+                    break;
+                case RESIZE_ALGO_LANCZOS:
+                    resize_bicubic_pillow(src, resized_image, new_width, new_height, /* lanczos */ true);
                     break;
                 default:
                     throw std::runtime_error("Unsupported resize algorithm");
@@ -307,7 +313,8 @@ private:
     // 1. Uses separable filtering: horizontal pass followed by vertical pass
     // 2. Pre-computes normalized filter coefficients for each output pixel
     // 3. Applies convolution using fixed-point integer arithmetic for performance
-    static bool resize_bicubic_pillow(const clip_image_u8 & img, clip_image_u8 & dst, int target_width, int target_height) {
+    // With lanczos = true the same resampler uses Pillow's LANCZOS filter (a = 3) instead of the bicubic one.
+    static bool resize_bicubic_pillow(const clip_image_u8 & img, clip_image_u8 & dst, int target_width, int target_height, bool lanczos = false) {
         // Fixed-point precision: 22 bits = 32 (int32_t) - 8 (uint8_t pixels) - 2 (headroom for accumulation)
         // This allows encoding fractional weights as integers: weight * 2^22
         const int PRECISION_BITS = 32 - 8 - 2;
@@ -315,7 +322,20 @@ private:
         // Bicubic filter function with a = -0.5 (Note that GGML/PyTorch takes a = -0.75)
         // Returns filter weight for distance x from pixel center
         // Support: [-2, 2], meaning the filter influences pixels within 2 units of distance
-        auto bicubic_filter = [](double x) -> double {
+        auto bicubic_filter = [lanczos](double x) -> double {
+            if (lanczos) {
+                if (-3.0 <= x && x < 3.0) {
+                    auto sinc = [](double v) {
+                        if (v == 0.0) {
+                            return 1.0;
+                        }
+                        const double pi_v = v * 3.141592653589793238462643383279502884;
+                        return std::sin(pi_v) / pi_v;
+                    };
+                    return sinc(x) * sinc(x / 3.0);
+                }
+                return 0.0;
+            }
             constexpr double a = -0.5;
             if (x < 0.0) {
                 x = -x;
@@ -330,7 +350,7 @@ private:
         };
 
         // Filter support radius: bicubic extends 2 pixels in each direction
-        constexpr double filter_support = 2.0;
+        const double filter_support = lanczos ? 3.0 : 2.0;
 
         // Clipping function for 8-bit values
         auto clip8 = [](int val) -> uint8_t {
@@ -860,8 +880,7 @@ bool mtmd_image_preprocessor_dyn_size::preprocess(const clip_image_u8 & img, cli
     GGML_ASSERT(hparams.image_min_pixels > 0 && hparams.image_max_pixels > 0);
     clip_image_u8 resized_image;
     const clip_image_size original_size{img.nx, img.ny};
-    // the original pixtral model doesn't have n_merge
-    const int cur_merge = hparams.n_merge == 0 ? 1 : hparams.n_merge;
+    const int cur_merge = hparams.n_merge;
     const clip_image_size target_size = img_tool::calc_size_preserved_ratio(
         original_size,
         hparams.patch_size * cur_merge,
@@ -885,8 +904,7 @@ bool mtmd_image_preprocessor_longest_edge::preprocess(const clip_image_u8 & img,
     GGML_ASSERT(hparams.image_longest_edge > 0);
     clip_image_u8 resized_image;
     const clip_image_size original_size{img.nx, img.ny};
-    // the original pixtral model doesn't have n_merge
-    const int cur_merge = hparams.n_merge == 0 ? 1 : hparams.n_merge;
+    const int cur_merge = hparams.n_merge;
     const clip_image_size target_size = img_tool::calc_size_preserved_ratio(
         original_size,
         hparams.patch_size * cur_merge,
@@ -1422,6 +1440,69 @@ bool mtmd_image_preprocessor_youtuvl::preprocess(const clip_image_u8 & img, clip
     clip_image_f32_ptr img_f32(clip_image_f32_init());
     img_u8_to_f32(resized, *img_f32, hparams.image_mean, hparams.image_std);
     // Add to results
+    output.entries.push_back(std::move(img_f32));
+    return true;
+}
+
+//
+// mtmd_image_preprocessor_muse_glimmer
+//
+
+// Replicates transformers' get_aspect_ratio_preserving_size
+static clip_image_size muse_glimmer_grid_size(int img_w, int img_h, int patch_hw, int max_tokens) {
+    double i_nph = (double) img_h / patch_hw;
+    double i_npw = (double) img_w / patch_hw;
+    const double ratio = i_nph > 0.0 ? i_npw / i_nph : 1.0;
+    if (i_nph * i_npw > (double) max_tokens) {
+        i_nph = std::sqrt((double) max_tokens / ratio);
+        i_npw = i_nph * ratio;
+    }
+    const int hs[2] = { (int) std::floor(i_nph), (int) std::ceil(i_nph) };
+    const int ws[2] = { (int) std::floor(i_npw), (int) std::ceil(i_npw) };
+    const double target_ar = (double) img_h / (double) img_w;
+    int    best_nph = -1;
+    int    best_npw = -1;
+    double best_d   = 0.0;
+    for (int a = 0; a < 2; ++a) {
+        for (int b = 0; b < 2; ++b) {
+            const int nph = hs[a];
+            const int npw = ws[b];
+            if (nph < 1 || npw < 1 || nph * npw > max_tokens) {
+                continue;
+            }
+            const double d = std::fabs((double) nph / (double) npw - target_ar);
+            const int n_tokens      = nph * npw;
+            const int best_n_tokens = best_nph * best_npw;
+            if (best_nph < 0 || d < best_d || (d == best_d && n_tokens > best_n_tokens)) {
+                best_nph = nph;
+                best_npw = npw;
+                best_d   = d;
+            }
+        }
+    }
+    if (best_nph < 0) { // no candidate fit under the cap: round and clamp
+        best_nph = std::max(1, (int) std::lround(i_nph));
+        best_npw = std::max(1, (int) std::lround(i_npw));
+    }
+    return clip_image_size{ best_npw * patch_hw, best_nph * patch_hw };
+}
+
+bool mtmd_image_preprocessor_muse_glimmer::preprocess(const clip_image_u8 & img, clip_image_f32_batch & output) {
+    const int patch_hw   = hparams.patch_size * hparams.n_merge;
+    const int patch_area = hparams.patch_size * hparams.patch_size * hparams.n_merge * hparams.n_merge;
+    GGML_ASSERT(patch_area > 0 && hparams.image_max_pixels > 0);
+    const int max_tokens = hparams.image_max_pixels / patch_area;
+
+    const clip_image_size original_size{img.nx, img.ny};
+    const clip_image_size target_size = muse_glimmer_grid_size(
+        original_size.width, original_size.height, patch_hw, max_tokens);
+
+    // PIL resizes directly to (target_w, target_h) -- a stretch, no padding.
+    clip_image_u8 resized_image;
+    img_tool::resize(img, resized_image, target_size, hparams.image_resize_algo, /* add_padding */ false);
+
+    clip_image_f32_ptr img_f32(clip_image_f32_init());
+    img_u8_to_f32(resized_image, *img_f32, hparams.image_mean, hparams.image_std);
     output.entries.push_back(std::move(img_f32));
     return true;
 }

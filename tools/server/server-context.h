@@ -154,8 +154,9 @@ private:
     // can be invoked from cache-handling code outside of the HTTP entry
     // points. Both return the number of tokens actually saved / restored, or
     // -1 on error.
-    int32_t save_slot_to_file(int id_slot, const std::string & filepath);
-    int32_t restore_slot_from_file(int id_slot, const std::string & filepath);
+    // the helpers wait for the slot (busy slots defer the task) until should_stop, e.g. the client went away
+    int32_t save_slot_to_file(int id_slot, const std::string & filepath, const std::function<bool()> & should_stop);
+    int32_t restore_slot_from_file(int id_slot, const std::string & filepath, const std::function<bool()> & should_stop);
 
     server_queue & queue_tasks;
     server_response & queue_results;

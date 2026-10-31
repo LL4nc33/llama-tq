@@ -255,6 +255,20 @@ bool llama_hparams::has_kv(uint32_t il) const {
     return true;
 }
 
+bool llama_hparams::has_rope(uint32_t il) const {
+    // the router layer stores adapter routing signal, not positional info,
+    // so it must not be RoPE-shifted
+    if (router_layer >= 0 && (int32_t) il == router_layer) {
+        return false;
+    }
+
+    if (il < n_layer) {
+        return rope_pattern[il] != 0;
+    }
+
+    GGML_ABORT("%s: il (%u) out of bounds (n_layer: %u)\n", __func__, il, n_layer);
+}
+
 uint32_t llama_hparams::n_layer_kv() const {
     uint32_t res = 0;
 

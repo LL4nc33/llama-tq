@@ -11,6 +11,11 @@
 #include <stdexcept>
 
 #define MAX_REPETITION_THRESHOLD 2000
+#define MAX_GROUP_DEPTH 256
+// a parse may be in at most this many states (stacks) at once. Rules that may be empty and are referenced more than once
+// per level double the states with every level of nesting, and each state is checked against the vocabulary for every
+// token, so such a grammar would stall the sampler; it is refused instead.
+#define MAX_GRAMMAR_STACKS 16384
 //
 // helpers
 //
@@ -193,7 +198,11 @@ static std::pair<uint32_t, const char *> parse_token(const llama_vocab * vocab, 
     if (*pos == '[') {
         pos++;
         const char * int_end = parse_int(pos);
-        uint32_t token_id = std::stoul(std::string(pos, int_end - pos));
+        unsigned long id = std::stoul(std::string(pos, int_end - pos));
+        if (id > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error(std::string("parsed token id is too big at ") + pos);
+        }
+        uint32_t token_id = static_cast<uint32_t>(id);
         pos = int_end;
         if (*pos != ']') {
             throw std::runtime_error(std::string("expecting ']' at ") + pos);
@@ -590,11 +599,15 @@ const char * llama_grammar_parser::parse_sequence(
             n_prev_rules = 1;
             rule.push_back({LLAMA_GRETYPE_RULE_REF, ref_rule_id});
         } else if (*pos == '(') { // grouping
+            if (++group_depth > MAX_GROUP_DEPTH) {
+                throw std::runtime_error("groups nested deeper than " + std::to_string(MAX_GROUP_DEPTH) + " levels");
+            }
             // parse nested alternates into synthesized rule
             pos = parse_space(pos + 1, true);
             uint32_t n_rules_before = symbol_ids.size();
             uint32_t sub_rule_id = generate_symbol_id(rule_name);
             pos = parse_alternates(pos, rule_name, sub_rule_id, true);
+            group_depth--;
             n_prev_rules = std::max(1u, (uint32_t)symbol_ids.size() - n_rules_before);
             last_sym_start = rule.size();
             // output reference to synthesized rule
@@ -877,6 +890,9 @@ static void llama_grammar_advance_stack(
             continue;
         }
         seen.insert(curr_stack);
+        if (seen.size() > MAX_GRAMMAR_STACKS || new_stacks.size() > MAX_GRAMMAR_STACKS) {
+            throw std::runtime_error("grammar has more than " + std::to_string(MAX_GRAMMAR_STACKS) + " parse states at once");
+        }
 
         if (curr_stack.empty()) {
             if (std::find(new_stacks.begin(), new_stacks.end(), curr_stack) == new_stacks.end()) {
@@ -954,55 +970,78 @@ static llama_grammar_candidates llama_grammar_reject_candidates(
     return rejects;
 }
 
+// whether a nonterminal reaches itself through its leftmost nonterminals (or the next ones, as long as the
+// previous nonterminal may be empty). The walk keeps its own stack, so a long chain of rules cannot overflow
+// the call stack, and a rule already checked is not walked again, so a rule referenced many times costs once.
 static bool llama_grammar_detect_left_recursion(
         const llama_grammar_rules & rules,
         size_t rule_index,
         std::vector<bool> * rules_visited,
         std::vector<bool> * rules_in_progress,
         std::vector<bool> * rules_may_be_empty) {
+    struct frame {
+        size_t rule_index;
+        size_t i;                        // next element of the rule to look at
+        bool   recurse_into_nonterminal; // whether that element can still start its alternative
+    };
+    std::vector<frame> todo;
+
+    // marks a rule as being walked and notes whether it might produce the empty string
+    auto enter = [&](size_t index) {
+        (*rules_in_progress)[index] = true;
+        const llama_grammar_rule & rule = rules[index];
+        bool at_rule_start = true;
+        for (size_t i = 0; i < rule.size(); i++) {
+            if (llama_grammar_is_end_of_sequence(&rule[i])) {
+                if (at_rule_start) {
+                    (*rules_may_be_empty)[index] = true;
+                    break;
+                }
+                at_rule_start = true;
+            } else {
+                at_rule_start = false;
+            }
+        }
+        todo.push_back({ index, 0, true });
+    };
+
     if ((*rules_in_progress)[rule_index]) {
         return true;
     }
-
-    (*rules_in_progress)[rule_index] = true;
-
-    const llama_grammar_rule & rule = rules[rule_index];
-
-    // First check if the rule might produce the empty string. This could be done combined with the second
-    // step but it's more readable as two steps.
-    bool at_rule_start = true;
-    for (size_t i = 0; i < rule.size(); i++) {
-        if (llama_grammar_is_end_of_sequence(&rule[i])) {
-            if (at_rule_start) {
-                (*rules_may_be_empty)[rule_index] = true;
-                break;
-            }
-            at_rule_start = true;
-        } else {
-            at_rule_start = false;
-        }
+    if ((*rules_visited)[rule_index]) {
+        return false;
     }
+    enter(rule_index);
 
-    // Second, recurse into leftmost nonterminals (or next-leftmost as long as the previous nonterminal may
-    // be empty)
-    bool recurse_into_nonterminal = true;
-    for (size_t i = 0; i < rule.size(); i++) {
-        if (rule[i].type == LLAMA_GRETYPE_RULE_REF && recurse_into_nonterminal) {
-            if (llama_grammar_detect_left_recursion(rules, (size_t)rule[i].value, rules_visited, rules_in_progress, rules_may_be_empty)) {
+    while (!todo.empty()) {
+        frame & f = todo.back();
+        const llama_grammar_rule & rule = rules[f.rule_index];
+        if (f.i == rule.size()) {
+            (*rules_in_progress)[f.rule_index] = false;
+            (*rules_visited)[f.rule_index] = true;
+            todo.pop_back();
+            continue;
+        }
+        const llama_grammar_element & elem = rule[f.i];
+        if (elem.type == LLAMA_GRETYPE_RULE_REF && f.recurse_into_nonterminal) {
+            const size_t ref = elem.value;
+            if ((*rules_in_progress)[ref]) {
                 return true;
             }
-            if (!((*rules_may_be_empty)[(size_t)rule[i].value])) {
-                recurse_into_nonterminal = false;
+            if (!(*rules_visited)[ref]) {
+                enter(ref); // this element is looked at again once the referenced rule is checked
+                continue;
             }
-        } else if (llama_grammar_is_end_of_sequence(&rule[i])) {
-            recurse_into_nonterminal = true;
+            if (!(*rules_may_be_empty)[ref]) {
+                f.recurse_into_nonterminal = false;
+            }
+        } else if (llama_grammar_is_end_of_sequence(&elem)) {
+            f.recurse_into_nonterminal = true;
         } else {
-            recurse_into_nonterminal = false;
+            f.recurse_into_nonterminal = false;
         }
+        f.i++;
     }
-
-    (*rules_in_progress)[rule_index] = false;
-    (*rules_visited)[rule_index] = true;
 
     return false;
 }
@@ -1170,24 +1209,29 @@ struct llama_grammar * llama_grammar_init_impl(
     // loop over alternates of start rule to build initial stacks
     llama_grammar_stacks stacks;
     pos = vec_rules[start_rule_index].data();
-    do {
-        llama_grammar_stack stack;
-        if (!llama_grammar_is_end_of_sequence(pos)) {
-            // if alternate is nonempty, add to stack
-            stack.push_back(pos);
-        }
-        llama_grammar_advance_stack(vec_rules, stack, stacks);
-        while (!llama_grammar_is_end_of_sequence(pos)) {
-            // scan to end of alternate def
-            pos++;
-        }
-        if (pos->type == LLAMA_GRETYPE_ALT) {
-            // there's another alternate def of this rule to process
-            pos++;
-        } else {
-            break;
-        }
-    } while (true);
+    try {
+        do {
+            llama_grammar_stack stack;
+            if (!llama_grammar_is_end_of_sequence(pos)) {
+                // if alternate is nonempty, add to stack
+                stack.push_back(pos);
+            }
+            llama_grammar_advance_stack(vec_rules, stack, stacks);
+            while (!llama_grammar_is_end_of_sequence(pos)) {
+                // scan to end of alternate def
+                pos++;
+            }
+            if (pos->type == LLAMA_GRETYPE_ALT) {
+                // there's another alternate def of this rule to process
+                pos++;
+            } else {
+                break;
+            }
+        } while (true);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: unsupported grammar: %s\n", __func__, err.what());
+        return nullptr;
+    }
 
     // Important: vec_rules has to be moved here, not copied, because stacks contains
     // pointers to elements of vec_rules. If vec_rules were copied into llama_grammar
@@ -1263,24 +1307,29 @@ struct llama_grammar * llama_grammar_init_impl(
     // loop over alternates of start rule to build initial stacks
     llama_grammar_stacks stacks;
     pos = vec_rules[start_rule_index].data();
-    do {
-        llama_grammar_stack stack;
-        if (!llama_grammar_is_end_of_sequence(pos)) {
-            // if alternate is nonempty, add to stack
-            stack.push_back(pos);
-        }
-        llama_grammar_advance_stack(vec_rules, stack, stacks);
-        while (!llama_grammar_is_end_of_sequence(pos)) {
-            // scan to end of alternate def
-            pos++;
-        }
-        if (pos->type == LLAMA_GRETYPE_ALT) {
-            // there's another alternate def of this rule to process
-            pos++;
-        } else {
-            break;
-        }
-    } while (true);
+    try {
+        do {
+            llama_grammar_stack stack;
+            if (!llama_grammar_is_end_of_sequence(pos)) {
+                // if alternate is nonempty, add to stack
+                stack.push_back(pos);
+            }
+            llama_grammar_advance_stack(vec_rules, stack, stacks);
+            while (!llama_grammar_is_end_of_sequence(pos)) {
+                // scan to end of alternate def
+                pos++;
+            }
+            if (pos->type == LLAMA_GRETYPE_ALT) {
+                // there's another alternate def of this rule to process
+                pos++;
+            } else {
+                break;
+            }
+        } while (true);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: unsupported grammar: %s\n", __func__, err.what());
+        return nullptr;
+    }
 
     std::vector<llama_token>    vec_trigger_tokens;
     std::vector<llama_grammar_trigger_pattern> vec_trigger_patterns;

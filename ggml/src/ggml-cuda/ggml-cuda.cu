@@ -2338,6 +2338,28 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_f(const ggml_tensor * tensor) {
     return use_mul_mat_vec_f;
 }
 
+// the largest number of columns for which MMVQ beats MMQ on Turing (measured on an RTX 2060 for 4096 x 14336)
+static int ggml_cuda_mmvq_max_batch_turing(const ggml_type type, const int cc) {
+    if (!GGML_CUDA_CC_IS_NVIDIA(cc) || cc < GGML_CUDA_CC_TURING || cc >= GGML_CUDA_CC_AMPERE) {
+        return MMVQ_MAX_BATCH_SIZE;
+    }
+    switch (type) {
+        case GGML_TYPE_Q8_0:
+        case GGML_TYPE_IQ2_XXS:
+            return 5;
+        case GGML_TYPE_Q3_K:
+            return 2; // MMQ ahead from 3 columns (RTX 2060: 12288 x 4096 201 -> 161 us, 4096 x 12288 180 -> 163 us)
+        case GGML_TYPE_Q4_K:
+            return 4; // mul_mat_vec_q4_K_mc for 4 columns where it fills the SMs (see mmvq.cu)
+        case GGML_TYPE_Q6_K:
+            return 4; // equal at 4 columns for 4096 x 14336, MMVQ faster for the output matrix of Gemma 4 (262144 x 3840)
+        case GGML_TYPE_PTQ1_0:
+            return 7; // planar kernel (mmvq-ptq1_0.cuh); Ternary-Bonsai-2-27B: 4 columns 100 instead of 59 t/s, MMQ ahead at 8
+        default:
+            return 3;
+    }
+}
+
 static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
     ggml_tensor *       src0 = tensor->src[0];
     ggml_tensor *       src1 = tensor->src[1];
@@ -2360,7 +2382,7 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
         return false;
     }
 
-    if (tensor->op == GGML_OP_MUL_MAT_ID && dst->ne[2] != 1) {
+    if (tensor->op == GGML_OP_MUL_MAT_ID && dst->ne[2] > get_mmvq_mmid_max_batch(src0->type, cc)) {
         return false;
     }
 
@@ -2433,6 +2455,23 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         use_mul_mat_f           = use_mul_mat_f             && ggml_cuda_should_use_mmf(src0->type, cc, warp_size, src0->ne, src0->nb, src1->ne[1], /*mul_mat_id=*/false);
         use_mul_mat_vec_f       = use_mul_mat_vec_f         && ggml_cuda_should_use_mmvf(src0->type, cc, src0->ne, src0->nb, src1->ne[1]);
         any_gpus_with_slow_fp16 = any_gpus_with_slow_fp16   || !fast_fp16_hardware_available(cc);
+
+        // a few columns on Turing: the int8 MMA tiles of MMQ cost about the same for 1..8 columns, the dp4a kernels of
+        // MMVQ grow with every column (RTX 2060, 4096 x 14336, 8 columns: q4_K 377 -> 183 us, q2_K 437 -> 179 us).
+        // A matrix whose row tiles fill less than one wave of SMs makes MMQ fall back to stream-k with a fixup pass, so
+        // MMVQ stays ahead for up to 5 columns there (RTX 2060, 34 SMs, 4 columns: 2048 x 4096 iq4_xs 33.0 -> 28.2 us,
+        // 512 x 2048: 9.4 -> 7.8 us). With 4096 rows (32 tiles) MMQ runs tiled and stays ahead (4096 x 14336 q2_K:
+        // MMVQ 228 us, MMQ 178 us). Rows longer than 4096 give stream-k enough work, 5 columns then go to MMQ again
+        // (2560 x 17408 iq4_xs: MMVQ 160 us, MMQ 131 us); types whose MMVQ loses from 3 columns on (q3_K) keep MMQ.
+        int mmvq_max_batch = ggml_cuda_mmvq_max_batch_turing(src0->type, cc);
+        const int64_t row_tiles = (src0->ne[1] + get_mmq_y_host(cc) - 1) / get_mmq_y_host(cc);
+        if (mmvq_max_batch >= 3 &&
+                100 * row_tiles < (int64_t) MMQ_TILING_MIN_EFFICIENCY_PERCENT * ggml_cuda_info().devices[ctx.device].nsm) {
+            mmvq_max_batch = std::max(mmvq_max_batch, src0->ne[0] <= 4096 ? 5 : 4);
+        }
+        if (use_mul_mat_q && src1->ne[1] > mmvq_max_batch) {
+            use_mul_mat_vec_q = false;
+        }
     }
 
     // debug helpers
@@ -3476,9 +3515,10 @@ static bool ggml_cuda_check_fusion_memory_ranges(const ggml_cgraph * cgraph,
     };
 
     bool is_ok = true;
-    // exception for topk-moe, as each row is read entirely before writing
-    if (ggml_nrows(cgraph->nodes[node_idx]) == 1 && is_topk_moe) {
-        return true;
+    // one block reads all logits before it writes, so logits may alias the out nodes
+    const ggml_tensor * logits_may_alias = nullptr;
+    if (is_topk_moe && ggml_nrows(cgraph->nodes[node_idx]) <= TOPK_MOE_ROWS_PER_BLOCK) {
+        logits_may_alias = cgraph->nodes[node_idx]->src[0];
     }
 
     for (int i = 0; i < out_count; ++i) {
@@ -3492,7 +3532,7 @@ static bool ggml_cuda_check_fusion_memory_ranges(const ggml_cgraph * cgraph,
             for (int src_idx = 0; src_idx < GGML_MAX_SRC; ++src_idx) {
                 const ggml_tensor * src = cgraph->nodes[j]->src[src_idx];
 
-                if (!src || src->op == GGML_OP_NONE) {
+                if (!src || src->op == GGML_OP_NONE || src == logits_may_alias) {
                     continue;
                 }
 
@@ -4504,6 +4544,109 @@ static bool ggml_cuda_try_gdn_gather_skip(ggml_backend_cuda_context & ctx, const
     return false;
 }
 
+// The gated delta net op writes its new recurrent state (with rollback slots: the K newest states) after the attention
+// scores, and the graph copies that tail into the recurrent cache right away (one state per sequence and layer, 3 MB
+// for Qwen3.8). When that copy is the next node and the attention scores are the op's only other reader, the kernel
+// writes the cache directly and the copy is skipped (with a tensor split, each device for its share of the heads).
+// Returns the number of nodes to skip. GGML_CUDA_GDN_SCATTER_FUSION=0 disables it.
+static int ggml_cuda_try_gdn_scatter_skip(ggml_backend_cuda_context & ctx, const ggml_cgraph * cgraph, int node_idx,
+        ggml_cuda_gated_delta_net_cache & cache) {
+    static const bool disabled = getenv("GGML_CUDA_GDN_SCATTER_FUSION") != nullptr &&
+                                 atoi(getenv("GGML_CUDA_GDN_SCATTER_FUSION")) == 0;
+    const ggml_tensor * gdn = cgraph->nodes[node_idx];
+    if (disabled || gdn->op != GGML_OP_GATED_DELTA_NET || gdn->type != GGML_TYPE_F32 ||
+        (gdn->flags & GGML_TENSOR_FLAG_OUTPUT) || ggml_node_get_use_count(cgraph, node_idx) != 2) {
+        return 0;
+    }
+
+    const ggml_tensor * v         = gdn->src[2];
+    const int64_t       S_v       = v->ne[0];
+    const int64_t       H         = v->ne[1];
+    const int64_t       n_tokens  = v->ne[2];
+    const int64_t       n_seqs    = v->ne[3];
+    const int64_t       D         = S_v * S_v * H;
+    const int64_t       n_written = std::min<int64_t>(n_tokens, ggml_get_op_params_i32(gdn, 0));
+    const size_t        tail_offs = ggml_row_size(GGML_TYPE_F32, S_v * H * n_tokens * n_seqs);
+
+    // the copy is the first node after the op that is not a view; the view of the tail it reads comes before it
+    int src_idx = -1;
+    int j       = node_idx + 1;
+    for (; j < cgraph->n_nodes; ++j) {
+        const ggml_tensor * n = cgraph->nodes[j];
+        if (ggml_is_empty(n) || n->op == GGML_OP_RESHAPE || n->op == GGML_OP_TRANSPOSE || n->op == GGML_OP_VIEW ||
+            n->op == GGML_OP_PERMUTE || n->op == GGML_OP_NONE) {
+            if (n->op == GGML_OP_VIEW && n->view_src == gdn && n->view_offs == tail_offs) {
+                src_idx = j;
+            }
+            continue;
+        }
+        break;
+    }
+    if (j == cgraph->n_nodes || src_idx < 0) {
+        return 0;
+    }
+    const ggml_tensor * cpy = cgraph->nodes[j];
+    const ggml_tensor * src = cgraph->nodes[src_idx];
+    const ggml_tensor * dst = cpy->src[1];
+    if (cpy->op != GGML_OP_CPY || (cpy->flags & GGML_TENSOR_FLAG_OUTPUT) || cpy->src[0] != src ||
+        ggml_node_get_use_count(cgraph, src_idx) != 1 || !ggml_is_contiguous(src) ||
+        ggml_nelements(src) != D * n_seqs * n_written) {
+        return 0;
+    }
+    // the cache view: [D, n_seqs, n_written] f32 on this device, sequences D apart
+    if (dst->type != GGML_TYPE_F32 || dst->data == nullptr || dst->buffer == nullptr ||
+        dst->buffer->buft != ggml_backend_cuda_buffer_type(ctx.device) ||
+        dst->ne[0] != D || dst->ne[1] != n_seqs || dst->ne[2] != n_written || dst->ne[3] != 1 ||
+        dst->nb[0] != sizeof(float) || (n_seqs > 1 && dst->nb[1] != D * sizeof(float)) ||
+        (n_written > 1 && dst->nb[2] % sizeof(float) != 0)) {
+        return 0;
+    }
+
+    // the op's other reader must not see the tail, which the kernel no longer writes
+    const ggml_tensor * other = nullptr;
+    for (int k = node_idx + 1; k < cgraph->n_nodes && other == nullptr; ++k) {
+        const ggml_tensor * n = cgraph->nodes[k];
+        if (k == src_idx) {
+            continue;
+        }
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            if (n->src[s] == gdn) {
+                other = n;
+                break;
+            }
+        }
+    }
+    if (other == nullptr || other->op != GGML_OP_VIEW || other->view_src != gdn ||
+        other->view_offs + ggml_nbytes(other) > tail_offs) {
+        return 0;
+    }
+
+    cache.data        = (float *) dst->data;
+    cache.slot_stride = n_written > 1 ? (int64_t) (dst->nb[2] / sizeof(float)) : 0;
+
+    // the kernel may read its state from the same cache (fused gather, or the states read in place): each thread reads
+    // the elements it writes, so that is safe as long as no thread writes what another one reads
+    if (const ggml_cuda_gated_delta_net_gather * gather = ctx.gdn_gathers().find(gdn)) {
+        // one sequence: rows and slots must lie whole states apart
+        const ptrdiff_t offs = cache.data - gather->base;
+        if (offs % D != 0 || gather->row_stride % D != 0 || cache.slot_stride % D != 0) {
+            return 0;
+        }
+    } else {
+        // the state (contiguous, sequences D apart) is either apart from every written slot or exactly the newest one
+        const char * s0 = (const char *) gdn->src[5]->data;
+        const char * s1 = s0 + ggml_nbytes(gdn->src[5]);
+        for (int64_t k = 0; k < n_written; ++k) {
+            const char * w0 = (const char *) (cache.data + k * cache.slot_stride);
+            const char * w1 = w0 + D * n_seqs * sizeof(float);
+            if (w0 < s1 && s0 < w1 && !(k == 0 && w0 == s0)) {
+                return 0;
+            }
+        }
+    }
+    return j - node_idx;
+}
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
 
@@ -4657,6 +4800,17 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (node->op == GGML_OP_GET_ROWS && !is_concurrent_event_active &&
                         ggml_cuda_try_gdn_gather_skip(*cuda_ctx, cgraph, i)) {
                     continue;
+                }
+
+                // copy of the new recurrent state into the cache folded into the gated delta net kernel
+                if (node->op == GGML_OP_GATED_DELTA_NET && !is_concurrent_event_active) {
+                    ggml_cuda_gated_delta_net_cache cache;
+                    const int skip = ggml_cuda_try_gdn_scatter_skip(*cuda_ctx, cgraph, i, cache);
+                    if (skip > 0) {
+                        ggml_cuda_op_gated_delta_net_to_cache(*cuda_ctx, node, cache);
+                        i += skip;
+                        continue;
+                    }
                 }
 
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);

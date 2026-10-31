@@ -209,15 +209,29 @@ comparison was not done.
 2026-10-15 the head drafted from a wrong hidden state on Qwen3.5/3.6 and lost against `ngram-cache`; older notes saying
 so are obsolete ([CHANGELOG 2026-10-15](../CHANGELOG.md#2026-10-15)). Measured acceptance and speed (Qwen3.6-35B-A3B on
 two RTX 2060): [benchmarks](benchmarks/README.md#speculative-decoding-two-gpus). In short: on short prompts draft max 1
-gains the most, at long context draft max 3.
+gains the most, at long context draft max 3. One GPU, Gemma 4 12B and Qwen3.6-35B-A3B against upstream:
+[benchmarks](benchmarks/README.md#mtp-one-gpu).
+
+- Gemma 4 has no MTP layer in the model file; its MTP assistant is a separate small model that reads the target's KV
+  cache (`mtp-gemma-4-12B-it-Q8_0.gguf` from [ggml-org/gemma-4-12B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-12B-it-GGUF)):
+  `-md mtp-gemma-4-12B-it-Q8_0.gguf -ngld 99 --spec-type draft-mtp --draft-max 7`. Qwen3.5/3.6/3.8 carry the layer,
+  so `--spec-type draft-mtp` alone is enough.
+- Draft length: dense models gain from long drafts on code and rewrites (7 on Gemma 4 12B); prose gains little beyond
+  draft max 3. On the MoE Qwen3.6-35B-A3B, MTP gains on code and rewrites with draft max 3 but loses on prose
+  at every draft length, so leave it off for chat that is mostly prose.
+- `LLAMA_MTP_DECAY=1.0` (the same `--draft-p-min` for every draft position) against the default 0.70 (2026-10-20, before the
+  activation-sum fix of [2026-10-21](../CHANGELOG.md#2026-10-21)): on Gemma 4 12B with draft max 7 faster on prose and
+  rewrites (+11 %) and within 2 % on code, on Qwen3.8-27B with draft max 3 faster on all three prompts, on
+  Qwen3.6-35B-A3B within ±5 %.
 
 - The MTP layer is loaded only with `--spec-type draft-mtp`; otherwise its memory stays free (856 MiB on Qwen3.6).
 - The draft context takes the target batch size and one output row per sequence, so MTP fits at 40k context with
   `q8_0` and at 32k with `ktq2_1` / `vtq2_1` on two 12 GB GPUs. Two identical requests draft identically.
 - With MTP the server defaults to `-b 8192` unless `-b` is given: the draft context reads the target hidden states after
   every prompt batch, and larger batches keep the prompt cost at about 6 %.
-- Several server slots work and share one draft state; with two concurrent requests MTP decodes about 5 % slower than
-  without speculation, so it pays off while one request is active.
+- Several server slots work and share one draft state. On hybrid models (Qwen3.5/3.6/3.8) the drafts of all requests
+  end equally long, so their verify batch runs in one forward pass and two concurrent requests decode faster than
+  without speculation ([benchmarks](benchmarks/README.md#speculative-decoding-two-gpus)).
 
 ### Hybrid models (Gated DeltaNet)
 
@@ -232,7 +246,7 @@ n-gram modes reserve output rows for one verify batch instead of the whole batch
 | Env var | Default | Range | Effect |
 |---|---|---|---|
 | `LLAMA_SPEC_RELAX` | 0 | 0..50 | Lower ngram-cache acceptance thresholds for noisier-quant models |
-| `LLAMA_MTP_DECAY` | 0.70 | 0.30..1.00 | DRAFT_MTP per-position p_min decay; 1.0 = strict at every step |
+| `LLAMA_MTP_DECAY` | 0.70 | 0.30..1.00 | DRAFT_MTP per-position p_min decay; 1.0 = strict at every step (faster on dense models, see DRAFT_MTP guidance) |
 | `FORK_MTP_PROFILE_ACC=1` | — | — | Log the average time of the accept phase (sampling, `seq_rm`) every 50 verify steps, for every speculation type |
 | `FORK_MTP_PROFILE_TGT=1` | — | — | Log the average target decode time every 50 calls (debug only) |
 | `FORK_MTP_PROFILE=1`, `FORK_MTP_DEBUG=1` | — | — | MTP draft timing and debug log (debug only) |

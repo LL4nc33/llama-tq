@@ -63,7 +63,8 @@ struct clip_graph {
                 norm_type norm_t,
                 ffn_op_type ffn_t,
                 ggml_tensor * learned_pos_embd,
-                std::function<ggml_tensor *(ggml_tensor *, const clip_layer &)> add_pos);
+                std::function<ggml_tensor *(ggml_tensor *, const clip_layer &)> add_pos,
+                const std::vector<ggml_tensor *> & attn_mask_layers = {}); // optional attention mask per layer
 
     // build the input after conv2d (inp_raw --> patches)
     // returns tensor with shape [n_embd, n_patches]

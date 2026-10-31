@@ -1205,7 +1205,8 @@ private:
                     ret->prompt_save(*prompt_cache);
                 }
 
-                if (!ret->prompt_load(*prompt_cache, task.tokens)) {
+                // a task that does not reuse cached prompts starts from an empty context: loading a state is wasted work
+                if (!task.params.cache_prompt || !ret->prompt_load(*prompt_cache, task.tokens)) {
                     ret->prompt_clear(false);
                 }
 
@@ -2033,13 +2034,19 @@ private:
                                 const std::string ckpt_path = filepath + ".ckpt";
                                 FILE * fp = fopen(ckpt_path.c_str(), "wb");
                                 if (fp) {
+                                    // version 2 keeps the positions the state covers: a restored checkpoint is only
+                                    // used when it reaches back far enough (the SWA window), which needs the real pos_min
                                     const uint32_t magic = 0x4B434854u; // 'TKHC'
-                                    const uint32_t version = 1;
+                                    const uint32_t version = 2;
                                     const uint64_t n_tokens_u64 = (uint64_t) token_count;
+                                    const int64_t  pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx), slot->id);
+                                    const int64_t  pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx), slot->id);
                                     const uint64_t payload_sz = (uint64_t) sz;
                                     fwrite(&magic, sizeof(magic), 1, fp);
                                     fwrite(&version, sizeof(version), 1, fp);
                                     fwrite(&n_tokens_u64, sizeof(n_tokens_u64), 1, fp);
+                                    fwrite(&pos_min, sizeof(pos_min), 1, fp);
+                                    fwrite(&pos_max, sizeof(pos_max), 1, fp);
                                     fwrite(&payload_sz, sizeof(payload_sz), 1, fp);
                                     fwrite(buf.data(), 1, sz, fp);
                                     fclose(fp);
@@ -2107,20 +2114,31 @@ private:
                         if (fp) {
                             uint32_t magic = 0, version = 0;
                             uint64_t n_tokens_u64 = 0, payload_sz = 0;
+                            int64_t  pos_min = -1, pos_max = -1;
+                            // the checkpoint has to belong to the tokens just restored (a file left from an older
+                            // save does not), and its size can be no larger than what the file holds
+                            std::error_code ec;
+                            const uint64_t file_sz = std::filesystem::file_size(ckpt_path, ec);
+                            const uint64_t header_sz = 2*sizeof(uint32_t) + 4*sizeof(uint64_t);
                             bool ok =
+                                !ec &&
                                 fread(&magic, sizeof(magic), 1, fp) == 1 &&
                                 fread(&version, sizeof(version), 1, fp) == 1 &&
+                                magic == 0x4B434854u && version == 2 &&
                                 fread(&n_tokens_u64, sizeof(n_tokens_u64), 1, fp) == 1 &&
+                                fread(&pos_min, sizeof(pos_min), 1, fp) == 1 &&
+                                fread(&pos_max, sizeof(pos_max), 1, fp) == 1 &&
                                 fread(&payload_sz, sizeof(payload_sz), 1, fp) == 1 &&
-                                magic == 0x4B434854u && version == 1 &&
-                                n_tokens_u64 > 0 && payload_sz > 0;
+                                n_tokens_u64 == token_count &&
+                                0 <= pos_min && pos_min <= pos_max && pos_max < (int64_t) n_tokens_u64 &&
+                                payload_sz > 0 && file_sz >= header_sz && payload_sz <= file_sz - header_sz;
                             if (ok) {
                                 std::vector<uint8_t> buf(payload_sz);
                                 ok = fread(buf.data(), 1, payload_sz, fp) == payload_sz;
                                 if (ok) {
                                     server_prompt_checkpoint ckpt;
-                                    ckpt.pos_min = 0;
-                                    ckpt.pos_max = (llama_pos) (n_tokens_u64 - 1);
+                                    ckpt.pos_min = (llama_pos) pos_min;
+                                    ckpt.pos_max = (llama_pos) pos_max;
                                     ckpt.n_tokens = (int64_t) n_tokens_u64;
                                     ckpt.data = std::move(buf);
                                     slot->prompt.checkpoints.clear();
@@ -3008,6 +3026,24 @@ private:
             llama_set_embeddings(ctx, slot_batched->task->need_embd());
         }
 
+        // when every active slot samples from the k best logits of a row, only those cross to the host: a whole row is
+        // 1 MB for a 262k vocabulary, a speculative verify of 4 tokens 4 MB, and the CPU no longer scans the vocabulary
+        {
+            int32_t k = 0;
+            for (const auto & slot : slots) {
+                if (!slot.is_processing()) {
+                    continue;
+                }
+                const int32_t k_slot = slot.smpl ? common_sampler_logits_top_k(slot.smpl.get()) : 0;
+                if (k_slot == 0) {
+                    k = 0;
+                    break;
+                }
+                k = std::max(k, k_slot);
+            }
+            llama_set_logits_top_k(ctx, k);
+        }
+
         if (batch.n_tokens == 0) {
             SRV_WRN("%s", "no tokens to decode\n");
 
@@ -3072,7 +3108,11 @@ private:
             const bool dflash_type_in_types =
                 std::find(params_base.speculative.types.begin(), params_base.speculative.types.end(),
                           COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params_base.speculative.types.end();
-            if (ctx_dft && ret == 0 && !shared_ctx_mode && !dflash_type_in_types) {
+            // A draft model that reads the target's KV cache (a Gemma 4 assistant) has nothing to mirror: the copy
+            // would move the whole sequence state through the host after every target batch (about 25 ms per token
+            // for Gemma 4 12B on an RTX 2060).
+            const bool dft_shares_tgt_memory = ctx_dft && llama_get_ctx_other(ctx_dft.get()) == ctx;
+            if (ctx_dft && ret == 0 && !shared_ctx_mode && !dflash_type_in_types && !dft_shares_tgt_memory) {
                 for (server_slot & sl : slots) {
                     if (!sl.is_processing() || !sl.spec) continue;
                     const llama_seq_id sid = sl.id;
@@ -3272,11 +3312,20 @@ private:
 
                 const int tok_idx = slot.i_batch - i;
 
-                llama_token id = common_sampler_sample(slot.smpl.get(), ctx, tok_idx);
+                llama_token id;
+                try {
+                    id = common_sampler_sample(slot.smpl.get(), ctx, tok_idx);
 
-                slot.i_batch = -1;
+                    slot.i_batch = -1;
 
-                common_sampler_accept(slot.smpl.get(), id, true);
+                    common_sampler_accept(slot.smpl.get(), id, true);
+                } catch (const std::exception & e) {
+                    // the request's grammar can fail while it is applied (e.g. too many parse states): end only this request
+                    send_error(slot, std::string("sampling failed: ") + e.what(), ERROR_TYPE_SERVER);
+                    slot.i_batch = -1;
+                    slot.release();
+                    continue; // continue loop of slots
+                }
 
                 // here we have synchronized the llama_context (due to the sampling above), so we can do time measurement
                 const int64_t t_current = ggml_time_us();
@@ -3326,7 +3375,16 @@ private:
 
                 // the accepted tokens from the speculation
                 const int64_t t_s = prof_acc ? ggml_time_us() : 0;
-                const auto ids = common_sampler_sample_and_accept_n(slot.smpl.get(), ctx, slot.i_batch_dft, slot.drafted);
+                std::vector<llama_token> ids;
+                try {
+                    ids = common_sampler_sample_and_accept_n(slot.smpl.get(), ctx, slot.i_batch_dft, slot.drafted);
+                } catch (const std::exception & e) {
+                    send_error(slot, std::string("sampling failed: ") + e.what(), ERROR_TYPE_SERVER);
+                    slot.i_batch_dft.clear();
+                    slot.drafted.clear();
+                    slot.release();
+                    continue; // continue loop of slots
+                }
                 if (spec_trace) {
                     std::string drafted_str, ids_str;
                     for (auto t : slot.drafted) { drafted_str += std::to_string(t) + ","; }
@@ -3396,7 +3454,8 @@ private:
                     llama_batch_free(tb);
                 } else {
                     SLT_WRN(slot, "%s", "partial seq_rm failed without ckpt - falling back to full reprefill\n");
-                    llama_memory_clear(llama_get_memory(ctx), true);
+                    // only this slot's sequence: the other slots keep their context
+                    llama_memory_seq_rm(llama_get_memory(ctx), slot.id, -1, -1);
                     const llama_tokens & all_tokens = slot.prompt.tokens.get_text_tokens();
                     llama_batch tb = llama_batch_init((int) all_tokens.size(), 0, 1);
                     for (size_t k = 0; k < all_tokens.size(); ++k) {
@@ -3831,7 +3890,7 @@ server_routes::server_routes(const common_params & params, server_context & ctx_
 // per-cache-key files without going through an HTTP request.
 // ---------------------------------------------------------------------------
 
-int32_t server_routes::save_slot_to_file(int id_slot, const std::string & filepath) {
+int32_t server_routes::save_slot_to_file(int id_slot, const std::string & filepath, const std::function<bool()> & should_stop) {
     server_response_reader rd(queue_tasks, queue_results, HTTP_POLLING_SECONDS);
     {
         server_task task(SERVER_TASK_TYPE_SLOT_SAVE);
@@ -3841,15 +3900,14 @@ int32_t server_routes::save_slot_to_file(int id_slot, const std::string & filepa
         task.slot_action.filepath = filepath;
         rd.post_task(std::move(task));
     }
-    auto never_stop = []() { return false; };
-    auto result = rd.next(never_stop);
+    auto result = rd.next(should_stop);
     if (!result || result->is_error()) return -1;
     auto * r = dynamic_cast<server_task_result_slot_save_load*>(result.get());
     if (!r) return -1;
     return static_cast<int32_t>(r->n_tokens);
 }
 
-int32_t server_routes::restore_slot_from_file(int id_slot, const std::string & filepath) {
+int32_t server_routes::restore_slot_from_file(int id_slot, const std::string & filepath, const std::function<bool()> & should_stop) {
     server_response_reader rd(queue_tasks, queue_results, HTTP_POLLING_SECONDS);
     {
         server_task task(SERVER_TASK_TYPE_SLOT_RESTORE);
@@ -3859,8 +3917,7 @@ int32_t server_routes::restore_slot_from_file(int id_slot, const std::string & f
         task.slot_action.filepath = filepath;
         rd.post_task(std::move(task));
     }
-    auto never_stop = []() { return false; };
-    auto result = rd.next(never_stop);
+    auto result = rd.next(should_stop);
     if (!result || result->is_error()) return -1;
     auto * r = dynamic_cast<server_task_result_slot_save_load*>(result.get());
     if (!r) return -1;
@@ -4402,7 +4459,7 @@ void server_routes::init_routes() {
                         SRV_INF("anthropic-cache: hit key=%s n_tokens=%d ttl=%s\n",
                                 hit->key_hex.c_str(), hit->n_tokens, hit->ttl_label.c_str());
                         const int32_t n_restored =
-                            restore_slot_from_file(/*id_slot=*/0, hit->filepath);
+                            restore_slot_from_file(/*id_slot=*/0, hit->filepath, req.should_stop);
                         if (n_restored > 0) {
                             anthropic_cache_hit_tokens = n_restored;
                         } else {
@@ -4420,6 +4477,12 @@ void server_routes::init_routes() {
                         e.what());
                 anthropic_cache_key.clear();
             }
+        }
+
+        // the snapshot is restored into and saved from slot 0, so the request has to run there: on another slot the
+        // restore would be wasted and the save would store whatever conversation slot 0 holds under this key
+        if (!anthropic_cache_key.empty()) {
+            body_parsed["id_slot"] = 0;
         }
 
         auto completion_res = handle_completions_impl(
@@ -4444,7 +4507,7 @@ void server_routes::init_routes() {
         if (anthropic_save_allowed && anthropic_cache_had_bp && anthropic_cache.is_enabled() &&
             !anthropic_cache_key.empty() && anthropic_cache_hit_tokens == 0) {
             const std::string bin = anthropic_cache.bin_path(anthropic_cache_key);
-            const int32_t n_saved = save_slot_to_file(/*id_slot=*/0, bin);
+            const int32_t n_saved = save_slot_to_file(/*id_slot=*/0, bin, req.should_stop);
             if (n_saved > 0) {
                 anthropic_cache.record(anthropic_cache_key,
                                        n_saved,

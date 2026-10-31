@@ -746,11 +746,50 @@ const func_builtins & value_string_t::get_builtins() const {
             res->val_str.mark_input_based_on(args.get_pos(0)->val_str);
             return res;
         }},
+        {"format", [](const func_args & args) -> value {
+            value val_input = args.get_pos(0);
+            if (!is_val<value_string>(val_input)) {
+                throw raised_exception("format() first argument must be a string");
+            }
+            const jinja::string & fmt = val_input->as_string();
+            const bool fmt_is_input = fmt.all_parts_are_input();
+
+            const std::string str = fmt.str();
+            jinja::string result;
+            std::string literal;
+            auto flush_literal = [&]() {
+                if (!literal.empty()) {
+                    result.parts.push_back({fmt_is_input, literal});
+                    literal.clear();
+                }
+            };
+
+            size_t arg_idx = 1; // positional args follow the format string
+            for (size_t i = 0; i < str.size(); ++i) {
+                if (str[i] != '{') {
+                    literal += str[i];
+                    continue;
+                }
+                if (i + 1 >= str.size() || str[i + 1] != '}') {
+                    throw not_implemented_exception("format() only supports simple '{}' placeholders");
+                }
+                ++i;
+                flush_literal();
+                const jinja::string arg_str = args.get_pos(arg_idx++)->as_string();
+                result.parts.insert(result.parts.end(), arg_str.parts.begin(), arg_str.parts.end());
+            }
+            flush_literal();
+            return mk_val<value_string>(result);
+        }},
         {"int", [](const func_args & args) -> value {
             value val_input   = args.get_pos(0);
             value val_default = args.get_kwarg_or_pos("default", 1);
             value val_base    = args.get_kwarg_or_pos("base",    2);
             const int base = val_base->is_undefined() ? 10 : val_base->as_int();
+            if (base != 0 && (base < 2 || base > 36)) {
+                // an out-of-range base makes std::stoi fail fast on the MSVC CRT instead of throwing
+                throw raised_exception("int() base must be 0 or between 2 and 36");
+            }
             if (is_val<value_string>(val_input) == false) {
                 throw raised_exception("int() first argument must be a string");
             }
@@ -1268,7 +1307,13 @@ const func_builtins & value_undefined_t::get_builtins() const {
 //////////////////////////////////
 
 
-static value from_json(const nlohmann::ordered_json & j, bool mark_input) {
+// the conversion recurses once per level; deeper input is refused instead of overflowing the stack
+static constexpr int MAX_JSON_DEPTH = 512;
+
+static value from_json(const nlohmann::ordered_json & j, bool mark_input, int depth = 1) {
+    if (depth > MAX_JSON_DEPTH) {
+        throw std::invalid_argument("JSON value is nested deeper than " + std::to_string(MAX_JSON_DEPTH) + " levels");
+    }
     if (j.is_null()) {
         return mk_val<value_none>();
     } else if (j.is_boolean()) {
@@ -1286,13 +1331,13 @@ static value from_json(const nlohmann::ordered_json & j, bool mark_input) {
     } else if (j.is_array()) {
         auto arr = mk_val<value_array>();
         for (const auto & item : j) {
-            arr->push_back(from_json(item, mark_input));
+            arr->push_back(from_json(item, mark_input, depth + 1));
         }
         return arr;
     } else if (j.is_object()) {
         auto obj = mk_val<value_object>();
         for (auto it = j.begin(); it != j.end(); ++it) {
-            obj->insert(it.key(), from_json(it.value(), mark_input));
+            obj->insert(it.key(), from_json(it.value(), mark_input, depth + 1));
         }
         return obj;
     } else {

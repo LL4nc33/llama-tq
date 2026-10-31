@@ -372,6 +372,60 @@ static void ggml_cpy_f32_iq4_nl_cuda(
         (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
+// describe a non-quantized tensor as `height` rows of `width` contiguous bytes, `pitch` bytes apart
+// (a fully contiguous tensor is a single row); false if its elements do not follow that pattern
+static bool ggml_cuda_cpy_rows_layout(const ggml_tensor * t, size_t & width, int64_t & height, size_t & pitch) {
+    width = ggml_element_size(t);
+    int d = 0;
+    for (; d < GGML_MAX_DIMS && (t->ne[d] == 1 || t->nb[d] == width); ++d) {
+        width *= t->ne[d];
+    }
+    height = 1;
+    pitch  = width;
+    if (d == GGML_MAX_DIMS) {
+        return true;
+    }
+    pitch = t->nb[d];
+    for (; d < GGML_MAX_DIMS; ++d) {
+        if (t->ne[d] == 1) {
+            continue;
+        }
+        if (t->nb[d] != pitch * height) {
+            return false;
+        }
+        height *= t->ne[d];
+    }
+    return pitch >= width;
+}
+
+// a same-type copy between tensors that are both rows of contiguous bytes (with any shapes, e.g. a snapshot written
+// into the slots of the recurrent cache) is one 2D block copy; rows narrower than a warp-wide 4-byte load stay on the
+// element-wise kernel
+static bool ggml_cuda_cpy_as_memcpy_2d(const ggml_tensor * src0, const ggml_tensor * src1, const size_t min_width,
+        size_t & width, int64_t & height, size_t & spitch, size_t & dpitch) {
+    if (src0->type != src1->type || ggml_is_quantized(src0->type)) {
+        return false;
+    }
+    size_t swidth, dwidth;
+    int64_t sheight, dheight;
+    if (!ggml_cuda_cpy_rows_layout(src0, swidth, sheight, spitch) || !ggml_cuda_cpy_rows_layout(src1, dwidth, dheight, dpitch)) {
+        return false;
+    }
+    // a contiguous side takes the rows of the other side
+    if (sheight == 1) {
+        swidth  = dwidth;
+        sheight = dheight;
+        spitch  = dwidth;
+    } else if (dheight == 1) {
+        dwidth  = swidth;
+        dheight = sheight;
+        dpitch  = swidth;
+    }
+    width  = swidth;
+    height = sheight;
+    return swidth == dwidth && sheight == dheight && width >= min_width;
+}
+
 void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, ggml_tensor * src1) {
     const int64_t ne = ggml_nelements(src0);
     GGML_ASSERT(ne == ggml_nelements(src1));
@@ -407,6 +461,10 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
     const bool can_be_transposed = nb01 == (int64_t)ggml_element_size(src0) &&
         src0->ne[3] == 1 && nb02 == ne00 * ne01 * (int64_t)ggml_element_size(src0);
 
+    size_t mc_width = 0, mc_spitch = 0, mc_dpitch = 0;
+    int64_t mc_height = 0;
+    const size_t mc_min_width = ggml_cuda_info().devices[ctx.device].warp_size * sizeof(float);
+
     if (src0->type == src1->type && contiguous_srcs) {
         GGML_ASSERT(ggml_nbytes(src0) == ggml_nbytes(src1));
 #if defined(GGML_USE_MUSA) && defined(GGML_MUSA_MUDNN_COPY)
@@ -417,6 +475,9 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         {
             CUDA_CHECK(cudaMemcpyAsync(src1_ddc, src0_ddc, ggml_nbytes(src0), cudaMemcpyDeviceToDevice, main_stream));
         }
+    } else if (ggml_cuda_cpy_as_memcpy_2d(src0, src1, mc_min_width, mc_width, mc_height, mc_spitch, mc_dpitch)) {
+        CUDA_CHECK(cudaMemcpy2DAsync(src1_ddc, mc_dpitch, src0_ddc, mc_spitch,
+                                     mc_width, mc_height, cudaMemcpyDeviceToDevice, main_stream));
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
         if (can_be_transposed) {
             ggml_cpy_scalar_cuda<float, float, true>

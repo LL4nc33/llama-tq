@@ -50,6 +50,10 @@ struct llama_hparams {
     uint32_t n_layer;
     uint32_t n_layer_nextn = 0; // gemma4-assistant MTP draft layers (PR #23398)
     int32_t n_layer_kv_from_start = -1; // if non-negative, the first n_layer_kv_from_start layers have KV cache
+
+    // granite-switch: index of the single-head "router" KV layer that encodes
+    // per-token adapter selection. -1 when the model has no such layer.
+    int32_t  router_layer = -1;
     uint32_t n_expert = 0;
     uint32_t n_expert_used = 0;
     uint32_t n_rel_attn_bkts = 0;
@@ -119,6 +123,9 @@ struct llama_hparams {
     float f_norm_rms_eps;
     float f_norm_group_eps;
 
+    // post norms use their own epsilon
+    float f_post_norm_eps = 0.0f;
+
     float f_attn_logit_softcapping   = 50.0f;
     float f_router_logit_softcapping = 30.0f;
     float f_final_logit_softcapping  = 30.0f;
@@ -160,6 +167,10 @@ struct llama_hparams {
     // note: using uint32_t type for compatibility reason
     std::array<uint32_t, LLAMA_MAX_LAYERS> swa_layers;
 
+    // Per-layer RoPE enable flags (1 = use RoPE, 0 = NoPE)
+    // by default, all layers use RoPE (controlled by rope_finetuned)
+    std::array<uint32_t, LLAMA_MAX_LAYERS> rope_pattern;
+
     // for State Space Models
     uint32_t ssm_d_conv  = 0;
     uint32_t ssm_d_inner = 0;
@@ -169,6 +180,8 @@ struct llama_hparams {
 
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
+    bool     kda_safe_gate = false;
+    float    kda_gate_lower_bound = 0.0f;
 
     // for DFlash speculative drafter
     uint32_t n_embd_inp_enc_impl     = 0;
@@ -180,6 +193,12 @@ struct llama_hparams {
 
     // for hybrid state space models
     std::array<bool, LLAMA_MAX_LAYERS> recurrent_layer_arr;
+
+    // hrm-text (looped H/L stacks)
+    uint32_t n_hrm_layers_per_stack = 0;
+    uint32_t n_hrm_h_cycles = 0;
+    uint32_t n_hrm_l_cycles = 0;
+    bool     hrm_prefix_lm = false;
 
     bool ssm_dt_b_c_rms = false;
 
@@ -370,6 +389,8 @@ struct llama_hparams {
     uint32_t n_embd_head_v_mla() const;
 
     bool has_kv(uint32_t il) const;
+
+    bool has_rope(uint32_t il) const;
 
     // number of layers for which has_kv() returns true
     uint32_t n_layer_kv() const;

@@ -42,6 +42,19 @@ template <>           __device__ __forceinline__ unsigned short ar_host_to_slot<
 static __device__ __forceinline__ float ar_host_from_slot(float x)          { return x; }
 static __device__ __forceinline__ float ar_host_from_slot(unsigned short x) { return __bfloat162float(__ushort_as_bfloat16(x)); }
 
+// 16 bytes of slot values: 4 f32 or 8 bf16 (two per 32-bit word, the lower index in the low half)
+template <typename T> static __device__ __forceinline__ uint32_t ar_host_word(const float * x);
+template <> __device__ __forceinline__ uint32_t ar_host_word<float>(const float * x) { return __float_as_uint(x[0]); }
+template <> __device__ __forceinline__ uint32_t ar_host_word<unsigned short>(const float * x) {
+    return (uint32_t) ar_host_to_slot<unsigned short>(x[0]) | ((uint32_t) ar_host_to_slot<unsigned short>(x[1]) << 16);
+}
+template <typename T> static __device__ __forceinline__ void ar_host_unword(uint32_t w, float * x);
+template <> __device__ __forceinline__ void ar_host_unword<float>(uint32_t w, float * x) { x[0] = __uint_as_float(w); }
+template <> __device__ __forceinline__ void ar_host_unword<unsigned short>(uint32_t w, float * x) {
+    x[0] = ar_host_from_slot((unsigned short) (w & 0xFFFF));
+    x[1] = ar_host_from_slot((unsigned short) (w >> 16));
+}
+
 template <typename T>
 static __global__ void k_ar_host(float * __restrict__ data, T * __restrict__ slots, const int64_t slot_stride,
         uint64_t * flags, unsigned int * counter, const int dev, const int n_dev, const uint64_t epoch, const int64_t ne) {
@@ -99,14 +112,26 @@ static __global__ void k_ar_host(float * __restrict__ data, T * __restrict__ slo
 // Two devices: writer blocks copy this device's part to its host slot while reader blocks wait for the other
 // device's flag and copy its slot to a device buffer, so both directions of a slow link are busy at once.
 // k_ar_host_add then adds the two (in the same rounding on both devices; a + b == b + a, so the results match).
+// The slots are written and read in 16-byte groups (8 bf16 or 4 f32 values per thread): with one value per thread
+// a warp moves 64 bytes per PCIe transaction, which reached 0.66 GB/s on a 1.6 GB/s link (RTX 2060, PCIe 2.0 x4).
 template <typename T>
 static __global__ void k_ar_host_xchg2(const float * __restrict__ data, T * __restrict__ slots, const int64_t slot_stride,
         float * __restrict__ other, uint64_t * flags, unsigned int * counter, const int dev, const int n_writers,
         const uint64_t epoch, const int64_t ne) {
+    constexpr int n_vec = sizeof(uint4)/sizeof(T); // values per 16-byte group, the slots are 16-byte aligned
+    const int64_t ng = ne / n_vec;                 // whole groups; the remaining values one per thread
+
     volatile uint64_t * vflags = flags;
     if ((int) blockIdx.x < n_writers) {
         T * own_slot = slots + dev*slot_stride;
-        for (int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x; i < ne; i += (int64_t) n_writers*blockDim.x) {
+        const int64_t stride = (int64_t) n_writers*blockDim.x;
+        for (int64_t g = (int64_t) blockIdx.x*blockDim.x + threadIdx.x; g < ng; g += stride) {
+            const float * x = data + g*n_vec;
+            constexpr int n_w = n_vec/4; // values per 32-bit word
+            ((uint4 *) own_slot)[g] = make_uint4(ar_host_word<T>(x), ar_host_word<T>(x + n_w),
+                                                 ar_host_word<T>(x + 2*n_w), ar_host_word<T>(x + 3*n_w));
+        }
+        for (int64_t i = ng*n_vec + (int64_t) blockIdx.x*blockDim.x + threadIdx.x; i < ne; i += stride) {
             own_slot[i] = ar_host_to_slot<T>(data[i]);
         }
         __threadfence_system();
@@ -137,7 +162,17 @@ static __global__ void k_ar_host_xchg2(const float * __restrict__ data, T * __re
     }
     __syncthreads();
     const T * other_slot = slots + (1 - dev)*slot_stride;
-    for (int64_t i = (int64_t) reader*blockDim.x + threadIdx.x; i < ne; i += (int64_t) n_readers*blockDim.x) {
+    const int64_t stride = (int64_t) n_readers*blockDim.x;
+    for (int64_t g = (int64_t) reader*blockDim.x + threadIdx.x; g < ng; g += stride) {
+        const uint4 w = __ldcv((const uint4 *) other_slot + g);
+        float * x = other + g*n_vec;
+        constexpr int n_w = n_vec/4;
+        ar_host_unword<T>(w.x, x);
+        ar_host_unword<T>(w.y, x + n_w);
+        ar_host_unword<T>(w.z, x + 2*n_w);
+        ar_host_unword<T>(w.w, x + 3*n_w);
+    }
+    for (int64_t i = ng*n_vec + (int64_t) reader*blockDim.x + threadIdx.x; i < ne; i += stride) {
         other[i] = ar_host_from_slot(__ldcv(other_slot + i));
     }
 }
@@ -211,7 +246,9 @@ bool ggml_cuda_allreduce_host(ggml_backend_t * backends, ggml_tensor ** tensors,
             if (st.other[ctx->device] == nullptr) {
                 CUDA_CHECK(cudaMalloc((void **) &st.other[ctx->device], ar_host_max_ne*sizeof(float)));
             }
-            const int n_half = (int) std::min<int64_t>((ne + block - 1)/block, 32);
+            // writer and reader blocks: one 16-byte group of the slot per thread
+            const int64_t n_vec  = st.bf16 ? 8 : 4;
+            const int     n_half = (int) std::max<int64_t>(1, std::min<int64_t>((ne/n_vec + block - 1)/block, 32));
             float * data = (float *) tensors[i]->data;
             if (st.bf16) {
                 k_ar_host_xchg2<<<2*n_half, block, 0, ctx->stream()>>>(data, (unsigned short *) slots, ar_host_max_ne,

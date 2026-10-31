@@ -242,6 +242,20 @@ std::vector<std::string> common_arg::get_env() const {
 // utils
 //
 
+// a draft model drafts with draft-simple unless MTP or DFlash use it: next to them draft-simple would decode into
+// their draft context and break its positions, so "--spec-type draft-mtp -md X" means the same as "-md X --spec-type draft-mtp"
+static void add_draft_simple(common_params_speculative & spec) {
+    auto & types = spec.types;
+    const auto has = [&](common_speculative_type t) { return std::find(types.begin(), types.end(), t) != types.end(); };
+    if (has(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) || has(COMMON_SPECULATIVE_TYPE_DRAFT_MTP) || has(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) {
+        return;
+    }
+    if (types.size() == 1 && types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
+        types.clear();
+    }
+    types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
+}
+
 // Helper function to parse tensor buffer override strings
 static void parse_tensor_buffer_overrides(const std::string & value, std::vector<llama_model_tensor_buft_override> & overrides) {
     std::map<std::string, ggml_backend_buffer_type_t> buft_list;
@@ -653,6 +667,12 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     if (!params.kv_overrides.empty()) {
         params.kv_overrides.emplace_back();
         params.kv_overrides.back().key[0] = 0;
+    }
+
+    // tools that act on the machine must not be reachable from any web page a browser on it opens
+    if ((!params.server_tools.empty() || params.webui_mcp_proxy) && !params.cors_origins_explicit) {
+        LOG_WRN("server tools or the MCP proxy are enabled, using localhost as default CORS origin (change via --cors-origins)\n");
+        params.cors_origins = "localhost";
     }
 
     // pad tensor_buft_overrides for common_fit_params:
@@ -2842,14 +2862,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.speculative.mparams_dft.hf_repo = value;
             params.speculative.draft.mparams.hf_repo = value;
-            // Register draft-simple speculation type (server-context will MTP-promote if head present)
-            if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
-                          COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) == params.speculative.types.end()) {
-                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
-                    params.speculative.types.clear();
-                }
-                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
-            }
+            add_draft_simple(params.speculative);
         }
     ).set_env("LLAMA_ARG_HFD_REPO"));
     add_opt(common_arg(
@@ -3106,16 +3119,54 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--webui-mcp-proxy"},
         {"--no-webui-mcp-proxy"},
-        string_format("experimental: whether to enable MCP CORS proxy - do not enable in untrusted environments (default: %s)", params.webui_mcp_proxy ? "enabled" : "disabled"),
+        string_format("experimental: whether to enable MCP CORS proxy - do not enable in untrusted environments (default: %s)\n"
+                      "note: for security reasons, this will limit --cors-origins to localhost by default", params.webui_mcp_proxy ? "enabled" : "disabled"),
         [](common_params & params, bool value) {
             params.webui_mcp_proxy = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_WEBUI_MCP_PROXY"));
     add_opt(common_arg(
+        {"--cors-origins"}, "ORIGINS",
+        string_format(
+            "comma-separated list of allowed origins for CORS (default: %s)\n"
+            "if set to special value 'localhost', reflect the Origin header only if it is localhost",
+        params.cors_origins.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.cors_origins = value;
+            params.cors_origins_explicit = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_ORIGINS"));
+    add_opt(common_arg(
+        {"--cors-methods"}, "METHODS",
+        string_format("comma-separated list of allowed methods for CORS (default: %s)", params.cors_methods.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.cors_methods = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_METHODS"));
+    add_opt(common_arg(
+        {"--cors-headers"}, "HEADERS",
+        string_format("comma-separated list of allowed headers for CORS (default: %s)", params.cors_headers.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.cors_headers = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_HEADERS"));
+    add_opt(common_arg(
+        {"--cors-credentials"},
+        {"--no-cors-credentials"},
+        string_format(
+            "whether to allow credentials for CORS (default: %s)\n"
+            "note: if this is enabled and --cors-origins is set to * (default), the Origin header will be echoed back, and credentials will always be allowed",
+        params.cors_credentials ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.cors_credentials = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_CREDENTIALS"));
+    add_opt(common_arg(
         {"--tools"}, "TOOL1,TOOL2,...",
         "experimental: whether to enable built-in tools for AI agents - do not enable in untrusted environments (default: no tools)\n"
         "specify \"all\" to enable all tools\n"
-        "available tools: read_file, file_glob_search, grep_search, exec_shell_command, write_file, edit_file, apply_diff",
+        "available tools: read_file, file_glob_search, grep_search, exec_shell_command, write_file, edit_file, apply_diff\n"
+        "note: for security reasons, this will limit --cors-origins to localhost by default",
         [](common_params & params, const std::string & value) {
             params.server_tools = parse_csv_row(value);
         }
@@ -3292,7 +3343,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
         {"--anthropic-cache-max-gb"}, "N",
-        "soft disk quota for Anthropic prompt-cache directory in GiB (default: 32)",
+        "disk quota of the Anthropic prompt-cache directory in GiB; expired, then least recently used entries are removed beyond it (default: 32)",
         [](common_params & params, int value) {
             params.anthropic_cache_max_gb = value;
         }
@@ -3772,14 +3823,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.speculative.mparams_dft.path = value;
             params.speculative.draft.mparams.path = value;
-            // Register draft-simple speculation type (server-context will MTP-promote if head present)
-            if (std::find(params.speculative.types.begin(), params.speculative.types.end(),
-                          COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) == params.speculative.types.end()) {
-                if (params.speculative.types.size() == 1 && params.speculative.types[0] == COMMON_SPECULATIVE_TYPE_NONE) {
-                    params.speculative.types.clear();
-                }
-                params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
-            }
+            add_draft_simple(params.speculative);
         }
     ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_MODEL_DRAFT"));
     add_opt(common_arg(

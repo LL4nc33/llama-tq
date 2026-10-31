@@ -1374,6 +1374,19 @@ int32_t llama_memory_recurrent_context::s_copy(int i) const {
     return (int32_t)(idx * mem->size) + src0;
 }
 
+bool llama_memory_recurrent_context::s_copy_main_in_place(uint32_t n_seqs) const {
+    if (is_full || mem->n_rs_seq != 0) {
+        return false;
+    }
+    for (uint32_t i = 0; i < n_seqs; ++i) {
+        const uint32_t cell_idx = mem->head + i;
+        if (cell_idx >= mem->size || mem->cells[cell_idx].src0 != (int32_t) cell_idx) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool llama_memory_recurrent::shadow_alloc() {
     if (shadow_allocated) return true;
     const uint32_t n_layer = hparams.n_layer;

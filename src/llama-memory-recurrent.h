@@ -195,6 +195,11 @@ public:
 
     int32_t s_copy(int i) const;
 
+    // true when each of the first n_seqs cells keeps its own state (nothing moved, cleared or rolled back), so that
+    // the states can be read where they are instead of being gathered; always false with rollback snapshots, whose
+    // read position changes with every verify step
+    bool s_copy_main_in_place(uint32_t n_seqs) const;
+
 private:
     const llama_memory_status status;
 

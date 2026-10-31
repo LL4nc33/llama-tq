@@ -89,6 +89,9 @@ struct llama_grammar_parser {
 
     llama_grammar_rules rules;
 
+    // how many ( ) groups enclose the position being parsed; each group recurses once
+    uint32_t group_depth = 0;
+
     llama_grammar_parser(const struct llama_vocab * vocab = nullptr) : vocab(vocab) {}
 
     llama_grammar_stack c_rules() const;

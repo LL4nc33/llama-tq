@@ -13,6 +13,7 @@ using namespace ggml_cuda_mma;
 #define MMQ_ITER_K 256
 #define MMQ_ITER_K_MXFP4_FP4    512
 #define MMQ_NWARPS 8
+#define MMQ_TILING_MIN_EFFICIENCY_PERCENT 90 // below this share of full SM waves, MMQ runs stream-k with a fixup pass instead of one block per tile
 
 typedef void (*load_tiles_mmq_t)(const char * __restrict__ x, int * x_tile, const int kbx0, const int i_max, const int stride);
 typedef void (*vec_dot_mmq_t)(const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00);
@@ -4230,9 +4231,13 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     const int ntiles_dst = ntx * nty * ntzw;
     const int tiles_nwaves = (ntiles_dst + nsm - 1) / nsm;
     const int tiles_efficiency_percent = 100 * ntiles_dst / (nsm*tiles_nwaves);
-    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= 90 ? ntiles_dst : nsm, 1, 1);
 
     GGML_ASSERT(ntiles_dst * blocks_per_ne00_fd.z < (1 << 30)); // Assert that variable kbc will not overflow.
+
+    // small matrices have fewer k iterations than SMs: blocks beyond that count would only add launch and fixup work
+    // (MMQ_ITER_K is the smallest iteration size, so nwork never undercounts)
+    const int nwork = ntiles_dst * ((args.ncols_x + MMQ_ITER_K - 1) / MMQ_ITER_K);
+    const dim3 block_nums_stream_k(GGML_CUDA_CC_IS_NVIDIA(cc) && tiles_efficiency_percent >= MMQ_TILING_MIN_EFFICIENCY_PERCENT ? ntiles_dst : std::min(nsm, nwork), 1, 1);
 
     const bool fixup_needed = ntiles_dst % block_nums_stream_k.x != 0;
 

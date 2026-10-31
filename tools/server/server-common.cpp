@@ -562,6 +562,30 @@ server_tokens server_tokens::clone() const {
 // tokenizer and input processing utils
 //
 
+bool json_text_nested_deeper_than(const std::string & text, int max_depth) {
+    int  depth     = 0;
+    bool in_string = false;
+    for (size_t i = 0; i < text.size(); i++) {
+        const char c = text[i];
+        if (in_string) {
+            if (c == '\\') {
+                i++; // skip the escaped character
+            } else if (c == '"') {
+                in_string = false;
+            }
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '{' || c == '[') {
+            if (++depth > max_depth) {
+                return true;
+            }
+        } else if (c == '}' || c == ']') {
+            depth--;
+        }
+    }
+    return false;
+}
+
 bool json_is_array_of_numbers(const json & data) {
     if (data.is_array()) {
         for (const auto & e : data) {
@@ -893,6 +917,14 @@ static void handle_media(
 }
 
 // used by /chat/completions endpoint
+const std::string & server_chat_parser_key() {
+    static const std::string key = [] {
+        std::random_device rd;
+        return string_format("chat_parser#%08x%08x%08x%08x", rd(), rd(), rd(), rd());
+    }();
+    return key;
+}
+
 json oaicompat_chat_params_parse(
     json & body, /* openai api json semantics */
     const server_chat_params & opt,
@@ -932,13 +964,20 @@ json oaicompat_chat_params_parse(
         json response_format      = json_value(body, "response_format", json::object());
         std::string response_type = json_value(response_format, "type", std::string());
         if (response_type == "json_object") {
-            json_schema = json_value(response_format, "schema", json::object());
+            if (response_format.contains("schema") || json_schema.empty()) {
+                json_schema = json_value(response_format, "schema", json::object());
+            }
         } else if (response_type == "json_schema") {
             auto schema_wrapper = json_value(response_format, "json_schema", json::object());
             json_schema = json_value(schema_wrapper, "schema", json::object());
         } else if (!response_type.empty() && response_type != "text") {
             throw std::invalid_argument("response_format type must be one of \"text\" or \"json_object\", but got: " + response_type);
         }
+    }
+
+    // an absent or empty schema means any object
+    if (json_schema.is_object() && json_schema.empty()) {
+        json_schema["type"] = "object";
     }
 
     // get input files
@@ -1137,7 +1176,7 @@ json oaicompat_chat_params_parse(
         llama_params["stop"].push_back(stop);
     }
     if (!chat_params.parser.empty()) {
-        llama_params["chat_parser"] = chat_params.parser;
+        llama_params[server_chat_parser_key()] = chat_params.parser;
     }
 
     // Reasoning budget: pass parameters through to sampling layer

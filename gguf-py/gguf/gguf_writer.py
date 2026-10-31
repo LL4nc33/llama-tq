@@ -850,6 +850,9 @@ class GGUFWriter:
     def add_shared_kv_layers(self, value: int) -> None:
         self.add_uint32(Keys.Attention.SHARED_KV_LAYERS.format(arch=self.arch), value)
 
+    def add_rope_pattern(self, value: Sequence[bool]) -> None:
+        self.add_array(Keys.Attention.ROPE_PATTERN.format(arch=self.arch), value)
+
     # if input is array, true means SWA and false means full_attention for each layer
     def add_sliding_window_pattern(self, value: int | Sequence[bool]) -> None:
         key = Keys.Attention.SLIDING_WINDOW_PATTERN.format(arch=self.arch)
@@ -916,6 +919,9 @@ class GGUFWriter:
     def add_moe_latent_size(self, value: int) -> None:
         self.add_uint32(Keys.LLM.MOE_LATENT_SIZE.format(arch=self.arch), value)
 
+    def add_post_norm_eps(self, value: float) -> None:
+        self.add_float32(Keys.LLM.POST_NORM_EPS.format(arch=self.arch), value)
+
     def add_nextn_predict_layers(self, count: int) -> None:
         self.add_uint32(Keys.LLM.NEXTN_PREDICT_LAYERS.format(arch=self.arch), count)
 
@@ -946,11 +952,44 @@ class GGUFWriter:
     def add_embedding_scale(self, value: float) -> None:
         self.add_float32(Keys.LLM.EMBEDDING_SCALE.format(arch=self.arch), value)
 
+    def add_adapter_count(self, count: int) -> None:
+        self.add_uint32(Keys.Adapters.COUNT.format(arch=self.arch), count)
+
+    def add_adapter_token_ids_activate(self, ids: Sequence[int]) -> None:
+        self.add_array(Keys.Adapters.TOKEN_IDS_ACTIVATE.format(arch=self.arch), ids)
+
+    def add_adapter_token_ids_substitute(self, ids: Sequence[int]) -> None:
+        self.add_array(Keys.Adapters.TOKEN_IDS_SUBSTITUTE.format(arch=self.arch), ids)
+
+    def add_adapter_lora_rank(self, rank: int) -> None:
+        self.add_uint32(Keys.Adapters.LORA_RANK.format(arch=self.arch), rank)
+
+    def add_adapter_router_gain(self, gain: float) -> None:
+        self.add_float32(Keys.Adapters.ROUTER_GAIN.format(arch=self.arch), gain)
+
     def add_wkv_head_size(self, size: int) -> None:
         self.add_uint32(Keys.WKV.HEAD_SIZE.format(arch=self.arch), size)
 
     def add_token_shift_count(self, count: int) -> None:
         self.add_uint32(Keys.LLM.TOKEN_SHIFT_COUNT.format(arch=self.arch), count)
+
+    def add_hrm_layers_per_stack(self, value: int) -> None:
+        self.add_uint32(Keys.HRM.LAYERS_PER_STACK.format(arch=self.arch), value)
+
+    def add_hrm_h_cycles(self, value: int) -> None:
+        self.add_uint32(Keys.HRM.H_CYCLES.format(arch=self.arch), value)
+
+    def add_hrm_l_cycles(self, value: int) -> None:
+        self.add_uint32(Keys.HRM.L_CYCLES.format(arch=self.arch), value)
+
+    def add_hrm_prefix_lm(self, value: bool) -> None:
+        self.add_bool(Keys.HRM.PREFIX_LM.format(arch=self.arch), value)
+
+    def add_num_loops(self, count: int) -> None:
+        self.add_uint32(Keys.LLM.NUM_LOOPS.format(arch=self.arch), count)
+
+    def add_skip_loop_final_norm(self, value: bool) -> None:
+        self.add_bool(Keys.LLM.SKIP_LOOP_FINAL_NORM.format(arch=self.arch), value)
 
     def add_interleave_moe_layer_step(self, value: int) -> None:
         self.add_uint32(Keys.LLM.INTERLEAVE_MOE_LAYER_STEP.format(arch=self.arch), value)
@@ -1077,6 +1116,12 @@ class GGUFWriter:
 
     def add_kda_head_dim(self, value: int) -> None:
         self.add_uint32(Keys.KDA.HEAD_DIM.format(arch=self.arch), value)
+
+    def add_kda_safe_gate(self, value: bool) -> None:
+        self.add_bool(Keys.KDA.SAFE_GATE.format(arch=self.arch), value)
+
+    def add_kda_gate_lower_bound(self, value: float) -> None:
+        self.add_float32(Keys.KDA.GATE_LOWER_BOUND.format(arch=self.arch), value)
 
     def add_tokenizer_model(self, model: str) -> None:
         self.add_string(Keys.Tokenizer.MODEL, model)
@@ -1313,6 +1358,15 @@ class GGUFWriter:
 
     def add_audio_num_mel_bins(self, value: int) -> None:
         self.add_uint32(Keys.ClipAudio.NUM_MEL_BINS, value)
+
+    def add_audio_hidden_sizes(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipAudio.HIDDEN_SIZES, values)
+
+    def add_audio_patch_sizes(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipAudio.PATCH_SIZES, values)
+
+    def add_audio_depths(self, values: Sequence[int]) -> None:
+        self.add_array(Keys.ClipAudio.DEPTHS, values)
 
     def add_audio_stack_factor(self, value: int) -> None:
         self.add_uint32(Keys.ClipAudio.Projector.STACK_FACTOR, value)

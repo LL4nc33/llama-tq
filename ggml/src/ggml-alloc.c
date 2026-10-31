@@ -1,4 +1,5 @@
 #include "ggml-alloc.h"
+#include "ggml-backend-share.h"
 #include "ggml-backend-impl.h"
 #include "ggml.h"
 #include "ggml-impl.h"
@@ -492,6 +493,15 @@ struct ggml_gallocr {
 
     struct leaf_alloc * leaf_allocs; // [n_leafs]
     int n_leafs;
+
+    // see ggml_gallocr_share_buffers: the allocator whose buffers this one places its graphs in when they fit, which of
+    // the buffers are borrowed from it (aliased: meta buffers, through aliases this allocator owns), and its generation
+    // at the time (bumped whenever an allocator replaces one of its buffers)
+    ggml_gallocr_t share_from;
+    bool *         borrowed;   // [n_buffers]
+    bool *         aliased;    // [n_buffers]
+    uint64_t *     borrow_gen; // [n_buffers]
+    uint64_t       gen;
 };
 
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
@@ -506,6 +516,11 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
 
     galloc->buf_tallocs = calloc(n_bufs, sizeof(struct ggml_dyn_tallocr *));
     GGML_ASSERT(galloc->buf_tallocs != NULL);
+
+    galloc->borrowed   = calloc(n_bufs, sizeof(bool));
+    galloc->aliased    = calloc(n_bufs, sizeof(bool));
+    galloc->borrow_gen = calloc(n_bufs, sizeof(uint64_t));
+    GGML_ASSERT(galloc->borrowed != NULL && galloc->aliased != NULL && galloc->borrow_gen != NULL);
 
     for (int i = 0; i < n_bufs; i++) {
         galloc->bufts[i] = bufts[i];
@@ -549,7 +564,7 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
                     break;
                 }
             }
-            if (!freed) {
+            if (!freed && (!galloc->borrowed[i] || galloc->aliased[i])) {
                 ggml_vbuffer_free(galloc->buffers[i]);
             }
         }
@@ -571,6 +586,9 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     ggml_hash_set_free(&galloc->hash_set);
     free(galloc->hash_values);
     free(galloc->bufts);
+    free(galloc->borrowed);
+    free(galloc->aliased);
+    free(galloc->borrow_gen);
     free(galloc->buffers);
     free(galloc->buf_tallocs);
     free(galloc->node_allocs);
@@ -821,6 +839,68 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
     }
 }
 
+// release buffer i of galloc: free it if it is its own (or its own alias) and no other id uses it
+static void ggml_gallocr_drop_buffer(ggml_gallocr_t galloc, int i) {
+    struct vbuffer * buf = galloc->buffers[i];
+    const bool mine = !galloc->borrowed[i] || galloc->aliased[i];
+    galloc->buffers[i]  = NULL;
+    galloc->borrowed[i] = false;
+    galloc->aliased[i]  = false;
+    if (buf == NULL || !mine) {
+        return;
+    }
+    for (int j = 0; j < galloc->n_buffers; j++) {
+        if (galloc->buffers[j] == buf) {
+            return;
+        }
+    }
+    ggml_vbuffer_free(buf);
+}
+
+// a buffer for the memory of buf: buf itself, or for meta buffers aliases with their own tensor objects (resetting a
+// meta buffer drops the tensor objects of the graph placed in it)
+static struct vbuffer * ggml_gallocr_borrow(struct vbuffer * buf, bool * aliased) {
+    *aliased = buf->chunks[0] != NULL && ggml_backend_buffer_is_meta(buf->chunks[0]);
+    if (!*aliased) {
+        return buf;
+    }
+    struct vbuffer * alias = (struct vbuffer *)calloc(1, sizeof(struct vbuffer));
+    GGML_ASSERT(alias != NULL);
+    for (int c = 0; c < GGML_VBUFFER_MAX_CHUNKS && buf->chunks[c]; c++) {
+        alias->chunks[c] = ggml_backend_meta_buffer_alias(buf->chunks[c]);
+        ggml_backend_buffer_set_usage(alias->chunks[c], GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+    }
+    return alias;
+}
+
+// whether the graph reserved in buffer i of galloc fits buffer i of the allocator it shares with
+static bool ggml_gallocr_fits_shared(ggml_gallocr_t galloc, int i) {
+    ggml_gallocr_t from = galloc->share_from;
+    if (from == NULL || from->buffers[i] == NULL || from->bufts[i] != galloc->bufts[i]) {
+        return false;
+    }
+    for (int c = 0; c < galloc->buf_tallocs[i]->n_chunks; c++) {
+        if (ggml_dyn_tallocr_max_size(galloc->buf_tallocs[i], c) > ggml_vbuffer_chunk_size(from->buffers[i], c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void ggml_gallocr_share_buffers(ggml_gallocr_t galloc, ggml_gallocr_t from) {
+    GGML_ASSERT(from == NULL || from->n_buffers == galloc->n_buffers);
+    galloc->share_from = from;
+}
+
+bool ggml_gallocr_buffers_valid(ggml_gallocr_t galloc) {
+    for (int i = 0; i < galloc->n_buffers; i++) {
+        if (galloc->borrowed[i] && galloc->borrow_gen[i] != galloc->share_from->gen) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool ggml_gallocr_reserve_n_impl(
         ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids, bool no_alloc) {
     size_t min_hash_size = graph->n_nodes + graph->n_leafs;
@@ -902,6 +982,30 @@ static bool ggml_gallocr_reserve_n_impl(
 
     // reallocate buffers if needed
     for (int i = 0; i < galloc->n_buffers; i++) {
+        // the graph fits the buffer of the allocator it shares with: place it there
+        if (!no_alloc && ggml_gallocr_fits_shared(galloc, i)) {
+            if (galloc->borrowed[i] && galloc->borrow_gen[i] == galloc->share_from->gen) {
+                continue; // borrowed from the current buffer already
+            }
+            ggml_gallocr_drop_buffer(galloc, i);
+            for (int j = 0; j < i; j++) { // the same buffer type under an earlier id: the same buffer
+                if (galloc->buf_tallocs[j] == galloc->buf_tallocs[i] && galloc->borrowed[j]) {
+                    galloc->buffers[i] = galloc->buffers[j];
+                    galloc->aliased[i] = galloc->aliased[j];
+                    break;
+                }
+            }
+            if (galloc->buffers[i] == NULL) {
+                galloc->buffers[i] = ggml_gallocr_borrow(galloc->share_from->buffers[i], &galloc->aliased[i]);
+            }
+            galloc->borrowed[i]   = true;
+            galloc->borrow_gen[i] = galloc->share_from->gen;
+            continue;
+        }
+        if (galloc->borrowed[i]) {
+            ggml_gallocr_drop_buffer(galloc, i);
+        }
+
         // if the buffer type is used multiple times, we reuse the same buffer
         for (int j = 0; j < i; j++) {
             if (galloc->buf_tallocs[j] == galloc->buf_tallocs[i]) {
@@ -932,6 +1036,7 @@ static bool ggml_gallocr_reserve_n_impl(
             }
 #endif
             ggml_vbuffer_free(galloc->buffers[i]);
+            galloc->gen++;
             if (no_alloc) {
                 galloc->buffers[i] = NULL;
             } else {
@@ -1006,6 +1111,10 @@ static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_t
 }
 
 static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
+    if (!ggml_gallocr_buffers_valid(galloc)) {
+        return true; // the shared buffers were replaced
+    }
+
     if (galloc->n_nodes != graph->n_nodes) {
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: graph has different number of nodes\n", __func__);
@@ -1099,8 +1208,8 @@ bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph)
 size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
     GGML_ASSERT(buffer_id >= 0 && buffer_id < galloc->n_buffers);
 
-    if (galloc->buffers[buffer_id] == NULL) {
-        return 0;
+    if (galloc->buffers[buffer_id] == NULL || galloc->borrowed[buffer_id]) {
+        return 0; // borrowed: counted by its owner
     }
 
     for (int i = 0; i < buffer_id; i++) {

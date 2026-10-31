@@ -55,6 +55,13 @@ void common_perf_print(const struct llama_context * ctx, const struct common_sam
 // get the underlying llama_sampler_chain
 struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl);
 
+// the largest top_k the logits are cut to on the device; larger values sample from whole rows
+#define COMMON_SAMPLER_LOGITS_TOP_K_MAX 1024
+
+// k when the sampler reads only the k largest logits of a row (the first active sampler of its chain is top-k and nothing
+// needs the whole row), 0 otherwise; then llama_set_logits_top_k(ctx, k) gives the same tokens with less work
+int32_t common_sampler_logits_top_k(const struct common_sampler * gsmpl);
+
 // extended sampling implementation:
 //
 // - set logits

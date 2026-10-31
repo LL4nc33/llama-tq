@@ -1,5 +1,206 @@
 # Changelog
 
+## 2026-10-29
+
+- **Two requests with MTP on Qwen3.5/3.6/3.8 and other hybrid models: +20-30 %.** Drafts of the sequences in one
+  verify batch now end equally long: the recurrent layers split a batch with unequal sequence lengths into one forward
+  pass per length, so two requests almost always cost two full passes. Two RTX 2060, Qwen3.8-27B Q4_K_M `-sm tensor`,
+  MTP draft-max 5, two concurrent requests: 43 -> 52-57 t/s in total; single requests unchanged (same texts).
+- **Flash attention reads the quantized cache directly for GQA 6 at 2-5 queries** (Qwen3.6/3.8 27B: 24 query heads,
+  4 KV heads); before, these batches converted the whole cache to f16 on every call. Two sequences decoding at 32k:
+  32.3 -> 38.9 t/s (+20 %), at 8k +6 %; same accuracy.
+- **`-sm tensor`: the host allreduce moves 16 bytes per thread.** +2-4.5 % with bit-identical results.
+- **Prompt cache: restoring a saved state into scattered cells copies whole runs instead of single cells**
+  (upstream #27991): seconds instead of up to a minute for long prompts with `-kvu -np 2`.
+- **Fixes:** Qwen3/LLaMA models with an attention output scale applied it twice (upstream #22421), Mistral3 NVFP4
+  checkpoints ignored their FFN scales (upstream #23629), BailingMoE3 loaded its SwiGLU limits but never applied them.
+- **New architectures** (all checked against upstream on random models): Muse Glimmer (with vision encoder) and Muse
+  Spark Open, DeepSeek V3.2 (DSA), Hy3 (with MTP), Cohere2-MoE (Tiny Aya), Granite SWA and Granite Switch,
+  BailingMoE3 (Ling 3), Nanbeige 4.2, Mellum, Laguna, Spark 2.5, HRM-Text (Mimir 1B), EmbeddingGemma 2.
+- **Benchmarks re-measured against upstream** (3f03b17724, two RTX 2060): decode with a `q8_0` cache at 32k is
+  1.24-2.2 times upstream, Qwen3.8-27B prefills 16 % faster, every other cell is within 1 % (Gemma 4 prefill is now
+  even); KL divergence against an f32 reference is equal or lower than upstream's. One-GPU decode, trellis, n-gram on
+  two GPUs, MTP and the speculative two-GPU rows of the benchmarks page are re-measured on this tree
+  ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
+
+## 2026-10-25
+
+- **Parallel requests on Qwen3.5/3.6/3.8 and Qwen3-Next: +15-21 %, ahead of upstream.** The linear-attention layers
+  no longer move their recurrent states around needlessly: the output projection takes all tokens of a batch in one
+  pass over the weights (it read them once per sequence), the gated delta net writes its new state straight into the
+  recurrent cache (the graph copied it there afterwards, 3 MB per sequence and layer for Qwen3.8), and states that stay
+  in their cells are read where they are instead of being gathered first. The two state changes give bit-identical
+  results. Two RTX 2060, 4 parallel requests: OidaNice-Next TQ1 105.8 -> 127.8 t/s (upstream 114.8), Qwen3.8-27B
+  Q4_K_M layer split 36.9 -> 44.4 (upstream 41.9), -sm tensor 54.0 -> 62.0; MTP -sm tensor +2-4 %.
+- **Turing: rms_norm reads rows as float4 (32 % faster), small matrices stay on MMVQ up to 5 columns, Stream-K
+  launches no more blocks than there is work, snapshot copies are 2D copies.** Qwen3-Coder-30B-A3B, 4 parallel
+  requests 209 -> 211 t/s; accuracy unchanged against a dequantize + cuBLAS f32 reference.
+- **Security: grammars with more than 16384 parse states at once are refused.** A short nested grammar could keep the
+  server busy for hours; such a grammar now fails like any invalid one, and an error while sampling ends only its
+  request.
+
+## 2026-10-24
+
+- **Security: requests can no longer crash the server or take over its parser.** A request could load its own output
+  parser (`chat_parser`) and trigger a use-after-free in it (CVE-2026-107183); the server now uses only the parser of
+  the chat template. JSON nested deeper than 512 levels is rejected with 400 (deep tools or response formats overflowed
+  the stack), as are grammars with groups nested deeper than 256 and JSON schemas deeper than 256; schema patterns
+  the converter cannot handle are accepted as any string (CVE-2026-17500, -17501). Request values are bounded:
+  penalty windows by the slot's context, `speculative.n_max` by `--draft-max`, negative `dry_allowed_length`
+  (CVE-2026-43628) and `min_keep` are rejected, and `top_k` above 1024 or above a device's part of the vocabulary
+  (`-sm tensor`) samples from whole rows. A shorter prompt after a longer one no longer aborts ngram-map speculation.
+- **Security: crafted model files are rejected instead of writing out of bounds.** GGUF element counts, padding,
+  dimensions, alignment and array types are checked; trellis outlier positions stay inside their block, KV-only
+  types are refused as weights, and the CPU trellis dot product no longer puts a whole row on the stack. Vision and
+  audio projectors are checked (pinpoints, mean/std, patch size, merge size, audio parameters; gemma4ua reports its
+  real output width), and mel spectrograms of long audio use 64-bit sizes.
+- **Security: `--cors-*` options; `--tools` and `--webui-mcp-proxy` only answer pages from localhost by default.** The
+  server warns when every origin is allowed without an API key; IPv6 localhost (`http://[::1]`) counts as localhost.
+- **Anthropic prompt cache: quota enforced, checkpoints restored only where they fit.** `--anthropic-cache-max-gb`
+  is enforced (expired entries first, then the least recently used), checkpoint companions store the positions they
+  cover and must match the restored tokens (a hybrid model no longer resumes from the state of the previous request),
+  and cached requests run on the slot their snapshot is restored into.
+- **cpp-httplib 0.40.0 -> 0.60.1.**
+
+## 2026-10-23
+
+- **First long prompt of a server on two GPUs at full speed (1330 -> 2467 t/s).** The top-k selection of the logits
+  was left out of prompt batches without outputs, so their graph no longer matched the reserved one: the compute buffers
+  were planned anew at every ubatch of the first long prompt (and of the first one after each change of k), and each plan
+  synchronizes all devices, which stops the pipeline of a layer split. The selection now also runs on batches without
+  outputs (no rows), and the graph keeps the largest k asked for, so requests that alternate between top-k and whole rows
+  (a chat, then its title under a grammar) no longer re-reserve. Same texts. Qwen3-Coder-30B-A3B IQ4_XS, two RTX 2060,
+  first 11.8k-token prompt: 1330 -> 2467 t/s (upstream 2506), later prompts 2540-2555 t/s like upstream.
+- **Time to the first token: 77 -> 66 ms with the prompt cache, 79 -> 36 ms without (upstream 73 / 65).** The autoparser
+  analyzed the chat template at every request, rendering it many times; the analysis is now kept per template. A request
+  with `cache_prompt: false` no longer loads a cached prompt before clearing the slot. Qwen3.5-0.8B, one RTX 2060.
+- **MTP: the draft graph is reused, 1-2.5 % faster.** A batch with both tokens and embeddings (every MTP draft batch)
+  never reused its graph, so each draft step built and planned the draft graph anew, and the draft graphs cycled through
+  all graph slots, so CUDA graphs (on by default from Ampere on) never captured them; such batches now reuse their graph
+  (as upstream). Same texts. Two RTX 2060, prose / code / rewrites: Qwen3.8-27B `-sm tensor`, draft max 5:
+  36.6 / 55.3 / 46.3 -> 37.1 / 56.2 / 47.0 t/s; Ternary-Bonsai-2-27B `-sm tensor`, draft max 3: 50.7 / 64.0 / 64.9 ->
+  51.9 / 65.6 / 66.6 t/s; Gemma-4-12B with its MTP assistant, one GPU: 53.5 / 70.6 / 67.9 -> 53.8 / 71.2 / 68.5 t/s.
+- **MTP with a draft model: `--spec-type draft-mtp` before `-md` drafts again (Gemma-4-12B 37 -> 52 t/s).** A draft
+  model registered draft-simple unless `--spec-type draft-mtp` came after it, so with the type first both ran: they
+  decoded into the same draft context, every MTP draft failed on its positions, and draft-simple drafted one token per
+  step. `-md` now adds draft-simple only when no MTP or DFlash type is set. Gemma-4-12B Q4_K_M with its MTP assistant,
+  draft max 3, one RTX 2060, prose / code / rewrites: 37.4 / 51.3 / 49.1 -> 52.0 / 69.2 / 67.7 t/s (as with `-md` first).
+- **Q4_K and Q5_K matrix-vector products with 2-8 columns no longer unpack the scales once per column.** The unpack sat
+  behind a branch the compiler could not hoist out of the column loop; it is branchless now (as upstream). Same results.
+  RTX 2060: 5-8 % faster at 2-3 columns (MMQ from 4 on); on an RTX 3090 the old kernel took 5-37 % longer than upstream's
+  at 2-8 columns (parallel requests, MTP verify).
+- **`get_rows` of same-type rows copies 16 bytes per thread.** The row index and pointers are computed once per row
+  instead of per element, and aligned rows are copied as int4 (as upstream). Qwen3.8-27B, two RTX 2060, 4 concurrent
+  requests: the recurrent-state gather 1327 -> 1164 ms of GPU time in the request window (-12 %).
+- **MoE models with a few tokens per step: gate, biases and GLU fused into the expert kernel, 3-4 % faster at 2-4
+  requests.** The fusion of the experts' up and gate products with their GLU covered one token only; with parallel
+  requests or a speculative verify batch they ran as three kernels. The vector kernel for a few tokens now fuses them,
+  and the expert routing handles up to 8 rows in one block (as upstream). Same texts. Two RTX 2060, 2 / 4 concurrent
+  requests: Qwen3-Coder-30B-A3B IQ4_XS 155.2 / 203.5 -> 159.4 / 209.5 t/s, Qwen3.6-35B-A3B IQ2_XXS 108.4 / 132.5 ->
+  111.7 / 137.7 t/s.
+- **`response_format: {"type": "json_object"}` constrains the output to JSON.** Without a schema it became an
+  empty schema, which the chat parsers took as no response format; an absent or empty schema now means any object (as
+  upstream).
+
+## 2026-10-22
+
+- **`-sm tensor`: only the best logits cross to the host, MTP 3-6 % faster.** With the logits split over the devices along
+  the vocabulary, the top-k selection on the device was switched off, so every verify token and every MTP draft token
+  copied whole rows to the host; on two RTX 2060 the GPU in the slow slot reads back at 1.6 GB/s, about 0.3 ms per draft
+  token. Each device now selects the k best of its part of the vocabulary (the meta backend splits `TOP_K` and the
+  `GET_ROWS` of their values along the parts), the context maps the indices to token ids, and the MTP draft asks for the
+  candidates when its sampler cannot run on the device. Same texts. Qwen3.8-27B `-sm tensor`, draft max 5, prose / code /
+  rewrites: 34.5 / 50.4 / 41.7 → 35.6 / 52.9 / 43.4 t/s, without speculation 26.7 → 27.1
+  ([benchmarks](docs/benchmarks/README.md#speculative-decoding-two-gpus)); Ternary-Bonsai-2-27B, draft max 3:
+  48.4 / 60.3 / 61.2 → 50.6 / 64.0 / 64.9 t/s.
+- **MTP: each verify size keeps its graph, `-sm tensor` with MTP 6-20 % faster.** The verify batch of speculative
+  decoding changes its size from step to step, and with one graph per context every change was a rebuild (with
+  `-sm tensor` about 8 ms on two RTX 2060, layer split under 2 ms). Batches of up to 16 tokens now keep their graphs in
+  up to 8 slots, each with its own scheduler; the slots place their graphs in the compute buffers of the main graph
+  (new `ggml/include/ggml-backend-share.h`: an allocator borrows the buffers of another one when its graph fits, meta
+  buffers through aliases with their own per-device tensor objects), so they cost no VRAM, and the meta backend keeps the
+  split of each graph (up to 16) instead of only the last. Same texts; `test-llama-archs` passes. Two RTX 2060,
+  Qwen3.8-27B `-sm tensor`, draft max 5, prose / code / rewrites: 30.5 / 47.5 / 38.6 → 34.5 / 50.4 / 41.7 t/s
+  ([benchmarks](docs/benchmarks/README.md#speculative-decoding-two-gpus)); Ternary-Bonsai-2-27B with an MTP layer,
+  `-sm tensor`, draft max 3: 40.4 / 49.0 / 49.7 → 48.6 / 60.5 / 61.3 t/s; layer split and one GPU 0-4 %.
+
+## 2026-10-21
+
+- **CUDA release archives on CPUs without AVX-512.** The CUDA archives of all releases so far (up to v2026.10.19) built
+  their CPU backend for the CPU of the build machine, which has AVX-512: on a CPU without it (most desktop CPUs, all AMD
+  Ryzen before Zen 4) `llama-server`, `llama-finetune` and the other tools stopped at startup with an illegal
+  instruction (found on a Ryzen 7 3700X). The CUDA build of the release workflow now builds the CPU backend in all
+  variants and loads the one for the CPU at hand (`GGML_BACKEND_DL`, `GGML_CPU_ALL_VARIANTS`), as the CPU and Vulkan
+  archives already did, and `scripts/check-release-archive.sh` rejects AVX-512 code outside those variants.
+- **Activation block sums from the quantized values (CUDA): prompt and verify batches more accurate.** Quantized matrix
+  products quantize the activations to 8 bits in blocks of 32 and store each block's sum, which the dot products
+  subtract for the offsets of `q4_0`, `q4_1`, `q4_K`, `q5_K` and similar weights. The CUDA quantizers summed the values
+  before quantizing, the CPU reference after: the offset part then no longer matched the product of the quantized
+  values, and the rounding errors of a block added up instead of cancelling. Now the sum is that of the quantized
+  values, in the quantizers of the matrix products and in the Q quantization of flash attention (K `q4_0`, `q4_1`,
+  `q5_0`, `q5_1`). Same speed. Gemma 4 12B Q4_K_M on its own prose, KL divergence against products without 8-bit
+  activations (dequantized weights, cuBLAS with f32 accumulation, flash attention off, one token per batch; the same
+  path in 512-token batches gives 0.050): batches of 512 tokens with flash attention 0.240 → 0.127. Batches of 4
+  tokens (a speculative verify, now through the new `q4_K` kernel below) stay at the level of the kernel they replace: 0.18
+  with flash attention and 0.12 without (before: 0.16 and 0.17; that kernel recomputes the sums itself), against 0.26 and
+  0.37 with the old sums. One-token decode does not use the sums (0.200 with flash attention, 0.152 without: the
+  remaining loss of the 8-bit activations). The KV accuracy table was measured again with the fix
+  ([TurboQuant, Accuracy](docs/turboquant.md#accuracy)). Upstream llama.cpp (checked at `1af554f`, 2026-09-19) sums the same way as the old code.
+- **MTP with the Gemma 4 assistant works.** With `-md mtp-gemma-4-12B-it-Q8_0.gguf --spec-type draft-mtp` the server
+  aborted at the first draft (`GGML_ASSERT` in `llama-context.cpp`): the buffer of the next-token embeddings was sized
+  with the width of the draft model (1024) and read with the width of the target (3840). After every target batch the
+  server also copied the whole KV cache of the sequence through the host into the draft context (21 GB device to host
+  in 30 s on Gemma 4 12B), although the assistant reads the target's cache directly; the copy is skipped now when the
+  draft context shares the target's memory.
+- **Fewer host transfers per token.** The rotation matrices of a quantized KV cache were graph inputs and crossed the
+  bus with every graph (1.3 MB per token on Gemma 4 12B with `q8_0`); they now sit in a device buffer of the cache when
+  all its layers use one buffer type. The MTP draft selects its 10 candidates on the GPU instead of copying all logits
+  (1 MB per draft token at a 262k vocabulary). New `llama_set_logits_top_k` / `llama_get_logits_top_k_ith`: the graph
+  keeps the k largest logits of each output row and only those cross to the host; `llama-server` sets k before each
+  batch when the sampler chain of every active slot starts with top-k and nothing before it needs whole rows (grammar,
+  logit bias, penalties, DRY, mirostat, `n_probs`), and not with `-sm tensor`. Texts unchanged (greedy and seeded
+  temperature 1, one and two slots). Gemma 4 12B decode without speculation 33.0 → 35.2 t/s on one RTX 2060. The CUDA
+  `top_k` takes the radix select also for fewer than 16 rows when CUB has no top-k (4 rows of 262144, k = 40: 2.6 ms →
+  0.12 ms). New `test-backend-ops` cases: `TOP_K` with 1 and 4 rows of 262144.
+- **Verify batches of 3-8 tokens on Turing.** The dp4a kernels for few columns (MMVQ) grow with every column on Turing,
+  the int8 tensor-core kernels (MMQ) cost about the same for 1-8 columns: above a threshold per weight type (4 columns
+  for `q4_K` and `q6_K`, 5 for `q8_0` and `iq2_xxs`, 7 for `PTQ1_0`, 3 for the rest) the batch now takes MMQ, and `q4_K` gets a kernel
+  for 3-8 columns with one row per thread (4096 × 14336, 8 columns: 377 → 183 µs). Other GPUs unchanged. Gemma 4 12B
+  Q4_K_M, time of a batch of 3 / 4 / 8 tokens: 37.4 / 45.0 / 80 → 35.8 / 40.7 / 44.8 ms (1 token 28.7). With all of
+  the above, MTP on Gemma 4 12B decodes prose / code / rewrites at 49.1 / 85.1 / 72.3 t/s on one RTX 2060 (upstream
+  41.4 / 58.5 / 54.0 at best; [benchmarks](docs/benchmarks/README.md#mtp-one-gpu)).
+- **MTP with `-sm tensor`.** The graph aborted in the split of the state snapshots that speculation keeps for rollback
+  on models with gated delta net layers (Qwen3.5/3.6/3.8; now viewed per head), and in the backend sampler of the draft
+  (the logits are split along the vocabulary, so speculation samples on the CPU with `-sm tensor`). It then ran, but
+  slower than the layer split: every change of the batch size (MTP verifies 1 token, then 4, then 1 ...) builds the
+  graph again, and the meta backend then sent the weights and caches through the split callback of `llama-model.cpp`,
+  which compiled its 29 regular expressions on every call (upstream #24710 makes them static) and was called again for
+  the whole cache after any view of it changed (the states of a buffer's own tensors now sit apart from those of views).
+  A rebuild costs about 68 → 14 ms. Qwen3.8-27B Q4_K_M on two RTX 2060, prose / code / rewrites: `-sm tensor` with MTP (draft
+  max 5) 26.8 / 43.0 / 34.4 t/s against 22.7 / 35.7 / 30.5 with the layer split and 25.2 without speculation (upstream:
+  23.1 / 32.4 / 28.4 at best, layer split; [benchmarks](docs/benchmarks/README.md#speculative-decoding-two-gpus)).
+  Same text as before on one GPU.
+- **Ternary-Bonsai-2-27B (`PTQ1_0`): verify batches of 4-7 tokens up to 1.7 times faster.** `PTQ1_0` fell under the Turing
+  threshold of 3 columns above, so a speculative verify of 4 tokens took MMQ, which expands every weight to 8 bits
+  (59 t/s for 4 tokens, as slow as 6); its own mat-vec kernel takes up to 7 columns now (4 tokens 100 t/s, 6 tokens 107
+  instead of 87; at 8 MMQ is ahead). `PQ2_0` keeps 3.
+- **`-sm tensor`: the meta backend keeps its bookkeeping out of the way.** A tensor's split state has room for 16
+  segments on 16 devices (2 KiB, nearly all unused), and the meta backend zeroed and copied whole states for every node
+  at each graph rebuild and looked one up per node at each evaluation: with MTP about a fifth of the host time. Lookups
+  now read the cached state in place, copies take only the used entries, the caches are hash maps, and the split of a
+  graph across the devices is kept while the same graph is evaluated again. Same texts. On two RTX 2060 a rebuild takes
+  7.8 instead of 13.7 ms (Qwen3.8-27B) and 8.8 instead of 15.7 ms (Ternary-Bonsai-2-27B); Qwen3.8-27B with MTP
+  ([benchmarks](docs/benchmarks/README.md#speculative-decoding-two-gpus)) and without speculation got 6-14 % faster.
+- **`-sm tensor` with MTP and two or more slots no longer aborts.** When a batch held tokens of several sequences, the
+  MTP hidden states were read back in runs per sequence, from an offset into the output, which the meta backend refused
+  (`GGML_ASSERT(offset == 0)` in `ggml_backend_meta_get_tensor_async`; upstream has the same check, but reads from
+  offset 0 only). Reads of whole rows from any offset work now; a read from offset 0 is unchanged. Qwen3.8-27B with
+  2 and 4 slots, 2 and 4 requests at once: 10 rounds without error.
+- **K2 Horizon with `-sm tensor` in `test-llama-archs`.** Its Q and K norm weights hold one value per element of all heads
+  (other models: of one head) and were copied to every GPU, while Q and K are split by heads: the product aborted in the
+  meta backend. They are now split like the Q and K bias. `test-llama-archs` passes with the tensor split on every
+  architecture that supports it. The released K2 Horizon GGUF has no such norms and ran before.
+
 ## 2026-10-18
 
 - **Faster flash-attention decode of trellis caches (`ktq2`-`ktq4`, 12-state-bit `vtq2`-`vtq4`).** Qwen3-4B on one RTX

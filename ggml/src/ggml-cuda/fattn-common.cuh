@@ -357,16 +357,13 @@ static __device__ __forceinline__ void quantize_q8_1_to_shared(
     }
 
     float amax = fabsf(vals[0]);
-    float sum  = vals[0];
 #pragma unroll
     for (int l = 1; l < int(sizeof(int)); ++l) {
         amax = fmaxf(amax, fabsf(vals[l]));
-        sum += vals[l];
     }
 #pragma unroll
     for (int mask = QI8_1/2; mask > 0; mask >>= 1) {
         amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, mask, 32));
-        sum +=             __shfl_xor_sync(0xFFFFFFFF, sum,  mask, 32);
     }
 
     const float d = amax / 127;
@@ -379,6 +376,15 @@ static __device__ __forceinline__ void quantize_q8_1_to_shared(
             q8[l] = roundf(vals[l] / d);
         }
     }
+
+    // the sum of the quantized values, as in quantize_q8_1: the K dot products subtract it for the offsets of
+    // q4_0/q4_1/q5_0/q5_1 and must see the same values as the products themselves
+    int sumi = q8[0] + q8[1] + q8[2] + q8[3];
+#pragma unroll
+    for (int mask = QI8_1/2; mask > 0; mask >>= 1) {
+        sumi += __shfl_xor_sync(0xFFFFFFFF, sumi, mask, 32);
+    }
+    const float sum = d * sumi;
 
     yq32[threadIdx.x] = q32;
     if (threadIdx.x % QI8_1 == 0 && (ni == WARP_SIZE || threadIdx.x < ni)) {

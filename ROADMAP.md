@@ -27,8 +27,8 @@ Nothing at the moment (2026-10-18).
 - **TurboQuant on every RTX generation:** the kernels are tuned on Turing only; tune them on Ampere, Ada and Blackwell
   (decode close to f16), better 2- and 3-bit K accuracy, a cheaper encoder scale search.
 - **Long-context decode:** split the KV length across SMs (Stream-K style) for single-sequence decode at long context.
-- **Upstream sync:** the quantized matmul (MMQ) and `rms_norm` kernels, which are behind upstream and cost Gemma 4
-  1-2 % prefill; the meta backend of `-sm tensor` (Kolibri-1 abort, see below).
+- **Upstream sync:** the quantized matmul (MMQ) refactor and its fused gate/up launch (upstream #24127, #29948); the
+  meta backend of `-sm tensor` (Kolibri-1 abort, see below).
 - **Speculative decoding:** an Eagle3 drafter (hidden-state extraction and GGUF plumbing are in; the drafter itself is
   not implemented).
 - **Fine-tuning:** validate QAT (`--qat-target-quant`, CPU kernel only) on a task and add a CUDA kernel; backward for
@@ -44,21 +44,8 @@ Nothing at the moment (2026-10-18).
 - **TurboQuant:** the trellis types are slower than the codebook types (first prompt 1.5-1.9 times as long, decode
   12-34 % slower); 2- and 3-bit codebook K lose a lot of
   accuracy, and gpt-oss needs 8-bit K. Details: [turboquant.md#known-issues](docs/turboquant.md#known-issues).
-- **Prefill on Gemma 4** is 1-2 % slower than upstream at long context
-  ([benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus)).
 - **`-sm tensor` with Kolibri-1** aborts in `test-llama-archs` (meta backend); use `-sm layer`
   ([tensor-split.md](docs/tensor-split.md)).
-- **MTP with several requests at once** decodes about 5 % slower than without speculation
-  ([speculative.md](docs/speculative.md#draft_mtp-guidance)).
 - **Fine-tuning:** models with plain GELU, fused gate+up feed-forward layers or Mamba layers cannot be trained yet
   ([finetune.md](docs/finetune.md#what-gets-a-gradient)).
 - **Model-specific** (e.g. Gemma 4 perplexity on wikitext): [models.md#known-limitations](docs/models.md#known-limitations)
-
-## Maintenance policy
-
-- **Upstream sync:** upstream `llama.cpp` fixes are cherry-picked when they apply cleanly; larger features are
-  integrated case by case and noted in the [changelog](CHANGELOG.md).
-- **Stability target:** TurboQuant kernels on CUDA sm_75+, used daily on an RTX 2060. Vulkan and HIP are experimental;
-  macOS / Metal are upstream stock.
-- **Regressions are blockers:** new kernels are checked against the CPU backend (`test-backend-ops`) and by perplexity or
-  KL divergence, speed changes by `llama-bench` against the previous build.

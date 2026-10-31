@@ -369,7 +369,9 @@ void ggml_trellis_outliers_apply(
     if (n_out > 255) n_out = 255;
 
     for (int j = 0; j < n_out; j++) {
-        // Caller guarantees pos[j] < QK_GROUP.
-        y[pos[j]] = ggml_fp16_to_fp32(val_fp16[j]);
+        // a block from a file can name any position: those outside the block are dropped
+        if (pos[j] < GGML_TRELLIS_QK_GROUP) {
+            y[pos[j]] = ggml_fp16_to_fp32(val_fp16[j]);
+        }
     }
 }

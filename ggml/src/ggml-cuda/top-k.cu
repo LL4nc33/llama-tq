@@ -331,8 +331,14 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 #if defined(GGML_CUDA_USE_CUB)
     // The per-row fallbacks below run one row after the other and leave the GPU idle. For wide
     // multi-row inputs (the qwen4exp indexer while reading a prompt) the parallel radix select wins
-    // although it reads the data more often.
-    if (ncols > 1024 && nrows >= 16) {
+    // although it reads the data more often. Without CUB's top-k the fallback sorts whole rows, which is
+    // slower for any number of wide rows (4 rows of a 262k vocabulary, k = 40: 2.6 ms on an RTX 2060).
+#ifdef CUB_TOP_K_AVAILABLE
+    const int64_t radix_min_rows = 16;
+#else
+    const int64_t radix_min_rows = 1;
+#endif
+    if (ncols > 1024 && nrows >= radix_min_rows) {
         top_k_radix_cuda(pool, src0_d, dst_d, ncols, nrows, k, stream);
         return;
     }

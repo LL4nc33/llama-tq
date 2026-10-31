@@ -354,6 +354,20 @@ private:
     // signs of the random diagonal D of the VTQ V rotation D*H*D (empty otherwise)
     std::vector<float> attn_rot_v_signs;
 
+    // order of the V rotation: using smaller rotation matrices for V seems beneficial
+    // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4146397570
+    static constexpr int64_t n_rot_v = 64;
+
+    int64_t n_rot_k() const;
+    int64_t n_rows_rot_v() const;
+
+    // the rotation matrices on the device of the cache, written once (nullptr: they are graph inputs)
+    ggml_tensor * rot_k_dev = nullptr;
+    ggml_tensor * rot_v_dev = nullptr;
+
+    ggml_context_ptr        rot_ctx;
+    ggml_backend_buffer_ptr rot_buf;
+
     // env: LLAMA_KV_CACHE_DEBUG
     int debug = 0;
 

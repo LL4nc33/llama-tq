@@ -9,6 +9,7 @@
 #endif
 
 #include "ggml-backend.h"
+#include "ggml-backend-share.h"
 #include "ggml-backend-impl.h"
 #include "ggml-alloc.h"
 #include "ggml-impl.h"
@@ -2017,6 +2018,16 @@ enum ggml_status ggml_backend_sched_graph_compute_async(ggml_backend_sched_t sch
     }
 
     return ggml_backend_sched_compute_splits(sched);
+}
+
+void ggml_backend_sched_share_compute_buffers(ggml_backend_sched_t sched, ggml_backend_sched_t from) {
+    GGML_ASSERT(sched && (from == nullptr || from->n_backends == sched->n_backends));
+    ggml_gallocr_share_buffers(sched->galloc, from ? from->galloc : nullptr);
+}
+
+bool ggml_backend_sched_compute_buffers_valid(ggml_backend_sched_t sched) {
+    GGML_ASSERT(sched);
+    return ggml_gallocr_buffers_valid(sched->galloc);
 }
 
 void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {

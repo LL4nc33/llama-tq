@@ -1431,20 +1431,17 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
 // Reference impl, not optimized. Used when FA is off and V-cache is VTQ_2 / VTQ_2S, and for every Q.K with a KTQ_3S
 // K-cache (the dequantization undoes the rotation of the block).
 
-// alloca header is platform-specific — Windows ships it in malloc.h.
-#if defined(_WIN32)
-#  include <malloc.h>
-#else
-#  include <alloca.h>
-#endif
-
+// one block at a time: the row length comes from the tensor, a buffer of the whole row could overflow the stack
 static void vec_dot_trellis_f32(int n, float * GGML_RESTRICT s, const void * GGML_RESTRICT vx,
-        const void * GGML_RESTRICT vy, ggml_to_float_t to_float) {
-    float * tmp = (float *)alloca((size_t)n * sizeof(float));
-    to_float(vx, tmp, n);
+        const void * GGML_RESTRICT vy, ggml_to_float_t to_float, size_t block_size) {
+    float tmp[QK_VTQ_TRELLIS];
+    const char  * x = (const char  *)vx;
     const float * y = (const float *)vy;
     double sum = 0.0;
-    for (int i = 0; i < n; i++) sum += (double)tmp[i] * (double)y[i];
+    for (int ib = 0; ib < n / QK_VTQ_TRELLIS; ib++) {
+        to_float(x + ib*block_size, tmp, QK_VTQ_TRELLIS);
+        for (int i = 0; i < QK_VTQ_TRELLIS; i++) sum += (double)tmp[i] * (double)y[ib*QK_VTQ_TRELLIS + i];
+    }
     *s = (float)sum;
 }
 
@@ -1452,61 +1449,61 @@ void ggml_vec_dot_vtq2_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq2_2);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq2_2, sizeof(block_vtq2_2));
 }
 
 void ggml_vec_dot_vtq3_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq3_2);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq3_2, sizeof(block_vtq3_2));
 }
 
 void ggml_vec_dot_vtq4_2_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq4_2);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq4_2, sizeof(block_vtq4_2));
 }
 
 void ggml_vec_dot_vtq2_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq2_2s);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq2_2s, sizeof(block_vtq2_2s));
 }
 
 void ggml_vec_dot_vtq3_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq3_2s);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq3_2s, sizeof(block_vtq3_2s));
 }
 
 void ggml_vec_dot_vtq4_2s_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq4_2s);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_vtq4_2s, sizeof(block_vtq4_2s));
 }
 
 void ggml_vec_dot_ktq2_3s_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq2_3s);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq2_3s, sizeof(block_ktq2_3s));
 }
 
 void ggml_vec_dot_ktq3_3s_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq3_3s);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq3_3s, sizeof(block_ktq3_3s));
 }
 
 void ggml_vec_dot_ktq4_3s_f32(int n, float * GGML_RESTRICT s, size_t bs,
         const void * GGML_RESTRICT vx, size_t bx,
         const void * GGML_RESTRICT vy, size_t by, int nrc) {
     (void)bs; (void)bx; (void)by; (void)nrc;
-    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq4_3s);
+    vec_dot_trellis_f32(n, s, vx, vy, (ggml_to_float_t) dequantize_row_ktq4_3s, sizeof(block_ktq4_3s));
 }

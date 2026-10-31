@@ -41,6 +41,9 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t 
         std::string message;
         error_type error;
         try {
+            if (json_text_nested_deeper_than(req.body, SERVER_MAX_JSON_DEPTH)) {
+                throw std::invalid_argument("request JSON is nested deeper than " + std::to_string(SERVER_MAX_JSON_DEPTH) + " levels");
+            }
             return func(req);
         } catch (const std::invalid_argument & e) {
             // treat invalid_argument as invalid request (400)
@@ -216,6 +219,12 @@ int main(int argc, char ** argv) {
     // Save & load slots
     ctx_http.get ("/slots",                    ex_wrapper(routes.get_slots));
     ctx_http.post("/slots/:id_slot",           ex_wrapper(routes.post_slots));
+    if (params.cors_origins == "*" && params.api_keys.empty()) {
+        SRV_WRN("%s", "CORS is set to allow all origins ('*') and no API key is set\n");
+        SRV_WRN("%s", "any web page opened in a browser that can reach this server can use it (cross-origin requests)\n");
+        SRV_WRN("%s", "set --api-key or limit the origins with --cors-origins\n");
+    }
+
     // CORS proxy (EXPERIMENTAL, only used by the Web UI for MCP)
     if (params.webui_mcp_proxy) {
         SRV_WRN("%s", "-----------------\n");

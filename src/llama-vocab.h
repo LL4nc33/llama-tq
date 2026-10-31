@@ -60,6 +60,9 @@ enum llama_vocab_pre_type {
     LLAMA_VOCAB_PRE_TYPE_JAIS2           = 49,
     LLAMA_VOCAB_PRE_TYPE_GEMMA4          = 50,
     LLAMA_VOCAB_PRE_TYPE_K2_HORIZON      = 51,
+    LLAMA_VOCAB_PRE_TYPE_MELLUM2         = 53,
+    LLAMA_VOCAB_PRE_TYPE_LAGUNA          = 54,
+    LLAMA_VOCAB_PRE_TYPE_SPARK2_5        = 55,
 };
 
 struct LLM_KV;

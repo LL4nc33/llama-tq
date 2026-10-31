@@ -44,10 +44,11 @@ static bool fattn_tq_wmma_dispatch(ggml_backend_cuda_context & ctx, ggml_tensor 
     }
 }
 
-// Small batches of queries (speculative decoding) with a GQA ratio that divides the block width: the kernel reads the
-// quantized cache once per block instead of converting it to f16 for the MMA kernel every step. Only while all
-// (query, head) columns fit one block: a second block reads the cache again and loses to the conversion (RTX 2060,
-// 32k: 36 columns -25 %); 32 columns only on long caches (FATTN_TQ_WMMA_NC32_MIN_KV). Also used by
+// Small batches of queries (speculative decoding, several sequences in a unified cache) with GQA 2, 4, 6, 8 or 16: the
+// kernel reads the quantized cache once per block instead of converting it to f16 for the MMA kernel every step. A
+// block holds whole groups of heads, NC/G queries (G = 6, Qwen3.6/3.8 27B: the last NC % 6 columns stay empty). Only
+// while all (query, head) columns fit one block: a second block reads the cache again and loses to the conversion
+// (RTX 2060, 32k: 36 columns -25 %); 32 columns only on long caches (FATTN_TQ_WMMA_NC32_MIN_KV). Also used by
 // ggml_cuda_flash_attn_ext_get_alloc_size: no f16 conversion buffer is reserved when this path runs.
 bool ggml_cuda_flash_attn_ext_tq_wmma_batch(const int device, const ggml_tensor * dst) {
     const ggml_tensor * Q     = dst->src[0];
@@ -66,7 +67,7 @@ bool ggml_cuda_flash_attn_ext_tq_wmma_batch(const int device, const ggml_tensor 
         return false;
     }
     const int64_t gqa_ratio = Q->ne[2] / K->ne[2];
-    if (gqa_ratio != 2 && gqa_ratio != 4 && gqa_ratio != 8 && gqa_ratio != 16) {
+    if (gqa_ratio != 2 && gqa_ratio != 4 && gqa_ratio != 6 && gqa_ratio != 8 && gqa_ratio != 16) {
         return false;
     }
     const int64_t ncols     = Q->ne[1]*gqa_ratio;

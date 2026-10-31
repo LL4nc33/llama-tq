@@ -32,7 +32,7 @@ enum resize_algo {
     RESIZE_ALGO_BILINEAR, // stretch to target resolution
     RESIZE_ALGO_BICUBIC, // center-crop when aspect ratio doesn't match
     RESIZE_ALGO_BICUBIC_PILLOW,
-    // RESIZE_ALGO_LANCZOS, // TODO
+    RESIZE_ALGO_LANCZOS, // Pillow LANCZOS (a = 3)
 };
 
 struct clip_hparams {
@@ -43,8 +43,7 @@ struct clip_hparams {
     int32_t projection_dim = 0;
     int32_t n_head = 0;
     int32_t n_layer = 0;
-    // idefics3
-    int32_t n_merge = 0; // number of patch merges **per-side**
+    int32_t n_merge = 1; // number of patch merges **per-side**
 
     // for preprocessor
     int32_t image_longest_edge = 0;
@@ -89,6 +88,11 @@ struct clip_hparams {
     int32_t sam_n_head  = 0;
     int32_t sam_n_embd  = 0;
 
+    // Muse Glimmer vision (per-block sparse-window pattern, learned pos-emb, patch-temporal)
+    // NOTE: these perhaps shouldn't have the architecture prefix
+    int32_t muse_glimmer_patch_temporal = 0;
+    int32_t muse_glimmer_sparse_factor  = 0;
+
     // audio
     int32_t n_mel_bins = 0; // whisper preprocessor
     int32_t proj_stack_factor = 0; // ultravox
@@ -110,8 +114,7 @@ struct clip_hparams {
     int32_t custom_image_max_tokens = -1;
 
     void set_limit_image_tokens(int n_tokens_min, int n_tokens_max) {
-        const int cur_merge = n_merge == 0 ? 1 : n_merge;
-        const int patch_area = patch_size * patch_size * cur_merge * cur_merge;
+        const int patch_area = patch_size * patch_size * n_merge * n_merge;
         image_min_pixels = (custom_image_min_tokens > 0 ? custom_image_min_tokens : n_tokens_min) * patch_area;
         image_max_pixels = (custom_image_max_tokens > 0 ? custom_image_max_tokens : n_tokens_max) * patch_area;
         warmup_image_size = static_cast<int>(std::sqrt(image_max_pixels));
@@ -120,8 +123,7 @@ struct clip_hparams {
     void set_warmup_n_tokens(int n_tokens) {
         int n_tok_per_side = static_cast<int>(std::sqrt(n_tokens));
         GGML_ASSERT(n_tok_per_side * n_tok_per_side == n_tokens && "n_tokens must be n*n");
-        const int cur_merge = n_merge == 0 ? 1 : n_merge;
-        warmup_image_size = n_tok_per_side * patch_size * cur_merge;
+        warmup_image_size = n_tok_per_side * patch_size * n_merge;
         // TODO: support warmup size for custom token numbers
     }
     // sam vit deepseek-ocr

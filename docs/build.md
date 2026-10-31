@@ -14,8 +14,10 @@ CUDA for x64 with one archive per GPU generation: `sm75` (Turing, RTX 20xx), `sm
 (Ada, RTX 40xx) and `sm120` (Blackwell, RTX 50xx). The CUDA archives need the CUDA runtime libraries `libcudart.so.12`
 and `libcublas.so.12` (e.g. the packages `cuda-cudart-12-8` and `libcublas-12-8` from NVIDIA's repository) and a driver
 for CUDA 12.8 (570 or newer); the Blackwell archive is built with CUDA 12.9 and needs the 12.9 packages and a driver 575
-or newer. Releases up to v2026.10.06 had a single CUDA archive that also needed `libnccl.so.2` and had to be started from
-its own directory. `--version`, the server log and the server's `/props` report the release version; the web
+or newer. The CPU code of every archive is built for several CPU generations and picked at startup; the CUDA archives up to
+v2026.10.19 had it built for the build machine only and stop with an illegal instruction on CPUs without AVX-512 (most
+desktop CPUs, all AMD Ryzen before Zen 4). Releases up to v2026.10.06 had a single CUDA archive that also needed
+`libnccl.so.2` and had to be started from its own directory. `--version`, the server log and the server's `/props` report the release version; the web
 interface is named llama-tq and has an About page with version, source links and license.
 
 ## Building from source
