@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-01
+
+- **Measured against upstream on an RTX 3090, RTX 4060 Ti and RTX 5090** (release v2026.10.31 against b11866): decode with
+  a `q8_0` cache at 32k is +9 to +40 %, and on the RTX 5090 MTP is +26 to +31 %. On the RTX 3090 prefill is up to 3.6 % behind
+  and MTP on code and rewrites up to 5 % ([benchmarks](docs/benchmarks/README.md#rtx-3090-rtx-4060-ti-and-rtx-5090)).
+- **Tensor split compared with upstream's own `-sm tensor`:** the earlier comparison set it against upstream's layer split.
+  Two RTX 2060, Qwen3.8-27B: about equal without bf16, with bf16 +5 % decode and +17 % on code with MTP, and bf16 costs no
+  measurable accuracy ([tensor split](docs/tensor-split.md)).
+
 ## 2026-10-29
 
 - **Two requests with MTP on Qwen3.5/3.6/3.8 and other hybrid models: +20-30 %.** Drafts of the sequences in one

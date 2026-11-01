@@ -232,6 +232,18 @@ default) unless the row says `-sm tensor`; the tensor rows are from a build with
 | fork `-sm tensor`, draft max 3, `LLAMA_MTP_DECAY=1.0` | 37.2 (80 %) | 52.6 (93 %) | 46.3 (89 %) |
 | fork `-sm tensor`, draft max 5, `LLAMA_MTP_DECAY=1.0` | 35.5 (78 %) | 57.7 (88 %) | 48.2 (83 %) |
 
+Upstream has its own `-sm tensor` without NCCL, and bf16 is specific to this fork. Same setup, both without bf16, builds
+alternated, 2026-11-01:
+
+| Build, draft setting | prose | code | rewrite |
+|---|---:|---:|---:|
+| upstream `-sm tensor`, MTP off | 26.5 | 26.6 | 26.5 |
+| upstream `-sm tensor`, draft max 1 | 35.8 (70 %) | 41.1 (94 %) | 39.4 (87 %) |
+| upstream `-sm tensor`, draft max 3 | 31.6 (40 %) | 49.5 (82 %) | 43.6 (69 %) |
+| fork `-sm tensor`, MTP off | 26.8 | 26.9 | 26.8 |
+| fork `-sm tensor`, draft max 3, `LLAMA_MTP_DECAY=1.0` | 34.6 (80 %) | 49.2 (94 %) | 41.6 (82 %) |
+| fork `-sm tensor`, draft max 5, `LLAMA_MTP_DECAY=1.0` | 34.5 (76 %) | 51.5 (89 %) | 45.0 (81 %) |
+
 Two concurrent requests in the same `-sm tensor` setup (98k context, `-np 2 -kvu`, draft max 5, a prose and a code
 prompt at temperature 0): 52-57 t/s in total, 43 t/s before the drafts of the two requests were made equally long
 (2026-10-25; a hybrid model otherwise verifies a batch with unequal sequence lengths in one forward pass per length).
@@ -292,6 +304,35 @@ upstream or closer to the reference; its speed does not come from cheaper arithm
 KTQ K is staged in f16 during prefill and converted at the first decode step (about 0.1 s after a 16k prompt on one
 RTX 2060). `llama-bench` runs that conversion before it times a generation test; before 2026-10-13 it was counted in
 the decode numbers.
+
+### RTX 3090, RTX 4060 Ti and RTX 5090
+
+One cloud GPU each, 2026-11-01: the release archives of llama-tq v2026.10.31 (sm86, sm89) against the upstream archive
+b11866 (the same upstream commit), same `llama-bench` settings and build order, mean of two runs per build, `q8_0` KV
+cache, in t/s. Qwen3.6-35B-A3B and Qwen3.8-27B do not fit the 16 GB of the RTX 4060 Ti:
+
+| Model | GPU | prefill | prefill 32k | decode | decode 32k |
+|---|---|---:|---:|---:|---:|
+| Qwen3-4B-Instruct-2507 Q4_K_M | RTX 3090 | 7849 → 8013 | 2343 → 2313 | 202.2 → 199.9 | 74.0 → 103.3 |
+| Qwen3-4B-Instruct-2507 Q4_K_M | RTX 4060 Ti | 5445 → 5537 | 897 → 875 | 93.3 → 93.8 | 40.6 → 48.7 |
+| Gemma 4 12B Q4_K_M | RTX 4060 Ti | 2050 → 2030 | 1279 → 1277 | 34.8 → 34.9 | 29.1 → 32.3 |
+| Qwen3.6-35B-A3B Q4_K_M | RTX 3090 | 4116 → 3972 | 2997 → 2932 | 174.5 → 172.0 | 131.4 → 150.5 |
+| Qwen3.8-27B Q4_K_M | RTX 3090 | 1598 → 1540 | 1124 → 1096 | 44.5 → 44.6 | 37.0 → 40.2 |
+| Qwen3-4B-Instruct-2507 Q4_K_M | RTX 5090 | 14979 → 17544 | 5090 → 5530 | 289.9 → 299.2 | 140.9 → 183.2 |
+| Qwen3.8-27B Q4_K_M | RTX 5090 | 3584 → 3614 | 2438 → 2472 | 72.6 → 74.0 | 62.7 → 68.2 |
+
+MTP (`mtp-bench.py`, 300 tokens on Qwen3.8-27B, 450 on Gemma 4, 32k context, two rounds, the better draft length per
+text, llama-tq with `LLAMA_MTP_DECAY=1.0`), upstream → llama-tq:
+
+| Model | GPU | no speculation | prose | code | rewrite |
+|---|---|---:|---:|---:|---:|
+| Qwen3.8-27B Q4_K_M | RTX 3090 | 43.6 → 45.0 | 59.4 → 60.2 | 94.3 → 89.2 | 78.0 → 74.9 |
+| Gemma 4 12B Q4_K_M | RTX 4060 Ti | 34.0 → 34.8 | 55.9 → 56.8 | 96.6 → 99.3 | 78.6 → 77.3 |
+| Qwen3.8-27B Q4_K_M | RTX 5090 | 71.5 → 77.4 | 81.2 → 106.3 | 134.6 → 170.2 | 109.9 → 140.5 |
+
+The lead at 32k holds (+9 to +40 %), but it is smaller than on the RTX 2060. On the RTX 5090 llama-tq is ahead everywhere
+(prefill up to +17 %, MTP +26 to +31 %). Prefill is up to 3.6 % behind upstream on the larger models of the RTX 3090,
+and MTP on code and rewrites up to 5 % there.
 
 Reproduce: [scripts/eval](../../scripts/eval/README.md#against-upstream-two-gpus).
 

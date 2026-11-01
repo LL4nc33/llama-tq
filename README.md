@@ -15,11 +15,10 @@ P2P and measured on RTX 30, 40 and 50 cards.
 
 ## What it adds
 
-- [TurboQuant KV cache](docs/turboquant.md): 2.6 to 6.5 bits per value, more accurate than `q4_0` at the same size
-- [Faster than upstream](docs/benchmarks/README.md#against-upstream-two-gpus) with a quantized KV cache at long
-  context (up to 2.2 times), at least as accurate
+- [TurboQuant KV cache](docs/turboquant.md): 2.6 to 6.5 bits per value (`q8_0` 8.5, f16 16), more accurate than `q4_0` at the same size
+- [Faster than upstream](#supported-gpus) with a quantized KV cache at long context, at least as accurate on the RTX 2060
 - [MTP speculative decoding](docs/speculative.md#draft_mtp-guidance) for Qwen3.5/3.6/3.8 and Gemma 4
-- [Tensor split without P2P](docs/tensor-split.md) for consumer GPUs
+- [Faster tensor split without P2P](docs/tensor-split.md): Qwen3.8-27B on two RTX 2060 at 27.9 t/s (upstream 26.5), on code with MTP 57.7 (49.5)
 - [LoRA fine-tuning](docs/finetune.md) directly on quantized GGUFs, also MoE and larger than VRAM
 
 ## Quick start
@@ -50,16 +49,21 @@ llama-finetune -m model.gguf -f train.jsonl -o task.gguf -ngl 99 -c 512 \
 
 ## Supported GPUs
 
-| GPU generation | CUDA architecture | Measured on |
-| --- | --- | --- |
-| Turing (RTX 20, T4) | 75 | RTX 2060, TITAN RTX |
-| Ampere (RTX 30, A100) | 80, 86 | RTX 3060, RTX 3090, RTX A40 |
-| Ada (RTX 40, L4) | 89 | RTX 4060 Ti, RTX 4090 |
-| Blackwell (RTX 50, RTX PRO 6000) | 120 | RTX 5090, RTX PRO 6000 |
+Last column: Qwen3-4B, `q8_0` KV cache, decode at 32k context, t/s, upstream → llama-tq.
+
+| GPU generation | CUDA | Measured on | Decode at 32k |
+| --- | --- | --- | ---: |
+| Turing (RTX&nbsp;20, T4) | 75 | RTX&nbsp;2060, TITAN&nbsp;RTX | 20.3 → **44.3** (2×&nbsp;2060) |
+| Ampere (RTX&nbsp;30, A100) | 80, 86 | RTX&nbsp;3060, RTX&nbsp;3090, RTX&nbsp;A40 | 74.0 → **103.3** (3090) |
+| Ada (RTX&nbsp;40, L4) | 89 | RTX&nbsp;4060&nbsp;Ti, RTX&nbsp;4090 | 40.6 → **48.7** (4060&nbsp;Ti) |
+| Blackwell (RTX&nbsp;50, RTX&nbsp;PRO&nbsp;6000) | 120 | RTX&nbsp;5090, RTX&nbsp;PRO&nbsp;6000 | 140.9 → **183.2** (5090) |
+
+More models: [benchmarks](docs/benchmarks/README.md#against-upstream-two-gpus).
 
 ## Limitations
 
-- Kernels are tuned on Turing (RTX 20); newer GPUs are measured, not tuned.
+- Kernels are tuned on Turing (RTX 20). On an RTX 3090 and RTX 4060 Ti prefill is up to 4 % slower than upstream, and on an
+  RTX 3090 MTP on code up to 5 %.
 - The trellis types (`ktq2`-`ktq4`, `vtq2`-`vtq4`) are more accurate per bit than the codebook types (`ktq*_1`,
   `vtq*_1`), but decode 12-34 % slower ([benchmarks](docs/benchmarks/README.md#trellis-and-codebook-types-two-gpus)).
 - The TurboQuant kernels are CUDA-only; CPU has a slow reference implementation, other backends use the upstream KV
