@@ -307,7 +307,7 @@ the decode numbers.
 
 ### RTX 3090, RTX 4060 Ti and RTX 5090
 
-One cloud GPU each, 2026-11-01: the release archives of llama-tq v2026.10.31 (sm86, sm89) against the upstream archive
+One cloud GPU each, 2026-11-01: the release archives of llama-tq v2026.10.31 (sm86, sm89, sm120) against the upstream archive
 b11866 (the same upstream commit), same `llama-bench` settings and build order, mean of two runs per build, `q8_0` KV
 cache, in t/s. Qwen3.6-35B-A3B and Qwen3.8-27B do not fit the 16 GB of the RTX 4060 Ti:
 
